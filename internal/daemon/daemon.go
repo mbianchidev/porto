@@ -214,7 +214,9 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Branch string `json:"branch"` }
+	var req struct {
+		Branch string `json:"branch"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Branch == "" {
 		http.Error(w, "branch required", http.StatusBadRequest)
@@ -233,7 +235,9 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) pinPort(w http.ResponseWriter, r *http.Request) {
-	var req struct{ Port int `json:"port"` }
+	var req struct {
+		Port int `json:"port"`
+	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
 	if req.Port <= 0 {
 		http.Error(w, "port required", http.StatusBadRequest)

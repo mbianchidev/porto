@@ -7,8 +7,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -183,7 +185,7 @@ func daemonCmd(st *store.Store, args []string) error {
 	}
 	switch args[0] {
 	case "start":
-		return daemon.New(st, nil).Run(context.Background())
+		return daemon.New(st, dashboardFS()).Run(context.Background())
 	case "status":
 		if daemonUp() {
 			fmt.Println("running")
@@ -194,6 +196,24 @@ func daemonCmd(st *store.Store, args []string) error {
 	default:
 		return fmt.Errorf("unsupported daemon command %q", args[0])
 	}
+}
+
+func dashboardFS() fs.FS {
+	candidates := []string{}
+	if dir := os.Getenv("PORTO_UI_DIR"); dir != "" {
+		candidates = append(candidates, dir)
+	}
+	candidates = append(candidates, "ui/dist")
+	if exe, err := os.Executable(); err == nil {
+		base := filepath.Dir(exe)
+		candidates = append(candidates, filepath.Join(base, "ui", "dist"), filepath.Join(base, "dist"))
+	}
+	for _, dir := range candidates {
+		if info, err := os.Stat(filepath.Join(dir, "index.html")); err == nil && !info.IsDir() {
+			return os.DirFS(dir)
+		}
+	}
+	return nil
 }
 
 func daemonUp() bool {
