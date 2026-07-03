@@ -3,10 +3,14 @@ package gitutil
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os/exec"
+	"regexp"
 	"strings"
 	"time"
 )
+
+var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@-]*$`)
 
 func Branch(path string) string {
 	out, err := git(path, "rev-parse", "--abbrev-ref", "HEAD")
@@ -22,7 +26,10 @@ func Dirty(path string) bool {
 }
 
 func Checkout(path, branch string) error {
-	_, err := git(path, "checkout", branch)
+	if !branchNamePattern.MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, ".lock") {
+		return errors.New("invalid branch name")
+	}
+	_, err := git(path, "switch", "--", branch)
 	return err
 }
 
