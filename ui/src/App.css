@@ -1,0 +1,125 @@
+main {
+  width: min(1180px, calc(100% - 32px));
+  margin: 0 auto;
+  padding: 48px 0;
+}
+
+.hero {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  text-align: left;
+  margin-bottom: 32px;
+}
+
+.hero p {
+  max-width: 760px;
+}
+
+.eyebrow {
+  color: var(--accent);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+  gap: 18px;
+}
+
+.card,
+.empty,
+.error {
+  border: 1px solid var(--border);
+  border-radius: 16px;
+  background: var(--panel);
+  padding: 20px;
+  text-align: left;
+}
+
+.error {
+  color: #fca5a5;
+  border-color: rgba(248, 113, 113, 0.4);
+  margin-bottom: 18px;
+}
+
+.cardHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.card h2 {
+  margin: 0 0 6px;
+}
+
+.card p {
+  font-size: 14px;
+  overflow-wrap: anywhere;
+}
+
+.status {
+  height: fit-content;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font-size: 13px;
+}
+
+.status.running {
+  color: #86efac;
+  background: rgba(34, 197, 94, 0.16);
+}
+
+.status.crashed {
+  color: #fca5a5;
+  background: rgba(248, 113, 113, 0.16);
+}
+
+dl {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+  margin: 20px 0;
+}
+
+dt {
+  font-size: 12px;
+  color: var(--muted);
+  text-transform: uppercase;
+}
+
+dd {
+  margin: 0;
+  color: var(--text-h);
+  overflow-wrap: anywhere;
+}
+
+.command {
+  display: block;
+  overflow-x: auto;
+}
+
+.actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 18px;
+}
+
+button {
+  cursor: pointer;
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  padding: 8px 12px;
+}
+
+button:hover {
+  border-color: var(--accent);
+}
