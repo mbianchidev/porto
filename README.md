@@ -1,4 +1,4 @@
-# Porto — Local Project Orchestrator
+# Porto - Local Development Orchestrator
 
 Porto is an open-source CLI, daemon, and lightweight React dashboard for managing runnable projects on a development machine. It discovers local repos, tracks their process IDs and ports in a small SQLite database, prevents port collisions, can pull the active Git branch before startup, captures logs, and exposes friendly local hostnames.
 
