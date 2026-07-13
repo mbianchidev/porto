@@ -19,6 +19,7 @@ import (
 	"github.com/mbianchidev/porto/internal/daemon"
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
+	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
 
@@ -90,6 +91,22 @@ func scan(st *store.Store, args []string) error {
 	}
 	for _, p := range projects {
 		_, _ = st.UpsertProject(context.Background(), p)
+	}
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		return err
+	}
+	if settings.SQLNotSoLiteEnabled {
+		allProjects, err := st.ListProjects(context.Background())
+		if err != nil {
+			return err
+		}
+		result, err := sqnsl.NewManager(nil).Sync(context.Background(), allProjects)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "porto: sql-not-so-lite integration: %v\n", err)
+		} else if result.Output != "" {
+			fmt.Println(result.Output)
+		}
 	}
 	fmt.Printf("discovered %d project(s)\n", len(projects))
 	return nil

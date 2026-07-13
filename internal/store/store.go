@@ -65,10 +65,14 @@ CREATE TABLE IF NOT EXISTS settings (
  cleanup_local_merged INTEGER NOT NULL DEFAULT 0,
  cleanup_remote_merged INTEGER NOT NULL DEFAULT 0,
  prune_remote_tracking INTEGER NOT NULL DEFAULT 1,
- protected_branches TEXT NOT NULL
+ protected_branches TEXT NOT NULL,
+ sql_not_so_lite_enabled INTEGER NOT NULL DEFAULT 0
 );
 `)
 	if err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("sql_not_so_lite_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	protected, err := json.Marshal(defaultProtectedBranches)
@@ -157,10 +161,10 @@ func (s *Store) SetHostname(ctx context.Context, name, host string) error {
 
 func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var settings app.Settings
-	var cleanupLocal, cleanupRemote, prune int
+	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches FROM settings WHERE id=1`).
-		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected)
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled FROM settings WHERE id=1`).
+		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected, &sqlNotSoLiteEnabled)
 	if err != nil {
 		return settings, err
 	}
@@ -170,6 +174,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	settings.CleanupLocalMerged = cleanupLocal == 1
 	settings.CleanupRemoteMerged = cleanupRemote == 1
 	settings.PruneRemoteTracking = prune == 1
+	settings.SQLNotSoLiteEnabled = sqlNotSoLiteEnabled == 1
 	return settings, nil
 }
 
@@ -178,12 +183,37 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=? WHERE id=1`,
+	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
 		string(protected),
+		boolInt(settings.SQLNotSoLiteEnabled),
 	)
+	return err
+}
+
+func (s *Store) ensureSettingsColumn(name, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(settings)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if columnName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE settings ADD COLUMN %s %s`, name, definition))
 	return err
 }
 

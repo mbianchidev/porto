@@ -32,6 +32,7 @@ type Settings struct {
 	CleanupRemoteMerged bool     `json:"cleanupRemoteMerged"`
 	PruneRemoteTracking bool     `json:"pruneRemoteTracking"`
 	ProtectedBranches   []string `json:"protectedBranches"`
+	SQLNotSoLiteEnabled bool     `json:"sqlNotSoLiteEnabled"`
 }
 
 type BranchCleanupResult struct {
