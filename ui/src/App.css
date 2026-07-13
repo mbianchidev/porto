@@ -32,7 +32,9 @@ main {
 
 .card,
 .empty,
-.error {
+.error,
+.notice,
+.hygiene {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--panel);
@@ -44,6 +46,98 @@ main {
   color: #fca5a5;
   border-color: rgba(248, 113, 113, 0.4);
   margin-bottom: 18px;
+}
+
+.notice {
+  color: #a7f3d0;
+  border-color: rgba(52, 211, 153, 0.35);
+  margin-bottom: 18px;
+}
+
+.hygiene {
+  display: grid;
+  grid-template-columns: minmax(220px, 0.75fr) minmax(320px, 1.25fr);
+  gap: 32px;
+  margin-bottom: 24px;
+  overflow: hidden;
+  position: relative;
+}
+
+.hygiene::before {
+  content: '';
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 4px;
+  background: linear-gradient(var(--accent), #a78bfa 55%, #fb7185);
+}
+
+.hygieneIntro h2 {
+  font-size: clamp(1.5rem, 3vw, 2.4rem);
+  line-height: 1;
+  letter-spacing: -0.04em;
+  margin-bottom: 14px;
+}
+
+.hygieneIntro p:last-child {
+  margin-bottom: 0;
+}
+
+.hygieneControls {
+  display: grid;
+  gap: 12px;
+}
+
+.toggleRow {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.toggleRow strong,
+.protectedField > span {
+  color: var(--text-h);
+  display: block;
+}
+
+.toggleRow small,
+.protectedField small {
+  color: var(--muted);
+  display: block;
+  margin-top: 3px;
+}
+
+.toggleRow.destructive strong {
+  color: #fda4af;
+}
+
+.toggleRow input {
+  accent-color: var(--accent);
+  flex: 0 0 auto;
+  height: 20px;
+  width: 20px;
+}
+
+.protectedField {
+  display: grid;
+  gap: 7px;
+}
+
+.protectedField input {
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font: inherit;
+  padding: 9px 11px;
+}
+
+.protectedField input:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 .cardHeader {
@@ -122,4 +216,29 @@ button {
 
 button:hover {
   border-color: var(--accent);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.cleanupButton {
+  border-color: rgba(167, 139, 250, 0.45);
+  background: rgba(167, 139, 250, 0.1);
+}
+
+@media (max-width: 760px) {
+  main {
+    padding: 28px 0;
+  }
+
+  .hero,
+  .hygiene {
+    grid-template-columns: 1fr;
+  }
+
+  .hero {
+    flex-direction: column;
+  }
 }

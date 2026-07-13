@@ -11,6 +11,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
 - PID, status, port, branch, dirty state, and log tracking.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
+- Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Local hostname routing via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
@@ -83,6 +84,12 @@ Porto stores project metadata, runtime state, pinned ports, and logs in SQLite:
 ```
 
 Set `PORTO_HOME=/path/to/dir` to choose another location, which makes self-hosted or portable setups easy.
+
+## Branch cleanup
+
+Open the dashboard's **Branch hygiene** panel to enable automatic local or remote cleanup. Porto checks every 10 seconds and only removes branches whose complete Git history is already reachable from the repository's default branch. The current branch, default branch, unmerged branches, and configured protected names or glob patterns are never removed.
+
+Remote cleanup is disabled by default and requires confirmation in the dashboard because it permanently deletes branches from the primary Git remote. Optional pruning runs `git fetch --prune` with interactive credential prompts disabled. Squash-merged and rebase-merged branches are intentionally left alone unless Git can prove their complete history is merged.
 
 ## Local DNS and routing
 

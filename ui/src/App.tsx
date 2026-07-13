@@ -15,16 +15,35 @@ type Project = {
   dirty: boolean
 }
 
-async function action(name: string, verb: string) {
+type Settings = {
+  cleanupLocalMerged: boolean
+  cleanupRemoteMerged: boolean
+  pruneRemoteTracking: boolean
+  protectedBranches: string[]
+}
+
+type CleanupResult = {
+  localDeleted: string[]
+  remoteDeleted: string[]
+  pruned: boolean
+}
+
+async function action(name: string, verb: string): Promise<Response> {
   const response = await fetch(`/api/projects/${name}/${verb}`, { method: 'POST' })
   if (!response.ok) throw new Error(await response.text())
+  return response
 }
 
 function App() {
   const [projects, setProjects] = useState<Project[]>([])
+  const [settings, setSettings] = useState<Settings | null>(null)
+  const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
+  const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
+  const [protectedBranches, setProtectedBranches] = useState('')
   const [error, setError] = useState('')
+  const [notice, setNotice] = useState('')
 
-  async function refresh() {
+  async function refreshProjects() {
     try {
       const response = await fetch('/api/projects')
       if (!response.ok) throw new Error(await response.text())
@@ -35,18 +54,100 @@ function App() {
     }
   }
 
+  async function load() {
+    try {
+      const [projectsResponse, settingsResponse] = await Promise.all([
+        fetch('/api/projects'),
+        fetch('/api/settings'),
+      ])
+      if (!projectsResponse.ok) throw new Error(await projectsResponse.text())
+      if (!settingsResponse.ok) throw new Error(await settingsResponse.text())
+      const nextSettings: Settings = await settingsResponse.json()
+      setProjects(await projectsResponse.json())
+      setSettings(nextSettings)
+      setSavedLocalCleanup(nextSettings.cleanupLocalMerged)
+      setSavedRemoteCleanup(nextSettings.cleanupRemoteMerged)
+      setProtectedBranches(nextSettings.protectedBranches.join(', '))
+      setError('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load projects')
+    }
+  }
+
   async function run(name: string, verb: string) {
     try {
       await action(name, verb)
-      await refresh()
+      await refreshProjects()
+      setNotice('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed')
     }
   }
 
+  function updateSetting(key: keyof Omit<Settings, 'protectedBranches'>, value: boolean) {
+    setSettings((current) => current ? { ...current, [key]: value } : current)
+  }
+
+  async function saveSettings() {
+    if (!settings) return
+    if (settings.cleanupRemoteMerged && !savedRemoteCleanup) {
+      const confirmed = window.confirm(
+        'Remote cleanup permanently deletes fully merged branches from the Git remote. Enable it?',
+      )
+      if (!confirmed) {
+        updateSetting('cleanupRemoteMerged', false)
+        return
+      }
+    }
+    const nextSettings = {
+      ...settings,
+      protectedBranches: protectedBranches
+        .split(',')
+        .map((branch) => branch.trim())
+        .filter(Boolean),
+    }
+    try {
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(nextSettings),
+      })
+      if (!response.ok) throw new Error(await response.text())
+      const saved: Settings = await response.json()
+      setSettings(saved)
+      setSavedLocalCleanup(saved.cleanupLocalMerged)
+      setSavedRemoteCleanup(saved.cleanupRemoteMerged)
+      setProtectedBranches(saved.protectedBranches.join(', '))
+      setError('')
+      setNotice('Branch cleanup settings saved.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to save settings')
+    }
+  }
+
+  async function cleanup(name: string) {
+    try {
+      const response = await action(name, 'cleanup-branches')
+      const result: CleanupResult = await response.json()
+      const deleted = [
+        ...result.localDeleted.map((branch) => `local ${branch}`),
+        ...result.remoteDeleted.map((branch) => `remote ${branch}`),
+      ]
+      setError('')
+      setNotice(
+        deleted.length > 0
+          ? `Deleted ${deleted.join(', ')}.`
+          : 'No fully merged, unprotected branches found.',
+      )
+      await refreshProjects()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Branch cleanup failed')
+    }
+  }
+
   useEffect(() => {
-    refresh()
-    const timer = window.setInterval(refresh, 5000)
+    load()
+    const timer = window.setInterval(refreshProjects, 5000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -62,10 +163,72 @@ function App() {
             SQLite-backed daemon.
           </p>
         </div>
-        <button type="button" onClick={refresh}>Refresh</button>
+        <button type="button" onClick={refreshProjects}>Refresh</button>
       </header>
 
       {error && <div className="error">{error}</div>}
+      {notice && <div className="notice">{notice}</div>}
+
+      <section className="hygiene" aria-labelledby="branch-hygiene-title">
+        <div className="hygieneIntro">
+          <p className="eyebrow">Branch hygiene</p>
+          <h2 id="branch-hygiene-title">Keep merged work out of the way.</h2>
+          <p>
+            Porto checks every 10 seconds and removes only branches whose full
+            history is already in the default branch.
+          </p>
+        </div>
+        <div className="hygieneControls">
+          <label className="toggleRow">
+            <span>
+              <strong>Clean up local branches immediately after merge</strong>
+              <small>Keeps the current, default, unmerged, and protected branches.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.cleanupLocalMerged ?? false}
+              disabled={!settings}
+              onChange={(event) => updateSetting('cleanupLocalMerged', event.target.checked)}
+            />
+          </label>
+          <label className="toggleRow destructive">
+            <span>
+              <strong>Clean up remote branches immediately after merge</strong>
+              <small>Permanently deletes matching branches from the primary remote.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.cleanupRemoteMerged ?? false}
+              disabled={!settings}
+              onChange={(event) => updateSetting('cleanupRemoteMerged', event.target.checked)}
+            />
+          </label>
+          <label className="toggleRow">
+            <span>
+              <strong>Prune stale remote-tracking branches</strong>
+              <small>Runs a non-interactive fetch and prune before remote cleanup.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.pruneRemoteTracking ?? false}
+              disabled={!settings || !settings.cleanupRemoteMerged}
+              onChange={(event) => updateSetting('pruneRemoteTracking', event.target.checked)}
+            />
+          </label>
+          <label className="protectedField">
+            <span>Protected branch patterns</span>
+            <input
+              type="text"
+              value={protectedBranches}
+              disabled={!settings}
+              onChange={(event) => setProtectedBranches(event.target.value)}
+              placeholder="main, develop, release/*"
+            />
+            <small>Comma-separated names or glob patterns. The default and current branches are always protected.</small>
+          </label>
+          <button type="button" onClick={saveSettings} disabled={!settings}>Save changes</button>
+        </div>
+      </section>
 
       <section className="grid">
         {projects.length === 0 && (
@@ -99,6 +262,14 @@ function App() {
               <button type="button" onClick={() => run(project.name, 'stop')}>Stop</button>
               <button type="button" onClick={() => run(project.name, 'restart')}>Restart</button>
               <button type="button" onClick={() => run(project.name, 'kill')}>Kill</button>
+              <button
+                className="cleanupButton"
+                type="button"
+                disabled={!savedLocalCleanup && !savedRemoteCleanup}
+                onClick={() => cleanup(project.name)}
+              >
+                Clean merged branches
+              </button>
             </div>
           </article>
         ))}

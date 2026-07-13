@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -12,6 +13,16 @@ import (
 )
 
 type Store struct{ db *sql.DB }
+
+var defaultProtectedBranches = []string{
+	"main",
+	"master",
+	"develop",
+	"development",
+	"staging",
+	"production",
+	"release/*",
+}
 
 func Open(path string) (*Store, error) {
 	db, err := sql.Open("sqlite", path)
@@ -49,7 +60,22 @@ CREATE TABLE IF NOT EXISTS logs (
  created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logs_project_created ON logs(project_id, created_at);
+CREATE TABLE IF NOT EXISTS settings (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ cleanup_local_merged INTEGER NOT NULL DEFAULT 0,
+ cleanup_remote_merged INTEGER NOT NULL DEFAULT 0,
+ prune_remote_tracking INTEGER NOT NULL DEFAULT 1,
+ protected_branches TEXT NOT NULL
+);
 `)
+	if err != nil {
+		return err
+	}
+	protected, err := json.Marshal(defaultProtectedBranches)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO settings(id, protected_branches) VALUES(1, ?)`, string(protected))
 	return err
 }
 
@@ -129,6 +155,38 @@ func (s *Store) SetHostname(ctx context.Context, name, host string) error {
 	return err
 }
 
+func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
+	var settings app.Settings
+	var cleanupLocal, cleanupRemote, prune int
+	var protected string
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches FROM settings WHERE id=1`).
+		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected)
+	if err != nil {
+		return settings, err
+	}
+	if err := json.Unmarshal([]byte(protected), &settings.ProtectedBranches); err != nil {
+		return settings, fmt.Errorf("decode protected branches: %w", err)
+	}
+	settings.CleanupLocalMerged = cleanupLocal == 1
+	settings.CleanupRemoteMerged = cleanupRemote == 1
+	settings.PruneRemoteTracking = prune == 1
+	return settings, nil
+}
+
+func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
+	protected, err := json.Marshal(settings.ProtectedBranches)
+	if err != nil {
+		return fmt.Errorf("encode protected branches: %w", err)
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=? WHERE id=1`,
+		boolInt(settings.CleanupLocalMerged),
+		boolInt(settings.CleanupRemoteMerged),
+		boolInt(settings.PruneRemoteTracking),
+		string(protected),
+	)
+	return err
+}
+
 func (s *Store) AddLog(ctx context.Context, id int64, stream, line string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO logs(project_id, stream, line, created_at) VALUES(?,?,?,?)`, id, stream, line, time.Now().UTC().Format(time.RFC3339Nano))
 	return err
@@ -196,4 +254,11 @@ func safeHost(name string) string {
 		return fmt.Sprintf("project-%d", time.Now().Unix())
 	}
 	return out
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
