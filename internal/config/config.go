@@ -4,14 +4,16 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"time"
 )
 
 const (
-	AppName          = "porto"
-	DaemonAddr       = "127.0.0.1:37623"
-	RouterAddr       = "127.0.0.1:37680"
-	BasePort         = 41000
-	DefaultScanDepth = 3
+	AppName               = "porto"
+	DaemonAddr            = "127.0.0.1:37623"
+	RouterAddr            = "127.0.0.1:37680"
+	BasePort              = 41000
+	DefaultScanDepth      = 3
+	BranchCleanupInterval = 10 * time.Second
 )
 
 func Dir() (string, error) {

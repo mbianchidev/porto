@@ -26,3 +26,16 @@ type LogLine struct {
 	Line      string    `json:"line"`
 	CreatedAt time.Time `json:"createdAt"`
 }
+
+type Settings struct {
+	CleanupLocalMerged  bool     `json:"cleanupLocalMerged"`
+	CleanupRemoteMerged bool     `json:"cleanupRemoteMerged"`
+	PruneRemoteTracking bool     `json:"pruneRemoteTracking"`
+	ProtectedBranches   []string `json:"protectedBranches"`
+}
+
+type BranchCleanupResult struct {
+	LocalDeleted  []string `json:"localDeleted"`
+	RemoteDeleted []string `json:"remoteDeleted"`
+	Pruned        bool     `json:"pruned"`
+}

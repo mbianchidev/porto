@@ -52,6 +52,7 @@ func (s *Server) Run(ctx context.Context) error {
 			log.Printf("router: %v", err)
 		}
 	}()
+	go s.branchCleanupLoop(ctx)
 	log.Printf("porto daemon listening on http://%s (router http://%s)", config.DaemonAddr, config.RouterAddr)
 	return srv.ListenAndServe()
 }
@@ -59,15 +60,46 @@ func (s *Server) Run(ctx context.Context) error {
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
 	mux.HandleFunc("GET /api/projects", s.list)
+	mux.HandleFunc("GET /api/settings", s.getSettings)
+	mux.HandleFunc("PUT /api/settings", s.setSettings)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
 	mux.HandleFunc("POST /api/projects/{name}/kill", s.stop(true))
 	mux.HandleFunc("POST /api/projects/{name}/restart", s.restart)
 	mux.HandleFunc("POST /api/projects/{name}/branch", s.branch)
+	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.cleanupBranches)
 	mux.HandleFunc("POST /api/projects/{name}/port", s.pinPort)
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("/", s.uiHandler)
+}
+
+func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, settings)
+}
+
+func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
+	var settings app.Settings
+	if err := json.NewDecoder(r.Body).Decode(&settings); err != nil {
+		http.Error(w, "invalid settings", http.StatusBadRequest)
+		return
+	}
+	protected, err := gitutil.NormalizeProtectedPatterns(settings.ProtectedBranches)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	settings.ProtectedBranches = protected
+	if err := s.store.SetSettings(r.Context(), settings); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, settings)
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +266,27 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]string{"branch": gitutil.Branch(p.Path)})
 }
 
+func (s *Server) cleanupBranches(w http.ResponseWriter, r *http.Request) {
+	p, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	result, err := gitutil.CleanupBranches(p.Path, settings)
+	if err != nil {
+		s.logCleanup(r.Context(), p, result)
+		http.Error(w, cleanupError(err, result), http.StatusInternalServerError)
+		return
+	}
+	s.logCleanup(r.Context(), p, result)
+	writeJSON(w, result)
+}
+
 func (s *Server) pinPort(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		Port int `json:"port"`
@@ -283,6 +336,66 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		}
 	}
 	return ps, nil
+}
+
+func (s *Server) branchCleanupLoop(ctx context.Context) {
+	ticker := time.NewTicker(config.BranchCleanupInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			s.cleanupAll(ctx)
+		}
+	}
+}
+
+func (s *Server) cleanupAll(ctx context.Context) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		log.Printf("load branch cleanup settings: %v", err)
+		return
+	}
+	if !settings.CleanupLocalMerged && !settings.CleanupRemoteMerged {
+		return
+	}
+	projects, err := s.store.ListProjects(ctx)
+	if err != nil {
+		log.Printf("list projects for branch cleanup: %v", err)
+		return
+	}
+	for _, project := range projects {
+		result, err := gitutil.CleanupBranches(project.Path, settings)
+		if err != nil {
+			s.logCleanup(ctx, project, result)
+			_ = s.store.AddLog(ctx, project.ID, "git", "branch cleanup failed: "+cleanupError(err, result))
+			continue
+		}
+		s.logCleanup(ctx, project, result)
+	}
+}
+
+func (s *Server) logCleanup(ctx context.Context, project app.Project, result app.BranchCleanupResult) {
+	if len(result.LocalDeleted) == 0 && len(result.RemoteDeleted) == 0 {
+		return
+	}
+	message := fmt.Sprintf("branch cleanup deleted local [%s] remote [%s]",
+		strings.Join(result.LocalDeleted, ", "),
+		strings.Join(result.RemoteDeleted, ", "),
+	)
+	_ = s.store.AddLog(ctx, project.ID, "git", message)
+}
+
+func cleanupError(err error, result app.BranchCleanupResult) string {
+	if len(result.LocalDeleted) == 0 && len(result.RemoteDeleted) == 0 {
+		return err.Error()
+	}
+	return fmt.Sprintf("%v after deleting local [%s] remote [%s]",
+		err,
+		strings.Join(result.LocalDeleted, ", "),
+		strings.Join(result.RemoteDeleted, ", "),
+	)
 }
 
 func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
