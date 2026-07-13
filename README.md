@@ -12,6 +12,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - PID, status, port, branch, dirty state, and log tracking.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
+- Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
 - Local hostname routing via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
@@ -90,6 +91,18 @@ Set `PORTO_HOME=/path/to/dir` to choose another location, which makes self-hoste
 Open the dashboard's **Branch hygiene** panel to enable automatic local or remote cleanup. Porto checks every 10 seconds and only removes branches whose complete Git history is already reachable from the repository's default branch. The current branch, default branch, unmerged branches, and configured protected names or glob patterns are never removed.
 
 Remote cleanup is disabled by default and requires confirmation in the dashboard because it permanently deletes branches from the primary Git remote. Optional pruning runs `git fetch --prune` with interactive credential prompts disabled. Squash-merged and rebase-merged branches are intentionally left alone unless Git can prove their complete history is merged.
+
+## sql-not-so-lite integration
+
+Enable **sql-not-so-lite** from the dashboard's **Optional integration** panel. Porto checks managed project roots for files with SQLite extensions and validates the SQLite file header before doing any external work.
+
+If no orchestrated project contains a valid SQLite database, Porto does not install or run anything. When an eligible project exists, Porto uses an existing `sqnsl` binary from `PATH`, or installs the pinned integration revision with Go, then runs:
+
+```sh
+sqnsl scan <project-path>...
+```
+
+Daemon activation and rescans run in the background and expose their current state in the dashboard. Offline `porto scan` commands run the integration synchronously. Integration output and failures are recorded in eligible project logs under the `sqnsl` stream.
 
 ## Local DNS and routing
 

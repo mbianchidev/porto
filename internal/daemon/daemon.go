@@ -23,6 +23,7 @@ import (
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
 
@@ -31,10 +32,11 @@ type Server struct {
 	mu      sync.Mutex
 	running map[int64]*exec.Cmd
 	ui      fs.FS
+	sqnsl   *sqnsl.Manager
 }
 
 func New(st *store.Store, ui fs.FS) *Server {
-	return &Server{store: st, running: map[int64]*exec.Cmd{}, ui: ui}
+	return &Server{store: st, running: map[int64]*exec.Cmd{}, ui: ui, sqnsl: sqnsl.NewManager(nil)}
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -53,6 +55,7 @@ func (s *Server) Run(ctx context.Context) error {
 		}
 	}()
 	go s.branchCleanupLoop(ctx)
+	s.syncSQLNotSoLite(ctx)
 	log.Printf("porto daemon listening on http://%s (router http://%s)", config.DaemonAddr, config.RouterAddr)
 	return srv.ListenAndServe()
 }
@@ -62,6 +65,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects", s.list)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.setSettings)
+	mux.HandleFunc("GET /api/integrations/sql-not-so-lite", s.sqlNotSoLiteStatus)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
@@ -95,11 +99,32 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	settings.ProtectedBranches = protected
+	current, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
 	if err := s.store.SetSettings(r.Context(), settings); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
+		s.syncSQLNotSoLite(r.Context())
+	}
 	writeJSON(w, settings)
+}
+
+func (s *Server) sqlNotSoLiteStatus(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.SQLNotSoLiteEnabled {
+		writeJSON(w, sqnsl.Status{State: "disabled", Message: "Integration is disabled.", UpdatedAt: time.Now().UTC()})
+		return
+	}
+	writeJSON(w, s.sqnsl.Status())
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -133,6 +158,7 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	for _, p := range found {
 		_, _ = s.store.UpsertProject(r.Context(), p)
 	}
+	s.syncSQLNotSoLite(r.Context())
 	writeJSON(w, map[string]any{"count": len(found), "projects": found})
 }
 
@@ -357,6 +383,7 @@ func (s *Server) cleanupAll(ctx context.Context) {
 		log.Printf("load branch cleanup settings: %v", err)
 		return
 	}
+
 	if !settings.CleanupLocalMerged && !settings.CleanupRemoteMerged {
 		return
 	}
@@ -374,6 +401,47 @@ func (s *Server) cleanupAll(ctx context.Context) {
 		}
 		s.logCleanup(ctx, project, result)
 	}
+}
+
+func (s *Server) syncSQLNotSoLite(ctx context.Context) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		log.Printf("load sql-not-so-lite settings: %v", err)
+		return
+	}
+	if !settings.SQLNotSoLiteEnabled {
+		return
+	}
+	projects, err := s.store.ListProjects(ctx)
+	if err != nil {
+		log.Printf("list projects for sql-not-so-lite: %v", err)
+		return
+	}
+	s.sqnsl.Start(projects, func(result sqnsl.Result, err error) {
+		message := result.Output
+		if err != nil {
+			message = err.Error()
+		} else if message == "" {
+			message = "sql-not-so-lite scan completed"
+		}
+		for _, project := range projects {
+			if containsPath(result.ProjectPaths, project.Path) {
+				_ = s.store.AddLog(context.Background(), project.ID, "sqnsl", message)
+			}
+		}
+		if err != nil {
+			log.Printf("sql-not-so-lite integration: %v", err)
+		}
+	})
+}
+
+func containsPath(paths []string, target string) bool {
+	for _, path := range paths {
+		if path == target {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) logCleanup(ctx context.Context, project app.Project, result app.BranchCleanupResult) {

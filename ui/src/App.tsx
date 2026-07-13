@@ -20,6 +20,13 @@ type Settings = {
   cleanupRemoteMerged: boolean
   pruneRemoteTracking: boolean
   protectedBranches: string[]
+  sqlNotSoLiteEnabled: boolean
+}
+
+type IntegrationStatus = {
+  state: 'disabled' | 'idle' | 'running' | 'ready' | 'error'
+  message: string
+  updatedAt: string
 }
 
 type CleanupResult = {
@@ -39,7 +46,9 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
+  const [savedIntegrationEnabled, setSavedIntegrationEnabled] = useState(false)
   const [protectedBranches, setProtectedBranches] = useState('')
+  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -54,19 +63,33 @@ function App() {
     }
   }
 
+  async function refreshIntegration() {
+    try {
+      const response = await fetch('/api/integrations/sql-not-so-lite')
+      if (!response.ok) throw new Error(await response.text())
+      setIntegrationStatus(await response.json())
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to load integration status')
+    }
+  }
+
   async function load() {
     try {
-      const [projectsResponse, settingsResponse] = await Promise.all([
+      const [projectsResponse, settingsResponse, integrationResponse] = await Promise.all([
         fetch('/api/projects'),
         fetch('/api/settings'),
+        fetch('/api/integrations/sql-not-so-lite'),
       ])
       if (!projectsResponse.ok) throw new Error(await projectsResponse.text())
       if (!settingsResponse.ok) throw new Error(await settingsResponse.text())
+      if (!integrationResponse.ok) throw new Error(await integrationResponse.text())
       const nextSettings: Settings = await settingsResponse.json()
       setProjects(await projectsResponse.json())
       setSettings(nextSettings)
+      setIntegrationStatus(await integrationResponse.json())
       setSavedLocalCleanup(nextSettings.cleanupLocalMerged)
       setSavedRemoteCleanup(nextSettings.cleanupRemoteMerged)
+      setSavedIntegrationEnabled(nextSettings.sqlNotSoLiteEnabled)
       setProtectedBranches(nextSettings.protectedBranches.join(', '))
       setError('')
     } catch (err) {
@@ -117,9 +140,15 @@ function App() {
       setSettings(saved)
       setSavedLocalCleanup(saved.cleanupLocalMerged)
       setSavedRemoteCleanup(saved.cleanupRemoteMerged)
+      setSavedIntegrationEnabled(saved.sqlNotSoLiteEnabled)
       setProtectedBranches(saved.protectedBranches.join(', '))
       setError('')
-      setNotice('Branch cleanup settings saved.')
+      setNotice(
+        saved.sqlNotSoLiteEnabled && !savedIntegrationEnabled
+          ? 'Settings saved. sql-not-so-lite activation started.'
+          : 'Settings saved.',
+      )
+      await refreshIntegration()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to save settings')
     }
@@ -147,7 +176,10 @@ function App() {
 
   useEffect(() => {
     load()
-    const timer = window.setInterval(refreshProjects, 5000)
+    const timer = window.setInterval(() => {
+      refreshProjects()
+      refreshIntegration()
+    }, 5000)
     return () => window.clearInterval(timer)
   }, [])
 
@@ -227,6 +259,36 @@ function App() {
             <small>Comma-separated names or glob patterns. The default and current branches are always protected.</small>
           </label>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save changes</button>
+        </div>
+      </section>
+
+      <section className="integration" aria-labelledby="sqlite-integration-title">
+        <div className="hygieneIntro">
+          <p className="eyebrow">Optional integration</p>
+          <h2 id="sqlite-integration-title">Discover project SQLite databases.</h2>
+          <p>
+            Porto installs and runs sql-not-so-lite only when an orchestrated
+            project contains a valid SQLite database.
+          </p>
+        </div>
+        <div className="hygieneControls">
+          <label className="toggleRow">
+            <span>
+              <strong>Enable sql-not-so-lite</strong>
+              <small>Requires Go only when Porto needs to install the pinned sqnsl binary.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.sqlNotSoLiteEnabled ?? false}
+              disabled={!settings}
+              onChange={(event) => updateSetting('sqlNotSoLiteEnabled', event.target.checked)}
+            />
+          </label>
+          <div className={`integrationStatus ${integrationStatus?.state ?? 'idle'}`}>
+            <strong>{integrationStatus?.state ?? 'loading'}</strong>
+            <span>{integrationStatus?.message ?? 'Loading integration status.'}</span>
+          </div>
+          <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
         </div>
       </section>
 
