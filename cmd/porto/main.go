@@ -53,6 +53,8 @@ func run(args []string) error {
 		return branch(args[1:])
 	case "port":
 		return pinPort(args[1:])
+	case "sendbox":
+		return sendboxAction(args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:])
 	case "help", "--help", "-h":
@@ -196,6 +198,16 @@ func pinPort(args []string) error {
 	return api("POST", fmt.Sprintf("/api/projects/%s/port", args[0]), map[string]int{"port": port}, os.Stdout)
 }
 
+func sendboxAction(args []string) error {
+	if len(args) != 2 || (args[0] != "start" && args[0] != "stop") {
+		return fmt.Errorf("usage: porto sendbox start|stop <project>")
+	}
+	if !daemonUp() {
+		return fmt.Errorf("daemon is not running; start it with 'porto daemon start'")
+	}
+	return api("POST", fmt.Sprintf("/api/projects/%s/sendbox/%s", args[1], args[0]), nil, os.Stdout)
+}
+
 func daemonCmd(st *store.Store, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: porto daemon start|status")
@@ -277,5 +289,6 @@ Commands:
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200]
   porto branch <project> <branch>
-  porto port <project> <port>`)
+  porto port <project> <port>
+  porto sendbox start|stop <project>`)
 }

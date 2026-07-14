@@ -13,6 +13,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
+- Optional [Sendbox](https://github.com/mbianchidev/sendbox) sessions for projects with a `.sendbox.yaml` configuration.
 - Local hostname routing via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
@@ -64,6 +65,7 @@ porto start|stop|restart|kill <project> [--no-pull]
 porto logs <project> [-n 200]
 porto branch <project> <branch>
 porto port <project> <port>
+porto sendbox start|stop <project>
 ```
 
 ## Discovery rules
@@ -103,6 +105,25 @@ sqnsl scan <project-path>...
 ```
 
 Daemon activation and rescans run in the background and expose their current state in the dashboard. Offline `porto scan` commands run the integration synchronously. Integration output and failures are recorded in eligible project logs under the `sqnsl` stream.
+
+## Sendbox integration
+
+Install [Sendbox](https://github.com/mbianchidev/sendbox) on a compatible macOS 26 Apple Silicon machine, then initialize each project that should expose the integration:
+
+```sh
+sendbox init --project /path/to/project
+```
+
+This creates `.sendbox.yaml`. Enable **Sendbox** in Porto's dashboard, then use **Run in Sendbox** / **Stop Sendbox**, or:
+
+```sh
+porto sendbox start <project>
+porto sendbox stop <project>
+```
+
+Porto runs `sendbox run --config <project>/.sendbox.yaml --project <project>` and captures its output in the project's existing logs under the `sendbox` and `sendbox-stderr` streams. Porto does not install, require, or run Sendbox when no managed project contains `.sendbox.yaml`.
+
+Sendbox sessions are independent from normal Porto processes. They do not receive Porto's automatic port assignment and are not routed through `*.porto.localhost`; avoid running both modes simultaneously when they would bind the same host port.
 
 ## Local DNS and routing
 
