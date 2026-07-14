@@ -57,6 +57,8 @@ func run(args []string) error {
 		return pinPort(args[1:])
 	case "kill-switch", "killswitch":
 		return killSwitchCmd(db, args[1:])
+	case "sendbox":
+		return sendboxAction(args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:])
 	case "help", "--help", "-h":
@@ -260,6 +262,16 @@ func writeOutput(value any) error {
 	return json.NewEncoder(os.Stdout).Encode(value)
 }
 
+func sendboxAction(args []string) error {
+	if len(args) != 2 || (args[0] != "start" && args[0] != "stop") {
+		return fmt.Errorf("usage: porto sendbox start|stop <project>")
+	}
+	if !daemonUp() {
+		return fmt.Errorf("daemon is not running; start it with 'porto daemon start'")
+	}
+	return api("POST", fmt.Sprintf("/api/projects/%s/sendbox/%s", args[1], args[0]), nil, os.Stdout)
+}
+
 func daemonCmd(st *store.Store, args []string) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: porto daemon start|status")
@@ -342,5 +354,6 @@ Commands:
   porto logs <project> [-n 200]
   porto branch <project> <branch>
   porto port <project> <port>
-  porto kill-switch status|install|sync|cleanup`)
+  porto kill-switch status|install|sync|cleanup
+  porto sendbox start|stop <project>`)
 }

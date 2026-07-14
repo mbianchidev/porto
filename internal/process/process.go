@@ -18,9 +18,17 @@ func ShellCommand(ctx context.Context, dir, command string, port int) (*exec.Cmd
 	if runtime.GOOS == "windows" {
 		shell, flag = "cmd", "/C"
 	}
-	cmd := exec.CommandContext(ctx, shell, flag, command)
-	cmd.Dir = dir
+	cmd, stdout, stderr, err := Command(ctx, dir, shell, flag, command)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	cmd.Env = append(os.Environ(), "PORT="+itoa(port), "PORTO_PORT="+itoa(port))
+	return cmd, stdout, stderr, nil
+}
+
+func Command(ctx context.Context, dir, name string, args ...string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
 	configure(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -28,6 +36,7 @@ func ShellCommand(ctx context.Context, dir, command string, port int) (*exec.Cmd
 	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
+		_ = stdout.Close()
 		return nil, nil, nil, err
 	}
 	return cmd, stdout, stderr, nil

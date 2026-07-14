@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net/http"
@@ -24,26 +25,40 @@ import (
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/sendbox"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
 
 type Server struct {
-	store      *store.Store
-	mu         sync.Mutex
-	running    map[int64]*exec.Cmd
-	ui         fs.FS
-	sqnsl      *sqnsl.Manager
-	killSwitch *killswitch.Manager
+	store           *store.Store
+	mu              sync.Mutex
+	running         map[int64]*exec.Cmd
+	sendboxRunning  map[int64]*exec.Cmd
+	sendboxStates   map[int64]string
+	sendboxMessages map[int64]string
+	ui              fs.FS
+	sendbox         sendboxIntegration
+	sqnsl           *sqnsl.Manager
+	killSwitch      *killswitch.Manager
+}
+
+type sendboxIntegration interface {
+	Status(projects []app.Project) sendbox.Status
+	Command(ctx context.Context, project app.Project) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error)
 }
 
 func New(st *store.Store, ui fs.FS) *Server {
 	return &Server{
-		store:      st,
-		running:    map[int64]*exec.Cmd{},
-		ui:         ui,
-		sqnsl:      sqnsl.NewManager(nil),
-		killSwitch: killswitch.NewManager(nil, nil),
+		store:           st,
+		running:         map[int64]*exec.Cmd{},
+		sendboxRunning:  map[int64]*exec.Cmd{},
+		sendboxStates:   map[int64]string{},
+		sendboxMessages: map[int64]string{},
+		ui:              ui,
+		sendbox:         sendbox.New(nil),
+		sqnsl:           sqnsl.NewManager(nil),
+		killSwitch:      killswitch.NewManager(nil, nil),
 	}
 }
 
@@ -79,6 +94,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/integrations/kill-switch/install", s.installKillSwitch)
 	mux.HandleFunc("POST /api/integrations/kill-switch/sync", s.syncKillSwitchNow)
 	mux.HandleFunc("POST /api/integrations/kill-switch/cleanup", s.cleanupWithKillSwitch)
+	mux.HandleFunc("GET /api/integrations/sendbox", s.sendboxStatus)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
@@ -87,6 +103,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/branch", s.branch)
 	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.cleanupBranches)
 	mux.HandleFunc("POST /api/projects/{name}/port", s.pinPort)
+	mux.HandleFunc("POST /api/projects/{name}/sendbox/start", s.startSendbox)
+	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.stopSendbox)
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("/", s.uiHandler)
 }
@@ -217,6 +235,150 @@ func (s *Server) cleanupWithKillSwitch(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, result)
+}
+
+func (s *Server) sendboxStatus(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.SendboxEnabled {
+		writeJSON(w, sendbox.Status{State: "disabled", Message: "Integration is disabled.", UpdatedAt: time.Now().UTC()})
+		return
+	}
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, s.sendbox.Status(projects))
+}
+
+func (s *Server) startSendbox(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.SendboxEnabled {
+		http.Error(w, "Sendbox integration is disabled", http.StatusConflict)
+		return
+	}
+	project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.mu.Lock()
+	if cmd := s.sendboxRunning[project.ID]; cmd != nil && cmd.Process != nil {
+		s.sendboxStates[project.ID] = "running"
+		s.sendboxMessages[project.ID] = "Sendbox session is running."
+		s.mu.Unlock()
+		s.setSendboxMetadata(&project, true)
+		writeJSON(w, project)
+		return
+	}
+	cmd, stdout, stderr, err := s.sendbox.Command(context.Background(), project)
+	if err != nil {
+		s.sendboxStates[project.ID] = "error"
+		s.sendboxMessages[project.ID] = err.Error()
+		s.mu.Unlock()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
+		s.sendboxStates[project.ID] = "error"
+		s.sendboxMessages[project.ID] = err.Error()
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("start Sendbox: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.sendboxRunning[project.ID] = cmd
+	s.sendboxStates[project.ID] = "running"
+	s.sendboxMessages[project.ID] = "Sendbox session is running."
+	s.mu.Unlock()
+
+	_ = s.store.AddLog(r.Context(), project.ID, "system", "Sendbox session started.")
+	go func() {
+		defer stdout.Close()
+		process.Stream(stdout, func(line string) {
+			_ = s.store.AddLog(context.Background(), project.ID, "sendbox", line)
+		})
+	}()
+	go func() {
+		defer stderr.Close()
+		process.Stream(stderr, func(line string) {
+			_ = s.store.AddLog(context.Background(), project.ID, "sendbox-stderr", line)
+		})
+	}()
+	go s.waitForSendbox(project, cmd)
+
+	s.setSendboxMetadata(&project, true)
+	writeJSON(w, project)
+}
+
+func (s *Server) stopSendbox(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.mu.Lock()
+	cmd := s.sendboxRunning[project.ID]
+	if cmd == nil {
+		s.mu.Unlock()
+		settings, settingsErr := s.store.Settings(r.Context())
+		if settingsErr != nil {
+			http.Error(w, settingsErr.Error(), http.StatusInternalServerError)
+			return
+		}
+		s.setSendboxMetadata(&project, settings.SendboxEnabled)
+		writeJSON(w, project)
+		return
+	}
+	s.sendboxStates[project.ID] = "stopping"
+	s.sendboxMessages[project.ID] = "Stopping Sendbox session."
+	if err := process.Terminate(cmd); err != nil {
+		s.sendboxStates[project.ID] = "error"
+		s.sendboxMessages[project.ID] = err.Error()
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("stop Sendbox: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Unlock()
+
+	s.setSendboxMetadata(&project, true)
+	writeJSON(w, project)
+}
+
+func (s *Server) waitForSendbox(project app.Project, cmd *exec.Cmd) {
+	err := cmd.Wait()
+	s.mu.Lock()
+	previous := s.sendboxStates[project.ID]
+	delete(s.sendboxRunning, project.ID)
+	if previous == "stopping" {
+		s.sendboxStates[project.ID] = "stopped"
+		s.sendboxMessages[project.ID] = "Sendbox session stopped."
+	} else if err != nil {
+		s.sendboxStates[project.ID] = "crashed"
+		s.sendboxMessages[project.ID] = err.Error()
+	} else {
+		s.sendboxStates[project.ID] = "stopped"
+		s.sendboxMessages[project.ID] = "Sendbox session completed."
+	}
+	state := s.sendboxStates[project.ID]
+	message := s.sendboxMessages[project.ID]
+	s.mu.Unlock()
+
+	_ = s.store.AddLog(context.Background(), project.ID, "system", message)
+	if state == "crashed" {
+		log.Printf("Sendbox session for %s: %v", project.Name, err)
+	}
 }
 
 func (s *Server) list(w http.ResponseWriter, r *http.Request) {
@@ -445,6 +607,10 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return nil, err
+	}
 	for i := range ps {
 		ps[i].Branch = gitutil.Branch(ps[i].Path)
 		ps[i].Dirty = gitutil.Dirty(ps[i].Path)
@@ -456,8 +622,48 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		} else if ps[i].Status == "running" {
 			ps[i].Status = "stopped"
 		}
+		s.setSendboxMetadata(&ps[i], settings.SendboxEnabled)
 	}
 	return ps, nil
+}
+
+func (s *Server) setSendboxMetadata(project *app.Project, enabled bool) {
+	configPath, configErr := sendbox.ConfigPath(project.Path)
+	project.SendboxConfigured = configPath != ""
+
+	s.mu.Lock()
+	_, running := s.sendboxRunning[project.ID]
+	state := s.sendboxStates[project.ID]
+	message := s.sendboxMessages[project.ID]
+	s.mu.Unlock()
+
+	if running || state == "stopping" {
+		project.SendboxStatus = state
+		project.SendboxMessage = message
+		return
+	}
+	if configErr != nil {
+		project.SendboxStatus = "error"
+		project.SendboxMessage = configErr.Error()
+		return
+	}
+	if !project.SendboxConfigured {
+		project.SendboxStatus = "unconfigured"
+		project.SendboxMessage = "Add .sendbox.yaml to enable Sendbox actions."
+		return
+	}
+	if !enabled {
+		project.SendboxStatus = "disabled"
+		project.SendboxMessage = "Sendbox integration is disabled."
+		return
+	}
+	if state != "" {
+		project.SendboxStatus = state
+		project.SendboxMessage = message
+		return
+	}
+	project.SendboxStatus = "stopped"
+	project.SendboxMessage = "Sendbox session has not started."
 }
 
 func (s *Server) branchCleanupLoop(ctx context.Context) {

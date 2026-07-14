@@ -13,6 +13,9 @@ type Project = {
   status: string
   branch: string
   dirty: boolean
+  sendboxConfigured: boolean
+  sendboxStatus: string
+  sendboxMessage: string
 }
 
 type Settings = {
@@ -22,6 +25,7 @@ type Settings = {
   protectedBranches: string[]
   sqlNotSoLiteEnabled: boolean
   killSwitchEnabled: boolean
+  sendboxEnabled: boolean
 }
 
 type IntegrationStatus = {
@@ -68,10 +72,12 @@ function App() {
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
-  const [savedIntegrationEnabled, setSavedIntegrationEnabled] = useState(false)
+  const [savedSQLNotSoLiteEnabled, setSavedSQLNotSoLiteEnabled] = useState(false)
+  const [savedSendboxEnabled, setSavedSendboxEnabled] = useState(false)
   const [savedKillSwitchEnabled, setSavedKillSwitchEnabled] = useState(false)
   const [protectedBranches, setProtectedBranches] = useState('')
-  const [integrationStatus, setIntegrationStatus] = useState<IntegrationStatus | null>(null)
+  const [sqlNotSoLiteStatus, setSQLNotSoLiteStatus] = useState<IntegrationStatus | null>(null)
+  const [sendboxStatus, setSendboxStatus] = useState<IntegrationStatus | null>(null)
   const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatus | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
@@ -89,13 +95,16 @@ function App() {
 
   async function refreshIntegrations() {
     try {
-      const [sqlResponse, killSwitchResponse] = await Promise.all([
+      const [sqlNotSoLiteResponse, sendboxResponse, killSwitchResponse] = await Promise.all([
         fetch('/api/integrations/sql-not-so-lite'),
+        fetch('/api/integrations/sendbox'),
         fetch('/api/integrations/kill-switch'),
       ])
-      if (!sqlResponse.ok) throw new Error(await sqlResponse.text())
+      if (!sqlNotSoLiteResponse.ok) throw new Error(await sqlNotSoLiteResponse.text())
+      if (!sendboxResponse.ok) throw new Error(await sendboxResponse.text())
       if (!killSwitchResponse.ok) throw new Error(await killSwitchResponse.text())
-      setIntegrationStatus(await sqlResponse.json())
+      setSQLNotSoLiteStatus(await sqlNotSoLiteResponse.json())
+      setSendboxStatus(await sendboxResponse.json())
       setKillSwitchStatus(await killSwitchResponse.json())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load integration status')
@@ -104,24 +113,34 @@ function App() {
 
   async function load() {
     try {
-      const [projectsResponse, settingsResponse, integrationResponse, killSwitchResponse] = await Promise.all([
+      const [
+        projectsResponse,
+        settingsResponse,
+        sqlNotSoLiteResponse,
+        sendboxResponse,
+        killSwitchResponse,
+      ] = await Promise.all([
         fetch('/api/projects'),
         fetch('/api/settings'),
         fetch('/api/integrations/sql-not-so-lite'),
+        fetch('/api/integrations/sendbox'),
         fetch('/api/integrations/kill-switch'),
       ])
       if (!projectsResponse.ok) throw new Error(await projectsResponse.text())
       if (!settingsResponse.ok) throw new Error(await settingsResponse.text())
-      if (!integrationResponse.ok) throw new Error(await integrationResponse.text())
+      if (!sqlNotSoLiteResponse.ok) throw new Error(await sqlNotSoLiteResponse.text())
+      if (!sendboxResponse.ok) throw new Error(await sendboxResponse.text())
       if (!killSwitchResponse.ok) throw new Error(await killSwitchResponse.text())
       const nextSettings: Settings = await settingsResponse.json()
       setProjects(await projectsResponse.json())
       setSettings(nextSettings)
-      setIntegrationStatus(await integrationResponse.json())
+      setSQLNotSoLiteStatus(await sqlNotSoLiteResponse.json())
+      setSendboxStatus(await sendboxResponse.json())
       setKillSwitchStatus(await killSwitchResponse.json())
       setSavedLocalCleanup(nextSettings.cleanupLocalMerged)
       setSavedRemoteCleanup(nextSettings.cleanupRemoteMerged)
-      setSavedIntegrationEnabled(nextSettings.sqlNotSoLiteEnabled)
+      setSavedSQLNotSoLiteEnabled(nextSettings.sqlNotSoLiteEnabled)
+      setSavedSendboxEnabled(nextSettings.sendboxEnabled)
       setSavedKillSwitchEnabled(nextSettings.killSwitchEnabled)
       setProtectedBranches(nextSettings.protectedBranches.join(', '))
       setError('')
@@ -137,6 +156,17 @@ function App() {
       setNotice('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed')
+    }
+  }
+
+  async function runSendbox(name: string, verb: 'start' | 'stop') {
+    try {
+      await action(name, `sendbox/${verb}`)
+      await refreshProjects()
+      setError('')
+      setNotice(verb === 'start' ? 'Sendbox session started.' : 'Stopping Sendbox session.')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Sendbox action failed')
     }
   }
 
@@ -173,18 +203,17 @@ function App() {
       setSettings(saved)
       setSavedLocalCleanup(saved.cleanupLocalMerged)
       setSavedRemoteCleanup(saved.cleanupRemoteMerged)
-      setSavedIntegrationEnabled(saved.sqlNotSoLiteEnabled)
+      setSavedSQLNotSoLiteEnabled(saved.sqlNotSoLiteEnabled)
+      setSavedSendboxEnabled(saved.sendboxEnabled)
       setSavedKillSwitchEnabled(saved.killSwitchEnabled)
       setProtectedBranches(saved.protectedBranches.join(', '))
       setError('')
-      const activations: string[] = []
-      if (saved.sqlNotSoLiteEnabled && !savedIntegrationEnabled) {
-        activations.push('sql-not-so-lite activation started')
-      }
-      if (saved.killSwitchEnabled && !savedKillSwitchEnabled) {
-        activations.push('KillSwitch port sync started')
-      }
-      setNotice(activations.length > 0 ? `Settings saved. ${activations.join(' and ')}.` : 'Settings saved.')
+      const enabled = [
+        saved.sqlNotSoLiteEnabled && !savedSQLNotSoLiteEnabled ? 'sql-not-so-lite' : '',
+        saved.sendboxEnabled && !savedSendboxEnabled ? 'Sendbox' : '',
+        saved.killSwitchEnabled && !savedKillSwitchEnabled ? 'KillSwitch' : '',
+      ].filter(Boolean)
+      setNotice(enabled.length > 0 ? `Settings saved. Enabled ${enabled.join(' and ')}.` : 'Settings saved.')
       await refreshIntegrations()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to save settings')
@@ -364,9 +393,39 @@ function App() {
               onChange={(event) => updateSetting('sqlNotSoLiteEnabled', event.target.checked)}
             />
           </label>
-          <div className={`integrationStatus ${integrationStatus?.state ?? 'idle'}`}>
-            <strong>{integrationStatus?.state ?? 'loading'}</strong>
-            <span>{integrationStatus?.message ?? 'Loading integration status.'}</span>
+          <div className={`integrationStatus ${sqlNotSoLiteStatus?.state ?? 'idle'}`}>
+            <strong>{sqlNotSoLiteStatus?.state ?? 'loading'}</strong>
+            <span>{sqlNotSoLiteStatus?.message ?? 'Loading integration status.'}</span>
+          </div>
+          <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
+        </div>
+      </section>
+
+      <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
+        <div className="hygieneIntro">
+          <p className="eyebrow">Optional integration</p>
+          <h2 id="sendbox-integration-title">Run configured projects in Sendbox.</h2>
+          <p>
+            Porto starts Sendbox independently for projects with
+            <code> .sendbox.yaml</code>. Normal project controls stay unchanged.
+          </p>
+        </div>
+        <div className="hygieneControls">
+          <label className="toggleRow">
+            <span>
+              <strong>Enable Sendbox</strong>
+              <small>Requires Sendbox, macOS 26, and Apple Silicon. Porto does not install it.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.sendboxEnabled ?? false}
+              disabled={!settings}
+              onChange={(event) => updateSetting('sendboxEnabled', event.target.checked)}
+            />
+          </label>
+          <div className={`integrationStatus ${sendboxStatus?.state ?? 'idle'}`}>
+            <strong>{sendboxStatus?.state ?? 'loading'}</strong>
+            <span>{sendboxStatus?.message ?? 'Loading Sendbox status.'}</span>
           </div>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
         </div>
@@ -460,6 +519,15 @@ function App() {
               <div><dt>Branch</dt><dd>{project.branch}{project.dirty ? ' *' : ''}</dd></div>
               <div><dt>Strategy</dt><dd>{project.strategy}</dd></div>
               <div><dt>Host</dt><dd>{project.hostname}.porto.localhost:37680</dd></div>
+              <div>
+                <dt>Sendbox</dt>
+                <dd
+                  className={`sendboxState ${project.sendboxStatus}`}
+                  title={project.sendboxMessage}
+                >
+                  {project.sendboxConfigured ? project.sendboxStatus : 'not configured'}
+                </dd>
+              </div>
             </dl>
 
             <code className="command">{project.command}</code>
@@ -469,6 +537,33 @@ function App() {
               <button type="button" onClick={() => run(project.name, 'stop')}>Stop</button>
               <button type="button" onClick={() => run(project.name, 'restart')}>Restart</button>
               <button type="button" onClick={() => run(project.name, 'kill')}>Kill</button>
+              {project.sendboxConfigured && (
+                <button
+                  className="sendboxButton"
+                  type="button"
+                  disabled={
+                    !savedSendboxEnabled
+                    || sendboxStatus?.state !== 'ready'
+                    || project.sendboxStatus === 'running'
+                    || project.sendboxStatus === 'stopping'
+                  }
+                  onClick={() => runSendbox(project.name, 'start')}
+                >
+                  Run in Sendbox
+                </button>
+              )}
+              {(project.sendboxConfigured
+                || project.sendboxStatus === 'running'
+                || project.sendboxStatus === 'stopping') && (
+                <button
+                  className="sendboxButton"
+                  type="button"
+                  disabled={project.sendboxStatus !== 'running'}
+                  onClick={() => runSendbox(project.name, 'stop')}
+                >
+                  Stop Sendbox
+                </button>
+              )}
               <button
                 className="cleanupButton"
                 type="button"
