@@ -13,6 +13,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
+- Optional macOS [KillSwitch](https://github.com/mbianchidev/kill-switch) integration for active port visibility and stale dev-server cleanup.
 - Local hostname routing via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
@@ -64,6 +65,7 @@ porto start|stop|restart|kill <project> [--no-pull]
 porto logs <project> [-n 200]
 porto branch <project> <branch>
 porto port <project> <port>
+porto kill-switch status|install|sync|cleanup
 ```
 
 ## Discovery rules
@@ -103,6 +105,18 @@ sqnsl scan <project-path>...
 ```
 
 Daemon activation and rescans run in the background and expose their current state in the dashboard. Offline `porto scan` commands run the integration synchronously. Integration output and failures are recorded in eligible project logs under the `sqnsl` stream.
+
+## KillSwitch integration
+
+On macOS, enable **KillSwitch** from the dashboard's **Optional integration** panel. Porto syncs only ports belonging to processes the current daemon is actively managing. KillSwitch stores those source-owned ports separately, so it does not replace the ports configured in KillSwitch itself.
+
+Installation is always explicit. Use the dashboard's **Install KillSwitch** action or run:
+
+```sh
+porto kill-switch install
+```
+
+After installation, Porto can sync active ports automatically and delegate a cleanup pass to KillSwitch. Cleanup follows KillSwitch's own auto-kill, age, runtime, indicator, and exclusion settings. See [KillSwitch integration details](docs/kill-switch.md) for platform requirements, command behavior, and failure handling.
 
 ## Local DNS and routing
 

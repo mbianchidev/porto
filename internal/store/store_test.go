@@ -32,6 +32,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		PruneRemoteTracking: false,
 		ProtectedBranches:   []string{"main", "release/*"},
 		SQLNotSoLiteEnabled: true,
+		KillSwitchEnabled:   true,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -77,5 +78,8 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	}
 	if settings.SQLNotSoLiteEnabled {
 		t.Fatal("integration should default to disabled")
+	}
+	if settings.KillSwitchEnabled {
+		t.Fatal("KillSwitch integration should default to disabled")
 	}
 }

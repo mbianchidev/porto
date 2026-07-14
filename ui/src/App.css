@@ -78,6 +78,10 @@ main {
   background: linear-gradient(var(--accent), #38bdf8);
 }
 
+.killSwitchIntegration::before {
+  background: linear-gradient(#fb923c, #f43f5e);
+}
+
 .hygieneIntro h2 {
   font-size: clamp(1.5rem, 3vw, 2.4rem);
   line-height: 1;
@@ -165,13 +169,43 @@ button:focus-visible {
   border-color: rgba(52, 211, 153, 0.35);
 }
 
-.integrationStatus.running {
+.integrationStatus.running,
+.integrationStatus.checking,
+.integrationStatus.installing,
+.integrationStatus.syncing,
+.integrationStatus.cleaning {
   border-color: rgba(56, 189, 248, 0.45);
 }
 
 .integrationStatus.error {
   border-color: rgba(248, 113, 113, 0.4);
   color: #fca5a5;
+}
+
+.integrationStatus.missing,
+.integrationStatus.unsupported {
+  border-color: rgba(251, 146, 60, 0.45);
+  color: #fdba74;
+}
+
+.killSwitchMeta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 12px;
+  margin-top: 5px;
+  font: 11px/1.4 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  color: var(--muted);
+}
+
+.integrationActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.destructiveAction {
+  border-color: rgba(251, 146, 60, 0.45);
+  background: rgba(251, 146, 60, 0.1);
 }
 
 .cardHeader {
