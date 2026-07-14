@@ -24,7 +24,7 @@ Open Porto's dashboard, enable **KillSwitch**, and save the setting. Enabling do
 porto kill-switch install
 ```
 
-Porto downloads the pinned official installer over HTTPS into a private temporary file, runs it in release mode, removes the file, and verifies the installed CLI before reporting success. The KillSwitch installer verifies the release checksum and installs the app under `~/bin`.
+Porto downloads the official installer from KillSwitch's `main` branch over HTTPS into a private temporary file, runs it in release mode, removes the file, and verifies the installed CLI before reporting success. The KillSwitch installer verifies the latest release checksum and installs the app under `~/bin`.
 
 ## Port ownership
 

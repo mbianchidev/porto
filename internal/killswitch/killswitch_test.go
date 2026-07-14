@@ -5,7 +5,6 @@ import (
 	"errors"
 	"os"
 	"reflect"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -273,7 +272,7 @@ func TestDisabledStatusClearsStaleInstallationDetails(t *testing.T) {
 	}
 }
 
-func TestScriptInstallerUsesPinnedSourceAndRemovesTemporaryFile(t *testing.T) {
+func TestScriptInstallerUsesMainSourceAndRemovesTemporaryFile(t *testing.T) {
 	var installerPath string
 	runner := &fakeRunner{
 		paths: map[string]string{
@@ -293,7 +292,7 @@ func TestScriptInstallerUsesPinnedSourceAndRemovesTemporaryFile(t *testing.T) {
 				if installerPath == "" {
 					t.Fatal("curl output path was not provided")
 				}
-				if strings.Contains(args[len(args)-1], "/main/") || args[len(args)-1] != installScriptURL {
+				if args[len(args)-1] != "https://raw.githubusercontent.com/mbianchidev/kill-switch/main/install.sh" {
 					t.Fatalf("installer URL = %q", args[len(args)-1])
 				}
 				if err := os.WriteFile(installerPath, []byte("#!/bin/bash\n"), 0o600); err != nil {

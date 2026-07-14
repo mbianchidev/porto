@@ -23,7 +23,7 @@ import (
 
 const (
 	sourceName       = "porto"
-	installScriptURL = "https://raw.githubusercontent.com/mbianchidev/kill-switch/e586f6e75331bb4ffd7ab311073e115c5e9a8003/install.sh"
+	installScriptURL = "https://raw.githubusercontent.com/mbianchidev/kill-switch/main/install.sh"
 )
 
 var (
