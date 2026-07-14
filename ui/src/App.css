@@ -78,6 +78,10 @@ main {
   background: linear-gradient(var(--accent), #38bdf8);
 }
 
+.sendboxIntegration::before {
+  background: linear-gradient(#34d399, #38bdf8 55%, #a78bfa);
+}
+
 .hygieneIntro h2 {
   font-size: clamp(1.5rem, 3vw, 2.4rem);
   line-height: 1;
@@ -208,6 +212,28 @@ button:focus-visible {
   background: rgba(248, 113, 113, 0.16);
 }
 
+.sendboxState {
+  text-transform: capitalize;
+}
+
+.sendboxState.running {
+  color: #86efac;
+}
+
+.sendboxState.stopping {
+  color: #7dd3fc;
+}
+
+.sendboxState.crashed,
+.sendboxState.error {
+  color: #fca5a5;
+}
+
+.sendboxState.disabled,
+.sendboxState.unconfigured {
+  color: var(--muted);
+}
+
 dl {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
@@ -260,6 +286,11 @@ button:disabled {
 .cleanupButton {
   border-color: rgba(167, 139, 250, 0.45);
   background: rgba(167, 139, 250, 0.1);
+}
+
+.sendboxButton {
+  border-color: rgba(52, 211, 153, 0.45);
+  background: rgba(52, 211, 153, 0.1);
 }
 
 @media (max-width: 760px) {

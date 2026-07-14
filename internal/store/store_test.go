@@ -32,6 +32,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		PruneRemoteTracking: false,
 		ProtectedBranches:   []string{"main", "release/*"},
 		SQLNotSoLiteEnabled: true,
+		SendboxEnabled:      true,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -76,6 +77,9 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 		t.Fatalf("load migrated settings: %v", err)
 	}
 	if settings.SQLNotSoLiteEnabled {
-		t.Fatal("integration should default to disabled")
+		t.Fatal("sql-not-so-lite integration should default to disabled")
+	}
+	if settings.SendboxEnabled {
+		t.Fatal("Sendbox integration should default to disabled")
 	}
 }
