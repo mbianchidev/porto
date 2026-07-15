@@ -36,6 +36,7 @@ type Settings struct {
 	PruneRemoteTracking bool     `json:"pruneRemoteTracking"`
 	ProtectedBranches   []string `json:"protectedBranches"`
 	SQLNotSoLiteEnabled bool     `json:"sqlNotSoLiteEnabled"`
+	KillSwitchEnabled   bool     `json:"killSwitchEnabled"`
 	SendboxEnabled      bool     `json:"sendboxEnabled"`
 }
 

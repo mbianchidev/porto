@@ -22,6 +22,7 @@ import (
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
+	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/sendbox"
@@ -39,6 +40,7 @@ type Server struct {
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	sqnsl           *sqnsl.Manager
+	killSwitch      *killswitch.Manager
 }
 
 type sendboxIntegration interface {
@@ -56,6 +58,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		sqnsl:           sqnsl.NewManager(nil),
+		killSwitch:      killswitch.NewManager(nil, nil),
 	}
 }
 
@@ -76,6 +79,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	go s.branchCleanupLoop(ctx)
 	s.syncSQLNotSoLite(ctx)
+	s.syncKillSwitch(ctx)
 	log.Printf("porto daemon listening on http://%s (router http://%s)", config.DaemonAddr, config.RouterAddr)
 	return srv.ListenAndServe()
 }
@@ -86,6 +90,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.setSettings)
 	mux.HandleFunc("GET /api/integrations/sql-not-so-lite", s.sqlNotSoLiteStatus)
+	mux.HandleFunc("GET /api/integrations/kill-switch", s.killSwitchStatus)
+	mux.HandleFunc("POST /api/integrations/kill-switch/install", s.installKillSwitch)
+	mux.HandleFunc("POST /api/integrations/kill-switch/sync", s.syncKillSwitchNow)
+	mux.HandleFunc("POST /api/integrations/kill-switch/cleanup", s.cleanupWithKillSwitch)
 	mux.HandleFunc("GET /api/integrations/sendbox", s.sendboxStatus)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
@@ -134,6 +142,9 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
 		s.syncSQLNotSoLite(r.Context())
 	}
+	if settings.KillSwitchEnabled != current.KillSwitchEnabled {
+		s.syncKillSwitch(r.Context())
+	}
 	writeJSON(w, settings)
 }
 
@@ -148,6 +159,82 @@ func (s *Server) sqlNotSoLiteStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, s.sqnsl.Status())
+}
+
+func (s *Server) killSwitchStatus(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.KillSwitchEnabled {
+		writeJSON(w, s.killSwitch.DisabledStatus())
+		return
+	}
+	status := s.killSwitch.Snapshot()
+	if status.State == "idle" {
+		s.syncKillSwitch(r.Context())
+		status = s.killSwitch.Snapshot()
+	}
+	writeJSON(w, status)
+}
+
+func (s *Server) installKillSwitch(w http.ResponseWriter, r *http.Request) {
+	if !s.killSwitch.Snapshot().Supported {
+		http.Error(w, killswitch.ErrUnsupported.Error(), http.StatusBadRequest)
+		return
+	}
+	if !s.killSwitch.StartInstall(func(_ killswitch.Status, err error) {
+		if err != nil {
+			log.Printf("KillSwitch install: %v", err)
+			return
+		}
+		s.syncKillSwitch(context.Background())
+	}) {
+		http.Error(w, killswitch.ErrBusy.Error(), http.StatusConflict)
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, s.killSwitch.Snapshot())
+}
+
+func (s *Server) syncKillSwitchNow(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.KillSwitchEnabled {
+		http.Error(w, "KillSwitch integration is disabled", http.StatusConflict)
+		return
+	}
+	ports, err := s.activeKillSwitchPorts(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.killSwitch.RequestSync(ports, s.logKillSwitchOperation("sync")); err != nil {
+		http.Error(w, err.Error(), killSwitchHTTPStatus(err))
+		return
+	}
+	writeJSONStatus(w, http.StatusAccepted, s.killSwitch.Snapshot())
+}
+
+func (s *Server) cleanupWithKillSwitch(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !settings.KillSwitchEnabled {
+		http.Error(w, "KillSwitch integration is disabled", http.StatusConflict)
+		return
+	}
+	result, err := s.killSwitch.Cleanup(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), killSwitchHTTPStatus(err))
+		return
+	}
+	writeJSON(w, result)
 }
 
 func (s *Server) sendboxStatus(w http.ResponseWriter, r *http.Request) {
@@ -336,6 +423,7 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.syncKillSwitch(r.Context())
 	writeJSON(w, p)
 }
 
@@ -391,6 +479,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			_ = s.store.AddLog(context.Background(), p.ID, "system", err.Error())
 		}
 		_ = s.store.SetRuntime(context.Background(), p.ID, status, 0, port)
+		s.syncKillSwitch(context.Background())
 	}()
 	return s.store.GetProject(ctx, name)
 }
@@ -402,6 +491,7 @@ func (s *Server) stop(force bool) http.HandlerFunc {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
+		s.syncKillSwitch(r.Context())
 		writeJSON(w, p)
 	}
 }
@@ -435,6 +525,7 @@ func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.syncKillSwitch(r.Context())
 	writeJSON(w, p)
 }
 
@@ -646,6 +737,60 @@ func (s *Server) syncSQLNotSoLite(ctx context.Context) {
 	})
 }
 
+func (s *Server) syncKillSwitch(ctx context.Context) {
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		log.Printf("load KillSwitch settings: %v", err)
+		return
+	}
+	ports := []int{}
+	if settings.KillSwitchEnabled {
+		ports, err = s.activeKillSwitchPorts(ctx)
+		if err != nil {
+			log.Printf("list active Porto ports for KillSwitch: %v", err)
+			return
+		}
+	}
+	callback := s.logKillSwitchOperation("sync")
+	if !settings.KillSwitchEnabled {
+		callback = func(_ killswitch.Status, err error) {
+			if err != nil && !errors.Is(err, killswitch.ErrNotInstalled) && !errors.Is(err, killswitch.ErrUnsupported) {
+				log.Printf("clear KillSwitch Porto ports: %v", err)
+			}
+		}
+	}
+	if err := s.killSwitch.RequestSync(ports, callback); err != nil {
+		log.Printf("queue KillSwitch sync: %v", err)
+	}
+}
+
+func (s *Server) activeKillSwitchPorts(ctx context.Context) ([]int, error) {
+	projects, err := s.enriched(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return killswitch.ManagedPorts(projects), nil
+}
+
+func (s *Server) logKillSwitchOperation(action string) func(killswitch.Status, error) {
+	return func(_ killswitch.Status, err error) {
+		if err != nil {
+			log.Printf("KillSwitch %s: %v", action, err)
+		}
+	}
+}
+
+func killSwitchHTTPStatus(err error) int {
+	switch {
+	case errors.Is(err, killswitch.ErrUnsupported):
+		return http.StatusBadRequest
+	case errors.Is(err, killswitch.ErrNotInstalled), errors.Is(err, killswitch.ErrBusy):
+		return http.StatusConflict
+	default:
+		return http.StatusInternalServerError
+	}
+}
+
 func containsPath(paths []string, target string) bool {
 	for _, path := range paths {
 		if path == target {
@@ -704,6 +849,12 @@ func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {
 
 func writeJSON(w http.ResponseWriter, v any) {
 	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(v)
+}
+
+func writeJSONStatus(w http.ResponseWriter, status int, v any) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(v)
 }
 

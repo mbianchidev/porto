@@ -32,6 +32,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		PruneRemoteTracking: false,
 		ProtectedBranches:   []string{"main", "release/*"},
 		SQLNotSoLiteEnabled: true,
+		KillSwitchEnabled:   true,
 		SendboxEnabled:      true,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
@@ -81,5 +82,8 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	}
 	if settings.SendboxEnabled {
 		t.Fatal("Sendbox integration should default to disabled")
+	}
+	if settings.KillSwitchEnabled {
+		t.Fatal("KillSwitch integration should default to disabled")
 	}
 }

@@ -24,6 +24,7 @@ type Settings = {
   pruneRemoteTracking: boolean
   protectedBranches: string[]
   sqlNotSoLiteEnabled: boolean
+  killSwitchEnabled: boolean
   sendboxEnabled: boolean
 }
 
@@ -31,6 +32,27 @@ type IntegrationStatus = {
   state: 'disabled' | 'idle' | 'running' | 'ready' | 'error'
   message: string
   updatedAt: string
+}
+
+type KillSwitchStatus = {
+  state: 'disabled' | 'idle' | 'checking' | 'missing' | 'installing' | 'syncing' | 'cleaning' | 'ready' | 'error' | 'unsupported'
+  message: string
+  updatedAt: string
+  supported: boolean
+  installed: boolean
+  binaryPath?: string
+  version?: string
+  autoKillEnabled: boolean | null
+  userPorts: number[]
+  syncedPorts: number[]
+  effectivePorts: number[]
+}
+
+type KillSwitchCleanupResult = {
+  autoKillEnabled: boolean
+  candidateCount: number
+  killedCount: number
+  killedProcesses: Array<{ pid: number }>
 }
 
 type CleanupResult = {
@@ -52,9 +74,11 @@ function App() {
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
   const [savedSQLNotSoLiteEnabled, setSavedSQLNotSoLiteEnabled] = useState(false)
   const [savedSendboxEnabled, setSavedSendboxEnabled] = useState(false)
+  const [savedKillSwitchEnabled, setSavedKillSwitchEnabled] = useState(false)
   const [protectedBranches, setProtectedBranches] = useState('')
   const [sqlNotSoLiteStatus, setSQLNotSoLiteStatus] = useState<IntegrationStatus | null>(null)
   const [sendboxStatus, setSendboxStatus] = useState<IntegrationStatus | null>(null)
+  const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatus | null>(null)
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -71,14 +95,17 @@ function App() {
 
   async function refreshIntegrations() {
     try {
-      const [sqlNotSoLiteResponse, sendboxResponse] = await Promise.all([
+      const [sqlNotSoLiteResponse, sendboxResponse, killSwitchResponse] = await Promise.all([
         fetch('/api/integrations/sql-not-so-lite'),
         fetch('/api/integrations/sendbox'),
+        fetch('/api/integrations/kill-switch'),
       ])
       if (!sqlNotSoLiteResponse.ok) throw new Error(await sqlNotSoLiteResponse.text())
       if (!sendboxResponse.ok) throw new Error(await sendboxResponse.text())
+      if (!killSwitchResponse.ok) throw new Error(await killSwitchResponse.text())
       setSQLNotSoLiteStatus(await sqlNotSoLiteResponse.json())
       setSendboxStatus(await sendboxResponse.json())
+      setKillSwitchStatus(await killSwitchResponse.json())
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to load integration status')
     }
@@ -91,25 +118,30 @@ function App() {
         settingsResponse,
         sqlNotSoLiteResponse,
         sendboxResponse,
+        killSwitchResponse,
       ] = await Promise.all([
         fetch('/api/projects'),
         fetch('/api/settings'),
         fetch('/api/integrations/sql-not-so-lite'),
         fetch('/api/integrations/sendbox'),
+        fetch('/api/integrations/kill-switch'),
       ])
       if (!projectsResponse.ok) throw new Error(await projectsResponse.text())
       if (!settingsResponse.ok) throw new Error(await settingsResponse.text())
       if (!sqlNotSoLiteResponse.ok) throw new Error(await sqlNotSoLiteResponse.text())
       if (!sendboxResponse.ok) throw new Error(await sendboxResponse.text())
+      if (!killSwitchResponse.ok) throw new Error(await killSwitchResponse.text())
       const nextSettings: Settings = await settingsResponse.json()
       setProjects(await projectsResponse.json())
       setSettings(nextSettings)
       setSQLNotSoLiteStatus(await sqlNotSoLiteResponse.json())
       setSendboxStatus(await sendboxResponse.json())
+      setKillSwitchStatus(await killSwitchResponse.json())
       setSavedLocalCleanup(nextSettings.cleanupLocalMerged)
       setSavedRemoteCleanup(nextSettings.cleanupRemoteMerged)
       setSavedSQLNotSoLiteEnabled(nextSettings.sqlNotSoLiteEnabled)
       setSavedSendboxEnabled(nextSettings.sendboxEnabled)
+      setSavedKillSwitchEnabled(nextSettings.killSwitchEnabled)
       setProtectedBranches(nextSettings.protectedBranches.join(', '))
       setError('')
     } catch (err) {
@@ -173,11 +205,13 @@ function App() {
       setSavedRemoteCleanup(saved.cleanupRemoteMerged)
       setSavedSQLNotSoLiteEnabled(saved.sqlNotSoLiteEnabled)
       setSavedSendboxEnabled(saved.sendboxEnabled)
+      setSavedKillSwitchEnabled(saved.killSwitchEnabled)
       setProtectedBranches(saved.protectedBranches.join(', '))
       setError('')
       const enabled = [
         saved.sqlNotSoLiteEnabled && !savedSQLNotSoLiteEnabled ? 'sql-not-so-lite' : '',
         saved.sendboxEnabled && !savedSendboxEnabled ? 'Sendbox' : '',
+        saved.killSwitchEnabled && !savedKillSwitchEnabled ? 'KillSwitch' : '',
       ].filter(Boolean)
       setNotice(enabled.length > 0 ? `Settings saved. Enabled ${enabled.join(' and ')}.` : 'Settings saved.')
       await refreshIntegrations()
@@ -206,6 +240,47 @@ function App() {
     }
   }
 
+  async function runKillSwitchAction(actionName: 'install' | 'sync' | 'cleanup') {
+    if (
+      actionName === 'cleanup'
+      && !window.confirm('Run KillSwitch cleanup now? It may terminate stale dev servers using KillSwitch settings.')
+    ) {
+      return
+    }
+    if (actionName === 'cleanup') {
+      setKillSwitchStatus((current) => current ? {
+        ...current,
+        state: 'cleaning',
+        message: 'Running KillSwitch dev cleanup.',
+      } : current)
+    }
+    try {
+      const response = await fetch(`/api/integrations/kill-switch/${actionName}`, { method: 'POST' })
+      if (!response.ok) throw new Error(await response.text())
+      if (actionName === 'cleanup') {
+        const result: KillSwitchCleanupResult = await response.json()
+        setNotice(
+          result.killedCount > 0
+            ? `KillSwitch terminated ${result.killedCount} stale dev server(s).`
+            : result.autoKillEnabled
+              ? `KillSwitch found ${result.candidateCount} candidate(s); none met the cleanup threshold.`
+              : `KillSwitch found ${result.candidateCount} candidate(s), but auto-kill is disabled.`,
+        )
+      } else {
+        setKillSwitchStatus(await response.json())
+        setNotice(actionName === 'install' ? 'KillSwitch installation started.' : 'KillSwitch port sync started.')
+      }
+      setError('')
+      await refreshIntegrations()
+      if (actionName === 'cleanup') {
+        await refreshProjects()
+      }
+    } catch (err) {
+      setError(err instanceof Error ? err.message : `KillSwitch ${actionName} failed`)
+      await refreshIntegrations()
+    }
+  }
+
   useEffect(() => {
     load()
     const timer = window.setInterval(() => {
@@ -214,6 +289,8 @@ function App() {
     }, 5000)
     return () => window.clearInterval(timer)
   }, [])
+
+  const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
 
   return (
     <main>
@@ -351,6 +428,71 @@ function App() {
             <span>{sendboxStatus?.message ?? 'Loading Sendbox status.'}</span>
           </div>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
+        </div>
+      </section>
+
+      <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
+        <div className="hygieneIntro">
+          <p className="eyebrow">Optional integration</p>
+          <h2 id="kill-switch-integration-title">Hand active dev ports to KillSwitch.</h2>
+          <p>
+            Porto registers only ports for processes it is actively managing.
+            KillSwitch keeps those ports separate from your own watch list.
+          </p>
+        </div>
+        <div className="hygieneControls">
+          <label className="toggleRow">
+            <span>
+              <strong>Enable KillSwitch</strong>
+              <small>macOS only. Installation always requires an explicit click.</small>
+            </span>
+            <input
+              type="checkbox"
+              checked={settings?.killSwitchEnabled ?? false}
+              disabled={!settings || killSwitchStatus?.supported === false}
+              onChange={(event) => updateSetting('killSwitchEnabled', event.target.checked)}
+            />
+          </label>
+          <div className={`integrationStatus ${killSwitchStatus?.state ?? 'idle'}`}>
+            <strong>{killSwitchStatus?.state ?? 'loading'}</strong>
+            <span>{killSwitchStatus?.message ?? 'Loading KillSwitch status.'}</span>
+            <div className="killSwitchMeta">
+              <span>{killSwitchStatus?.version ?? 'version unavailable'}</span>
+              <span>{killSwitchStatus?.syncedPorts.length ?? 0} active Porto port(s)</span>
+              <span>
+                {killSwitchStatus?.autoKillEnabled == null
+                  ? 'cleanup policy in KillSwitch'
+                  : killSwitchStatus.autoKillEnabled ? 'auto-kill on' : 'auto-kill off'}
+              </span>
+            </div>
+          </div>
+          <div className="integrationActions">
+            <button type="button" onClick={saveSettings} disabled={!settings || killSwitchBusy}>
+              Save integration setting
+            </button>
+            <button
+              type="button"
+              onClick={() => runKillSwitchAction('install')}
+              disabled={!killSwitchStatus?.supported || killSwitchBusy}
+            >
+              {killSwitchStatus?.installed ? 'Update KillSwitch' : 'Install KillSwitch'}
+            </button>
+            <button
+              type="button"
+              onClick={() => runKillSwitchAction('sync')}
+              disabled={!settings?.killSwitchEnabled || !killSwitchStatus?.installed || killSwitchBusy}
+            >
+              Sync active ports
+            </button>
+            <button
+              className="destructiveAction"
+              type="button"
+              onClick={() => runKillSwitchAction('cleanup')}
+              disabled={!settings?.killSwitchEnabled || !killSwitchStatus?.installed || killSwitchBusy}
+            >
+              Run cleanup now
+            </button>
+          </div>
         </div>
       </section>
 

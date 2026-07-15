@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -19,6 +20,7 @@ import (
 	"github.com/mbianchidev/porto/internal/daemon"
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
+	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
@@ -53,6 +55,8 @@ func run(args []string) error {
 		return branch(args[1:])
 	case "port":
 		return pinPort(args[1:])
+	case "kill-switch", "killswitch":
+		return killSwitchCmd(db, args[1:])
 	case "sendbox":
 		return sendboxAction(args[1:])
 	case "daemon":
@@ -198,6 +202,66 @@ func pinPort(args []string) error {
 	return api("POST", fmt.Sprintf("/api/projects/%s/port", args[0]), map[string]int{"port": port}, os.Stdout)
 }
 
+func killSwitchCmd(st *store.Store, args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: porto kill-switch status|install|sync|cleanup")
+	}
+	action := args[0]
+	if daemonUp() {
+		method := "POST"
+		path := "/api/integrations/kill-switch"
+		if action == "status" {
+			method = "GET"
+		} else {
+			path += "/" + action
+		}
+		switch action {
+		case "status", "install", "sync", "cleanup":
+			return api(method, path, nil, os.Stdout)
+		default:
+			return fmt.Errorf("unsupported KillSwitch command %q", action)
+		}
+	}
+
+	manager := killswitch.NewManager(nil, nil)
+	ctx := context.Background()
+	switch action {
+	case "status":
+		status, err := manager.Probe(ctx)
+		if encodeErr := writeOutput(status); encodeErr != nil {
+			return encodeErr
+		}
+		return err
+	case "install":
+		status, err := manager.Install(ctx)
+		if encodeErr := writeOutput(status); encodeErr != nil {
+			return encodeErr
+		}
+		return err
+	case "sync":
+		return errors.New("daemon is not running; start it with 'porto daemon start' before syncing KillSwitch ports")
+	case "cleanup":
+		settings, err := st.Settings(ctx)
+		if err != nil {
+			return err
+		}
+		if !settings.KillSwitchEnabled {
+			return errors.New("KillSwitch integration is disabled")
+		}
+		result, err := manager.Cleanup(ctx)
+		if err != nil {
+			return err
+		}
+		return writeOutput(result)
+	default:
+		return fmt.Errorf("unsupported KillSwitch command %q", action)
+	}
+}
+
+func writeOutput(value any) error {
+	return json.NewEncoder(os.Stdout).Encode(value)
+}
+
 func sendboxAction(args []string) error {
 	if len(args) != 2 || (args[0] != "start" && args[0] != "stop") {
 		return fmt.Errorf("usage: porto sendbox start|stop <project>")
@@ -290,5 +354,6 @@ Commands:
   porto logs <project> [-n 200]
   porto branch <project> <branch>
   porto port <project> <port>
+  porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>`)
 }
