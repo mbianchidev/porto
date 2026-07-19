@@ -561,7 +561,7 @@ func (m *Manager) setStatus(status Status) {
 
 func ManagedPorts(projects []app.Project) []int {
 	reserved := map[int]bool{}
-	for _, address := range []string{config.DaemonAddr, config.RouterAddr} {
+	for _, address := range []string{config.DaemonAddr, config.RouterAddr, config.RouterTLSAddr} {
 		_, rawPort, err := net.SplitHostPort(address)
 		if err != nil {
 			continue

@@ -8,12 +8,16 @@ import (
 )
 
 const (
-	AppName               = "porto"
-	DaemonAddr            = "127.0.0.1:37623"
-	RouterAddr            = "127.0.0.1:37680"
-	BasePort              = 41000
-	DefaultScanDepth      = 3
-	BranchCleanupInterval = 10 * time.Second
+	AppName                  = "porto"
+	DaemonAddr               = "127.0.0.1:37623"
+	RouterAddr               = "127.0.0.1:37680"
+	RouterTLSAddr            = "127.0.0.1:37681"
+	LocalDomain              = "porto.local"
+	LocalhostDomain          = "porto.localhost"
+	BasePort                 = 41000
+	DefaultScanDepth         = 3
+	BranchCleanupInterval    = 10 * time.Second
+	CertificateCheckInterval = 24 * time.Hour
 )
 
 func Dir() (string, error) {
@@ -38,4 +42,13 @@ func DBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "porto.db"), nil
+}
+
+func CertificatePaths() (string, string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", "", err
+	}
+	certDir := filepath.Join(dir, "certificates")
+	return filepath.Join(certDir, LocalDomain+".pem"), filepath.Join(certDir, LocalDomain+"-key.pem"), nil
 }

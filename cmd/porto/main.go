@@ -10,12 +10,15 @@ import (
 	"io"
 	"io/fs"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/daemon"
 	"github.com/mbianchidev/porto/internal/discovery"
@@ -51,6 +54,8 @@ func run(args []string) error {
 		return projectAction(args[0], args[1:])
 	case "logs":
 		return logs(db, args[1:])
+	case "cert", "certificate":
+		return certificateAction(args[1:])
 	case "branch":
 		return branch(args[1:])
 	case "port":
@@ -153,22 +158,46 @@ func projectAction(action string, args []string) error {
 }
 
 func logs(st *store.Store, args []string) error {
-	fs := flag.NewFlagSet("logs", flag.ContinueOnError)
-	limit := fs.Int("n", 200, "lines")
-	if err := fs.Parse(args); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: porto logs <project>")
-	}
-	if daemonUp() {
-		return api("GET", fmt.Sprintf("/api/projects/%s/logs?limit=%d", fs.Arg(0), *limit), nil, os.Stdout)
-	}
-	p, err := st.GetProject(context.Background(), fs.Arg(0))
+	project, stream, limit, clear, err := parseLogArgs(args)
 	if err != nil {
 		return err
 	}
-	lines, err := st.Logs(context.Background(), p.ID, *limit)
+	path := fmt.Sprintf("/api/projects/%s/logs", url.PathEscape(project))
+	query := url.Values{}
+	query.Set("limit", strconv.Itoa(limit))
+	if stream != "all" {
+		query.Set("stream", stream)
+	}
+	path += "?" + query.Encode()
+	if daemonUp() {
+		if clear {
+			path = fmt.Sprintf("/api/projects/%s/logs/clear?%s", url.PathEscape(project), query.Encode())
+			return api("POST", path, nil, os.Stdout)
+		}
+		return api("GET", path, nil, os.Stdout)
+	}
+	p, err := st.GetProject(context.Background(), project)
+	if err != nil {
+		return err
+	}
+	storeStream := stream
+	if storeStream == "all" {
+		storeStream = ""
+	}
+	if clear {
+		deleted, err := st.ClearLogs(context.Background(), p.ID, storeStream)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("cleared %d log line(s)\n", deleted)
+		return nil
+	}
+	var lines []app.LogLine
+	if storeStream == "" {
+		lines, err = st.Logs(context.Background(), p.ID, limit)
+	} else {
+		lines, err = st.LogsByStream(context.Background(), p.ID, storeStream, limit)
+	}
 	if err != nil {
 		return err
 	}
@@ -176,6 +205,82 @@ func logs(st *store.Store, args []string) error {
 		fmt.Printf("%s %-6s %s\n", l.CreatedAt.Format(time.Kitchen), l.Stream, l.Line)
 	}
 	return nil
+}
+
+func parseLogArgs(args []string) (project, stream string, limit int, clear bool, err error) {
+	stream = "all"
+	limit = 200
+	for i := 0; i < len(args); i++ {
+		switch arg := args[i]; {
+		case arg == "-n" || arg == "--lines":
+			if i+1 >= len(args) {
+				return "", "", 0, false, fmt.Errorf("%s requires a value", arg)
+			}
+			i++
+			limit, err = strconv.Atoi(args[i])
+			if err != nil || limit <= 0 || limit > 1000 {
+				return "", "", 0, false, errors.New("log line count must be between 1 and 1000")
+			}
+		case strings.HasPrefix(arg, "-n="):
+			limit, err = strconv.Atoi(strings.TrimPrefix(arg, "-n="))
+			if err != nil || limit <= 0 || limit > 1000 {
+				return "", "", 0, false, errors.New("log line count must be between 1 and 1000")
+			}
+		case arg == "--stream":
+			if i+1 >= len(args) {
+				return "", "", 0, false, errors.New("--stream requires a value")
+			}
+			i++
+			stream = strings.ToLower(args[i])
+		case strings.HasPrefix(arg, "--stream="):
+			stream = strings.ToLower(strings.TrimPrefix(arg, "--stream="))
+		case arg == "--clear":
+			clear = true
+		case strings.HasPrefix(arg, "-"):
+			return "", "", 0, false, fmt.Errorf("unknown logs option %q", arg)
+		case project == "":
+			project = arg
+		default:
+			return "", "", 0, false, errors.New("usage: porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]")
+		}
+	}
+	if project == "" {
+		return "", "", 0, false, errors.New("usage: porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]")
+	}
+	switch stream {
+	case "all", "stdout", "stderr":
+	default:
+		return "", "", 0, false, errors.New("stream must be all, stdout, or stderr")
+	}
+	return project, stream, limit, clear, nil
+}
+
+func certificateAction(args []string) error {
+	if len(args) != 1 {
+		return errors.New("usage: porto cert path|generate")
+	}
+	certificatePath, keyPath, err := config.CertificatePaths()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "path":
+		return writeOutput(map[string]string{
+			"certificatePath": certificatePath,
+			"keyPath":         keyPath,
+		})
+	case "generate":
+		if daemonUp() {
+			return api("POST", "/api/tls/renew", nil, os.Stdout)
+		}
+		status, err := certificates.New(certificatePath, keyPath).Renew()
+		if err != nil {
+			return err
+		}
+		return writeOutput(status)
+	default:
+		return fmt.Errorf("unsupported certificate command %q", args[0])
+	}
 }
 
 func branch(args []string) error {
@@ -351,7 +456,8 @@ Commands:
   porto list
   porto daemon start|status
   porto start|stop|restart|kill <project> [--no-pull]
-  porto logs <project> [-n 200]
+  porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
+  porto cert path|generate
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup

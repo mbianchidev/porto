@@ -9,6 +9,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -19,6 +20,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
@@ -41,6 +43,7 @@ type Server struct {
 	sendbox         sendboxIntegration
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
+	tlsCertificates *certificates.Manager
 }
 
 type sendboxIntegration interface {
@@ -63,24 +66,52 @@ func New(st *store.Store, ui fs.FS) *Server {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	certificatePath, keyPath, err := config.CertificatePaths()
+	if err != nil {
+		return fmt.Errorf("resolve TLS certificate paths: %w", err)
+	}
+	s.tlsCertificates = certificates.New(certificatePath, keyPath)
+	certificateStatus, err := s.tlsCertificates.Ensure()
+	if err != nil {
+		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
+	}
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{Addr: config.DaemonAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	router := &http.Server{Addr: config.RouterAddr, Handler: http.HandlerFunc(s.proxyByHost), ReadHeaderTimeout: 5 * time.Second}
+	tlsRouter := &http.Server{
+		Addr:              config.RouterTLSAddr,
+		Handler:           http.HandlerFunc(s.proxyByHost),
+		ReadHeaderTimeout: 5 * time.Second,
+		TLSConfig:         s.tlsCertificates.TLSConfig(),
+	}
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
 		_ = router.Shutdown(context.Background())
+		_ = tlsRouter.Shutdown(context.Background())
 	}()
 	go func() {
 		if err := router.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
 		}
 	}()
+	go func() {
+		if err := tlsRouter.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Printf("TLS router: %v", err)
+		}
+	}()
 	go s.branchCleanupLoop(ctx)
+	go s.certificateRenewalLoop(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
-	log.Printf("porto daemon listening on http://%s (router http://%s)", config.DaemonAddr, config.RouterAddr)
+	log.Printf(
+		"porto daemon listening on http://%s (routers http://%s and https://%s, certificate %s)",
+		config.DaemonAddr,
+		config.RouterAddr,
+		config.RouterTLSAddr,
+		certificateStatus.CertificatePath,
+	)
 	return srv.ListenAndServe()
 }
 
@@ -95,6 +126,8 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/integrations/kill-switch/sync", s.syncKillSwitchNow)
 	mux.HandleFunc("POST /api/integrations/kill-switch/cleanup", s.cleanupWithKillSwitch)
 	mux.HandleFunc("GET /api/integrations/sendbox", s.sendboxStatus)
+	mux.HandleFunc("GET /api/tls", s.tlsStatus)
+	mux.HandleFunc("POST /api/tls/renew", s.renewTLS)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
@@ -106,7 +139,34 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/sendbox/start", s.startSendbox)
 	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.stopSendbox)
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
+	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
 	mux.HandleFunc("/", s.uiHandler)
+}
+
+func (s *Server) tlsStatus(w http.ResponseWriter, _ *http.Request) {
+	if s.tlsCertificates == nil {
+		http.Error(w, "TLS certificate manager is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	status, err := s.tlsCertificates.Status()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, status)
+}
+
+func (s *Server) renewTLS(w http.ResponseWriter, _ *http.Request) {
+	if s.tlsCertificates == nil {
+		http.Error(w, "TLS certificate manager is not initialized", http.StatusServiceUnavailable)
+		return
+	}
+	status, err := s.tlsCertificates.Renew()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, status)
 }
 
 func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
@@ -303,18 +363,8 @@ func (s *Server) startSendbox(w http.ResponseWriter, r *http.Request) {
 	s.mu.Unlock()
 
 	_ = s.store.AddLog(r.Context(), project.ID, "system", "Sendbox session started.")
-	go func() {
-		defer stdout.Close()
-		process.Stream(stdout, func(line string) {
-			_ = s.store.AddLog(context.Background(), project.ID, "sendbox", line)
-		})
-	}()
-	go func() {
-		defer stderr.Close()
-		process.Stream(stderr, func(line string) {
-			_ = s.store.AddLog(context.Background(), project.ID, "sendbox-stderr", line)
-		})
-	}()
+	go s.captureLogs(project, "sendbox", stdout)
+	go s.captureLogs(project, "sendbox-stderr", stderr)
 	go s.waitForSendbox(project, cmd)
 
 	s.setSendboxMetadata(&project, true)
@@ -462,12 +512,14 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		return p, err
 	}
 	if err := cmd.Start(); err != nil {
+		_ = stdout.Close()
+		_ = stderr.Close()
 		return p, err
 	}
 	s.running[p.ID] = cmd
 	_ = s.store.SetRuntime(ctx, p.ID, "running", cmd.Process.Pid, port)
-	go process.Stream(stdout, func(line string) { _ = s.store.AddLog(context.Background(), p.ID, "stdout", line) })
-	go process.Stream(stderr, func(line string) { _ = s.store.AddLog(context.Background(), p.ID, "stderr", line) })
+	go s.captureLogs(p, "stdout", stdout)
+	go s.captureLogs(p, "stderr", stderr)
 	go func() {
 		err := cmd.Wait()
 		s.mu.Lock()
@@ -594,12 +646,70 @@ func (s *Server) logs(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	logs, err := s.store.Logs(r.Context(), p.ID, limit)
+	stream, err := requestedLogStream(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	var logs []app.LogLine
+	if stream == "" {
+		logs, err = s.store.Logs(r.Context(), p.ID, limit)
+	} else {
+		logs, err = s.store.LogsByStream(r.Context(), p.ID, stream, limit)
+	}
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	writeJSON(w, logs)
+}
+
+func (s *Server) clearLogs(w http.ResponseWriter, r *http.Request) {
+	p, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	stream, err := requestedLogStream(r)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	deleted, err := s.store.ClearLogs(r.Context(), p.ID, stream)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]int64{"deleted": deleted})
+}
+
+func requestedLogStream(r *http.Request) (string, error) {
+	switch stream := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("stream"))); stream {
+	case "", "all":
+		return "", nil
+	case "stdout", "stderr":
+		return stream, nil
+	default:
+		return "", errors.New("stream must be all, stdout, or stderr")
+	}
+}
+
+func (s *Server) captureLogs(project app.Project, stream string, reader io.ReadCloser) {
+	defer reader.Close()
+	storeErrorLogged := false
+	if err := process.Stream(reader, func(line string) error {
+		if err := s.store.AddLog(context.Background(), project.ID, stream, line); err != nil {
+			if !storeErrorLogged {
+				log.Printf("store %s logs for %s: %v", stream, project.Name, err)
+				storeErrorLogged = true
+			}
+		} else {
+			storeErrorLogged = false
+		}
+		return nil
+	}); err != nil {
+		log.Printf("read %s logs for %s: %v", stream, project.Name, err)
+	}
 }
 
 func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
@@ -675,6 +785,21 @@ func (s *Server) branchCleanupLoop(ctx context.Context) {
 			return
 		case <-ticker.C:
 			s.cleanupAll(ctx)
+		}
+	}
+}
+
+func (s *Server) certificateRenewalLoop(ctx context.Context) {
+	ticker := time.NewTicker(config.CertificateCheckInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			if _, err := s.tlsCertificates.Ensure(); err != nil {
+				log.Printf("renew TLS certificate: %v", err)
+			}
 		}
 	}
 }
@@ -823,19 +948,41 @@ func cleanupError(err error, result app.BranchCleanupResult) string {
 }
 
 func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
-	host := strings.Split(r.Host, ":")[0]
-	name := strings.TrimSuffix(host, ".porto.localhost")
-	if name == host || name == "" {
-		http.Error(w, "use <project>.porto.localhost", http.StatusNotFound)
+	hostname, local := localHostname(r.Host)
+	if !local {
+		http.Error(w, "use porto.local or <project>.porto.local", http.StatusNotFound)
 		return
 	}
-	p, err := s.store.GetProject(r.Context(), name)
+	if hostname == "" {
+		s.uiHandler(w, r)
+		return
+	}
+	p, err := s.store.GetProjectByHostname(r.Context(), hostname)
 	if err != nil || p.Port == 0 {
 		http.Error(w, "project not found or port unknown", http.StatusNotFound)
 		return
 	}
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port))
 	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
+}
+
+func localHostname(hostport string) (string, bool) {
+	host := hostport
+	if parsed, _, err := net.SplitHostPort(hostport); err == nil {
+		host = parsed
+	}
+	host = strings.TrimSuffix(strings.ToLower(host), ".")
+	for _, domain := range []string{config.LocalDomain, config.LocalhostDomain} {
+		if host == domain {
+			return "", true
+		}
+		suffix := "." + domain
+		if strings.HasSuffix(host, suffix) {
+			name := strings.TrimSuffix(host, suffix)
+			return name, name != ""
+		}
+	}
+	return "", false
 }
 
 func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {

@@ -35,7 +35,8 @@ main {
 .error,
 .notice,
 .hygiene,
-.integration {
+.integration,
+.logConsole {
   border: 1px solid var(--border);
   border-radius: 16px;
   background: var(--panel);
@@ -84,6 +85,110 @@ main {
 
 .sendboxIntegration::before {
   background: linear-gradient(#34d399, #38bdf8 55%, #a78bfa);
+}
+
+.logConsole {
+  margin-bottom: 24px;
+  overflow: hidden;
+  padding: 0;
+}
+
+.consoleHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: flex-start;
+  padding: 20px;
+}
+
+.consoleHeader h2 {
+  margin: 0 0 4px;
+}
+
+.consoleHeader p {
+  margin-bottom: 0;
+}
+
+.consoleActions,
+.streamTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.streamTabs {
+  border-top: 1px solid var(--border);
+  padding: 10px 20px;
+}
+
+.streamTabs button {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-family: var(--mono);
+  text-transform: lowercase;
+}
+
+.streamTabs button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.logViewport {
+  min-height: 180px;
+  max-height: 430px;
+  overflow: auto;
+  border-top: 1px solid var(--border);
+  background:
+    linear-gradient(90deg, rgba(103, 232, 249, 0.035) 1px, transparent 1px) 0 0 / 32px 100%,
+    #0a0d18;
+  color: #cad2e7;
+  font: 12px/1.55 var(--mono);
+}
+
+.logLine {
+  display: grid;
+  grid-template-columns: 78px 104px minmax(0, 1fr);
+  gap: 12px;
+  padding: 5px 20px;
+  border-bottom: 1px solid rgba(42, 47, 69, 0.45);
+}
+
+.logLine:hover {
+  background: rgba(255, 255, 255, 0.025);
+}
+
+.logLine time {
+  color: #64708d;
+}
+
+.streamLabel {
+  color: #a78bfa;
+  font-weight: 700;
+}
+
+.logLine.stdout .streamLabel {
+  color: #67e8f9;
+}
+
+.logLine.stderr .streamLabel,
+.logLine.sendbox-stderr .streamLabel {
+  color: #fb7185;
+}
+
+.logMessage {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.logEmpty {
+  padding: 28px 20px;
+  color: var(--muted);
+}
+
+.logEmpty.errorLine {
+  color: #fca5a5;
 }
 
 .hygieneIntro h2 {
@@ -287,6 +392,12 @@ dd {
   overflow-wrap: anywhere;
 }
 
+dd a {
+  color: #7dd3fc;
+  text-decoration-color: rgba(125, 211, 252, 0.4);
+  text-underline-offset: 3px;
+}
+
 .command {
   display: block;
   overflow-x: auto;
@@ -327,6 +438,11 @@ button:disabled {
   background: rgba(52, 211, 153, 0.1);
 }
 
+.logsButton {
+  border-color: rgba(103, 232, 249, 0.45);
+  background: rgba(103, 232, 249, 0.1);
+}
+
 @media (max-width: 760px) {
   main {
     padding: 28px 0;
@@ -340,5 +456,15 @@ button:disabled {
 
   .hero {
     flex-direction: column;
+  }
+
+  .consoleHeader {
+    flex-direction: column;
+  }
+
+  .logLine {
+    grid-template-columns: 72px 88px minmax(0, 1fr);
+    gap: 8px;
+    padding-inline: 12px;
   }
 }
