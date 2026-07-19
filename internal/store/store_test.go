@@ -87,3 +87,65 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 		t.Fatal("KillSwitch integration should default to disabled")
 	}
 }
+
+func TestLogFilteringAndClearing(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	id, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "app",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	for _, entry := range []struct {
+		stream string
+		line   string
+	}{
+		{stream: "stdout", line: "ready"},
+		{stream: "stderr", line: "warning"},
+		{stream: "system", line: "started"},
+	} {
+		if err := st.AddLog(context.Background(), id, entry.stream, entry.line); err != nil {
+			t.Fatalf("add %s log: %v", entry.stream, err)
+		}
+	}
+
+	stdout, err := st.LogsByStream(context.Background(), id, "stdout", 200)
+	if err != nil {
+		t.Fatalf("load stdout logs: %v", err)
+	}
+	if len(stdout) != 1 || stdout[0].Stream != "stdout" || stdout[0].Line != "ready" {
+		t.Fatalf("stdout logs = %+v", stdout)
+	}
+	deleted, err := st.ClearLogs(context.Background(), id, "stderr")
+	if err != nil {
+		t.Fatalf("clear stderr logs: %v", err)
+	}
+	if deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", deleted)
+	}
+	all, err := st.Logs(context.Background(), id, 200)
+	if err != nil {
+		t.Fatalf("load remaining logs: %v", err)
+	}
+	if len(all) != 2 || all[0].Stream != "stdout" || all[1].Stream != "system" {
+		t.Fatalf("remaining logs = %+v", all)
+	}
+	if _, err := st.ClearLogs(context.Background(), id, ""); err != nil {
+		t.Fatalf("clear all logs: %v", err)
+	}
+	empty, err := st.Logs(context.Background(), id, 200)
+	if err != nil {
+		t.Fatalf("load empty logs: %v", err)
+	}
+	if empty == nil || len(empty) != 0 {
+		t.Fatalf("empty logs = %#v, want non-nil empty slice", empty)
+	}
+}

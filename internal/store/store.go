@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS logs (
  created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_logs_project_created ON logs(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_logs_project_stream_created ON logs(project_id, stream, created_at);
 CREATE TABLE IF NOT EXISTS settings (
  id INTEGER PRIMARY KEY CHECK (id = 1),
  cleanup_local_merged INTEGER NOT NULL DEFAULT 0,
@@ -131,6 +132,11 @@ func (s *Store) ListProjects(ctx context.Context) ([]app.Project, error) {
 
 func (s *Store) GetProject(ctx context.Context, name string) (app.Project, error) {
 	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at FROM projects WHERE name=? OR id=CAST(? AS INTEGER)`, name, name)
+	return scanProject(row)
+}
+
+func (s *Store) GetProjectByHostname(ctx context.Context, hostname string) (app.Project, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at FROM projects WHERE hostname=?`, hostname)
 	return scanProject(row)
 }
 
@@ -235,15 +241,31 @@ func (s *Store) AddLog(ctx context.Context, id int64, stream, line string) error
 }
 
 func (s *Store) Logs(ctx context.Context, id int64, limit int) ([]app.LogLine, error) {
+	return s.logs(ctx, id, "", limit)
+}
+
+func (s *Store) LogsByStream(ctx context.Context, id int64, stream string, limit int) ([]app.LogLine, error) {
+	return s.logs(ctx, id, stream, limit)
+}
+
+func (s *Store) logs(ctx context.Context, id int64, stream string, limit int) ([]app.LogLine, error) {
 	if limit <= 0 || limit > 1000 {
 		limit = 200
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT project_id,stream,line,created_at FROM logs WHERE project_id=? ORDER BY created_at DESC LIMIT ?`, id, limit)
+	query := `SELECT project_id,stream,line,created_at FROM logs WHERE project_id=?`
+	args := []any{id}
+	if stream != "" {
+		query += ` AND stream=?`
+		args = append(args, stream)
+	}
+	query += ` ORDER BY id DESC LIMIT ?`
+	args = append(args, limit)
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var rev []app.LogLine
+	rev := make([]app.LogLine, 0)
 	for rows.Next() {
 		var l app.LogLine
 		var ts string
@@ -257,6 +279,20 @@ func (s *Store) Logs(ctx context.Context, id int64, limit int) ([]app.LogLine, e
 		rev[i], rev[j] = rev[j], rev[i]
 	}
 	return rev, rows.Err()
+}
+
+func (s *Store) ClearLogs(ctx context.Context, id int64, stream string) (int64, error) {
+	query := `DELETE FROM logs WHERE project_id=?`
+	args := []any{id}
+	if stream != "" {
+		query += ` AND stream=?`
+		args = append(args, stream)
+	}
+	result, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
 
 type scanner interface{ Scan(dest ...any) error }

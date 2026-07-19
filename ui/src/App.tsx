@@ -61,6 +61,15 @@ type CleanupResult = {
   pruned: boolean
 }
 
+type LogStream = 'all' | 'stdout' | 'stderr'
+
+type LogLine = {
+  projectId: number
+  stream: string
+  line: string
+  createdAt: string
+}
+
 async function action(name: string, verb: string): Promise<Response> {
   const response = await fetch(`/api/projects/${name}/${verb}`, { method: 'POST' })
   if (!response.ok) throw new Error(await response.text())
@@ -79,6 +88,12 @@ function App() {
   const [sqlNotSoLiteStatus, setSQLNotSoLiteStatus] = useState<IntegrationStatus | null>(null)
   const [sendboxStatus, setSendboxStatus] = useState<IntegrationStatus | null>(null)
   const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatus | null>(null)
+  const [logProjectName, setLogProjectName] = useState('')
+  const [logStream, setLogStream] = useState<LogStream>('all')
+  const [logLines, setLogLines] = useState<LogLine[]>([])
+  const [logRefresh, setLogRefresh] = useState(0)
+  const [logsLoading, setLogsLoading] = useState(false)
+  const [logError, setLogError] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
 
@@ -281,6 +296,25 @@ function App() {
     }
   }
 
+  async function clearLogs() {
+    if (!logProjectName) return
+    const label = logStream === 'all' ? 'all logs' : `${logStream} logs`
+    if (!window.confirm(`Clear ${label} for ${logProjectName}?`)) return
+    try {
+      const response = await fetch(
+        `/api/projects/${encodeURIComponent(logProjectName)}/logs/clear?stream=${logStream}`,
+        { method: 'POST' },
+      )
+      if (!response.ok) throw new Error(await response.text())
+      const result: { deleted: number } = await response.json()
+      setNotice(`Cleared ${result.deleted} ${logStream === 'all' ? '' : `${logStream} `}log line(s).`)
+      setError('')
+      setLogRefresh((value) => value + 1)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to clear logs')
+    }
+  }
+
   useEffect(() => {
     load()
     const timer = window.setInterval(() => {
@@ -290,7 +324,42 @@ function App() {
     return () => window.clearInterval(timer)
   }, [])
 
+  useEffect(() => {
+    if (!logProjectName) return
+    let active = true
+    const loadLogs = async (showLoading: boolean) => {
+      if (showLoading) {
+        setLogsLoading(true)
+        setLogLines([])
+      }
+      try {
+        const response = await fetch(
+          `/api/projects/${encodeURIComponent(logProjectName)}/logs?limit=500&stream=${logStream}`,
+        )
+        if (!response.ok) throw new Error(await response.text())
+        const lines: LogLine[] = await response.json()
+        if (active) {
+          setLogLines(lines)
+          setLogError('')
+        }
+      } catch (err) {
+        if (active) {
+          setLogError(err instanceof Error ? err.message : 'Unable to load logs')
+        }
+      } finally {
+        if (active && showLoading) setLogsLoading(false)
+      }
+    }
+    loadLogs(true)
+    const timer = window.setInterval(() => loadLogs(false), 2000)
+    return () => {
+      active = false
+      window.clearInterval(timer)
+    }
+  }, [logProjectName, logStream, logRefresh])
+
   const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
+  const logProject = projects.find((project) => project.name === logProjectName)
 
   return (
     <main>
@@ -496,6 +565,60 @@ function App() {
         </div>
       </section>
 
+      {logProjectName && (
+        <section className="logConsole" aria-labelledby="process-console-title">
+          <div className="consoleHeader">
+            <div>
+              <p className="eyebrow">Process console</p>
+              <h2 id="process-console-title">{logProjectName}</h2>
+              <p>
+                {logProject?.status ?? 'unknown'} · {logProject?.pid ? `PID ${logProject.pid}` : 'no active PID'}
+              </p>
+            </div>
+            <div className="consoleActions">
+              <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
+              <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
+              <button type="button" onClick={() => setLogProjectName('')}>Close</button>
+            </div>
+          </div>
+          <div className="streamTabs" role="tablist" aria-label="Log stream">
+            {(['all', 'stdout', 'stderr'] as const).map((stream) => (
+              <button
+                type="button"
+                role="tab"
+                aria-selected={logStream === stream}
+                className={logStream === stream ? 'active' : ''}
+                key={stream}
+                onClick={() => {
+                  setLogLines([])
+                  setLogStream(stream)
+                }}
+              >
+                {stream}
+              </button>
+            ))}
+          </div>
+          <div className="logViewport" role="log" aria-live="polite" aria-busy={logsLoading}>
+            {logError && <div className="logEmpty errorLine">{logError}</div>}
+            {!logError && logsLoading && logLines.length === 0 && (
+              <div className="logEmpty">Loading process output…</div>
+            )}
+            {!logError && !logsLoading && logLines.length === 0 && (
+              <div className="logEmpty">No {logStream === 'all' ? '' : `${logStream} `}output captured yet.</div>
+            )}
+            {!logError && logLines.map((line, index) => (
+              <div className={`logLine ${line.stream}`} key={`${line.createdAt}-${index}`}>
+                <time dateTime={line.createdAt}>
+                  {new Date(line.createdAt).toLocaleTimeString([], { hour12: false })}
+                </time>
+                <span className="streamLabel">{line.stream}</span>
+                <span className="logMessage">{line.line}</span>
+              </div>
+            ))}
+          </div>
+        </section>
+      )}
+
       <section className="grid">
         {projects.length === 0 && (
           <article className="empty">
@@ -518,7 +641,14 @@ function App() {
               <div><dt>PID</dt><dd>{project.pid || '—'}</dd></div>
               <div><dt>Branch</dt><dd>{project.branch}{project.dirty ? ' *' : ''}</dd></div>
               <div><dt>Strategy</dt><dd>{project.strategy}</dd></div>
-              <div><dt>Host</dt><dd>{project.hostname}.porto.localhost:37680</dd></div>
+              <div>
+                <dt>HTTPS host</dt>
+                <dd>
+                  <a href={`https://${project.hostname}.porto.local:37681`} target="_blank" rel="noreferrer">
+                    {project.hostname}.porto.local:37681
+                  </a>
+                </dd>
+              </div>
               <div>
                 <dt>Sendbox</dt>
                 <dd
@@ -537,6 +667,17 @@ function App() {
               <button type="button" onClick={() => run(project.name, 'stop')}>Stop</button>
               <button type="button" onClick={() => run(project.name, 'restart')}>Restart</button>
               <button type="button" onClick={() => run(project.name, 'kill')}>Kill</button>
+              <button
+                className="logsButton"
+                type="button"
+                onClick={() => {
+                  setLogLines([])
+                  setLogProjectName(project.name)
+                  setLogStream('all')
+                }}
+              >
+                View logs
+              </button>
               {project.sendboxConfigured && (
                 <button
                   className="sendboxButton"

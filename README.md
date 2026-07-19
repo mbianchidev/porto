@@ -9,13 +9,14 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Project discovery across user-selected roots with `--depth` and ignore lists.
 - Detection priority: `Makefile`, then Compose files, then `package.json` scripts.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
-- PID, status, port, branch, dirty state, and log tracking.
+- PID, status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
 - Optional macOS [KillSwitch](https://github.com/mbianchidev/kill-switch) integration for active port visibility and stale dev-server cleanup.
 - Optional [Sendbox](https://github.com/mbianchidev/sendbox) sessions for projects with a `.sendbox.yaml` configuration.
-- Local hostname routing via `http://<project>.porto.localhost:37680`.
+- HTTPS hostname routing via `https://<project>.porto.local:37681` with an automatically generated self-signed certificate.
+- Zero-configuration HTTP compatibility via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
 ## Install from source
@@ -40,7 +41,7 @@ porto scan ~/code ~/work --depth 3
 porto list
 porto daemon start
 porto start api
-porto logs api -n 100
+porto logs api --stream stdout -n 100
 porto stop api
 ```
 
@@ -50,11 +51,13 @@ Open the dashboard at:
 http://127.0.0.1:37623
 ```
 
-If a project has hostname `api`, access it through the local router at:
+If a project has hostname `api`, access it through the HTTPS router after configuring local name resolution and trusting Porto's certificate:
 
 ```text
-http://api.porto.localhost:37680
+https://api.porto.local:37681
 ```
+
+The existing zero-configuration HTTP route remains available at `http://api.porto.localhost:37680`.
 
 ## CLI
 
@@ -63,7 +66,8 @@ porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
 porto list
 porto daemon start|status
 porto start|stop|restart|kill <project> [--no-pull]
-porto logs <project> [-n 200]
+porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
+porto cert path|generate
 porto branch <project> <branch>
 porto port <project> <port>
 porto kill-switch status|install|sync|cleanup
@@ -89,6 +93,8 @@ Porto stores project metadata, runtime state, pinned ports, and logs in SQLite:
 ```
 
 Set `PORTO_HOME=/path/to/dir` to choose another location, which makes self-hosted or portable setups easy.
+
+Project output is stored in the same database. `porto logs` and the dashboard process console can show all entries or only stdout/stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project.
 
 ## Branch cleanup
 
@@ -137,11 +143,32 @@ porto sendbox stop <project>
 
 Porto runs `sendbox run --config <project>/.sendbox.yaml --project <project>` and captures its output in the project's existing logs under the `sendbox` and `sendbox-stderr` streams. Porto does not install, require, or run Sendbox when no managed project contains `.sendbox.yaml`.
 
-Sendbox sessions are independent from normal Porto processes. They do not receive Porto's automatic port assignment and are not routed through `*.porto.localhost`; avoid running both modes simultaneously when they would bind the same host port.
+Sendbox sessions are independent from normal Porto processes. They do not receive Porto's automatic port assignment and are not routed through Porto's local hostnames; avoid running both modes simultaneously when they would bind the same host port.
 
-## Local DNS and routing
+## Local HTTPS, certificates, and DNS
 
-Porto does not edit system host files. It serves a reversible opt-in local reverse proxy on `127.0.0.1:37680` and routes hostnames ending in `.porto.localhost` to the assigned project port. This keeps setup simple and works with standard localhost resolution on modern systems.
+When the daemon starts, Porto creates an ECDSA self-signed certificate and private key under:
+
+```text
+~/.config/porto/certificates/porto.local.pem
+~/.config/porto/certificates/porto.local-key.pem
+```
+
+Use `porto cert path` to print the active paths or `porto cert generate` to replace the certificate. Renewal updates a running daemon immediately, and the daemon checks daily for certificates within 30 days of expiry. The certificate covers `porto.local`, `*.porto.local`, `porto.localhost`, `*.porto.localhost`, `localhost`, and loopback IP addresses. Porto never installs the certificate into the system trust store; trust `porto.local.pem` manually only on development machines where you control the file. On Unix, the private key is written with owner-only permissions. On Windows, access relies on the ACL inherited from the user's configuration directory.
+
+The HTTPS router listens on `127.0.0.1:37681`. Porto does not edit DNS or host files. Because `.local` is reserved for mDNS, configure exact names in your local DNS or hosts file, for example:
+
+```text
+127.0.0.1 porto.local api.porto.local
+```
+
+Hosts files do not support wildcard entries, so add each project hostname separately. For a one-off request without changing DNS:
+
+```sh
+curl --resolve api.porto.local:37681:127.0.0.1 https://api.porto.local:37681
+```
+
+The HTTP router continues listening on `127.0.0.1:37680` and accepts both `<project>.porto.local` and `<project>.porto.localhost`. The `.porto.localhost` form normally resolves to loopback without configuration.
 
 ## Development
 

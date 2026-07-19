@@ -42,13 +42,16 @@ func Command(ctx context.Context, dir, name string, args ...string) (*exec.Cmd, 
 	return cmd, stdout, stderr, nil
 }
 
-func Stream(r io.Reader, fn func(string)) {
+func Stream(r io.Reader, fn func(string) error) error {
 	s := bufio.NewScanner(r)
 	buf := make([]byte, 0, 64*1024)
 	s.Buffer(buf, 1024*1024)
 	for s.Scan() {
-		fn(s.Text())
+		if err := fn(s.Text()); err != nil {
+			return err
+		}
 	}
+	return s.Err()
 }
 
 func itoa(v int) string {
