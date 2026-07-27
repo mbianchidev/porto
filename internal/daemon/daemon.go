@@ -21,6 +21,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/certificates"
+	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
@@ -32,18 +33,29 @@ import (
 	"github.com/mbianchidev/porto/internal/store"
 )
 
+const projectProcessExitTimeout = 5 * time.Second
+
 type Server struct {
 	store           *store.Store
 	mu              sync.Mutex
-	running         map[int64]*exec.Cmd
+	running         map[int64]*projectProcess
+	stopping        map[int64]bool
 	sendboxRunning  map[int64]*exec.Cmd
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
 	ui              fs.FS
 	sendbox         sendboxIntegration
+	compose         composeIntegration
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
+}
+
+type projectProcess struct {
+	cmd      *exec.Cmd
+	done     chan struct{}
+	project  app.Project
+	stopping bool
 }
 
 type sendboxIntegration interface {
@@ -51,15 +63,21 @@ type sendboxIntegration interface {
 	Command(ctx context.Context, project app.Project) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error)
 }
 
+type composeIntegration interface {
+	Down(ctx context.Context, project app.Project) error
+}
+
 func New(st *store.Store, ui fs.FS) *Server {
 	return &Server{
 		store:           st,
-		running:         map[int64]*exec.Cmd{},
+		running:         map[int64]*projectProcess{},
+		stopping:        map[int64]bool{},
 		sendboxRunning:  map[int64]*exec.Cmd{},
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
+		compose:         compose.New(nil),
 		sqnsl:           sqnsl.NewManager(nil),
 		killSwitch:      killswitch.NewManager(nil, nil),
 	}
@@ -484,7 +502,10 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	if err != nil {
 		return p, err
 	}
-	if cmd := s.running[p.ID]; cmd != nil && cmd.Process != nil {
+	if s.stopping[p.ID] {
+		return p, fmt.Errorf("%s is stopping", p.Name)
+	}
+	if running := s.running[p.ID]; running != nil && running.cmd != nil && running.cmd.Process != nil {
 		p.Status = "running"
 		return p, nil
 	}
@@ -516,24 +537,50 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		_ = stderr.Close()
 		return p, err
 	}
-	s.running[p.ID] = cmd
+	runtimeProject := p
+	runtimeProject.Port = port
+	runtimeProject.PID = cmd.Process.Pid
+	runtimeProject.Status = "running"
+	running := &projectProcess{
+		cmd:     cmd,
+		done:    make(chan struct{}),
+		project: runtimeProject,
+	}
+	s.running[p.ID] = running
 	_ = s.store.SetRuntime(ctx, p.ID, "running", cmd.Process.Pid, port)
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
-	go func() {
-		err := cmd.Wait()
-		s.mu.Lock()
-		delete(s.running, p.ID)
-		s.mu.Unlock()
-		status := "stopped"
-		if err != nil {
-			status = "crashed"
-			_ = s.store.AddLog(context.Background(), p.ID, "system", err.Error())
-		}
-		_ = s.store.SetRuntime(context.Background(), p.ID, status, 0, port)
-		s.syncKillSwitch(context.Background())
-	}()
+	go s.waitForProject(p, running, port)
 	return s.store.GetProject(ctx, name)
+}
+
+func (s *Server) waitForProject(project app.Project, running *projectProcess, port int) {
+	err := running.cmd.Wait()
+
+	s.mu.Lock()
+	current := s.running[project.ID] == running
+	expectedStop := running.stopping
+	status := "stopped"
+	if err != nil && !expectedStop {
+		status = "crashed"
+	}
+	var runtimeErr error
+	if current {
+		runtimeErr = s.store.SetRuntime(context.Background(), project.ID, status, 0, port)
+		delete(s.running, project.ID)
+	}
+	s.mu.Unlock()
+
+	if current && err != nil && !expectedStop {
+		if logErr := s.store.AddLog(context.Background(), project.ID, "system", err.Error()); logErr != nil {
+			log.Printf("store crash log for %s: %v", project.Name, logErr)
+		}
+	}
+	if runtimeErr != nil {
+		log.Printf("update runtime for %s: %v", project.Name, runtimeErr)
+	}
+	close(running.done)
+	s.syncKillSwitch(context.Background())
 }
 
 func (s *Server) stop(force bool) http.HandlerFunc {
@@ -549,25 +596,118 @@ func (s *Server) stop(force bool) http.HandlerFunc {
 }
 
 func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.Project, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
 	p, err := s.store.GetProject(ctx, name)
 	if err != nil {
 		return p, err
 	}
-	cmd := s.running[p.ID]
-	if cmd != nil {
-		if force {
-			err = process.Kill(cmd)
-		} else {
-			err = process.Terminate(cmd)
+
+	s.mu.Lock()
+	if s.stopping[p.ID] {
+		s.mu.Unlock()
+		return p, fmt.Errorf("%s is already stopping", p.Name)
+	}
+	s.stopping[p.ID] = true
+	running := s.running[p.ID]
+	target := p
+	if running != nil {
+		running.stopping = true
+		if running.project.ID != 0 {
+			target = running.project
 		}
-		if err != nil {
+	}
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.stopping, p.ID)
+		s.mu.Unlock()
+	}()
+
+	if force && target.Strategy == "compose" {
+		operationContext := context.WithoutCancel(ctx)
+		if cleanupErr := s.compose.Down(operationContext, target); cleanupErr != nil {
+			return p, errors.Join(cleanupErr, forceStopProjectProcess(running))
+		}
+		if err := stopProjectProcess(running); err != nil {
+			return p, err
+		}
+		if running == nil {
+			if err := s.store.SetRuntime(operationContext, p.ID, "stopped", 0, p.Port); err != nil {
+				return p, err
+			}
+		}
+		return s.store.GetProject(operationContext, name)
+	}
+
+	if running != nil {
+		if force {
+			err = process.Kill(running.cmd)
+		} else {
+			err = process.Terminate(running.cmd)
+		}
+		if err != nil && !projectProcessDone(running) {
 			return p, err
 		}
 	}
-	_ = s.store.SetRuntime(ctx, p.ID, "stopped", 0, p.Port)
+	if err := s.store.SetRuntime(ctx, p.ID, "stopped", 0, p.Port); err != nil {
+		return p, err
+	}
 	return s.store.GetProject(ctx, name)
+}
+
+func stopProjectProcess(running *projectProcess) error {
+	if running == nil || projectProcessDone(running) {
+		return nil
+	}
+	terminateErr := process.Terminate(running.cmd)
+	if waitForProjectProcess(running, projectProcessExitTimeout) {
+		return nil
+	}
+	killErr := process.Kill(running.cmd)
+	if waitForProjectProcess(running, projectProcessExitTimeout) {
+		return nil
+	}
+	return errors.Join(
+		terminateErr,
+		killErr,
+		errors.New("timed out waiting for Docker Compose launcher to exit"),
+	)
+}
+
+func forceStopProjectProcess(running *projectProcess) error {
+	if running == nil || projectProcessDone(running) {
+		return nil
+	}
+	killErr := process.Kill(running.cmd)
+	if waitForProjectProcess(running, projectProcessExitTimeout) {
+		return nil
+	}
+	return errors.Join(killErr, errors.New("timed out waiting for project launcher to exit"))
+}
+
+func projectProcessDone(running *projectProcess) bool {
+	if running == nil || running.done == nil {
+		return running == nil
+	}
+	select {
+	case <-running.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForProjectProcess(running *projectProcess, timeout time.Duration) bool {
+	if projectProcessDone(running) {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-running.done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 func (s *Server) restart(w http.ResponseWriter, r *http.Request) {

@@ -84,6 +84,8 @@ Run strategy priority:
 2. `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, or `compose.yaml`.
 3. `package.json`, preferring `scripts.start` then `scripts.dev`.
 
+For Compose projects, `porto kill` runs `docker compose down --remove-orphans`. Compose first applies each service's graceful shutdown behavior, then Porto removes running, created, exited, and orphaned containers before reaping the local launcher.
+
 ## Persistence
 
 Porto stores project metadata, runtime state, pinned ports, and logs in SQLite:
