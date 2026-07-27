@@ -8,16 +8,19 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/store"
 )
 
@@ -55,6 +58,247 @@ type noopKillSwitchInstaller struct{}
 
 func (noopKillSwitchInstaller) Install(context.Context) error { return nil }
 
+type fakeComposeCleanup struct {
+	mu       sync.Mutex
+	projects []app.Project
+	err      error
+}
+
+func (f *fakeComposeCleanup) Down(_ context.Context, project app.Project) error {
+	f.mu.Lock()
+	f.projects = append(f.projects, project)
+	f.mu.Unlock()
+	return f.err
+}
+
+func (f *fakeComposeCleanup) calls() []app.Project {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]app.Project(nil), f.projects...)
+}
+
+func TestKillComposeProjectCleansContainersWithoutTrackedProcess(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	if err := st.SetRuntime(context.Background(), project.ID, "stopped", 0, 41001); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+	cleanup := &fakeComposeCleanup{}
+	server := New(st, nil)
+	server.compose = cleanup
+
+	got, err := server.stopProject(context.Background(), project.Name, true)
+	if err != nil {
+		t.Fatalf("kill project: %v", err)
+	}
+	if got.Status != "stopped" || got.PID != 0 {
+		t.Fatalf("project = %+v", got)
+	}
+	calls := cleanup.calls()
+	if len(calls) != 1 || calls[0].ID != project.ID || calls[0].Port != 41001 {
+		t.Fatalf("cleanup calls = %+v", calls)
+	}
+}
+
+func TestKillComposeProjectReapsTrackedLauncher(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	if err := st.SetRuntime(context.Background(), project.ID, "running", 1, 41002); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+	project, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+
+	cleanup := &fakeComposeCleanup{}
+	server := New(st, nil)
+	server.compose = cleanup
+	startTestProjectProcess(t, server, project)
+
+	got, err := server.stopProject(context.Background(), project.Name, true)
+	if err != nil {
+		t.Fatalf("kill project: %v", err)
+	}
+	if got.Status != "stopped" || got.PID != 0 {
+		t.Fatalf("project = %+v", got)
+	}
+	server.mu.Lock()
+	_, stillRunning := server.running[project.ID]
+	server.mu.Unlock()
+	if stillRunning {
+		t.Fatal("tracked launcher was not reaped")
+	}
+	if calls := cleanup.calls(); len(calls) != 1 || calls[0].Command != project.Command {
+		t.Fatalf("cleanup calls = %+v", calls)
+	}
+}
+
+func TestKillComposeProjectStopsLauncherWhenCleanupFails(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	if err := st.SetRuntime(context.Background(), project.ID, "running", 1, 41004); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+	project, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+	server := New(st, nil)
+	server.compose = &fakeComposeCleanup{err: errors.New("docker daemon unavailable")}
+	startTestProjectProcess(t, server, project)
+
+	_, err = server.stopProject(context.Background(), project.Name, true)
+	if err == nil || !strings.Contains(err.Error(), "docker daemon unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	got, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatalf("reload stopped project: %v", err)
+	}
+	if got.Status != "stopped" || got.PID != 0 {
+		t.Fatalf("project = %+v", got)
+	}
+	server.mu.Lock()
+	_, stillRunning := server.running[project.ID]
+	server.mu.Unlock()
+	if stillRunning {
+		t.Fatal("tracked launcher was not force-stopped after cleanup failure")
+	}
+}
+
+func TestKillComposeProjectReportsCleanupFailure(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	if err := st.SetRuntime(context.Background(), project.ID, "running", 123, 41003); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+	server := New(st, nil)
+	server.compose = &fakeComposeCleanup{err: errors.New("docker daemon unavailable")}
+
+	_, err := server.stopProject(context.Background(), project.Name, true)
+	if err == nil || !strings.Contains(err.Error(), "docker daemon unavailable") {
+		t.Fatalf("error = %v", err)
+	}
+	got, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+	if got.Status != "running" || got.PID != 123 {
+		t.Fatalf("failed cleanup changed runtime: %+v", got)
+	}
+}
+
+func TestComposeCleanupOnlyRunsForForceKill(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		strategy string
+		force    bool
+	}{
+		{name: "normal compose stop", strategy: "compose", force: false},
+		{name: "non-compose kill", strategy: "package", force: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			st, project := testProject(t, app.Project{
+				Name:     "web",
+				Path:     t.TempDir(),
+				Strategy: test.strategy,
+				Command:  "npm run dev",
+			})
+			cleanup := &fakeComposeCleanup{}
+			server := New(st, nil)
+			server.compose = cleanup
+
+			if _, err := server.stopProject(context.Background(), project.Name, test.force); err != nil {
+				t.Fatalf("stop project: %v", err)
+			}
+			if calls := cleanup.calls(); len(calls) != 0 {
+				t.Fatalf("cleanup calls = %+v", calls)
+			}
+		})
+	}
+}
+
+func TestDaemonHelperProcess(t *testing.T) {
+	if os.Getenv("PORTO_DAEMON_HELPER_PROCESS") != "1" {
+		return
+	}
+	for {
+		time.Sleep(time.Second)
+	}
+}
+
+func testProject(t *testing.T, project app.Project) (*store.Store, app.Project) {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Errorf("close store: %v", err)
+		}
+	})
+	id, err := st.UpsertProject(context.Background(), project)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	project.ID = id
+	return st, project
+}
+
+func startTestProjectProcess(t *testing.T, server *Server, project app.Project) *projectProcess {
+	t.Helper()
+	cmd, stdout, stderr, err := process.Command(
+		context.Background(),
+		t.TempDir(),
+		os.Args[0],
+		"-test.run=^TestDaemonHelperProcess$",
+	)
+	if err != nil {
+		t.Fatalf("create helper command: %v", err)
+	}
+	cmd.Env = append(os.Environ(), "PORTO_DAEMON_HELPER_PROCESS=1")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("start helper command: %v", err)
+	}
+	running := &projectProcess{
+		cmd:     cmd,
+		done:    make(chan struct{}),
+		project: project,
+	}
+	server.mu.Lock()
+	server.running[project.ID] = running
+	server.mu.Unlock()
+	go server.waitForProject(project, running, project.Port)
+	t.Cleanup(func() {
+		_ = process.Kill(cmd)
+		select {
+		case <-running.done:
+		case <-time.After(time.Second):
+		}
+		_ = stdout.Close()
+		_ = stderr.Close()
+	})
+	return running
+}
+
 func TestKillSwitchRoutesSyncActivePortsAndRunCleanup(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {
@@ -87,7 +331,7 @@ func TestKillSwitchRoutesSyncActivePortsAndRunCleanup(t *testing.T) {
 	runner := &killSwitchRunner{syncArgs: make(chan []string, 1)}
 	server := New(st, nil)
 	server.killSwitch = killswitch.NewManager(runner, noopKillSwitchInstaller{})
-	server.running[id] = &exec.Cmd{}
+	server.running[id] = &projectProcess{cmd: &exec.Cmd{}}
 	mux := http.NewServeMux()
 	server.routes(mux)
 

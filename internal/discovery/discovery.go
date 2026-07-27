@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/compose"
 )
 
 type Options struct {
@@ -78,9 +79,8 @@ func Detect(path string) (app.Project, bool) {
 		}
 		return app.Project{Name: name, Path: path, Strategy: "make", Command: cmd}, true
 	}
-	if has(path, "docker-compose.yml") || has(path, "docker-compose.yaml") || has(path, "compose.yml") || has(path, "compose.yaml") {
-		file := first(path, []string{"docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"})
-		return app.Project{Name: name, Path: path, Strategy: "compose", Command: "docker compose -f " + file + " up"}, true
+	if file, ok := compose.FindFile(path); ok {
+		return app.Project{Name: name, Path: path, Strategy: "compose", Command: compose.UpCommand(file)}, true
 	}
 	if has(path, "package.json") {
 		if script := packageScript(path); script != "" {
@@ -91,14 +91,6 @@ func Detect(path string) (app.Project, bool) {
 }
 
 func has(dir, name string) bool { _, err := os.Stat(filepath.Join(dir, name)); return err == nil }
-func first(dir string, names []string) string {
-	for _, n := range names {
-		if has(dir, n) {
-			return n
-		}
-	}
-	return names[0]
-}
 
 func makeTarget(dir string) string {
 	b, err := os.ReadFile(filepath.Join(dir, "Makefile"))
