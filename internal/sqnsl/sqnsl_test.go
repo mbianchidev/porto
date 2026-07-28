@@ -115,7 +115,7 @@ func TestSyncInstallsPinnedRevision(t *testing.T) {
 	if got := strings.Join(runner.runs[0].args, " "); got != "install "+installTarget {
 		t.Fatalf("install args = %q", got)
 	}
-	if runner.runs[2].name != filepath.Join("/tmp/bin", "sqnsl") {
+	if runner.runs[2].name != filepath.Join("/tmp/bin", binaryName()) {
 		t.Fatalf("sqnsl path = %q", runner.runs[2].name)
 	}
 }

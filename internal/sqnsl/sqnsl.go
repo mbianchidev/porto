@@ -168,11 +168,15 @@ func (m *Manager) installedBinary(ctx context.Context, goBinary string) (string,
 		}
 		binDir = filepath.Join(goPaths[0], "bin")
 	}
-	name := "sqnsl"
-	if runtime.GOOS == "windows" {
-		name += ".exe"
-	}
+	name := binaryName()
 	return filepath.Join(binDir, name), nil
+}
+
+func binaryName() string {
+	if runtime.GOOS == "windows" {
+		return "sqnsl.exe"
+	}
+	return "sqnsl"
 }
 
 func ProjectPathsWithSQLite(projects []app.Project) ([]string, error) {

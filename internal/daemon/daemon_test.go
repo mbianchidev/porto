@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -300,6 +301,10 @@ func startTestProjectProcess(t *testing.T, server *Server, project app.Project) 
 }
 
 func TestKillSwitchRoutesSyncActivePortsAndRunCleanup(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("KillSwitch integration is supported only on macOS")
+	}
+
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
