@@ -1,0 +1,10 @@
+# Go build output
+/porto
+/porto.exe
+
+# Release packaging output
+/dist/
+/stage/
+
+# Local editor and OS files
+.DS_Store
