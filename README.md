@@ -31,6 +31,8 @@ sha256sum --check --ignore-missing SHA256SUMS
 tar -xzf porto_<version>_<os>_<arch>.tar.gz
 ```
 
+macOS ships `shasum` instead of GNU `sha256sum`, so verify with `shasum -a 256 --check --ignore-missing SHA256SUMS` unless coreutils is installed.
+
 Each archive contains the `porto` binary next to the dashboard assets in `ui/dist`. Keep that layout, or point `PORTO_UI_DIR` at the dashboard directory.
 
 ## Install from source
@@ -41,12 +43,12 @@ Requirements:
 - Node.js 22.12+ (or 20.19+) and npm for building the dashboard
 
 ```sh
-npm --prefix ui install
+npm --prefix ui ci
 npm --prefix ui run build
 go build -o porto ./cmd/porto
 ```
 
-The binary carries the whole daemon and CLI, and loads the dashboard from `PORTO_UI_DIR`, `ui/dist` in the working directory, or `ui/dist` next to the executable. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
+The binary carries the whole daemon and CLI, and loads the dashboard from `PORTO_UI_DIR`, `ui/dist` in the working directory, or `ui/dist` or `dist` next to the executable. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
 
 ## Quickstart
 
@@ -199,7 +201,7 @@ npm --prefix ui run lint
 
 GitHub Actions runs formatting, `go vet`, the Go test suite on Linux, macOS, and Windows, a cross-compilation pass for every release target, and the dashboard lint and build on Node 22.12, 24, and 26. CodeQL and a weekly `govulncheck` plus `npm audit` job cover security, and Dependabot keeps Go modules, dashboard packages, and actions current.
 
-Pushing a `vX.Y.Z` tag builds and publishes signed, checksummed archives for Linux, macOS, and Windows on `amd64` and `arm64`. See [CI/CD details](docs/ci-cd.md).
+Pushing a `vX.Y.Z` tag builds and publishes archives for Linux, macOS, and Windows on `amd64` and `arm64`, together with a `SHA256SUMS` file and signed build provenance attestations. See [CI/CD details](docs/ci-cd.md).
 
 ## License
 

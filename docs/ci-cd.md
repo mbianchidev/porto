@@ -49,10 +49,10 @@ porto_1.2.3_darwin_arm64/
 
 The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working directory, then `ui/dist` or `dist` next to the executable, so keep `ui/dist` beside the binary when installing. Binaries are built with `CGO_ENABLED=0 -trimpath -ldflags '-s -w'`.
 
-A `SHA256SUMS` file covers every archive, and each archive gets a signed build provenance attestation. Verify a download with:
+A `SHA256SUMS` file covers every archive, and each archive gets a signed build provenance attestation. The archives themselves are not signed. Verify a download with:
 
 ```sh
-sha256sum --check --ignore-missing SHA256SUMS
+sha256sum --check --ignore-missing SHA256SUMS  # shasum -a 256 --check on macOS
 gh attestation verify porto_1.2.3_linux_amd64.tar.gz --repo mbianchidev/porto
 ```
 
