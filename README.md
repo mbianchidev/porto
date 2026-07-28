@@ -1,5 +1,8 @@
 # Porto - Local Development Orchestrator
 
+[![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
+
 Porto is an open-source CLI, daemon, and lightweight React dashboard for managing runnable projects on a development machine. It discovers local repos, tracks their process IDs and ports in a small SQLite database, prevents port collisions, can pull the active Git branch before startup, captures logs, and exposes friendly local hostnames.
 
 ## Features
@@ -19,12 +22,23 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Zero-configuration HTTP compatibility via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
+## Install a release
+
+Download the archive for your platform from the [releases page](https://github.com/mbianchidev/porto/releases), verify it, and unpack it:
+
+```sh
+sha256sum --check --ignore-missing SHA256SUMS
+tar -xzf porto_<version>_<os>_<arch>.tar.gz
+```
+
+Each archive contains the `porto` binary next to the dashboard assets in `ui/dist`. Keep that layout, or point `PORTO_UI_DIR` at the dashboard directory.
+
 ## Install from source
 
 Requirements:
 
 - Go 1.25+
-- Node.js 22+ and npm for building the dashboard
+- Node.js 22.12+ (or 20.19+) and npm for building the dashboard
 
 ```sh
 npm --prefix ui install
@@ -32,7 +46,7 @@ npm --prefix ui run build
 go build -o porto ./cmd/porto
 ```
 
-The binary is self-contained for the daemon and CLI. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
+The binary carries the whole daemon and CLI, and loads the dashboard from `PORTO_UI_DIR`, `ui/dist` in the working directory, or `ui/dist` next to the executable. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
 
 ## Quickstart
 
@@ -180,6 +194,12 @@ go build ./cmd/porto
 npm --prefix ui run build
 npm --prefix ui run lint
 ```
+
+## Continuous integration and releases
+
+GitHub Actions runs formatting, `go vet`, the Go test suite on Linux, macOS, and Windows, a cross-compilation pass for every release target, and the dashboard lint and build on Node 22.12, 24, and 26. CodeQL and a weekly `govulncheck` plus `npm audit` job cover security, and Dependabot keeps Go modules, dashboard packages, and actions current.
+
+Pushing a `vX.Y.Z` tag builds and publishes signed, checksummed archives for Linux, macOS, and Windows on `amd64` and `arm64`. See [CI/CD details](docs/ci-cd.md).
 
 ## License
 
