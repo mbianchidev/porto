@@ -62,6 +62,8 @@ type CleanupResult = {
 }
 
 type LogStream = 'all' | 'stdout' | 'stderr'
+type Page = 'projects' | 'settings'
+type ProjectView = 'list' | 'tiles'
 
 type LogLine = {
   projectId: number
@@ -77,6 +79,11 @@ async function action(name: string, verb: string): Promise<Response> {
 }
 
 function App() {
+  const [page, setPage] = useState<Page>(() => window.location.hash === '#/settings' ? 'settings' : 'projects')
+  const [projectView, setProjectView] = useState<ProjectView>(() => {
+    const savedView = window.localStorage.getItem('porto-project-view')
+    return savedView === 'tiles' ? 'tiles' : 'list'
+  })
   const [projects, setProjects] = useState<Project[]>([])
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
@@ -325,6 +332,14 @@ function App() {
   }, [])
 
   useEffect(() => {
+    const handleHashChange = () => {
+      setPage(window.location.hash === '#/settings' ? 'settings' : 'projects')
+    }
+    window.addEventListener('hashchange', handleHashChange)
+    return () => window.removeEventListener('hashchange', handleHashChange)
+  }, [])
+
+  useEffect(() => {
     if (!logProjectName) return
     let active = true
     const loadLogs = async (showLoading: boolean) => {
@@ -363,23 +378,35 @@ function App() {
 
   return (
     <main>
-      <header className="hero">
-        <div>
-          <p className="eyebrow">Porto</p>
-          <h1>Local Project Orchestrator</h1>
-          <p>
-            Discover runnable repos, start or stop them from one dashboard, and
-            keep PID, port, logs, Git branch, and local hostnames in one small
-            SQLite-backed daemon.
-          </p>
-        </div>
-        <button type="button" onClick={refreshProjects}>Refresh</button>
+      <header className="appHeader">
+        <a className="brand" href="#/" aria-label="Porto projects">
+          <span className="brandMark" aria-hidden="true">P</span>
+          <span>
+            <strong>Porto</strong>
+            <small>Local orchestrator</small>
+          </span>
+        </a>
+        <nav className="primaryNav" aria-label="Primary navigation">
+          <a className={page === 'projects' ? 'active' : ''} href="#/">Projects</a>
+          <a className={page === 'settings' ? 'active' : ''} href="#/settings">Settings</a>
+        </nav>
       </header>
 
       {error && <div className="error">{error}</div>}
       {notice && <div className="notice">{notice}</div>}
 
-      <section className="hygiene" aria-labelledby="branch-hygiene-title">
+      {page === 'settings' && (
+        <>
+          <header className="pageIntro">
+            <div>
+              <p className="eyebrow">Settings</p>
+              <h1>Keep the dashboard focused.</h1>
+              <p>Configure branch cleanup and optional integrations away from daily project controls.</p>
+            </div>
+            <a className="buttonLink" href="#/">Back to projects</a>
+          </header>
+
+          <section className="hygiene" aria-labelledby="branch-hygiene-title">
         <div className="hygieneIntro">
           <p className="eyebrow">Branch hygiene</p>
           <h2 id="branch-hygiene-title">Keep merged work out of the way.</h2>
@@ -438,9 +465,9 @@ function App() {
           </label>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save changes</button>
         </div>
-      </section>
+          </section>
 
-      <section className="integration" aria-labelledby="sqlite-integration-title">
+          <section className="integration" aria-labelledby="sqlite-integration-title">
         <div className="hygieneIntro">
           <p className="eyebrow">Optional integration</p>
           <h2 id="sqlite-integration-title">Discover project SQLite databases.</h2>
@@ -468,9 +495,9 @@ function App() {
           </div>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
         </div>
-      </section>
+          </section>
 
-      <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
+          <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
         <div className="hygieneIntro">
           <p className="eyebrow">Optional integration</p>
           <h2 id="sendbox-integration-title">Run configured projects in Sendbox.</h2>
@@ -498,9 +525,9 @@ function App() {
           </div>
           <button type="button" onClick={saveSettings} disabled={!settings}>Save integration setting</button>
         </div>
-      </section>
+          </section>
 
-      <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
+          <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
         <div className="hygieneIntro">
           <p className="eyebrow">Optional integration</p>
           <h2 id="kill-switch-integration-title">Hand active dev ports to KillSwitch.</h2>
@@ -563,9 +590,11 @@ function App() {
             </button>
           </div>
         </div>
-      </section>
+          </section>
+        </>
+      )}
 
-      {logProjectName && (
+      {page === 'projects' && logProjectName && (
         <section className="logConsole" aria-labelledby="process-console-title">
           <div className="consoleHeader">
             <div>
@@ -619,7 +648,36 @@ function App() {
         </section>
       )}
 
-      <section className="grid">
+      {page === 'projects' && (
+        <>
+          <header className="projectsHeader">
+            <div>
+              <p className="eyebrow">Projects</p>
+              <h1>Local work, in motion.</h1>
+              <p>{projects.length} discovered {projects.length === 1 ? 'project' : 'projects'}</p>
+            </div>
+            <div className="projectTools">
+              <div className="viewSwitch" role="group" aria-label="Project view">
+                {(['list', 'tiles'] as const).map((view) => (
+                  <button
+                    type="button"
+                    className={projectView === view ? 'active' : ''}
+                    aria-pressed={projectView === view}
+                    key={view}
+                    onClick={() => {
+                      setProjectView(view)
+                      window.localStorage.setItem('porto-project-view', view)
+                    }}
+                  >
+                    {view === 'list' ? 'List' : 'Tiles'}
+                  </button>
+                ))}
+              </div>
+              <button type="button" onClick={refreshProjects}>Refresh</button>
+            </div>
+          </header>
+
+          <section className={`grid ${projectView}`}>
         {projects.length === 0 && (
           <article className="empty">
             <h2>No projects yet</h2>
@@ -716,7 +774,9 @@ function App() {
             </div>
           </article>
         ))}
-      </section>
+          </section>
+        </>
+      )}
     </main>
   )
 }

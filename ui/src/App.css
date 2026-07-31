@@ -1,20 +1,107 @@
 main {
   width: min(1180px, calc(100% - 32px));
   margin: 0 auto;
-  padding: 48px 0;
+  padding: 24px 0 48px;
 }
 
-.hero {
+.appHeader {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 32px;
+  padding-bottom: 18px;
+}
+
+.brand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  color: var(--text-h);
+  text-decoration: none;
+}
+
+.brandMark {
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border: 1px solid var(--accent-border);
+  border-radius: 10px 4px 10px 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font: 700 18px/1 var(--mono);
+}
+
+.brand strong,
+.brand small {
+  display: block;
+}
+
+.brand small {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.primaryNav,
+.projectTools,
+.viewSwitch {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.primaryNav a {
+  border-radius: 8px;
+  color: var(--muted);
+  padding: 7px 10px;
+  text-decoration: none;
+}
+
+.primaryNav a:hover,
+.primaryNav a.active {
+  background: var(--code-bg);
+  color: var(--text-h);
+}
+
+.primaryNav a:focus-visible,
+.brand:focus-visible,
+.buttonLink:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 3px;
+}
+
+.pageIntro,
+.projectsHeader {
   display: flex;
   justify-content: space-between;
   gap: 24px;
-  align-items: flex-start;
-  text-align: left;
-  margin-bottom: 32px;
+  align-items: flex-end;
+  margin-bottom: 24px;
 }
 
-.hero p {
-  max-width: 760px;
+.pageIntro h1,
+.projectsHeader h1 {
+  font-size: clamp(2rem, 5vw, 3.8rem);
+  margin-bottom: 10px;
+}
+
+.pageIntro p:last-child,
+.projectsHeader p:last-child {
+  margin-bottom: 0;
+}
+
+.buttonLink {
+  border: 1px solid var(--accent-border);
+  border-radius: 10px;
+  color: var(--text-h);
+  background: var(--accent-bg);
+  padding: 8px 12px;
+  text-decoration: none;
+  white-space: nowrap;
 }
 
 .eyebrow {
@@ -28,6 +115,29 @@ main {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
   gap: 18px;
+}
+
+.viewSwitch {
+  border: 1px solid var(--border);
+  border-radius: 11px;
+  background: #0a0d18;
+  padding: 3px;
+}
+
+.viewSwitch button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  padding: 5px 9px;
+}
+
+.viewSwitch button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
 }
 
 .card,
@@ -62,29 +172,7 @@ main {
   grid-template-columns: minmax(220px, 0.75fr) minmax(320px, 1.25fr);
   gap: 32px;
   margin-bottom: 24px;
-  overflow: hidden;
-  position: relative;
-}
-
-.hygiene::before,
-.integration::before {
-  content: '';
-  position: absolute;
-  inset: 0 auto 0 0;
-  width: 4px;
-  background: linear-gradient(var(--accent), #a78bfa 55%, #fb7185);
-}
-
-.integration::before {
-  background: linear-gradient(var(--accent), #38bdf8);
-}
-
-.killSwitchIntegration::before {
-  background: linear-gradient(#fb923c, #f43f5e);
-}
-
-.sendboxIntegration::before {
-  background: linear-gradient(#34d399, #38bdf8 55%, #a78bfa);
+  box-shadow: inset 0 1px rgba(103, 232, 249, 0.2);
 }
 
 .logConsole {
@@ -332,6 +420,72 @@ button:focus-visible {
   overflow-wrap: anywhere;
 }
 
+.grid.list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.grid.list .card {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.3fr) minmax(340px, 2fr) auto;
+  gap: 18px;
+  align-items: center;
+  border-radius: 11px;
+  padding: 12px 14px;
+}
+
+.grid.list .cardHeader {
+  min-width: 0;
+}
+
+.grid.list .cardHeader h2 {
+  font-size: 17px;
+}
+
+.grid.list .cardHeader p {
+  overflow: hidden;
+  margin-bottom: 0;
+  color: var(--muted);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.grid.list dl {
+  grid-template-columns: 76px minmax(120px, 1fr) minmax(120px, 1fr);
+  gap: 8px 16px;
+  margin: 0;
+}
+
+.grid.list dl > div:nth-child(2),
+.grid.list dl > div:nth-child(4),
+.grid.list dl > div:nth-child(6) {
+  display: none;
+}
+
+.grid.list dt {
+  font-size: 10px;
+}
+
+.grid.list dd {
+  font-size: 13px;
+}
+
+.grid.list .command {
+  display: none;
+}
+
+.grid.list .actions {
+  justify-content: flex-end;
+  margin-top: 0;
+  max-width: 390px;
+}
+
+.grid.list .actions button {
+  padding: 6px 9px;
+  font-size: 12px;
+}
+
 .status {
   height: fit-content;
   border-radius: 999px;
@@ -448,14 +602,35 @@ button:disabled {
     padding: 28px 0;
   }
 
-  .hero,
+  .pageIntro,
+  .projectsHeader,
   .hygiene,
   .integration {
     grid-template-columns: 1fr;
   }
 
-  .hero {
+  .pageIntro,
+  .projectsHeader {
     flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .projectTools {
+    width: 100%;
+    justify-content: space-between;
+  }
+
+  .grid.list .card {
+    grid-template-columns: 1fr;
+  }
+
+  .grid.list dl {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .grid.list .actions {
+    justify-content: flex-start;
+    max-width: none;
   }
 
   .consoleHeader {
@@ -466,5 +641,36 @@ button:disabled {
     grid-template-columns: 72px 88px minmax(0, 1fr);
     gap: 8px;
     padding-inline: 12px;
+  }
+}
+
+@media (max-width: 520px) {
+  .appHeader {
+    align-items: flex-start;
+  }
+
+  .brand small {
+    display: none;
+  }
+
+  .primaryNav {
+    gap: 2px;
+  }
+
+  .projectTools {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .viewSwitch {
+    align-self: flex-start;
+  }
+
+  .grid.list dl {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .grid.list dl > div:nth-child(5) {
+    display: none;
   }
 }
