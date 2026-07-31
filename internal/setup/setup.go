@@ -225,8 +225,8 @@ func runCommand(ctx context.Context, dir string, command Command, emit func(stre
 	wait.Add(2)
 	go captureReader("stdout", stdout, emit, &wait, &outputMu, &outputErr)
 	go captureReader("stderr", stderr, emit, &wait, &outputMu, &outputErr)
-	commandErr := cmd.Wait()
 	wait.Wait()
+	commandErr := cmd.Wait()
 	return errors.Join(commandErr, outputErr)
 }
 
