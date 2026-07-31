@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -64,7 +65,7 @@ func Plan(project app.Project) ([]Command, error) {
 		}
 	}
 
-	if commands := nodeCommands(project.Path); len(commands) > 0 {
+	if commands := nodeCommands(project.Path, usesStartScript(project.Command)); len(commands) > 0 {
 		return commands, nil
 	}
 	if commands := pythonCommands(project.Path); len(commands) > 0 {
@@ -114,22 +115,27 @@ func (c Command) ShellString() string {
 	return strings.Join(parts, " ")
 }
 
-func nodeCommands(dir string) []Command {
+func nodeCommands(dir string, includeBuild bool) []Command {
 	if !has(dir, "package.json") {
 		return nil
 	}
+	var commands []Command
 	switch {
 	case has(dir, "pnpm-lock.yaml"):
-		return []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile"}}}
+		commands = []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile"}}}
 	case has(dir, "yarn.lock"):
-		return []Command{{Name: "yarn", Args: []string{"install", "--frozen-lockfile"}}}
+		commands = []Command{{Name: "yarn", Args: []string{"install", "--frozen-lockfile"}}}
 	case has(dir, "bun.lock"), has(dir, "bun.lockb"):
-		return []Command{{Name: "bun", Args: []string{"install", "--frozen-lockfile"}}}
+		commands = []Command{{Name: "bun", Args: []string{"install", "--frozen-lockfile"}}}
 	case has(dir, "package-lock.json"), has(dir, "npm-shrinkwrap.json"):
-		return []Command{{Name: "npm", Args: []string{"ci"}}}
+		commands = []Command{{Name: "npm", Args: []string{"ci"}}}
 	default:
-		return []Command{{Name: "npm", Args: []string{"install"}}}
+		commands = []Command{{Name: "npm", Args: []string{"install"}}}
 	}
+	if includeBuild && packageHasScript(dir, "build") {
+		commands = append(commands, NodeRunCommand(dir, "build"))
+	}
+	return commands
 }
 
 func pythonCommands(dir string) []Command {
@@ -181,6 +187,22 @@ func makeSetupTarget(dir string) string {
 		}
 	}
 	return ""
+}
+
+func packageHasScript(dir, script string) bool {
+	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
+	if err != nil {
+		return false
+	}
+	var pkg struct {
+		Scripts map[string]string `json:"scripts"`
+	}
+	return json.Unmarshal(data, &pkg) == nil && pkg.Scripts[script] != ""
+}
+
+func usesStartScript(command string) bool {
+	fields := strings.Fields(command)
+	return len(fields) > 0 && fields[len(fields)-1] == "start"
 }
 
 func runCommand(ctx context.Context, dir string, command Command, emit func(stream, line string) error) error {

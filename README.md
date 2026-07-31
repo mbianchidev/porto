@@ -112,7 +112,7 @@ Dependency setup follows the project strategy and manifests:
 
 - Make projects use the first available `install`, `setup`, `bootstrap`, `deps`, or `dependencies` target.
 - Compose projects run `docker compose build --no-cache`.
-- Node projects use pnpm, Yarn, Bun, or npm based on their lockfile.
+- Node projects use pnpm, Yarn, Bun, or npm based on their lockfile, and run the build script when Porto detected a production `start` script.
 - Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip.
 - Go and Rust projects run `go mod download` or `cargo fetch`.
 

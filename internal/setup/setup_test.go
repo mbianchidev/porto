@@ -41,6 +41,18 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 			want:     []Command{{Name: "npm", Args: []string{"ci"}}},
 		},
 		{
+			name:     "production node build",
+			strategy: "package",
+			files: map[string]string{
+				"package.json":      `{"scripts":{"start":"next start","build":"next build"}}`,
+				"package-lock.json": "{}",
+			},
+			want: []Command{
+				{Name: "npm", Args: []string{"ci"}},
+				{Name: "npm", Args: []string{"run", "build"}},
+			},
+		},
+		{
 			name:     "python requirements",
 			strategy: "make",
 			files:    map[string]string{"Makefile": "run:\n\tpython3 app.py\n", "requirements.txt": "fastapi\n"},
@@ -71,7 +83,11 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			got, err := Plan(app.Project{Name: "app", Path: dir, Strategy: tt.strategy})
+			command := ""
+			if tt.name == "production node build" {
+				command = "npm run start"
+			}
+			got, err := Plan(app.Project{Name: "app", Path: dir, Strategy: tt.strategy, Command: command})
 			if err != nil {
 				t.Fatalf("plan: %v", err)
 			}
