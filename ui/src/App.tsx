@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import './App.css'
 
 type Project = {
@@ -92,10 +92,12 @@ function App() {
   const [logStream, setLogStream] = useState<LogStream>('all')
   const [logLines, setLogLines] = useState<LogLine[]>([])
   const [logRefresh, setLogRefresh] = useState(0)
+  const [logFocusRequest, setLogFocusRequest] = useState(0)
   const [logsLoading, setLogsLoading] = useState(false)
   const [logError, setLogError] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
+  const logConsoleRef = useRef<HTMLElement>(null)
 
   async function refreshProjects() {
     try {
@@ -315,6 +317,13 @@ function App() {
     }
   }
 
+  function viewLogs(name: string) {
+    setLogLines([])
+    setLogProjectName(name)
+    setLogStream('all')
+    setLogFocusRequest((value) => value + 1)
+  }
+
   useEffect(() => {
     load()
     const timer = window.setInterval(() => {
@@ -357,6 +366,14 @@ function App() {
       window.clearInterval(timer)
     }
   }, [logProjectName, logStream, logRefresh])
+
+  useEffect(() => {
+    if (!logProjectName) return
+    const frame = window.requestAnimationFrame(() => {
+      logConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    })
+    return () => window.cancelAnimationFrame(frame)
+  }, [logProjectName, logFocusRequest])
 
   const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
   const logProject = projects.find((project) => project.name === logProjectName)
@@ -566,7 +583,7 @@ function App() {
       </section>
 
       {logProjectName && (
-        <section className="logConsole" aria-labelledby="process-console-title">
+        <section ref={logConsoleRef} className="logConsole" aria-labelledby="process-console-title">
           <div className="consoleHeader">
             <div>
               <p className="eyebrow">Process console</p>
@@ -670,11 +687,7 @@ function App() {
               <button
                 className="logsButton"
                 type="button"
-                onClick={() => {
-                  setLogLines([])
-                  setLogProjectName(project.name)
-                  setLogStream('all')
-                }}
+                onClick={() => viewLogs(project.name)}
               >
                 View logs
               </button>
