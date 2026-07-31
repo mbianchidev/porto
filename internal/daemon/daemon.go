@@ -532,7 +532,10 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	setupContext := context.WithoutCancel(r.Context())
+	var logMu sync.Mutex
 	emit := func(stream, line string) error {
+		logMu.Lock()
+		defer logMu.Unlock()
 		return s.store.AddLog(setupContext, project.ID, stream, line)
 	}
 	if err := emit("system", "Dependency setup started."); err != nil {

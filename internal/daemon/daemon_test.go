@@ -61,8 +61,9 @@ type noopKillSwitchInstaller struct{}
 func (noopKillSwitchInstaller) Install(context.Context) error { return nil }
 
 type fakeSetupRunner struct {
-	started chan struct{}
-	release chan struct{}
+	started  chan struct{}
+	release  chan struct{}
+	parallel bool
 }
 
 func (f fakeSetupRunner) Run(_ context.Context, _ app.Project, emit func(stream, line string) error) (projectsetup.Result, error) {
@@ -72,10 +73,42 @@ func (f fakeSetupRunner) Run(_ context.Context, _ app.Project, emit func(stream,
 	if f.release != nil {
 		<-f.release
 	}
+	if f.parallel {
+		errs := make(chan error, 2)
+		go func() { errs <- emit("stdout", "dependencies installed") }()
+		go func() { errs <- emit("stderr", "install warning") }()
+		return projectsetup.Result{Commands: []string{"npm ci"}}, errors.Join(<-errs, <-errs)
+	}
 	if err := emit("stdout", "dependencies installed"); err != nil {
 		return projectsetup.Result{}, err
 	}
 	return projectsetup.Result{Commands: []string{"npm ci"}}, nil
+}
+
+func TestProjectSetupSerializesParallelLogs(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	server := New(st, nil)
+	server.setupRunner = fakeSetupRunner{parallel: true}
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/projects/web/setup", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("setup status = %d: %s", response.Code, response.Body.String())
+	}
+	logs, err := st.Logs(context.Background(), project.ID, 20)
+	if err != nil {
+		t.Fatalf("load setup logs: %v", err)
+	}
+	if len(logs) != 4 {
+		t.Fatalf("setup logs = %#v, want four lines", logs)
+	}
 }
 
 func TestProjectSetupWritesLogs(t *testing.T) {
