@@ -10,7 +10,8 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Go CLI and daemon with a small SQLite database under `~/.config/porto/porto.db` (override with `PORTO_HOME`).
 - React dashboard served by the daemon for one-click start, stop, restart, and kill actions.
 - Project discovery across user-selected roots with `--depth` and ignore lists.
-- Detection priority: `Makefile`, then Compose files, then `package.json` scripts.
+- Detection priority: `Makefile`, Compose files, `package.json` scripts, Python entry points, Go mains, then Rust binaries.
+- One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
 - PID, status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
@@ -49,6 +50,8 @@ go build -o porto ./cmd/porto
 ```
 
 The binary carries the whole daemon and CLI, and loads the dashboard from `PORTO_UI_DIR`, `ui/dist` in the working directory, or `ui/dist` or `dist` next to the executable. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
+
+Each project card includes **Setup dependencies**. Porto runs one setup at a time per project, writes its output to the process console, and keeps the setup running if the browser disconnects. Stop a project before setting it up.
 
 ## Quickstart
 
@@ -98,9 +101,20 @@ Run strategy priority:
 
 1. `Makefile` / `makefile`, preferring `dev`, `run`, or `start` targets.
 2. `docker-compose.yml`, `docker-compose.yaml`, `compose.yml`, or `compose.yaml`.
-3. `package.json`, preferring `scripts.start` then `scripts.dev`.
+3. `package.json`, preferring `scripts.start` then `scripts.dev` and honoring pnpm, Yarn, Bun, or npm lockfiles.
+4. Python projects with `requirements.txt` or `pyproject.toml` and `manage.py`, `main.py`, or `app.py`.
+5. Go modules with a root `main.go`.
+6. Rust crates with `src/main.rs`.
 
 For Compose projects, `porto kill` runs `docker compose down --remove-orphans`. Compose first applies each service's graceful shutdown behavior, then Porto removes running, created, exited, and orphaned containers before reaping the local launcher.
+
+Dependency setup follows the project strategy and manifests:
+
+- Make projects use the first available `install`, `setup`, `bootstrap`, `deps`, or `dependencies` target.
+- Compose projects run `docker compose build --no-cache`.
+- Node projects use pnpm, Yarn, Bun, or npm based on their lockfile.
+- Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip.
+- Go and Rust projects run `go mod download` or `cargo fetch`.
 
 ## Persistence
 

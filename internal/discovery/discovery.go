@@ -10,6 +10,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/compose"
+	projectsetup "github.com/mbianchidev/porto/internal/setup"
 )
 
 type Options struct {
@@ -84,8 +85,19 @@ func Detect(path string) (app.Project, bool) {
 	}
 	if has(path, "package.json") {
 		if script := packageScript(path); script != "" {
-			return app.Project{Name: name, Path: path, Strategy: "package", Command: "npm run " + script}, true
+			command := projectsetup.NodeRunCommand(path, script)
+			return app.Project{Name: name, Path: path, Strategy: "package", Command: command.ShellString()}, true
 		}
+	}
+	if entry := pythonEntry(path); entry != "" && (has(path, "requirements.txt") || has(path, "pyproject.toml")) {
+		command := projectsetup.PythonRunCommand(path, entry)
+		return app.Project{Name: name, Path: path, Strategy: "python", Command: command.ShellString()}, true
+	}
+	if has(path, "go.mod") && has(path, "main.go") {
+		return app.Project{Name: name, Path: path, Strategy: "go", Command: "go run ."}, true
+	}
+	if has(path, "Cargo.toml") && has(path, filepath.Join("src", "main.rs")) {
+		return app.Project{Name: name, Path: path, Strategy: "rust", Command: "cargo run"}, true
 	}
 	return app.Project{}, false
 }
@@ -123,6 +135,15 @@ func packageScript(dir string) string {
 	}
 	if pkg.Scripts["dev"] != "" {
 		return "dev"
+	}
+	return ""
+}
+
+func pythonEntry(dir string) string {
+	for _, name := range []string{"manage.py", "main.py", "app.py"} {
+		if has(dir, name) {
+			return name
+		}
 	}
 	return ""
 }

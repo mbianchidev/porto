@@ -1,0 +1,100 @@
+package setup
+
+import (
+	"os"
+	"path/filepath"
+	"reflect"
+	"testing"
+
+	"github.com/mbianchidev/porto/internal/app"
+)
+
+func TestPlanSelectsSupportedEcosystems(t *testing.T) {
+	tests := []struct {
+		name     string
+		strategy string
+		files    map[string]string
+		want     []Command
+	}{
+		{
+			name:     "compose",
+			strategy: "compose",
+			files:    map[string]string{"compose.yaml": "services: {}"},
+			want:     []Command{{Name: "docker", Args: []string{"compose", "-f", "compose.yaml", "build", "--no-cache"}}},
+		},
+		{
+			name:     "make target",
+			strategy: "make",
+			files:    map[string]string{"Makefile": "setup:\n\t@echo setup\n"},
+			want:     []Command{{Name: "make", Args: []string{"setup"}}},
+		},
+		{
+			name:     "pnpm",
+			strategy: "package",
+			files:    map[string]string{"package.json": "{}", "pnpm-lock.yaml": ""},
+			want:     []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile"}}},
+		},
+		{
+			name:     "npm lock",
+			strategy: "package",
+			files:    map[string]string{"package.json": "{}", "package-lock.json": "{}"},
+			want:     []Command{{Name: "npm", Args: []string{"ci"}}},
+		},
+		{
+			name:     "python requirements",
+			strategy: "make",
+			files:    map[string]string{"Makefile": "run:\n\tpython3 app.py\n", "requirements.txt": "fastapi\n"},
+			want: []Command{
+				{Name: "python3", Args: []string{"-m", "venv", ".venv"}},
+				{Name: "VENVPYTHON", Args: []string{"-m", "pip", "install", "-r", "requirements.txt"}},
+			},
+		},
+		{
+			name:     "go",
+			strategy: "make",
+			files:    map[string]string{"Makefile": "run:\n\tgo run .\n", "go.mod": "module example.com/app\n"},
+			want:     []Command{{Name: "go", Args: []string{"mod", "download"}}},
+		},
+		{
+			name:     "rust",
+			strategy: "make",
+			files:    map[string]string{"Makefile": "run:\n\tcargo run\n", "Cargo.toml": "[package]\nname='app'\n"},
+			want:     []Command{{Name: "cargo", Args: []string{"fetch"}}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			for name, contents := range tt.files {
+				if err := os.WriteFile(filepath.Join(dir, name), []byte(contents), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			got, err := Plan(app.Project{Name: "app", Path: dir, Strategy: tt.strategy})
+			if err != nil {
+				t.Fatalf("plan: %v", err)
+			}
+			for i := range got {
+				if filepath.IsAbs(got[i].Name) && filepath.Base(got[i].Name) == "python" {
+					got[i].Name = "VENVPYTHON"
+				}
+			}
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("commands = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNodeRunCommandUsesLockfileManager(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "yarn.lock"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := NodeRunCommand(dir, "dev")
+	want := Command{Name: "yarn", Args: []string{"dev"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("command = %#v, want %#v", got, want)
+	}
+}

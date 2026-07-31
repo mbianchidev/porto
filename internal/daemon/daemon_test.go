@@ -22,6 +22,7 @@ import (
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/process"
+	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/store"
 )
 
@@ -58,6 +59,85 @@ func (r *killSwitchRunner) Run(_ context.Context, _ string, args ...string) (kil
 type noopKillSwitchInstaller struct{}
 
 func (noopKillSwitchInstaller) Install(context.Context) error { return nil }
+
+type fakeSetupRunner struct {
+	started chan struct{}
+	release chan struct{}
+}
+
+func (f fakeSetupRunner) Run(_ context.Context, _ app.Project, emit func(stream, line string) error) (projectsetup.Result, error) {
+	if f.started != nil {
+		close(f.started)
+	}
+	if f.release != nil {
+		<-f.release
+	}
+	if err := emit("stdout", "dependencies installed"); err != nil {
+		return projectsetup.Result{}, err
+	}
+	return projectsetup.Result{Commands: []string{"npm ci"}}, nil
+}
+
+func TestProjectSetupWritesLogs(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	server := New(st, nil)
+	server.setupRunner = fakeSetupRunner{}
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/projects/web/setup", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("setup status = %d: %s", response.Code, response.Body.String())
+	}
+	logs, err := st.Logs(context.Background(), project.ID, 20)
+	if err != nil {
+		t.Fatalf("load setup logs: %v", err)
+	}
+	got := make([]string, 0, len(logs))
+	for _, line := range logs {
+		got = append(got, line.Line)
+	}
+	want := []string{"Dependency setup started.", "dependencies installed", "Dependency setup completed."}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("logs = %#v, want %#v", got, want)
+	}
+}
+
+func TestProjectSetupRejectsConcurrentRequest(t *testing.T) {
+	st, _ := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := New(st, nil)
+	server.setupRunner = fakeSetupRunner{started: started, release: release}
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	firstDone := make(chan struct{})
+	go func() {
+		defer close(firstDone)
+		mux.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/projects/web/setup", nil))
+	}()
+	<-started
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/api/projects/web/setup", nil))
+	if response.Code != http.StatusConflict {
+		t.Fatalf("concurrent setup status = %d, want %d", response.Code, http.StatusConflict)
+	}
+	close(release)
+	<-firstDone
+}
 
 type fakeComposeCleanup struct {
 	mu       sync.Mutex
