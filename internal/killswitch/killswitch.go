@@ -622,9 +622,9 @@ func commandError(action string, output CommandOutput, err error) error {
 }
 
 func cloneStatus(status Status) Status {
-	status.UserPorts = append([]int(nil), status.UserPorts...)
-	status.SyncedPorts = append([]int(nil), status.SyncedPorts...)
-	status.EffectivePorts = append([]int(nil), status.EffectivePorts...)
+	status.UserPorts = append([]int{}, status.UserPorts...)
+	status.SyncedPorts = append([]int{}, status.SyncedPorts...)
+	status.EffectivePorts = append([]int{}, status.EffectivePorts...)
 	if status.AutoKillEnabled != nil {
 		status.AutoKillEnabled = boolPointer(*status.AutoKillEnabled)
 	}

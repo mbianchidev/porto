@@ -59,6 +59,17 @@ func (f *fakeInstaller) Install(context.Context) error {
 	return f.err
 }
 
+func TestSnapshotReturnsEmptyPortSlices(t *testing.T) {
+	manager := newManager("darwin", &fakeRunner{}, &fakeInstaller{}, func() (string, error) {
+		return t.TempDir(), nil
+	})
+
+	status := manager.Snapshot()
+	if status.UserPorts == nil || status.SyncedPorts == nil || status.EffectivePorts == nil {
+		t.Fatalf("port slices = %#v, %#v, %#v; want non-nil empty slices", status.UserPorts, status.SyncedPorts, status.EffectivePorts)
+	}
+}
+
 func TestManagedPortsIncludesOnlyActiveProcesses(t *testing.T) {
 	projects := []app.Project{
 		{Name: "running", Status: "running", PID: 101, Port: 41002},

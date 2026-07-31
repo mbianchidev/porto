@@ -29,6 +29,7 @@ import (
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/sendbox"
+	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
@@ -40,12 +41,14 @@ type Server struct {
 	mu              sync.Mutex
 	running         map[int64]*projectProcess
 	stopping        map[int64]bool
+	settingUp       map[int64]bool
 	sendboxRunning  map[int64]*exec.Cmd
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	compose         composeIntegration
+	setupRunner     projectSetupRunner
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
@@ -67,17 +70,23 @@ type composeIntegration interface {
 	Down(ctx context.Context, project app.Project) error
 }
 
+type projectSetupRunner interface {
+	Run(ctx context.Context, project app.Project, emit func(stream, line string) error) (projectsetup.Result, error)
+}
+
 func New(st *store.Store, ui fs.FS) *Server {
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
+		settingUp:       map[int64]bool{},
 		sendboxRunning:  map[int64]*exec.Cmd{},
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		compose:         compose.New(nil),
+		setupRunner:     projectsetup.ExecRunner{},
 		sqnsl:           sqnsl.NewManager(nil),
 		killSwitch:      killswitch.NewManager(nil, nil),
 	}
@@ -151,6 +160,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
 	mux.HandleFunc("POST /api/projects/{name}/kill", s.stop(true))
 	mux.HandleFunc("POST /api/projects/{name}/restart", s.restart)
+	mux.HandleFunc("POST /api/projects/{name}/setup", s.setupProject)
 	mux.HandleFunc("POST /api/projects/{name}/branch", s.branch)
 	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.cleanupBranches)
 	mux.HandleFunc("POST /api/projects/{name}/port", s.pinPort)
@@ -495,12 +505,65 @@ func (s *Server) start(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, p)
 }
 
+func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+
+	s.mu.Lock()
+	if s.settingUp[project.ID] {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("%s setup is already running", project.Name), http.StatusConflict)
+		return
+	}
+	if running := s.running[project.ID]; running != nil {
+		s.mu.Unlock()
+		http.Error(w, fmt.Sprintf("stop %s before running setup", project.Name), http.StatusConflict)
+		return
+	}
+	s.settingUp[project.ID] = true
+	s.mu.Unlock()
+	defer func() {
+		s.mu.Lock()
+		delete(s.settingUp, project.ID)
+		s.mu.Unlock()
+	}()
+
+	setupContext := context.WithoutCancel(r.Context())
+	var logMu sync.Mutex
+	emit := func(stream, line string) error {
+		logMu.Lock()
+		defer logMu.Unlock()
+		return s.store.AddLog(setupContext, project.ID, stream, line)
+	}
+	if err := emit("system", "Dependency setup started."); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	result, err := s.setupRunner.Run(setupContext, project, emit)
+	if err != nil {
+		_ = emit("system", "Dependency setup failed: "+err.Error())
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := emit("system", "Dependency setup completed."); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
+
 func (s *Server) startProject(ctx context.Context, name string, noPull bool) (app.Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, err := s.store.GetProject(ctx, name)
 	if err != nil {
 		return p, err
+	}
+	if s.settingUp[p.ID] {
+		return p, fmt.Errorf("%s dependency setup is running", p.Name)
 	}
 	if s.stopping[p.ID] {
 		return p, fmt.Errorf("%s is stopping", p.Name)
