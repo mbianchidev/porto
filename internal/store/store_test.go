@@ -88,6 +88,22 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	}
 }
 
+func TestListProjectsReturnsEmptySlice(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	projects, err := st.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	if projects == nil || len(projects) != 0 {
+		t.Fatalf("projects = %#v, want non-nil empty slice", projects)
+	}
+}
+
 func TestLogFilteringAndClearing(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {
