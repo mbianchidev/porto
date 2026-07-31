@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/app"
@@ -92,7 +93,8 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 				t.Fatalf("plan: %v", err)
 			}
 			for i := range got {
-				if filepath.IsAbs(got[i].Name) && filepath.Base(got[i].Name) == "python" {
+				binary := strings.TrimSuffix(filepath.Base(got[i].Name), ".exe")
+				if filepath.IsAbs(got[i].Name) && binary == "python" {
 					got[i].Name = "VENVPYTHON"
 				}
 			}
