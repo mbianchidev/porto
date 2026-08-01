@@ -79,7 +79,7 @@ On macOS, install the trusted portless HTTPS helper once:
 porto https install
 ```
 
-This opens the native macOS administrator authorization dialog only to install a dedicated TCP forwarder on port 443. The Porto daemon and managed projects remain unprivileged. If a project has hostname `api`, access it at:
+This opens the native macOS administrator authorization dialog only to install a dedicated IPv4 and IPv6 loopback TCP forwarder on port 443. The Porto daemon and managed projects remain unprivileged. If a project has hostname `api`, access it at:
 
 ```text
 https://api.porto.localhost/
