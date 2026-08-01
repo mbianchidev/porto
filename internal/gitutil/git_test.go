@@ -9,6 +9,41 @@ import (
 	"github.com/mbianchidev/porto/internal/app"
 )
 
+func TestManagedWorktreeLifecycle(t *testing.T) {
+	repo := initTestRepo(t)
+	runTestGit(t, repo, "switch", "-c", "feature/branch-instance")
+	writeAndCommit(t, repo, "feature.txt", "feature", "add feature")
+	runTestGit(t, repo, "switch", "main")
+	worktree := filepath.Join(t.TempDir(), "instance")
+
+	if err := CreateWorktree(repo, worktree, "feature/branch-instance"); err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	if got := Branch(worktree); got != "feature/branch-instance" {
+		t.Fatalf("worktree branch = %q", got)
+	}
+	if err := CanCheckout(repo, "feature/branch-instance"); err == nil {
+		t.Fatal("checkout allowed for a branch used by another worktree")
+	}
+	if err := RemoveWorktree(repo, worktree); err != nil {
+		t.Fatalf("remove worktree: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+}
+
+func TestCanCheckoutRejectsDirtyTree(t *testing.T) {
+	repo := initTestRepo(t)
+	runTestGit(t, repo, "branch", "other")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CanCheckout(repo, "other"); err == nil {
+		t.Fatal("dirty checkout was allowed")
+	}
+}
+
 func TestCleanupBranchesDeletesOnlyFullyMergedLocalBranches(t *testing.T) {
 	repo := initTestRepo(t)
 	runTestGit(t, repo, "switch", "-c", "merged")

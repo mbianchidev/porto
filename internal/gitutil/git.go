@@ -5,8 +5,10 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"path"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -31,11 +33,128 @@ func Dirty(path string) bool {
 }
 
 func Checkout(path, branch string) error {
-	if !branchNamePattern.MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, ".lock") {
-		return errors.New("invalid branch name")
+	if err := validateBranchName(branch); err != nil {
+		return err
 	}
-	_, err := git(path, "switch", "--", branch)
-	return err
+	if refExists(path, "refs/heads/"+branch) {
+		out, err := git(path, "switch", "--", branch)
+		if err != nil {
+			return gitFailure("switch branch", out, err)
+		}
+		return nil
+	}
+	remote, err := primaryRemote(path)
+	if err != nil {
+		return err
+	}
+	if remote == "" || !refExists(path, "refs/remotes/"+remote+"/"+branch) {
+		return fmt.Errorf("branch %q is unavailable", branch)
+	}
+	out, err := git(path, "switch", "--track", "-c", branch, remote+"/"+branch)
+	if err != nil {
+		return gitFailure("switch branch", out, err)
+	}
+	return nil
+}
+
+func Branches(repoPath string) ([]string, error) {
+	local, err := refs(repoPath, "refs/heads")
+	if err != nil {
+		return nil, err
+	}
+	remote, err := primaryRemote(repoPath)
+	if err != nil {
+		return nil, err
+	}
+	seen := make(map[string]bool, len(local))
+	branches := append([]string(nil), local...)
+	for _, branch := range local {
+		seen[branch] = true
+	}
+	if remote != "" {
+		remoteBranches, err := refs(repoPath, "refs/remotes/"+remote)
+		if err != nil {
+			return nil, err
+		}
+		for _, remoteBranch := range remoteBranches {
+			branch, ok := strings.CutPrefix(remoteBranch, remote+"/")
+			if !ok || branch == "HEAD" || seen[branch] {
+				continue
+			}
+			seen[branch] = true
+			branches = append(branches, branch)
+		}
+	}
+	slices.Sort(branches)
+	return branches, nil
+}
+
+func DefaultBranch(repoPath string) (string, error) {
+	remote, err := primaryRemote(repoPath)
+	if err != nil {
+		return "", err
+	}
+	return defaultBranch(repoPath, remote)
+}
+
+func CanCheckout(repoPath, branch string) error {
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
+	if branch == Branch(repoPath) {
+		return nil
+	}
+	if Dirty(repoPath) {
+		return errors.New("commit or stash local changes before switching branches")
+	}
+	worktrees, err := branchWorktrees(repoPath)
+	if err != nil {
+		return err
+	}
+	if worktree := worktrees[branch]; worktree != "" && filepath.Clean(worktree) != filepath.Clean(repoPath) {
+		return fmt.Errorf("branch %q is already checked out at %s", branch, worktree)
+	}
+	return nil
+}
+
+func CreateWorktree(repoPath, worktreePath, branch string) error {
+	if err := validateBranchName(branch); err != nil {
+		return err
+	}
+	worktrees, err := branchWorktrees(repoPath)
+	if err != nil {
+		return err
+	}
+	if path := worktrees[branch]; path != "" {
+		return fmt.Errorf("branch %q is already checked out at %s", branch, path)
+	}
+	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
+		return fmt.Errorf("create worktree parent: %w", err)
+	}
+	args := []string{"worktree", "add", "--", worktreePath, branch}
+	if !refExists(repoPath, "refs/heads/"+branch) {
+		remote, err := primaryRemote(repoPath)
+		if err != nil {
+			return err
+		}
+		if remote == "" || !refExists(repoPath, "refs/remotes/"+remote+"/"+branch) {
+			return fmt.Errorf("branch %q is unavailable", branch)
+		}
+		args = []string{"worktree", "add", "--track", "-b", branch, "--", worktreePath, remote + "/" + branch}
+	}
+	out, err := git(repoPath, args...)
+	if err != nil {
+		return gitFailure("create Git worktree", out, err)
+	}
+	return nil
+}
+
+func RemoveWorktree(repoPath, worktreePath string) error {
+	out, err := git(repoPath, "worktree", "remove", "--", worktreePath)
+	if err != nil {
+		return gitFailure("remove Git worktree", out, err)
+	}
+	return nil
 }
 
 func Pull(path string) (string, error) {
@@ -171,6 +290,32 @@ func checkedOutBranches(repoPath string) (map[string]bool, error) {
 		}
 	}
 	return checkedOut, nil
+}
+
+func branchWorktrees(repoPath string) (map[string]string, error) {
+	out, err := git(repoPath, "worktree", "list", "--porcelain")
+	if err != nil {
+		return nil, gitFailure("list Git worktrees", out, err)
+	}
+	worktrees := map[string]string{}
+	currentPath := ""
+	for line := range strings.SplitSeq(out, "\n") {
+		if path, ok := strings.CutPrefix(line, "worktree "); ok {
+			currentPath = path
+			continue
+		}
+		if branch, ok := strings.CutPrefix(line, "branch refs/heads/"); ok {
+			worktrees[branch] = currentPath
+		}
+	}
+	return worktrees, nil
+}
+
+func validateBranchName(branch string) error {
+	if !branchNamePattern.MatchString(branch) || strings.Contains(branch, "..") || strings.HasSuffix(branch, ".lock") {
+		return errors.New("invalid branch name")
+	}
+	return nil
 }
 
 func revParse(repoPath, ref string) (string, error) {

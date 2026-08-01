@@ -85,6 +85,42 @@ func (f fakeSetupRunner) Run(_ context.Context, _ app.Project, emit func(stream,
 	return projectsetup.Result{Commands: []string{"npm ci"}}, nil
 }
 
+func TestAvailableBranchHostnameCompactsAndDisambiguates(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:         "2dnd",
+		Path:         t.TempDir(),
+		SourcePath:   t.TempDir(),
+		Strategy:     "package",
+		Command:      "npm run dev",
+		Hostname:     "2dnd",
+		BaseHostname: "2dnd",
+	})
+	server := New(st, nil)
+	got, err := server.availableBranchHostname(context.Background(), project, "copilot/improve-elemental-resistances-system", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "2dnd-cop-imp-ele-res-sys" {
+		t.Fatalf("hostname = %q", got)
+	}
+	if _, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "collision",
+		Path:     t.TempDir(),
+		Strategy: "go",
+		Command:  "go run .",
+		Hostname: got,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	disambiguated, err := server.availableBranchHostname(context.Background(), project, "copilot/improve-elemental-resistances-system", "main")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if disambiguated == got || !strings.HasPrefix(disambiguated, got+"-") {
+		t.Fatalf("disambiguated hostname = %q", disambiguated)
+	}
+}
+
 func TestProjectSetupSerializesParallelLogs(t *testing.T) {
 	st, project := testProject(t, app.Project{
 		Name:     "web",

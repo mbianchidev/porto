@@ -262,7 +262,7 @@ main {
 
 .card,
 .empty,
-.error,
+.errorBanner,
 .notice,
 .hygiene,
 .integration,
@@ -274,7 +274,7 @@ main {
   text-align: left;
 }
 
-.error {
+.errorBanner {
   color: #fca5a5;
   border-color: rgba(248, 113, 113, 0.4);
   margin-bottom: 18px;
@@ -558,7 +558,7 @@ button:focus-visible {
 
 .grid.list .card {
   display: grid;
-  grid-template-columns: minmax(250px, 1.15fr) minmax(390px, 1.7fr) minmax(184px, auto);
+  grid-template-columns: minmax(210px, 1fr) minmax(190px, 0.8fr) minmax(300px, 1.35fr) minmax(184px, auto);
   gap: 16px 22px;
   align-items: center;
   border-radius: 11px;
@@ -588,6 +588,47 @@ button:focus-visible {
   gap: 8px 14px;
   margin: 0;
   min-width: 0;
+}
+
+.branchControls {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.branchControls label {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.branchControls label > span {
+  color: var(--muted);
+  font: 10px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.branchControls select {
+  width: 100%;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 28px 7px 9px;
+  background: var(--code-bg);
+  color: var(--text-h);
+  font: 12px/1.2 var(--mono);
+}
+
+.branchControls select:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
+}
+
+.grid.list .branchControls {
+  grid-template-columns: 1fr;
+  margin-top: 0;
 }
 
 .grid.list dl > div:nth-child(2),
@@ -796,6 +837,11 @@ button:disabled {
   background: rgba(167, 139, 250, 0.1);
 }
 
+.removeButton {
+  border-color: rgba(248, 113, 113, 0.45);
+  background: rgba(248, 113, 113, 0.1);
+}
+
 .sendboxButton {
   border-color: rgba(52, 211, 153, 0.45);
   background: rgba(52, 211, 153, 0.1);
@@ -808,13 +854,17 @@ button:disabled {
 
 @media (max-width: 1040px) {
   .grid.list .card {
-    grid-template-columns: minmax(220px, 0.9fr) minmax(340px, 1.5fr);
+    grid-template-columns: minmax(220px, 0.9fr) minmax(220px, 0.9fr) minmax(340px, 1.5fr);
   }
 
   .grid.list .actions {
     grid-column: 1 / -1;
     justify-content: flex-end;
     max-width: none;
+  }
+
+  .grid.list dl {
+    grid-column: 3;
   }
 }
 
@@ -851,6 +901,10 @@ button:disabled {
 
   .grid.list .card {
     grid-template-columns: 1fr;
+  }
+
+  .grid.list dl {
+    grid-column: auto;
   }
 
   .grid.list dl {

@@ -50,6 +50,9 @@ VALUES('devoidofbeauty.com','/tmp/devoidofbeauty','go','go run .','devoidofbeaut
 	if project.Hostname != "devoidofbeauty.com" {
 		t.Fatalf("hostname = %q, want dotted hostname", project.Hostname)
 	}
+	if project.BaseHostname != "devoidofbeauty.com" {
+		t.Fatalf("base hostname = %q, want dotted hostname", project.BaseHostname)
+	}
 }
 
 func TestOpenMergesCanonicalProjectPathDuplicates(t *testing.T) {
@@ -206,6 +209,70 @@ func TestListProjectsReturnsEmptySlice(t *testing.T) {
 	}
 	if projects == nil || len(projects) != 0 {
 		t.Fatalf("projects = %#v, want non-nil empty slice", projects)
+	}
+}
+
+func TestProjectInstancesPreserveMetadataAndUniqueHostnames(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	source := filepath.Join(t.TempDir(), "source")
+	instancePath := filepath.Join(t.TempDir(), "instance")
+	baseID, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "app",
+		Path:     source,
+		Strategy: "package",
+		Command:  "npm run dev",
+		Hostname: "app",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	instanceID, err := st.UpsertProject(context.Background(), app.Project{
+		Name:            "app",
+		Path:            instancePath,
+		SourcePath:      source,
+		Strategy:        "package",
+		Command:         "npm run dev",
+		Hostname:        "app-feature",
+		BaseHostname:    "app",
+		ManagedInstance: true,
+		Branch:          "feature/work",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if baseID == instanceID {
+		t.Fatal("instance reused base project ID")
+	}
+	instance, err := st.GetProjectByID(context.Background(), instanceID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !instance.ManagedInstance || instance.SourcePath != canonicalProjectPath(source) || instance.Branch != "feature/work" {
+		t.Fatalf("instance metadata = %+v", instance)
+	}
+	if _, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "other",
+		Path:     filepath.Join(t.TempDir(), "other"),
+		Strategy: "go",
+		Command:  "go run .",
+		Hostname: "app-feature",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	projects, err := st.ListProjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	seen := map[string]bool{}
+	for _, project := range projects {
+		if seen[project.Hostname] {
+			t.Fatalf("duplicate hostname %q", project.Hostname)
+		}
+		seen[project.Hostname] = true
 	}
 }
 

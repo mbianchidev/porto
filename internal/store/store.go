@@ -2,8 +2,11 @@ package store
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -43,6 +46,10 @@ func Open(path string) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
+	if err := s.ensureUniqueHostnames(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	return s, nil
 }
 
@@ -59,6 +66,10 @@ CREATE TABLE IF NOT EXISTS projects (
  port INTEGER DEFAULT 0,
  pinned_port INTEGER DEFAULT 0,
  hostname TEXT DEFAULT '',
+ base_hostname TEXT NOT NULL DEFAULT '',
+ source_path TEXT NOT NULL DEFAULT '',
+ managed_instance INTEGER NOT NULL DEFAULT 0,
+ instance_branch TEXT NOT NULL DEFAULT '',
  pid INTEGER DEFAULT 0,
  status TEXT DEFAULT 'stopped',
  auto_start INTEGER DEFAULT 0,
@@ -97,6 +108,20 @@ CREATE TABLE IF NOT EXISTS settings (
 	if err := s.ensureSettingsColumn("sendbox_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
+	for name, definition := range map[string]string{
+		"base_hostname":    "TEXT NOT NULL DEFAULT ''",
+		"source_path":      "TEXT NOT NULL DEFAULT ''",
+		"managed_instance": "INTEGER NOT NULL DEFAULT 0",
+		"instance_branch":  "TEXT NOT NULL DEFAULT ''",
+	} {
+		if err := s.ensureProjectColumn(name, definition); err != nil {
+			return err
+		}
+	}
+	if _, err := s.db.Exec(`UPDATE projects SET source_path=path WHERE source_path='';
+UPDATE projects SET base_hostname=hostname WHERE base_hostname=''`); err != nil {
+		return err
+	}
 	protected, err := json.Marshal(defaultProtectedBranches)
 	if err != nil {
 		return err
@@ -111,11 +136,23 @@ func (s *Store) UpsertProject(ctx context.Context, p app.Project) (int64, error)
 	if p.Hostname == "" {
 		p.Hostname = safeHost(p.Name)
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO projects(name,path,strategy,command,hostname,updated_at)
-VALUES(?,?,?,?,?,?)
+	if p.BaseHostname == "" {
+		p.BaseHostname = p.Hostname
+	}
+	if p.SourcePath == "" {
+		p.SourcePath = p.Path
+	}
+	p.SourcePath = canonicalProjectPath(p.SourcePath)
+	hostname, err := s.availableHostname(ctx, p.Path, p.Hostname)
+	if err != nil {
+		return 0, err
+	}
+	p.Hostname = hostname
+	res, err := s.db.ExecContext(ctx, `INSERT INTO projects(name,path,strategy,command,hostname,base_hostname,source_path,managed_instance,instance_branch,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?)
 ON CONFLICT(path) DO UPDATE SET name=excluded.name, strategy=excluded.strategy, command=excluded.command,
 hostname=CASE WHEN projects.hostname='' OR projects.hostname=? THEN excluded.hostname ELSE projects.hostname END, updated_at=excluded.updated_at`,
-		p.Name, p.Path, p.Strategy, p.Command, p.Hostname, now, legacySafeHost(p.Name))
+		p.Name, p.Path, p.Strategy, p.Command, p.Hostname, p.BaseHostname, p.SourcePath, boolInt(p.ManagedInstance), p.Branch, now, legacySafeHost(p.Name))
 	if err != nil {
 		return 0, err
 	}
@@ -129,7 +166,7 @@ hostname=CASE WHEN projects.hostname='' OR projects.hostname=? THEN excluded.hos
 }
 
 func (s *Store) ListProjects(ctx context.Context) ([]app.Project, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at FROM projects ORDER BY name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,base_hostname,source_path,managed_instance,instance_branch,pid,status,auto_start,last_started,updated_at FROM projects ORDER BY name,managed_instance,instance_branch`)
 	if err != nil {
 		return nil, err
 	}
@@ -146,12 +183,22 @@ func (s *Store) ListProjects(ctx context.Context) ([]app.Project, error) {
 }
 
 func (s *Store) GetProject(ctx context.Context, name string) (app.Project, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at FROM projects WHERE name=? OR id=CAST(? AS INTEGER)`, name, name)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,base_hostname,source_path,managed_instance,instance_branch,pid,status,auto_start,last_started,updated_at FROM projects WHERE name=? OR id=CAST(? AS INTEGER) ORDER BY CASE WHEN id=CAST(? AS INTEGER) THEN 0 ELSE 1 END LIMIT 1`, name, name, name)
+	return scanProject(row)
+}
+
+func (s *Store) GetProjectByID(ctx context.Context, id int64) (app.Project, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,base_hostname,source_path,managed_instance,instance_branch,pid,status,auto_start,last_started,updated_at FROM projects WHERE id=?`, id)
+	return scanProject(row)
+}
+
+func (s *Store) GetProjectByPath(ctx context.Context, path string) (app.Project, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,base_hostname,source_path,managed_instance,instance_branch,pid,status,auto_start,last_started,updated_at FROM projects WHERE path=?`, canonicalProjectPath(path))
 	return scanProject(row)
 }
 
 func (s *Store) GetProjectByHostname(ctx context.Context, hostname string) (app.Project, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at FROM projects WHERE hostname=?`, hostname)
+	row := s.db.QueryRowContext(ctx, `SELECT id,name,path,strategy,command,port,pinned_port,hostname,base_hostname,source_path,managed_instance,instance_branch,pid,status,auto_start,last_started,updated_at FROM projects WHERE hostname=?`, hostname)
 	return scanProject(row)
 }
 
@@ -186,6 +233,34 @@ func (s *Store) SetPinnedPort(ctx context.Context, name string, port int) error 
 func (s *Store) SetHostname(ctx context.Context, name, host string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE projects SET hostname=?, updated_at=? WHERE name=? OR id=CAST(? AS INTEGER)`, host, time.Now().UTC().Format(time.RFC3339Nano), name, name)
 	return err
+}
+
+func (s *Store) SetBranchIdentity(ctx context.Context, id int64, branch, hostname string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE projects SET instance_branch=?,hostname=?,updated_at=? WHERE id=?`,
+		branch, hostname, time.Now().UTC().Format(time.RFC3339Nano), id)
+	return err
+}
+
+func (s *Store) HostnameExists(ctx context.Context, hostname string, exceptID int64) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE hostname=? AND id<>?`, hostname, exceptID).Scan(&count)
+	return count > 0, err
+}
+
+func (s *Store) DeleteProject(ctx context.Context, id int64) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM logs WHERE project_id=?`, id); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM projects WHERE id=?`, id); err != nil {
+		_ = tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
@@ -248,6 +323,100 @@ func (s *Store) ensureSettingsColumn(name, definition string) error {
 	}
 	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE settings ADD COLUMN %s %s`, name, definition))
 	return err
+}
+
+func (s *Store) ensureProjectColumn(name, definition string) error {
+	rows, err := s.db.Query(`PRAGMA table_info(projects)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid, notNull, primaryKey int
+		var columnName, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		if columnName == name {
+			return nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE projects ADD COLUMN %s %s`, name, definition))
+	return err
+}
+
+func (s *Store) deduplicateHostnames() error {
+	rows, err := s.db.Query(`SELECT id,path,hostname FROM projects ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	seen := map[string]bool{}
+	type update struct {
+		id       int64
+		hostname string
+	}
+	var updates []update
+	for rows.Next() {
+		var id int64
+		var path, hostname string
+		if err := rows.Scan(&id, &path, &hostname); err != nil {
+			return err
+		}
+		if !seen[hostname] {
+			seen[hostname] = true
+			continue
+		}
+		candidate := hostname + "-" + shortHash(path)
+		for seen[candidate] {
+			candidate += "x"
+		}
+		seen[candidate] = true
+		updates = append(updates, update{id: id, hostname: candidate})
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		if _, err := s.db.Exec(`UPDATE projects SET hostname=? WHERE id=?`, item.hostname, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) ensureUniqueHostnames() error {
+	if err := s.deduplicateHostnames(); err != nil {
+		return err
+	}
+	_, err := s.db.Exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_projects_hostname ON projects(hostname)`)
+	return err
+}
+
+func (s *Store) availableHostname(ctx context.Context, path, hostname string) (string, error) {
+	var existingPath string
+	err := s.db.QueryRowContext(ctx, `SELECT path FROM projects WHERE hostname=?`, hostname).Scan(&existingPath)
+	if errors.Is(err, sql.ErrNoRows) || canonicalProjectPath(existingPath) == path {
+		return hostname, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	candidate := hostname + "-" + shortHash(path)
+	for i := 0; ; i++ {
+		var count int
+		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE hostname=?`, candidate).Scan(&count); err != nil {
+			return "", err
+		}
+		if count == 0 {
+			return candidate, nil
+		}
+		candidate = fmt.Sprintf("%s-%s-%d", hostname, shortHash(path), i+2)
+	}
 }
 
 func (s *Store) AddLog(ctx context.Context, id int64, stream, line string) error {
@@ -314,16 +483,22 @@ type scanner interface{ Scan(dest ...any) error }
 
 func scanProject(row scanner) (app.Project, error) {
 	var p app.Project
-	var auto int
+	var auto, managed int
 	var last, updated string
-	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.Strategy, &p.Command, &p.Port, &p.PinnedPort, &p.Hostname, &p.PID, &p.Status, &auto, &last, &updated)
+	err := row.Scan(&p.ID, &p.Name, &p.Path, &p.Strategy, &p.Command, &p.Port, &p.PinnedPort, &p.Hostname, &p.BaseHostname, &p.SourcePath, &managed, &p.Branch, &p.PID, &p.Status, &auto, &last, &updated)
 	if err != nil {
 		return p, err
 	}
 	p.AutoStart = auto == 1
+	p.ManagedInstance = managed == 1
 	p.LastStarted, _ = time.Parse(time.RFC3339Nano, last)
 	p.UpdatedAt, _ = time.Parse(time.RFC3339Nano, updated)
 	return p, nil
+}
+
+func shortHash(value string) string {
+	sum := sha256.Sum256([]byte(value))
+	return hex.EncodeToString(sum[:3])
 }
 
 func safeHost(name string) string {
@@ -385,6 +560,7 @@ func (s *Store) migrateGeneratedHostnames() error {
 	defer rows.Close()
 	type update struct {
 		id       int64
+		previous string
 		hostname string
 	}
 	var updates []update
@@ -396,7 +572,7 @@ func (s *Store) migrateGeneratedHostnames() error {
 		}
 		generated := safeHost(name)
 		if generated != hostname && hostname == legacySafeHost(name) {
-			updates = append(updates, update{id: id, hostname: generated})
+			updates = append(updates, update{id: id, previous: hostname, hostname: generated})
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -406,7 +582,9 @@ func (s *Store) migrateGeneratedHostnames() error {
 		return err
 	}
 	for _, item := range updates {
-		if _, err := s.db.Exec(`UPDATE projects SET hostname=? WHERE id=?`, item.hostname, item.id); err != nil {
+		if _, err := s.db.Exec(`UPDATE projects
+SET hostname=?, base_hostname=CASE WHEN base_hostname='' OR base_hostname=? THEN ? ELSE base_hostname END
+WHERE id=?`, item.hostname, item.previous, item.hostname, item.id); err != nil {
 			return err
 		}
 	}

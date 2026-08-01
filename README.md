@@ -14,6 +14,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
 - PID, status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
+- Dashboard branch switching with automatic restart, plus concurrent branch instances backed by managed Git worktrees.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
@@ -138,6 +139,14 @@ Porto stores project metadata, runtime state, pinned ports, and logs in SQLite:
 Set `PORTO_HOME=/path/to/dir` to choose another location, which makes self-hosted or portable setups easy.
 
 Project output is stored in the same database. `porto logs` and the dashboard process console can show all entries or only stdout/stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project.
+
+## Branch switching and instances
+
+Each project card lists the repository's local and remote-tracking branches. Selecting a different running branch stops the process, switches the worktree, updates its HTTPS hostname, and restarts it. Porto refuses the switch when the worktree is dirty or the target branch is already checked out elsewhere.
+
+Use **New instance** to run another branch without disturbing the original checkout. Porto creates a managed Git worktree under `~/.config/porto/worktrees` (or `$PORTO_HOME/worktrees`), gives it an independent process, port, logs, and controls, and keeps the default branch on the base hostname. Other branches use compact labels: `copilot/improve-elemental-resistances-system` becomes `cop-imp-ele-res-sys`, so a project named `2dnd` receives `https://2dnd-cop-imp-ele-res-sys.porto.localhost/`. Porto shortens long labels and adds a deterministic suffix when needed to keep every hostname valid and unique.
+
+Managed instances can be removed from their project card after their worktree is clean. Porto stops the process, removes the Git worktree, and deletes only that instance's runtime metadata and logs.
 
 ## Branch cleanup
 

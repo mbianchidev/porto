@@ -9,7 +9,11 @@ type Project = {
   command: string
   port: number
   hostname: string
+  baseHostname: string
   httpsUrl: string
+  sourcePath: string
+  managedInstance: boolean
+  defaultBranch: string
   pid: number
   status: string
   branch: string
@@ -66,7 +70,7 @@ type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
 type ProjectView = 'list' | 'tiles'
 type ProjectStatusFilter = 'all' | 'running' | 'stopped' | 'error'
-type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup'
+type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup' | 'remove'
 
 type LogLine = {
   projectId: number
@@ -145,6 +149,12 @@ function ProjectActionButton({
             <path d="M7 20v-3a3 3 0 0 1 3-3" />
           </>
         )}
+        {icon === 'remove' && (
+          <>
+            <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13" />
+            <path d="M10 11v5m4-5v5" />
+          </>
+        )}
       </svg>
       <span className="visuallyHidden">{label}</span>
     </button>
@@ -170,12 +180,14 @@ function App() {
   const [sqlNotSoLiteStatus, setSQLNotSoLiteStatus] = useState<IntegrationStatus | null>(null)
   const [sendboxStatus, setSendboxStatus] = useState<IntegrationStatus | null>(null)
   const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatus | null>(null)
-  const [logProjectName, setLogProjectName] = useState('')
+  const [logProjectID, setLogProjectID] = useState<number | null>(null)
   const [logStream, setLogStream] = useState<LogStream>('all')
   const [logLines, setLogLines] = useState<LogLine[]>([])
   const [logRefresh, setLogRefresh] = useState(0)
   const [logFocusRequest, setLogFocusRequest] = useState(0)
-  const [setupProjectName, setSetupProjectName] = useState('')
+  const [setupProjectID, setSetupProjectID] = useState<number | null>(null)
+  const [branchOptions, setBranchOptions] = useState<Record<number, string[]>>({})
+  const [branchBusyID, setBranchBusyID] = useState<number | null>(null)
   const [logsLoading, setLogsLoading] = useState(false)
   const [logError, setLogError] = useState('')
   const [error, setError] = useState('')
@@ -276,6 +288,77 @@ function App() {
       setNotice('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed')
+    }
+  }
+
+  async function loadBranches(project: Project) {
+      if (branchOptions[project.id]) return
+      try {
+        const response = await fetch(`/api/projects/${project.id}/branches`)
+        if (!response.ok) throw new Error(await response.text())
+        const result: { branches: string[] } = await response.json()
+        setBranchOptions((current) => ({ ...current, [project.id]: result.branches }))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to load branches')
+      }
+    }
+
+  async function switchBranch(project: Project, branch: string) {
+      if (!branch || branch === project.branch) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/branch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch }),
+        })
+        if (!response.ok) throw new Error(await response.text())
+        setError('')
+        setNotice(`Switched ${project.name} to ${branch}${project.status === 'running' ? ' and restarted it' : ''}.`)
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Branch switch failed')
+      } finally {
+        setBranchBusyID(null)
+      }
+    }
+
+  async function createInstance(project: Project, branch: string) {
+      if (!branch) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/instances`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch }),
+        })
+        if (!response.ok) throw new Error(await response.text())
+        setError('')
+        setNotice(`Created a ${project.name} instance for ${branch}.`)
+        setBranchOptions({})
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to create branch instance')
+      } finally {
+        setBranchBusyID(null)
+      }
+    }
+
+  async function removeInstance(project: Project) {
+      if (!window.confirm(`Remove the ${project.branch} instance of ${project.name}?`)) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/instance`, { method: 'DELETE' })
+        if (!response.ok) throw new Error(await response.text())
+        if (logProjectID === project.id) setLogProjectID(null)
+        setError('')
+        setNotice(`Removed the ${project.branch} instance of ${project.name}.`)
+        setBranchOptions({})
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to remove branch instance')
+      } finally {
+        setBranchBusyID(null)
     }
   }
 
@@ -402,12 +485,14 @@ function App() {
   }
 
   async function clearLogs() {
-    if (!logProjectName) return
+    if (logProjectID == null) return
+    const project = projects.find((item) => item.id === logProjectID)
+    if (!project) return
     const label = logStream === 'all' ? 'all logs' : `${logStream} logs`
-    if (!window.confirm(`Clear ${label} for ${logProjectName}?`)) return
+    if (!window.confirm(`Clear ${label} for ${project.name}?`)) return
     try {
       const response = await fetch(
-        `/api/projects/${encodeURIComponent(logProjectName)}/logs/clear?stream=${logStream}`,
+        `/api/projects/${logProjectID}/logs/clear?stream=${logStream}`,
         { method: 'POST' },
       )
       if (!response.ok) throw new Error(await response.text())
@@ -420,20 +505,20 @@ function App() {
     }
   }
 
-  function viewLogs(name: string) {
+  function viewLogs(id: number) {
     setLogLines([])
-    setLogProjectName(name)
+    setLogProjectID(id)
     setLogStream('all')
     setLogFocusRequest((value) => value + 1)
   }
 
-  async function setupDependencies(name: string) {
-    viewLogs(name)
-    setSetupProjectName(name)
+  async function setupDependencies(project: Project) {
+    viewLogs(project.id)
+    setSetupProjectID(project.id)
     setError('')
     setNotice('')
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(name)}/setup`, { method: 'POST' })
+      const response = await fetch(`/api/projects/${project.id}/setup`, { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       const result: { commands: string[] } = await response.json()
       setNotice(`Dependency setup completed with ${result.commands.join(' then ')}.`)
@@ -442,7 +527,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Dependency setup failed')
       setLogRefresh((value) => value + 1)
     } finally {
-      setSetupProjectName('')
+      setSetupProjectID(null)
     }
   }
 
@@ -464,7 +549,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!logProjectName) return
+    if (logProjectID == null) return
     let active = true
     const loadLogs = async (showLoading: boolean) => {
       if (showLoading) {
@@ -473,7 +558,7 @@ function App() {
       }
       try {
         const response = await fetch(
-          `/api/projects/${encodeURIComponent(logProjectName)}/logs?limit=500&stream=${logStream}`,
+          `/api/projects/${logProjectID}/logs?limit=500&stream=${logStream}`,
         )
         if (!response.ok) throw new Error(await response.text())
         const lines: LogLine[] = await response.json()
@@ -495,18 +580,18 @@ function App() {
       active = false
       window.clearInterval(timer)
     }
-  }, [logProjectName, logStream, logRefresh])
+  }, [logProjectID, logStream, logRefresh])
 
   useEffect(() => {
-    if (!logProjectName) return
+    if (logProjectID == null) return
     const frame = window.requestAnimationFrame(() => {
       logConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [logProjectName, logFocusRequest])
+  }, [logProjectID, logFocusRequest])
 
   const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
-  const logProject = projects.find((project) => project.name === logProjectName)
+  const logProject = projects.find((project) => project.id === logProjectID)
 
   return (
     <main>
@@ -524,7 +609,7 @@ function App() {
         </nav>
       </header>
 
-      {error && <div className="error">{error}</div>}
+      {error && <div className="errorBanner">{error}</div>}
       {notice && <div className="notice">{notice}</div>}
 
       {page === 'settings' && (
@@ -726,12 +811,14 @@ function App() {
         </>
       )}
 
-      {page === 'projects' && logProjectName && (
+      {page === 'projects' && logProjectID != null && (
         <section ref={logConsoleRef} className="logConsole" aria-labelledby="process-console-title">
           <div className="consoleHeader">
             <div>
               <p className="eyebrow">Process console</p>
-              <h2 id="process-console-title">{logProjectName}</h2>
+              <h2 id="process-console-title">
+                {logProject?.name ?? 'Project'}{logProject?.branch ? ` · ${logProject.branch}` : ''}
+              </h2>
               <p>
                 {logProject?.status ?? 'unknown'} · {logProject?.pid ? `PID ${logProject.pid}` : 'no active PID'}
               </p>
@@ -739,7 +826,7 @@ function App() {
             <div className="consoleActions">
               <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
               <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
-              <button type="button" onClick={() => setLogProjectName('')}>Close</button>
+              <button type="button" onClick={() => setLogProjectID(null)}>Close</button>
             </div>
           </div>
           <div className="streamTabs" role="tablist" aria-label="Log stream">
@@ -873,6 +960,37 @@ function App() {
                 <h2>{project.name}</h2>
                 <p>{project.path}</p>
               </div>
+
+              <div className="branchControls">
+                <label>
+                  <span>Running branch</span>
+                  <select
+                    value={project.branch}
+                    disabled={branchBusyID === project.id}
+                    onFocus={() => loadBranches(project)}
+                    onChange={(event) => switchBranch(project, event.target.value)}
+                  >
+                    {!branchOptions[project.id] && <option value={project.branch}>{project.branch}</option>}
+                    {(branchOptions[project.id] ?? [project.branch]).map((branch) => (
+                      <option value={branch} key={branch}>{branch}</option>
+                    ))}
+                  </select>
+                </label>
+                <label>
+                  <span>New instance</span>
+                  <select
+                    value=""
+                    disabled={branchBusyID === project.id}
+                    onFocus={() => loadBranches(project)}
+                    onChange={(event) => createInstance(project, event.target.value)}
+                  >
+                    <option value="">Choose branch…</option>
+                    {(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch).map((branch) => (
+                      <option value={branch} key={branch}>{branch}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
               <span className={`status ${project.status}`}>{project.status}</span>
             </div>
 
@@ -906,24 +1024,24 @@ function App() {
               <ProjectActionButton
                 label="Start project"
                 icon="play"
-                disabled={setupProjectName === project.name}
-                onClick={() => run(project.name, 'start')}
+                disabled={setupProjectID === project.id}
+                onClick={() => run(String(project.id), 'start')}
               />
-              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(project.name, 'stop')} />
-              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(project.name, 'restart')} />
-              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(project.name, 'kill')} />
+              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(String(project.id), 'stop')} />
+              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(String(project.id), 'restart')} />
+              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(String(project.id), 'kill')} />
               <ProjectActionButton
                 className="setupButton"
-                label={setupProjectName === project.name ? 'Setting up dependencies' : 'Set up dependencies'}
+                label={setupProjectID === project.id ? 'Setting up dependencies' : 'Set up dependencies'}
                 icon="setup"
-                disabled={project.status === 'running' || setupProjectName !== ''}
-                onClick={() => setupDependencies(project.name)}
+                disabled={project.status === 'running' || setupProjectID != null}
+                onClick={() => setupDependencies(project)}
               />
               <ProjectActionButton
                 className="logsButton"
                 label="View logs"
                 icon="logs"
-                onClick={() => viewLogs(project.name)}
+                onClick={() => viewLogs(project.id)}
               />
               {project.sendboxConfigured && (
                 <ProjectActionButton
@@ -936,7 +1054,7 @@ function App() {
                     || project.sendboxStatus === 'running'
                     || project.sendboxStatus === 'stopping'
                   }
-                  onClick={() => runSendbox(project.name, 'start')}
+                  onClick={() => runSendbox(String(project.id), 'start')}
                 />
               )}
               {(project.sendboxConfigured
@@ -947,7 +1065,7 @@ function App() {
                   label="Stop Sendbox"
                   icon="sendboxStop"
                   disabled={project.sendboxStatus !== 'running'}
-                  onClick={() => runSendbox(project.name, 'stop')}
+                  onClick={() => runSendbox(String(project.id), 'stop')}
                 />
               )}
               <ProjectActionButton
@@ -955,8 +1073,17 @@ function App() {
                 label="Clean merged branches"
                 icon="cleanup"
                 disabled={!savedLocalCleanup && !savedRemoteCleanup}
-                onClick={() => cleanup(project.name)}
+                onClick={() => cleanup(String(project.id))}
               />
+              {project.managedInstance && (
+                <ProjectActionButton
+                  className="removeButton"
+                  label="Remove branch instance"
+                  icon="remove"
+                  disabled={branchBusyID === project.id}
+                  onClick={() => removeInstance(project)}
+                />
+              )}
             </div>
           </article>
         ))}

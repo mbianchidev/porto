@@ -1,10 +1,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -24,6 +27,8 @@ const (
 	BranchCleanupInterval    = 10 * time.Second
 	CertificateCheckInterval = 24 * time.Hour
 )
+
+var branchTokenSeparators = regexp.MustCompile(`[^a-z0-9]+`)
 
 func RouterTLSAddress() string {
 	if address := strings.TrimSpace(os.Getenv(RouterTLSAddrEnv)); address != "" {
@@ -46,6 +51,72 @@ func ProjectHTTPSURL(hostname string) string {
 		return "https://" + host + "/"
 	}
 	return "https://" + net.JoinHostPort(host, port) + "/"
+}
+
+func ProjectHostname(base, branch, defaultBranch string) string {
+	if branch == "" || branch == defaultBranch {
+		return base
+	}
+	return appendHostnameSuffix(base, compactBranchToken(branch))
+}
+
+func DisambiguateProjectHostname(candidate, branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	return appendHostnameSuffix(candidate, hex.EncodeToString(sum[:3]))
+}
+
+func ManagedWorktreePath(sourcePath, branch string) (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	sourceSum := sha256.Sum256([]byte(sourcePath))
+	branchSum := sha256.Sum256([]byte(branch))
+	name := compactBranchToken(branch) + "-" + hex.EncodeToString(branchSum[:3])
+	return filepath.Join(dir, "worktrees", hex.EncodeToString(sourceSum[:6]), name), nil
+}
+
+func compactBranchToken(branch string) string {
+	parts := branchTokenSeparators.Split(strings.ToLower(branch), -1)
+	tokens := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if len(part) > 3 {
+			part = part[:3]
+		}
+		tokens = append(tokens, part)
+	}
+	if len(tokens) == 0 {
+		return "branch"
+	}
+	return strings.Join(tokens, "-")
+}
+
+func appendHostnameSuffix(base, suffix string) string {
+	labels := strings.Split(base, ".")
+	last := labels[len(labels)-1]
+	maxSuffix := 63 - len(last) - 1
+	if maxSuffix < 1 {
+		last = last[:min(len(last), 55)]
+		maxSuffix = 63 - len(last) - 1
+	}
+	if len(suffix) > maxSuffix {
+		sum := sha256.Sum256([]byte(suffix))
+		hash := hex.EncodeToString(sum[:3])
+		keep := maxSuffix - len(hash) - 1
+		if keep < 1 {
+			suffix = hash
+			if len(suffix) > maxSuffix {
+				suffix = suffix[:maxSuffix]
+			}
+		} else {
+			suffix = strings.Trim(suffix[:keep], "-") + "-" + hash
+		}
+	}
+	labels[len(labels)-1] = last + "-" + suffix
+	return strings.Join(labels, ".")
 }
 
 func Dir() (string, error) {
