@@ -105,6 +105,8 @@ porto kill-switch status|install|sync|cleanup
 porto sendbox start|stop <project>
 ```
 
+Stopping the daemon with `Ctrl+C` or `SIGTERM` gracefully stops all projects and Sendbox sessions managed by that daemon before it exits.
+
 ## Discovery rules
 
 Porto walks each selected root up to the requested depth. It always ignores `node_modules` and also honors the comma-separated `--ignore` list. When a runnable project is found, detection stops for that subtree. Paths are canonicalized so overlapping roots or symlink aliases do not create duplicate projects.

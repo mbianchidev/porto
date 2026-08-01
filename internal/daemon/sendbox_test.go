@@ -108,3 +108,56 @@ func TestSendboxLifecycleDoesNotOverwriteProjectRuntime(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestShutdownStopsSendboxSessions(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	project := app.Project{
+		Name:     "app",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	}
+	project.ID, err = st.UpsertProject(context.Background(), project)
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatalf("load settings: %v", err)
+	}
+	settings.SendboxEnabled = true
+	if err := st.SetSettings(context.Background(), settings); err != nil {
+		t.Fatalf("enable Sendbox: %v", err)
+	}
+	server := New(st, nil)
+	server.sendbox = fakeSendboxIntegration{}
+	mux := http.NewServeMux()
+	server.routes(mux)
+	startResponse := httptest.NewRecorder()
+	mux.ServeHTTP(startResponse, httptest.NewRequest(http.MethodPost, "/api/projects/app/sendbox/start", nil))
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("start status = %d: %s", startResponse.Code, startResponse.Body.String())
+	}
+
+	shutdownContext, cancel := context.WithTimeout(context.Background(), daemonShutdownTimeout)
+	defer cancel()
+	if err := server.stopManagedApplications(shutdownContext); err != nil {
+		t.Fatalf("stop managed applications: %v", err)
+	}
+
+	server.mu.Lock()
+	_, running := server.sendboxRunning[project.ID]
+	state := server.sendboxStates[project.ID]
+	server.mu.Unlock()
+	if running {
+		t.Fatal("Sendbox session is still running")
+	}
+	if state != "stopped" {
+		t.Fatalf("Sendbox state = %q, want stopped", state)
+	}
+}
