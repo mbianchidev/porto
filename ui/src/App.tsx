@@ -64,6 +64,7 @@ type CleanupResult = {
 type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
 type ProjectView = 'list' | 'tiles'
+type ProjectStatusFilter = 'all' | 'running' | 'stopped' | 'error'
 type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup'
 
 type LogLine = {
@@ -156,6 +157,8 @@ function App() {
     return savedView === 'tiles' ? 'tiles' : 'list'
   })
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectStatusFilter, setProjectStatusFilter] = useState<ProjectStatusFilter>('all')
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
@@ -177,6 +180,26 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const logConsoleRef = useRef<HTMLElement>(null)
+  const normalizedProjectQuery = projectQuery.trim().toLocaleLowerCase()
+  const filteredProjects = projects.filter((project) => {
+    const matchesName = normalizedProjectQuery === ''
+      || project.name.toLocaleLowerCase().includes(normalizedProjectQuery)
+    const matchesStatus = projectStatusFilter === 'all'
+      || project.status === projectStatusFilter
+      || (projectStatusFilter === 'error' && project.status !== 'running' && project.status !== 'stopped')
+    return matchesName && matchesStatus
+  })
+  const projectStatusCounts = projects.reduce(
+    (counts, project) => {
+      if (project.status === 'running' || project.status === 'stopped') {
+        counts[project.status] += 1
+      } else {
+        counts.error += 1
+      }
+      return counts
+    },
+    { running: 0, stopped: 0, error: 0 },
+  )
 
   async function refreshProjects() {
     try {
@@ -785,6 +808,41 @@ function App() {
             </div>
           </header>
 
+          <div className="projectFilters">
+            <label className="projectSearch">
+              <span className="visuallyHidden">Filter projects by name</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m16 16 4 4" />
+              </svg>
+              <input
+                type="search"
+                value={projectQuery}
+                placeholder="Filter by project name"
+                onChange={(event) => setProjectQuery(event.target.value)}
+              />
+            </label>
+            <div className="statusFilters" role="group" aria-label="Filter projects by status">
+              {(['all', 'running', 'stopped', 'error'] as const).map((status) => (
+                <button
+                  type="button"
+                  className={projectStatusFilter === status ? `active ${status}` : status}
+                  aria-pressed={projectStatusFilter === status}
+                  key={status}
+                  onClick={() => setProjectStatusFilter(status)}
+                >
+                  <span>{status}</span>
+                  <strong>
+                    {status === 'all' ? projects.length : projectStatusCounts[status]}
+                  </strong>
+                </button>
+              ))}
+            </div>
+            <span className="filterResultCount" aria-live="polite">
+              {filteredProjects.length} shown
+            </span>
+          </div>
+
           <section className={`grid ${projectView}`}>
         {projects.length === 0 && (
           <article className="empty">
@@ -792,7 +850,22 @@ function App() {
             <p>Run <code>porto scan ~/code --depth 3</code> to discover projects.</p>
           </article>
         )}
-        {projects.map((project) => (
+        {projects.length > 0 && filteredProjects.length === 0 && (
+          <article className="empty filteredEmpty">
+            <h2>No matching projects</h2>
+            <p>Try another name or status.</p>
+            <button
+              type="button"
+              onClick={() => {
+                setProjectQuery('')
+                setProjectStatusFilter('all')
+              }}
+            >
+              Clear filters
+            </button>
+          </article>
+        )}
+        {filteredProjects.map((project) => (
           <article className="card" key={project.id}>
             <div className="cardTop">
               <div className="cardHeader">

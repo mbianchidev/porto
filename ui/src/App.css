@@ -117,6 +117,126 @@ main {
   gap: 18px;
 }
 
+.projectFilters {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) auto auto;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  margin-bottom: 14px;
+  padding: 8px;
+  background: rgba(10, 13, 24, 0.72);
+}
+
+.projectSearch {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  min-width: 0;
+  border: 1px solid transparent;
+  border-radius: 9px;
+  padding: 0 10px;
+  background: var(--panel);
+  color: var(--muted);
+}
+
+.projectSearch:focus-within {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.projectSearch svg {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 1.8;
+}
+
+.projectSearch input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  padding: 8px 0;
+  background: transparent;
+  color: var(--text-h);
+  font: inherit;
+}
+
+.projectSearch input::placeholder {
+  color: var(--muted);
+}
+
+.projectSearch input::-webkit-search-cancel-button {
+  cursor: pointer;
+}
+
+.statusFilters {
+  display: flex;
+  gap: 3px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 3px;
+  background: var(--bg);
+}
+
+.statusFilters button {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-color: transparent;
+  border-radius: 7px;
+  padding: 5px 8px;
+  background: transparent;
+  color: var(--muted);
+  text-transform: capitalize;
+}
+
+.statusFilters button strong {
+  min-width: 18px;
+  border-radius: 999px;
+  padding: 1px 5px;
+  background: var(--code-bg);
+  color: var(--text);
+  font: 600 10px/1.6 var(--mono);
+  text-align: center;
+}
+
+.statusFilters button.active {
+  border-color: var(--accent-border);
+  background: var(--accent-bg);
+  color: var(--text-h);
+}
+
+.statusFilters button.active.running {
+  border-color: rgba(34, 197, 94, 0.35);
+  background: rgba(34, 197, 94, 0.12);
+}
+
+.statusFilters button.active.error {
+  border-color: rgba(248, 113, 113, 0.35);
+  background: rgba(248, 113, 113, 0.12);
+}
+
+.filterResultCount {
+  padding-right: 4px;
+  color: var(--muted);
+  font: 11px/1 var(--mono);
+  white-space: nowrap;
+}
+
+.filteredEmpty {
+  grid-column: 1 / -1;
+}
+
+.filteredEmpty p {
+  margin-bottom: 14px;
+}
+
 .viewSwitch {
   border: 1px solid var(--border);
   border-radius: 11px;
@@ -721,6 +841,14 @@ button:disabled {
     justify-content: space-between;
   }
 
+  .projectFilters {
+    grid-template-columns: 1fr auto;
+  }
+
+  .projectSearch {
+    grid-column: 1 / -1;
+  }
+
   .grid.list .card {
     grid-template-columns: 1fr;
   }
@@ -766,6 +894,23 @@ button:disabled {
 
   .viewSwitch {
     align-self: flex-start;
+  }
+
+  .projectFilters {
+    grid-template-columns: 1fr;
+  }
+
+  .statusFilters {
+    overflow-x: auto;
+  }
+
+  .statusFilters button {
+    flex: 1 0 auto;
+    justify-content: center;
+  }
+
+  .filterResultCount {
+    padding: 0 4px 4px;
   }
 
   .grid.list dl {
