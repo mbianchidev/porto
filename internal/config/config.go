@@ -65,15 +65,12 @@ func DisambiguateProjectHostname(candidate, branch string) string {
 	return appendHostnameSuffix(candidate, hex.EncodeToString(sum[:3]))
 }
 
-func ManagedWorktreePath(sourcePath, branch string) (string, error) {
+func ManagedWorktreeRoot() (string, error) {
 	dir, err := Dir()
 	if err != nil {
 		return "", err
 	}
-	sourceSum := sha256.Sum256([]byte(sourcePath))
-	branchSum := sha256.Sum256([]byte(branch))
-	name := compactBranchToken(branch) + "-" + hex.EncodeToString(branchSum[:3])
-	return filepath.Join(dir, "worktrees", hex.EncodeToString(sourceSum[:6]), name), nil
+	return filepath.Join(dir, "worktrees"), nil
 }
 
 func compactBranchToken(branch string) string {

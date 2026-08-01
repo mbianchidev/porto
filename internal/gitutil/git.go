@@ -3,6 +3,8 @@ package gitutil
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"os"
@@ -18,6 +20,8 @@ import (
 )
 
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@-]*$`)
+
+type ResolvedBranch string
 
 func Branch(path string) string {
 	out, err := git(path, "rev-parse", "--abbrev-ref", "HEAD")
@@ -62,6 +66,7 @@ func Branches(repoPath string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	remote, err := primaryRemote(repoPath)
 	if err != nil {
 		return nil, err
@@ -87,6 +92,22 @@ func Branches(repoPath string) ([]string, error) {
 	}
 	slices.Sort(branches)
 	return branches, nil
+}
+
+func ResolveBranch(repoPath, requested string) (ResolvedBranch, error) {
+	if err := validateBranchName(requested); err != nil {
+		return "", err
+	}
+	branches, err := Branches(repoPath)
+	if err != nil {
+		return "", err
+	}
+	for _, branch := range branches {
+		if branch == requested {
+			return ResolvedBranch(branch), nil
+		}
+	}
+	return "", fmt.Errorf("branch %q is unavailable", requested)
 }
 
 func DefaultBranch(repoPath string) (string, error) {
@@ -117,36 +138,40 @@ func CanCheckout(repoPath, branch string) error {
 	return nil
 }
 
-func CreateWorktree(repoPath, worktreePath, branch string) error {
-	if err := validateBranchName(branch); err != nil {
-		return err
+func CreateWorktree(repoPath, worktreeRoot string, resolvedBranch ResolvedBranch) (string, error) {
+	branch := string(resolvedBranch)
+	if branch == "" {
+		return "", errors.New("resolved branch required")
 	}
 	worktrees, err := branchWorktrees(repoPath)
 	if err != nil {
-		return err
+		return "", err
 	}
 	if path := worktrees[branch]; path != "" {
-		return fmt.Errorf("branch %q is already checked out at %s", branch, path)
+		return "", fmt.Errorf("branch %q is already checked out at %s", branch, path)
 	}
+	sourceSum := sha256.Sum256([]byte(repoPath))
+	branchSum := sha256.Sum256([]byte(branch))
+	worktreePath := filepath.Join(worktreeRoot, hex.EncodeToString(sourceSum[:6]), hex.EncodeToString(branchSum[:8]))
 	if err := os.MkdirAll(filepath.Dir(worktreePath), 0o755); err != nil {
-		return fmt.Errorf("create worktree parent: %w", err)
+		return "", fmt.Errorf("create worktree parent: %w", err)
 	}
 	args := []string{"worktree", "add", "--", worktreePath, branch}
 	if !refExists(repoPath, "refs/heads/"+branch) {
 		remote, err := primaryRemote(repoPath)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if remote == "" || !refExists(repoPath, "refs/remotes/"+remote+"/"+branch) {
-			return fmt.Errorf("branch %q is unavailable", branch)
+			return "", fmt.Errorf("branch %q is unavailable", branch)
 		}
 		args = []string{"worktree", "add", "--track", "-b", branch, "--", worktreePath, remote + "/" + branch}
 	}
 	out, err := git(repoPath, args...)
 	if err != nil {
-		return gitFailure("create Git worktree", out, err)
+		return "", gitFailure("create Git worktree", out, err)
 	}
-	return nil
+	return worktreePath, nil
 }
 
 func RemoveWorktree(repoPath, worktreePath string) error {

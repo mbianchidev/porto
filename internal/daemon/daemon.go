@@ -18,7 +18,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -960,13 +959,9 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		source = project
 	}
-	branches, err := gitutil.Branches(source.Path)
+	resolvedBranch, err := gitutil.ResolveBranch(source.Path, req.Branch)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if !slices.Contains(branches, req.Branch) {
-		http.Error(w, fmt.Sprintf("branch %q is unavailable", req.Branch), http.StatusBadRequest)
+		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 	defaultBranch, err := gitutil.DefaultBranch(source.Path)
@@ -974,14 +969,13 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	worktreePath, err := config.ManagedWorktreePath(source.Path, req.Branch)
+	worktreeRoot, err := config.ManagedWorktreeRoot()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 	instance := app.Project{
 		Name:            source.Name,
-		Path:            worktreePath,
 		SourcePath:      source.Path,
 		Strategy:        source.Strategy,
 		Command:         source.Command,
@@ -994,10 +988,12 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if err := gitutil.CreateWorktree(source.Path, worktreePath, req.Branch); err != nil {
+	worktreePath, err := gitutil.CreateWorktree(source.Path, worktreeRoot, resolvedBranch)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
+	instance.Path = worktreePath
 	id, err := s.store.UpsertProject(r.Context(), instance)
 	if err != nil {
 		_ = gitutil.RemoveWorktree(source.Path, worktreePath)

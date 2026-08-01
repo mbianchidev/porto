@@ -16,9 +16,15 @@ func TestManagedWorktreeLifecycle(t *testing.T) {
 	runTestGit(t, repo, "switch", "main")
 	worktree := filepath.Join(t.TempDir(), "instance")
 
-	if err := CreateWorktree(repo, worktree, "feature/branch-instance"); err != nil {
+	resolved, err := ResolveBranch(repo, "feature/branch-instance")
+	if err != nil {
+		t.Fatalf("resolve branch: %v", err)
+	}
+	created, err := CreateWorktree(repo, filepath.Dir(worktree), resolved)
+	if err != nil {
 		t.Fatalf("create worktree: %v", err)
 	}
+	worktree = created
 	if got := Branch(worktree); got != "feature/branch-instance" {
 		t.Fatalf("worktree branch = %q", got)
 	}
