@@ -142,7 +142,7 @@ Project output is stored in the same database. `porto logs` and the dashboard pr
 
 ## Branch switching and instances
 
-Each project card lists the repository's local and remote-tracking branches. Selecting a different running branch stops the process, switches the worktree, updates its HTTPS hostname, and restarts it. Porto refuses the switch when the worktree is dirty or the target branch is already checked out elsewhere.
+Each project card has a searchable picker for the repository's local and remote-tracking branches, with the default branch plus `main` and `master` pinned first when available. Selecting a different running branch stops the process, switches the worktree, updates its HTTPS hostname, and restarts it. Porto refuses the switch when the worktree is dirty or the target branch is already checked out elsewhere.
 
 Use **New instance** to run another branch without disturbing the original checkout. Porto creates a managed Git worktree under `~/.config/porto/worktrees` (or `$PORTO_HOME/worktrees`), gives it an independent process, port, logs, and controls, and keeps the default branch on the base hostname. Other branches use compact labels: `copilot/improve-elemental-resistances-system` becomes `cop-imp-ele-res-sys`, so a project named `2dnd` receives `https://2dnd-cop-imp-ele-res-sys.porto.localhost/`. Porto shortens long labels and adds a deterministic suffix when needed to keep every hostname valid and unique.
 

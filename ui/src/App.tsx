@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import './App.css'
 
 type Project = {
@@ -161,6 +161,136 @@ function ProjectActionButton({
   )
 }
 
+function BranchPicker({
+  label,
+  value,
+  options,
+  defaultBranch,
+  placeholder,
+  disabled,
+  onOpen,
+  onSelect,
+}: {
+  label: string
+  value: string
+  options: string[]
+  defaultBranch: string
+  placeholder: string
+  disabled: boolean
+  onOpen: () => void
+  onSelect: (branch: string) => void
+}) {
+  const id = useId()
+  const inputID = `${id}-input`
+  const listID = `${id}-list`
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const pinned = [defaultBranch, 'main', 'master'].filter(Boolean)
+  const orderedOptions = [...new Set(options)]
+    .sort((left, right) => {
+      const leftPinned = pinned.indexOf(left)
+      const rightPinned = pinned.indexOf(right)
+      if (leftPinned !== -1 || rightPinned !== -1) {
+        if (leftPinned === -1) return 1
+        if (rightPinned === -1) return -1
+        return leftPinned - rightPinned
+      }
+      return left.localeCompare(right)
+    })
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filteredOptions = orderedOptions.filter((branch) => (
+    normalizedQuery === '' || branch.toLocaleLowerCase().includes(normalizedQuery)
+  ))
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [open])
+
+  function showOptions() {
+    if (disabled) return
+    onOpen()
+    setQuery('')
+    setOpen(true)
+  }
+
+  return (
+    <div className="branchField">
+      <label htmlFor={inputID}>{label}</label>
+      <div className={`branchPicker ${open ? 'open' : ''}`} ref={rootRef}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="m16 16 4 4" />
+        </svg>
+        <input
+          id={inputID}
+          type="search"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listID}
+          aria-expanded={open}
+          value={open ? query : value}
+          placeholder={placeholder}
+          disabled={disabled}
+          onFocus={showOptions}
+          onClick={showOptions}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setOpen(true)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              setOpen(false)
+              setQuery('')
+              event.currentTarget.blur()
+            }
+            if (event.key === 'Enter' && filteredOptions.length === 1) {
+              event.preventDefault()
+              onSelect(filteredOptions[0])
+              setOpen(false)
+              setQuery('')
+            }
+          }}
+        />
+        <span className="branchChevron" aria-hidden="true">⌄</span>
+        {open && (
+          <div className="branchMenu" id={listID} role="listbox">
+            {filteredOptions.length === 0 && (
+              <span className="branchEmpty">No matching branches</span>
+            )}
+            {filteredOptions.map((branch) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={branch === value}
+                className={branch === value ? 'selected' : ''}
+                key={branch}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onSelect(branch)
+                  setOpen(false)
+                  setQuery('')
+                }}
+              >
+                <span>{branch}</span>
+                {branch === defaultBranch && <small>default</small>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  )
+}
+
 function App() {
   const [page, setPage] = useState<Page>(() => window.location.hash === '#/settings' ? 'settings' : 'projects')
   const [projectView, setProjectView] = useState<ProjectView>(() => {
@@ -213,6 +343,18 @@ function App() {
     },
     { running: 0, stopped: 0, error: 0 },
   )
+
+  useEffect(() => {
+    if (!error) return
+    const timer = window.setTimeout(() => setError(''), 7000)
+    return () => window.clearTimeout(timer)
+  }, [error])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 4500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
 
   async function refreshProjects() {
     try {
@@ -609,8 +751,8 @@ function App() {
         </nav>
       </header>
 
-      {error && <div className="errorBanner">{error}</div>}
-      {notice && <div className="notice">{notice}</div>}
+      {error && <div className="errorBanner banner" role="alert">{error}</div>}
+      {notice && <div className="notice banner" role="status">{notice}</div>}
 
       {page === 'settings' && (
         <>
@@ -960,38 +1102,30 @@ function App() {
                 <h2>{project.name}</h2>
                 <p>{project.path}</p>
               </div>
-
-              <div className="branchControls">
-                <label>
-                  <span>Running branch</span>
-                  <select
-                    value={project.branch}
-                    disabled={branchBusyID === project.id}
-                    onFocus={() => loadBranches(project)}
-                    onChange={(event) => switchBranch(project, event.target.value)}
-                  >
-                    {!branchOptions[project.id] && <option value={project.branch}>{project.branch}</option>}
-                    {(branchOptions[project.id] ?? [project.branch]).map((branch) => (
-                      <option value={branch} key={branch}>{branch}</option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  <span>New instance</span>
-                  <select
-                    value=""
-                    disabled={branchBusyID === project.id}
-                    onFocus={() => loadBranches(project)}
-                    onChange={(event) => createInstance(project, event.target.value)}
-                  >
-                    <option value="">Choose branch…</option>
-                    {(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch).map((branch) => (
-                      <option value={branch} key={branch}>{branch}</option>
-                    ))}
-                  </select>
-                </label>
-              </div>
               <span className={`status ${project.status}`}>{project.status}</span>
+            </div>
+
+            <div className="branchControls">
+              <BranchPicker
+                label="Running branch"
+                value={project.branch}
+                options={branchOptions[project.id] ?? [project.branch]}
+                defaultBranch={project.defaultBranch}
+                placeholder="Search branches"
+                disabled={branchBusyID === project.id}
+                onOpen={() => loadBranches(project)}
+                onSelect={(branch) => switchBranch(project, branch)}
+              />
+              <BranchPicker
+                label="New instance"
+                value=""
+                options={(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch)}
+                defaultBranch={project.defaultBranch}
+                placeholder="Search branches"
+                disabled={branchBusyID === project.id}
+                onOpen={() => loadBranches(project)}
+                onSelect={(branch) => createInstance(project, branch)}
+              />
             </div>
 
             <dl>
