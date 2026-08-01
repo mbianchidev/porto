@@ -1,6 +1,7 @@
 package certificates
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -23,8 +24,9 @@ import (
 )
 
 const (
-	validity      = 365 * 24 * time.Hour
-	renewalWindow = 30 * 24 * time.Hour
+	validity          = 365 * 24 * time.Hour
+	authorityValidity = 10 * 365 * 24 * time.Hour
+	renewalWindow     = 30 * 24 * time.Hour
 )
 
 var requiredDNSNames = []string{
@@ -36,31 +38,49 @@ var requiredDNSNames = []string{
 }
 
 type Status struct {
-	CertificatePath string    `json:"certificatePath"`
-	KeyPath         string    `json:"keyPath"`
-	DNSNames        []string  `json:"dnsNames"`
-	NotBefore       time.Time `json:"notBefore"`
-	NotAfter        time.Time `json:"notAfter"`
-	Fingerprint     string    `json:"fingerprint"`
+	CertificatePath          string    `json:"certificatePath"`
+	KeyPath                  string    `json:"keyPath"`
+	CertificateAuthorityPath string    `json:"certificateAuthorityPath"`
+	DNSNames                 []string  `json:"dnsNames"`
+	NotBefore                time.Time `json:"notBefore"`
+	NotAfter                 time.Time `json:"notAfter"`
+	Fingerprint              string    `json:"fingerprint"`
 }
 
 type Manager struct {
-	mu              sync.RWMutex
-	certificatePath string
-	keyPath         string
-	certificate     *tls.Certificate
-	leaf            *x509.Certificate
+	mu                       sync.RWMutex
+	certificatePath          string
+	keyPath                  string
+	certificateAuthorityPath string
+	authorityKeyPath         string
+	certificate              *tls.Certificate
+	leaf                     *x509.Certificate
+	authority                *x509.Certificate
+	authorityKey             crypto.Signer
 }
 
-func New(certificatePath, keyPath string) *Manager {
-	return &Manager{certificatePath: certificatePath, keyPath: keyPath}
+func New(certificatePath, keyPath, certificateAuthorityPath, authorityKeyPath string) *Manager {
+	return &Manager{
+		certificatePath:          certificatePath,
+		keyPath:                  keyPath,
+		certificateAuthorityPath: certificateAuthorityPath,
+		authorityKeyPath:         authorityKeyPath,
+	}
 }
 
 func (m *Manager) Ensure(additionalDNSNames ...string) (Status, error) {
+	lock, err := acquireFileLock(m.authorityKeyPath + ".lock")
+	if err != nil {
+		return Status{}, fmt.Errorf("lock TLS certificate files: %w", err)
+	}
+	defer lock.Close()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	dnsNames := certificateDNSNames(additionalDNSNames)
 
+	if err := m.ensureAuthorityLocked(time.Now()); err != nil {
+		return Status{}, err
+	}
 	if err := m.loadLocked(time.Now(), dnsNames); err == nil {
 		return m.statusLocked(), nil
 	}
@@ -71,9 +91,17 @@ func (m *Manager) Ensure(additionalDNSNames ...string) (Status, error) {
 }
 
 func (m *Manager) Renew(additionalDNSNames ...string) (Status, error) {
+	lock, err := acquireFileLock(m.authorityKeyPath + ".lock")
+	if err != nil {
+		return Status{}, fmt.Errorf("lock TLS certificate files: %w", err)
+	}
+	defer lock.Close()
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if err := m.ensureAuthorityLocked(time.Now()); err != nil {
+		return Status{}, err
+	}
 	if err := m.generateLocked(time.Now(), certificateDNSNames(additionalDNSNames)); err != nil {
 		return Status{}, err
 	}
@@ -115,7 +143,7 @@ func (m *Manager) loadLocked(now time.Time, dnsNames []string) error {
 	if err != nil {
 		return fmt.Errorf("parse TLS certificate: %w", err)
 	}
-	if err := validate(leaf, now, dnsNames); err != nil {
+	if err := validate(leaf, m.authority, now, dnsNames); err != nil {
 		return err
 	}
 	pair.Leaf = leaf
@@ -129,8 +157,7 @@ func (m *Manager) generateLocked(now time.Time, dnsNames []string) error {
 	if err != nil {
 		return fmt.Errorf("generate TLS private key: %w", err)
 	}
-	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
-	serial, err := rand.Int(rand.Reader, serialLimit)
+	serial, err := randomSerial()
 	if err != nil {
 		return fmt.Errorf("generate TLS certificate serial: %w", err)
 	}
@@ -151,7 +178,7 @@ func (m *Manager) generateLocked(now time.Time, dnsNames []string) error {
 			net.ParseIP("::1"),
 		},
 	}
-	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	der, err := x509.CreateCertificate(rand.Reader, template, m.authority, &privateKey.PublicKey, m.authorityKey)
 	if err != nil {
 		return fmt.Errorf("create TLS certificate: %w", err)
 	}
@@ -159,7 +186,11 @@ func (m *Manager) generateLocked(now time.Time, dnsNames []string) error {
 	if err != nil {
 		return fmt.Errorf("marshal TLS private key: %w", err)
 	}
-	certificatePEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	authorityPEM, err := os.ReadFile(m.certificateAuthorityPath)
+	if err != nil {
+		return fmt.Errorf("read TLS certificate authority: %w", err)
+	}
+	certificatePEM := append(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), authorityPEM...)
 	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER})
 	if err := writeAtomic(m.keyPath, keyPEM, 0o600); err != nil {
 		return fmt.Errorf("write TLS private key: %w", err)
@@ -176,16 +207,17 @@ func (m *Manager) generateLocked(now time.Time, dnsNames []string) error {
 func (m *Manager) statusLocked() Status {
 	sum := sha256.Sum256(m.leaf.Raw)
 	return Status{
-		CertificatePath: m.certificatePath,
-		KeyPath:         m.keyPath,
-		DNSNames:        append([]string(nil), m.leaf.DNSNames...),
-		NotBefore:       m.leaf.NotBefore,
-		NotAfter:        m.leaf.NotAfter,
-		Fingerprint:     hex.EncodeToString(sum[:]),
+		CertificatePath:          m.certificatePath,
+		KeyPath:                  m.keyPath,
+		CertificateAuthorityPath: m.certificateAuthorityPath,
+		DNSNames:                 append([]string(nil), m.leaf.DNSNames...),
+		NotBefore:                m.leaf.NotBefore,
+		NotAfter:                 m.leaf.NotAfter,
+		Fingerprint:              hex.EncodeToString(sum[:]),
 	}
 }
 
-func validate(certificate *x509.Certificate, now time.Time, dnsNames []string) error {
+func validate(certificate, authority *x509.Certificate, now time.Time, dnsNames []string) error {
 	if now.Before(certificate.NotBefore) {
 		return errors.New("TLS certificate is not valid yet")
 	}
@@ -205,7 +237,7 @@ func validate(certificate *x509.Certificate, now time.Time, dnsNames []string) e
 		}
 	}
 	roots := x509.NewCertPool()
-	roots.AddCert(certificate)
+	roots.AddCert(authority)
 	if _, err := certificate.Verify(x509.VerifyOptions{
 		DNSName:     "porto.local",
 		Roots:       roots,
@@ -215,6 +247,90 @@ func validate(certificate *x509.Certificate, now time.Time, dnsNames []string) e
 		return fmt.Errorf("verify TLS certificate: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) ensureAuthorityLocked(now time.Time) error {
+	if err := m.loadAuthorityLocked(now); err == nil {
+		return nil
+	}
+	return m.generateAuthorityLocked(now)
+}
+
+func (m *Manager) loadAuthorityLocked(now time.Time) error {
+	pair, err := tls.LoadX509KeyPair(m.certificateAuthorityPath, m.authorityKeyPath)
+	if err != nil {
+		return err
+	}
+	if len(pair.Certificate) == 0 {
+		return errors.New("TLS certificate authority chain is empty")
+	}
+	authority, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		return fmt.Errorf("parse TLS certificate authority: %w", err)
+	}
+	signer, ok := pair.PrivateKey.(crypto.Signer)
+	if !ok {
+		return errors.New("TLS certificate authority private key cannot sign certificates")
+	}
+	if !authority.IsCA || authority.KeyUsage&x509.KeyUsageCertSign == 0 {
+		return errors.New("TLS certificate authority cannot sign certificates")
+	}
+	if now.Before(authority.NotBefore) || !authority.NotAfter.After(now.Add(renewalWindow)) {
+		return errors.New("TLS certificate authority is expired or near expiry")
+	}
+	if err := authority.CheckSignatureFrom(authority); err != nil {
+		return fmt.Errorf("verify TLS certificate authority: %w", err)
+	}
+	m.authority = authority
+	m.authorityKey = signer
+	return nil
+}
+
+func (m *Manager) generateAuthorityLocked(now time.Time) error {
+	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return fmt.Errorf("generate TLS certificate authority key: %w", err)
+	}
+	serial, err := randomSerial()
+	if err != nil {
+		return fmt.Errorf("generate TLS certificate authority serial: %w", err)
+	}
+	template := &x509.Certificate{
+		SerialNumber: serial,
+		Subject: pkix.Name{
+			CommonName:   "Porto Local Development Root CA",
+			Organization: []string{"Porto"},
+		},
+		NotBefore:             now.Add(-5 * time.Minute),
+		NotAfter:              now.Add(authorityValidity),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+		MaxPathLenZero:        true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, &privateKey.PublicKey, privateKey)
+	if err != nil {
+		return fmt.Errorf("create TLS certificate authority: %w", err)
+	}
+	privateDER, err := x509.MarshalPKCS8PrivateKey(privateKey)
+	if err != nil {
+		return fmt.Errorf("marshal TLS certificate authority key: %w", err)
+	}
+	if err := writeAtomic(m.authorityKeyPath, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: privateDER}), 0o600); err != nil {
+		return fmt.Errorf("write TLS certificate authority key: %w", err)
+	}
+	if err := writeAtomic(m.certificateAuthorityPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o644); err != nil {
+		return fmt.Errorf("write TLS certificate authority: %w", err)
+	}
+	if err := m.loadAuthorityLocked(now); err != nil {
+		return fmt.Errorf("load generated TLS certificate authority: %w", err)
+	}
+	return nil
+}
+
+func randomSerial() (*big.Int, error) {
+	serialLimit := new(big.Int).Lsh(big.NewInt(1), 128)
+	return rand.Int(rand.Reader, serialLimit)
 }
 
 func certificateDNSNames(additional []string) []string {

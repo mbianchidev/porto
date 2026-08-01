@@ -12,9 +12,11 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
@@ -24,6 +26,7 @@ import (
 	"github.com/mbianchidev/porto/internal/discovery"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/localhttps"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
@@ -39,6 +42,14 @@ func run(args []string) error {
 	if len(args) == 0 {
 		usage()
 		return nil
+	}
+	if args[0] == "https-forwarder" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return localhttps.Run(ctx)
+	}
+	if args[0] == "https" {
+		return httpsAction(args[1:])
 	}
 	db, err := openStore()
 	if err != nil {
@@ -71,6 +82,55 @@ func run(args []string) error {
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
+	}
+}
+
+func httpsAction(args []string) error {
+	if len(args) == 0 {
+		return errors.New("usage: porto https install|status|uninstall")
+	}
+	certificatePath, keyPath, err := config.CertificatePaths()
+	if err != nil {
+		return err
+	}
+	authorityPath, authorityKeyPath, err := config.CertificateAuthorityPaths()
+	if err != nil {
+		return err
+	}
+	switch args[0] {
+	case "install":
+		if len(args) != 1 {
+			return errors.New("usage: porto https install")
+		}
+		if _, err := certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath).Ensure(); err != nil {
+			return err
+		}
+		if err := localhttps.Install(certificatePath, authorityPath); err != nil {
+			return err
+		}
+		return writeOutput(localhttps.Snapshot(certificatePath))
+	case "status":
+		if len(args) != 1 {
+			return errors.New("usage: porto https status")
+		}
+		return writeOutput(localhttps.Snapshot(certificatePath))
+	case "uninstall":
+		if len(args) != 1 {
+			return errors.New("usage: porto https uninstall")
+		}
+		return localhttps.Uninstall()
+	case "install-root":
+		if len(args) != 2 {
+			return errors.New("invalid HTTPS forwarder installation")
+		}
+		return localhttps.RootInstall(args[1])
+	case "uninstall-root":
+		if len(args) != 1 {
+			return errors.New("invalid HTTPS forwarder removal")
+		}
+		return localhttps.RootUninstall()
+	default:
+		return fmt.Errorf("unsupported HTTPS command %q", args[0])
 	}
 }
 
@@ -257,17 +317,23 @@ func parseLogArgs(args []string) (project, stream string, limit int, clear bool,
 
 func certificateAction(st *store.Store, args []string) error {
 	if len(args) != 1 {
-		return errors.New("usage: porto cert path|generate")
+		return errors.New("usage: porto cert path|generate|trust|untrust|status")
 	}
 	certificatePath, keyPath, err := config.CertificatePaths()
+	if err != nil {
+		return err
+	}
+	authorityPath, authorityKeyPath, err := config.CertificateAuthorityPaths()
 	if err != nil {
 		return err
 	}
 	switch args[0] {
 	case "path":
 		return writeOutput(map[string]string{
-			"certificatePath": certificatePath,
-			"keyPath":         keyPath,
+			"certificatePath":  certificatePath,
+			"keyPath":          keyPath,
+			"authorityPath":    authorityPath,
+			"authorityKeyPath": authorityKeyPath,
 		})
 	case "generate":
 		if daemonUp() {
@@ -277,17 +343,36 @@ func certificateAction(st *store.Store, args []string) error {
 		if err != nil {
 			return err
 		}
-		hostnames := make([]string, 0, len(projects))
+		hostnames := make([]string, 0, len(projects)*2)
 		for _, project := range projects {
 			if strings.Contains(project.Hostname, ".") {
-				hostnames = append(hostnames, project.Hostname+"."+config.LocalDomain)
+				hostnames = append(
+					hostnames,
+					project.Hostname+"."+config.LocalDomain,
+					project.Hostname+"."+config.LocalhostDomain,
+				)
 			}
 		}
-		status, err := certificates.New(certificatePath, keyPath).Renew(hostnames...)
+		status, err := certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath).Renew(hostnames...)
 		if err != nil {
 			return err
 		}
 		return writeOutput(status)
+	case "trust":
+		if _, err := certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath).Ensure(); err != nil {
+			return err
+		}
+		if err := localhttps.Trust(authorityPath); err != nil {
+			return err
+		}
+		return writeOutput(map[string]bool{"trusted": localhttps.Trusted(certificatePath)})
+	case "untrust":
+		if err := localhttps.Untrust(authorityPath); err != nil {
+			return err
+		}
+		return writeOutput(map[string]bool{"trusted": localhttps.Trusted(certificatePath)})
+	case "status":
+		return writeOutput(map[string]bool{"trusted": localhttps.Trusted(certificatePath)})
 	default:
 		return fmt.Errorf("unsupported certificate command %q", args[0])
 	}
@@ -467,7 +552,8 @@ Commands:
   porto daemon start|status
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
-  porto cert path|generate
+  porto cert path|generate|trust|untrust|status
+  porto https install|status|uninstall
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup

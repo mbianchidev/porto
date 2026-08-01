@@ -108,7 +108,11 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("resolve TLS certificate paths: %w", err)
 	}
-	s.tlsCertificates = certificates.New(certificatePath, keyPath)
+	authorityPath, authorityKeyPath, err := config.CertificateAuthorityPaths()
+	if err != nil {
+		return fmt.Errorf("resolve TLS certificate authority paths: %w", err)
+	}
+	s.tlsCertificates = certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath)
 	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)

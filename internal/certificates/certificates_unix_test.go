@@ -10,7 +10,7 @@ import (
 
 func TestCertificateFilePermissions(t *testing.T) {
 	dir := t.TempDir()
-	status, err := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem")).Ensure()
+	status, err := testManager(dir).Ensure()
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
 	}
@@ -27,5 +27,12 @@ func TestCertificateFilePermissions(t *testing.T) {
 	}
 	if got := keyInfo.Mode().Perm(); got != 0o600 {
 		t.Fatalf("key mode = %o, want 600", got)
+	}
+	authorityKeyInfo, err := os.Stat(filepath.Join(dir, "porto-root-ca-key.pem"))
+	if err != nil {
+		t.Fatalf("stat certificate authority key: %v", err)
+	}
+	if got := authorityKeyInfo.Mode().Perm(); got != 0o600 {
+		t.Fatalf("certificate authority key mode = %o, want 600", got)
 	}
 }

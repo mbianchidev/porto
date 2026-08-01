@@ -3,6 +3,7 @@ package certificates
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -14,7 +15,7 @@ import (
 
 func TestEnsureGeneratesAndReusesCertificate(t *testing.T) {
 	dir := t.TempDir()
-	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	manager := testManager(dir)
 
 	first, err := manager.Ensure()
 	if err != nil {
@@ -46,7 +47,7 @@ func TestEnsureGeneratesAndReusesCertificate(t *testing.T) {
 
 func TestEnsureIncludesExactDottedProjectHostname(t *testing.T) {
 	dir := t.TempDir()
-	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	manager := testManager(dir)
 	status, err := manager.Ensure("devoidofbeauty.com.porto.local")
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
@@ -70,7 +71,7 @@ func TestEnsureIncludesExactDottedProjectHostname(t *testing.T) {
 
 func TestEnsureRegeneratesCertificateForNewHostname(t *testing.T) {
 	dir := t.TempDir()
-	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	manager := testManager(dir)
 	first, err := manager.Ensure()
 	if err != nil {
 		t.Fatalf("ensure initial certificate: %v", err)
@@ -89,7 +90,7 @@ func TestEnsureRegeneratesCertificateForNewHostname(t *testing.T) {
 
 func TestRenewReplacesLiveCertificate(t *testing.T) {
 	dir := t.TempDir()
-	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	manager := testManager(dir)
 	first, err := manager.Ensure()
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
@@ -113,17 +114,28 @@ func TestRenewReplacesLiveCertificate(t *testing.T) {
 	if before == after {
 		t.Fatal("live TLS certificate pointer was not replaced")
 	}
+	authorityBefore, err := os.ReadFile(first.CertificateAuthorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityAfter, err := os.ReadFile(second.CertificateAuthorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(authorityBefore, authorityAfter) {
+		t.Fatal("renewal replaced the trusted certificate authority")
+	}
 }
 
 func TestTLSConfigServesWildcardCertificate(t *testing.T) {
 	dir := t.TempDir()
-	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	manager := testManager(dir)
 	status, err := manager.Ensure()
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
 	}
 
-	certificatePEM, err := os.ReadFile(status.CertificatePath)
+	certificatePEM, err := os.ReadFile(status.CertificateAuthorityPath)
 	if err != nil {
 		t.Fatalf("read certificate: %v", err)
 	}
@@ -156,6 +168,50 @@ func TestTLSConfigServesWildcardCertificate(t *testing.T) {
 	if string(body) != "secure" {
 		t.Fatalf("TLS response = %q", body)
 	}
+}
+
+func TestCertificateIsSignedByPersistentAuthority(t *testing.T) {
+	dir := t.TempDir()
+	manager := testManager(dir)
+	status, err := manager.Ensure()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pair, err := tls.LoadX509KeyPair(status.CertificatePath, status.KeyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	authorityPEM, err := os.ReadFile(status.CertificateAuthorityPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, _ := pem.Decode(authorityPEM)
+	if block == nil {
+		t.Fatal("decode certificate authority")
+	}
+	authority, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !authority.IsCA {
+		t.Fatal("certificate authority is not marked as a CA")
+	}
+	if err := leaf.CheckSignatureFrom(authority); err != nil {
+		t.Fatalf("leaf is not signed by authority: %v", err)
+	}
+}
+
+func testManager(dir string) *Manager {
+	return New(
+		filepath.Join(dir, "porto.local.pem"),
+		filepath.Join(dir, "porto.local-key.pem"),
+		filepath.Join(dir, "porto-root-ca.pem"),
+		filepath.Join(dir, "porto-root-ca-key.pem"),
+	)
 }
 
 func contains(values []string, target string) bool {
