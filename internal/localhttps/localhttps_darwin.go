@@ -175,7 +175,15 @@ func privilegedAction(action string, args ...string) error {
 		return fmt.Errorf("resolve Porto executable: %w", err)
 	}
 	commandArgs := append([]string{executable, "https", action}, args...)
-	return interactiveCommand("/usr/bin/sudo", commandArgs...)
+	script := `on run argv
+set commandText to quoted form of item 1 of argv
+repeat with argumentIndex from 2 to count argv
+set commandText to commandText & " " & quoted form of item argumentIndex of argv
+end repeat
+do shell script commandText with administrator privileges
+end run`
+	osascriptArgs := append([]string{"-e", script}, commandArgs...)
+	return interactiveCommand("/usr/bin/osascript", osascriptArgs...)
 }
 
 func interactiveCommand(name string, args ...string) error {
