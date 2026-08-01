@@ -10,9 +10,33 @@ import (
 )
 
 const (
-	ListenAddress = "127.0.0.1:443"
-	TargetAddress = "127.0.0.1:37681"
+	ListenAddress     = "127.0.0.1:443"
+	ListenAddressIPv6 = "[::1]:443"
+	TargetAddress     = "127.0.0.1:37681"
 )
+
+func RunForwarders(ctx context.Context, listenAddresses []string, targetAddress string) error {
+	if len(listenAddresses) == 0 {
+		return errors.New("at least one HTTPS listen address is required")
+	}
+	runContext, cancel := context.WithCancel(ctx)
+	defer cancel()
+	results := make(chan error, len(listenAddresses))
+	for _, listenAddress := range listenAddresses {
+		go func() {
+			results <- RunForwarder(runContext, listenAddress, targetAddress)
+		}()
+	}
+
+	var result error
+	for range listenAddresses {
+		if err := <-results; err != nil {
+			result = errors.Join(result, err)
+			cancel()
+		}
+	}
+	return result
+}
 
 func RunForwarder(ctx context.Context, listenAddress, targetAddress string) error {
 	listener, err := net.Listen("tcp", listenAddress)

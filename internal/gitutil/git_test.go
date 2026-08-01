@@ -1,9 +1,11 @@
 package gitutil
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/app"
@@ -58,6 +60,51 @@ func TestForceRemoveMissingWorktreeIsIdempotent(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "missing")
 	if err := RemoveWorktreeForce(repo, missing); err != nil {
 		t.Fatalf("force remove missing worktree: %v", err)
+	}
+}
+
+func TestPullRetriesGitHubSSHFailureOverHTTPS(t *testing.T) {
+	var calls [][]string
+	run := func(_ string, args ...string) (string, error) {
+		calls = append(calls, append([]string(nil), args...))
+		if len(calls) == 1 {
+			return "git@github.com: Permission denied (publickey).\nfatal: Could not read from remote repository.", errors.New("exit status 1")
+		}
+		return "Already up to date.\n", nil
+	}
+
+	output, err := pull("/repo", run)
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if output != "Already up to date.\n" {
+		t.Fatalf("output = %q", output)
+	}
+	want := [][]string{
+		{"pull", "--ff-only"},
+		{
+			"-c", "url.https://github.com/.insteadOf=git@github.com:",
+			"-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
+			"pull", "--ff-only",
+		},
+	}
+	if !reflect.DeepEqual(calls, want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+}
+
+func TestPullDoesNotRetryUnrelatedFailure(t *testing.T) {
+	calls := 0
+	run := func(_ string, _ ...string) (string, error) {
+		calls++
+		return "fatal: not a git repository", errors.New("exit status 128")
+	}
+
+	if _, err := pull("/repo", run); err == nil {
+		t.Fatal("pull unexpectedly succeeded")
+	}
+	if calls != 1 {
+		t.Fatalf("calls = %d, want 1", calls)
 	}
 }
 

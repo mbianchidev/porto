@@ -70,14 +70,19 @@ func Uninstall() error {
 }
 
 func Snapshot(certificatePath string) Status {
-	connection, err := net.DialTimeout("tcp", ListenAddress, 300*time.Millisecond)
-	if err == nil {
+	listening := true
+	for _, address := range []string{ListenAddress, ListenAddressIPv6} {
+		connection, err := net.DialTimeout("tcp", address, 300*time.Millisecond)
+		if err != nil {
+			listening = false
+			continue
+		}
 		_ = connection.Close()
 	}
 	_, statErr := os.Stat(launchDaemonPath)
 	return Status{
 		Installed: statErr == nil,
-		Listening: err == nil,
+		Listening: listening,
 		Trusted:   Trusted(certificatePath),
 	}
 }
@@ -314,5 +319,5 @@ func launchDaemonPlist() string {
 }
 
 func Run(ctx context.Context) error {
-	return RunForwarder(ctx, ListenAddress, TargetAddress)
+	return RunForwarders(ctx, []string{ListenAddress, ListenAddressIPv6}, TargetAddress)
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -39,6 +40,130 @@ func TestFindFileUsesDiscoveryPriority(t *testing.T) {
 	got, ok := FindFile(root)
 	if !ok || got != "docker-compose.yml" {
 		t.Fatalf("FindFile() = %q, %t; want docker-compose.yml, true", got, ok)
+	}
+}
+
+func TestCheckUsesDockerServerInfo(t *testing.T) {
+	runner := &fakeRunner{output: []byte("28.3.2\n")}
+	integration := newIntegration(runner, time.Second)
+
+	if err := integration.Check(context.Background()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	want := Command{
+		Name: "docker",
+		Args: []string{"info", "--format", "{{.ServerVersion}}"},
+	}
+	if !reflect.DeepEqual(runner.commands, []Command{want}) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{want})
+	}
+}
+
+func TestCheckReportsActionableDaemonFailure(t *testing.T) {
+	runner := &fakeRunner{
+		output: []byte("failed to connect to the docker API at unix:///missing/docker.sock"),
+		err:    errors.New("exit status 1"),
+	}
+
+	err := newIntegration(runner, time.Second).Check(context.Background())
+	if !errors.Is(err, ErrDaemonUnavailable) {
+		t.Fatalf("error = %v, want ErrDaemonUnavailable", err)
+	}
+	for _, want := range []string{"start or repair OrbStack", "unix:///missing/docker.sock"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestCheckDistinguishesMissingDockerCLI(t *testing.T) {
+	runner := &fakeRunner{err: &exec.Error{Name: "docker", Err: exec.ErrNotFound}}
+
+	err := newIntegration(runner, time.Second).Check(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Porto daemon PATH") {
+		t.Fatalf("error = %v", err)
+	}
+	if errors.Is(err, ErrDaemonUnavailable) {
+		t.Fatalf("missing CLI error was classified as daemon unavailable: %v", err)
+	}
+}
+
+func TestCheckTimesOut(t *testing.T) {
+	runner := &fakeRunner{
+		run: func(ctx context.Context, _ Command) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	integration := newIntegration(runner, time.Second)
+	integration.checkTimeout = time.Millisecond
+
+	err := integration.Check(context.Background())
+	if !errors.Is(err, ErrDaemonUnavailable) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v", err)
+	}
+}
+
+func TestPublishedPortsParsesWarningsAndPrioritizesFrontend(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`time="now" level=warning msg="version is obsolete"
+{"Service":"backend","State":"running","Publishers":[{"PublishedPort":8080,"Protocol":"tcp"},{"PublishedPort":8080,"Protocol":"tcp"},{"PublishedPort":0,"Protocol":"tcp"}]}
+{"Service":"frontend","State":"running","Publishers":[{"PublishedPort":3000,"Protocol":"tcp"},{"PublishedPort":3000,"Protocol":"tcp"},{"PublishedPort":5353,"Protocol":"udp"}]}
+`)}
+	project := app.Project{
+		Name:     "web",
+		Path:     root,
+		Strategy: "compose",
+		Command:  UpCommand("compose.yaml"),
+		Port:     41007,
+	}
+
+	got, err := newIntegration(runner, time.Second).PublishedPorts(context.Background(), project)
+	if err != nil {
+		t.Fatalf("PublishedPorts: %v", err)
+	}
+	want := []PublishedPort{
+		{Service: "frontend", Port: 3000},
+		{Service: "backend", Port: 8080},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
+	}
+	wantCommand := Command{
+		Dir:  root,
+		Name: "docker",
+		Args: []string{"compose", "-f", "compose.yaml", "ps", "--format", "json"},
+		Env:  []string{"PORT=41007", "PORTO_PORT=41007"},
+	}
+	if !reflect.DeepEqual(runner.commands, []Command{wantCommand}) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{wantCommand})
+	}
+}
+
+func TestPublishedPortsParsesJSONArray(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`warning
+[{"Service":"web","State":"running","Publishers":[{"PublishedPort":4173,"Protocol":"tcp"}]}]
+`)}
+
+	got, err := newIntegration(runner, time.Second).PublishedPorts(context.Background(), app.Project{
+		Name:    "web",
+		Path:    root,
+		Command: UpCommand("compose.yaml"),
+	})
+	if err != nil {
+		t.Fatalf("PublishedPorts: %v", err)
+	}
+	want := []PublishedPort{{Service: "web", Port: 4173}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
 	}
 }
 

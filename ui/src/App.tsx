@@ -79,6 +79,22 @@ type LogLine = {
   createdAt: string
 }
 
+async function writeClipboard(text: string) {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(text)
+    return
+  }
+  const textarea = document.createElement('textarea')
+  textarea.value = text
+  textarea.style.position = 'fixed'
+  textarea.style.opacity = '0'
+  document.body.appendChild(textarea)
+  textarea.select()
+  const copied = document.execCommand('copy')
+  textarea.remove()
+  if (!copied) throw new Error('Clipboard access was denied')
+}
+
 async function action(name: string, verb: string): Promise<Response> {
   const response = await fetch(`/api/projects/${name}/${verb}`, { method: 'POST' })
   if (!response.ok) throw new Error(await response.text())
@@ -688,6 +704,23 @@ function App() {
     }
   }
 
+  async function copyLogs() {
+    const text = logLines
+      .map((line) => {
+        const timestamp = new Date(line.createdAt).toLocaleTimeString([], { hour12: false })
+        return `${timestamp}\t${line.stream}\t${line.line}`
+      })
+      .join('\n')
+    if (text === '') return
+    try {
+      await writeClipboard(text)
+      setNotice(`Copied ${logLines.length} visible log line(s).`)
+      setError('')
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Unable to copy logs')
+    }
+  }
+
   function viewLogs(id: number) {
     setLogLines([])
     setLogProjectID(id)
@@ -1008,6 +1041,13 @@ function App() {
             </div>
             <div className="consoleActions">
               <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
+              <button
+                type="button"
+                disabled={logsLoading || logError !== '' || logLines.length === 0}
+                onClick={copyLogs}
+              >
+                Copy visible
+              </button>
               <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
               <button type="button" onClick={() => setLogProjectID(null)}>Close</button>
             </div>
