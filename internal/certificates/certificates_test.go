@@ -1,16 +1,21 @@
 package certificates
 
 import (
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/pem"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
+	"sync"
 	"testing"
+	"time"
 )
 
 func TestEnsureGeneratesAndReusesCertificate(t *testing.T) {
@@ -45,31 +50,32 @@ func TestEnsureGeneratesAndReusesCertificate(t *testing.T) {
 	}
 }
 
-func TestEnsureIncludesExactDottedProjectHostname(t *testing.T) {
+func TestEnsureServesExactDottedProjectHostnameSeparately(t *testing.T) {
 	dir := t.TempDir()
 	manager := testManager(dir)
 	status, err := manager.Ensure("devoidofbeauty.com.porto.local")
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
 	}
-	if !contains(status.DNSNames, "devoidofbeauty.com.porto.local") {
-		t.Fatalf("DNS names = %v, want dotted project hostname", status.DNSNames)
+	if !reflect.DeepEqual(status.DNSNames, requiredDNSNames) {
+		t.Fatalf("base DNS names = %v, want %v", status.DNSNames, requiredDNSNames)
 	}
 
-	pair, err := tls.LoadX509KeyPair(status.CertificatePath, status.KeyPath)
+	pair, err := manager.TLSConfig().GetCertificate(&tls.ClientHelloInfo{
+		ServerName: "devoidofbeauty.com.porto.local",
+	})
 	if err != nil {
-		t.Fatalf("load generated key pair: %v", err)
+		t.Fatalf("get dotted hostname certificate: %v", err)
 	}
-	leaf, err := x509.ParseCertificate(pair.Certificate[0])
-	if err != nil {
-		t.Fatalf("parse generated certificate: %v", err)
+	if !reflect.DeepEqual(pair.Leaf.DNSNames, []string{"devoidofbeauty.com.porto.local"}) {
+		t.Fatalf("dotted certificate DNS names = %v", pair.Leaf.DNSNames)
 	}
-	if err := leaf.VerifyHostname("devoidofbeauty.com.porto.local"); err != nil {
+	if err := pair.Leaf.VerifyHostname("devoidofbeauty.com.porto.local"); err != nil {
 		t.Fatalf("verify dotted project hostname: %v", err)
 	}
 }
 
-func TestEnsureRegeneratesCertificateForNewHostname(t *testing.T) {
+func TestEnsureDoesNotRegenerateBaseCertificateForNewHostname(t *testing.T) {
 	dir := t.TempDir()
 	manager := testManager(dir)
 	first, err := manager.Ensure()
@@ -80,11 +86,11 @@ func TestEnsureRegeneratesCertificateForNewHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure expanded certificate: %v", err)
 	}
-	if first.Fingerprint == second.Fingerprint {
-		t.Fatal("certificate was not regenerated for the new hostname")
+	if first.Fingerprint != second.Fingerprint {
+		t.Fatal("base certificate was regenerated for a dynamic hostname")
 	}
-	if !contains(second.DNSNames, "devoidofbeauty.com.porto.local") {
-		t.Fatalf("DNS names = %v, want dotted project hostname", second.DNSNames)
+	if !reflect.DeepEqual(second.DNSNames, requiredDNSNames) {
+		t.Fatalf("base DNS names = %v, want %v", second.DNSNames, requiredDNSNames)
 	}
 }
 
@@ -170,6 +176,116 @@ func TestTLSConfigServesWildcardCertificate(t *testing.T) {
 	}
 }
 
+func TestTLSConfigUsesBaseCertificateForSingleLabelHostname(t *testing.T) {
+	manager := testManager(t.TempDir())
+	if _, err := manager.Ensure("devoidofbeauty.com.porto.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	base, err := manager.TLSConfig().GetCertificate(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	singleLabel, err := manager.TLSConfig().GetCertificate(&tls.ClientHelloInfo{
+		ServerName: "2dnd.porto.localhost",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base != singleLabel {
+		t.Fatal("single-label hostname did not use the base wildcard certificate")
+	}
+}
+
+func TestTLSConfigRejectsUnknownDottedHostname(t *testing.T) {
+	manager := testManager(t.TempDir())
+	if _, err := manager.Ensure("allowed.example.porto.localhost"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.TLSConfig().GetCertificate(&tls.ClientHelloInfo{
+		ServerName: "unknown.example.porto.localhost",
+	}); err == nil {
+		t.Fatal("unknown dotted hostname received a certificate")
+	}
+}
+
+func TestTLSConfigCachesConcurrentDottedHostnameCertificate(t *testing.T) {
+	manager := testManager(t.TempDir())
+	const hostname = "allowed.example.porto.localhost"
+	if _, err := manager.Ensure(hostname); err != nil {
+		t.Fatal(err)
+	}
+	const callers = 20
+	certificates := make(chan *tls.Certificate, callers)
+	errors := make(chan error, callers)
+	var wait sync.WaitGroup
+	for range callers {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			certificate, err := manager.TLSConfig().GetCertificate(&tls.ClientHelloInfo{
+				ServerName: hostname,
+			})
+			certificates <- certificate
+			errors <- err
+		}()
+	}
+	wait.Wait()
+	close(certificates)
+	close(errors)
+	for err := range errors {
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	var first *tls.Certificate
+	for certificate := range certificates {
+		if first == nil {
+			first = certificate
+			continue
+		}
+		if certificate != first {
+			t.Fatal("concurrent requests received different cached certificates")
+		}
+	}
+}
+
+func TestEnsureReplacesOverbroadBaseCertificate(t *testing.T) {
+	dir := t.TempDir()
+	manager := testManager(dir)
+	if _, err := manager.Ensure(); err != nil {
+		t.Fatal(err)
+	}
+	manager.mu.Lock()
+	overbroadNames := append(append([]string(nil), requiredDNSNames...), "devoidofbeauty.com.porto.localhost")
+	overbroad, certificatePEM, keyPEM, err := manager.issueCertificateLocked(
+		time.Now(),
+		overbroadNames,
+		[]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("::1")},
+	)
+	manager.mu.Unlock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(manager.keyPath, keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeAtomic(manager.certificatePath, certificatePEM, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	reloaded := testManager(dir)
+	status, err := reloaded.Ensure("devoidofbeauty.com.porto.localhost")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if status.Fingerprint == fingerprint(overbroad.Leaf) {
+		t.Fatal("overbroad base certificate was reused")
+	}
+	if !reflect.DeepEqual(status.DNSNames, requiredDNSNames) {
+		t.Fatalf("base DNS names = %v, want %v", status.DNSNames, requiredDNSNames)
+	}
+}
+
 func TestCertificateIsSignedByPersistentAuthority(t *testing.T) {
 	dir := t.TempDir()
 	manager := testManager(dir)
@@ -214,11 +330,7 @@ func testManager(dir string) *Manager {
 	)
 }
 
-func contains(values []string, target string) bool {
-	for _, value := range values {
-		if value == target {
-			return true
-		}
-	}
-	return false
+func fingerprint(certificate *x509.Certificate) string {
+	sum := sha256.Sum256(certificate.Raw)
+	return hex.EncodeToString(sum[:])
 }
