@@ -32,7 +32,7 @@ func RouterTLSAddress() string {
 }
 
 func ProjectHTTPSURL(hostname string) string {
-	host := hostname + "." + LocalDomain
+	host := hostname + "." + LocalhostDomain
 	port := strings.TrimSpace(os.Getenv(RouterTLSPublicPortEnv))
 	if port == "" {
 		_, port, _ = net.SplitHostPort(RouterTLSAddress())

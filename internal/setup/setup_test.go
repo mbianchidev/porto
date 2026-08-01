@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -114,5 +115,65 @@ func TestNodeRunCommandUsesLockfileManager(t *testing.T) {
 	want := Command{Name: "yarn", Args: []string{"dev"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("command = %#v, want %#v", got, want)
+	}
+}
+
+func TestRuntimeCommandConfiguresVite(t *testing.T) {
+	tests := []struct {
+		name        string
+		command     string
+		script      string
+		wantCommand string
+	}{
+		{
+			name:        "npm",
+			command:     "npm run dev",
+			script:      "vite",
+			wantCommand: "npm run dev -- --host 127.0.0.1 --port 41001",
+		},
+		{
+			name:        "pnpm",
+			command:     "pnpm run dev",
+			script:      "vite --open",
+			wantCommand: "pnpm run dev -- --host 127.0.0.1 --port 41001",
+		},
+		{
+			name:        "yarn",
+			command:     "yarn dev",
+			script:      "vite",
+			wantCommand: "yarn dev --host 127.0.0.1 --port 41001",
+		},
+		{
+			name:        "bun",
+			command:     "bun run dev",
+			script:      "vite --host 0.0.0.0",
+			wantCommand: "bun run dev -- --port 41001",
+		},
+		{
+			name:        "existing port",
+			command:     "npm run dev",
+			script:      "vite --port 3000",
+			wantCommand: "npm run dev",
+		},
+		{
+			name:        "composed script",
+			command:     "npm run dev",
+			script:      "concurrently vite api",
+			wantCommand: "npm run dev",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			packageJSON := `{"scripts":{"dev":` + strconv.Quote(tt.script) + `}}`
+			if err := os.WriteFile(filepath.Join(dir, "package.json"), []byte(packageJSON), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			project := app.Project{Path: dir, Strategy: "package", Command: tt.command}
+			if got := RuntimeCommand(project, 41001); got != tt.wantCommand {
+				t.Fatalf("command = %q, want %q", got, tt.wantCommand)
+			}
+		})
 	}
 }

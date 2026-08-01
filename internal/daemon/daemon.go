@@ -635,7 +635,8 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			return p, fmt.Errorf("git pull failed: %w", err)
 		}
 	}
-	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, p.Command, port)
+	command := projectsetup.RuntimeCommand(p, port)
+	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, command, port)
 	if err != nil {
 		return p, err
 	}
@@ -1198,7 +1199,7 @@ func cleanupError(err error, result app.BranchCleanupResult) string {
 func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 	hostname, local := localHostname(r.Host)
 	if !local {
-		http.Error(w, "use porto.local or <project>.porto.local", http.StatusNotFound)
+		http.Error(w, "use porto.localhost or <project>.porto.localhost", http.StatusNotFound)
 		return
 	}
 	if hostname == "" {
@@ -1285,10 +1286,14 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 	if err != nil {
 		return nil, fmt.Errorf("list projects for TLS certificate: %w", err)
 	}
-	hostnames := make([]string, 0, len(projects))
+	hostnames := make([]string, 0, len(projects)*2)
 	for _, project := range projects {
 		if strings.Contains(project.Hostname, ".") {
-			hostnames = append(hostnames, project.Hostname+"."+config.LocalDomain)
+			hostnames = append(
+				hostnames,
+				project.Hostname+"."+config.LocalDomain,
+				project.Hostname+"."+config.LocalhostDomain,
+			)
 		}
 	}
 	return hostnames, nil

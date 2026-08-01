@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -91,6 +92,31 @@ func NodeRunCommand(dir, script string) Command {
 	default:
 		return Command{Name: "npm", Args: []string{"run", script}}
 	}
+}
+
+func RuntimeCommand(project app.Project, port int) string {
+	if project.Strategy != "package" || port <= 0 {
+		return project.Command
+	}
+	manager, script, ok := nodeScriptCommand(project.Command)
+	if !ok {
+		return project.Command
+	}
+	scriptCommand := packageScript(project.Path, script)
+	fields := strings.Fields(scriptCommand)
+	if len(fields) == 0 || fields[0] != "vite" || hasArgument(fields, "--port") {
+		return project.Command
+	}
+	args := make([]string, 0, 5)
+	if !hasArgument(fields, "--host") {
+		args = append(args, "--host", "127.0.0.1")
+	}
+	args = append(args, "--port", strconv.Itoa(port))
+	separator := " -- "
+	if manager == "yarn" {
+		separator = " "
+	}
+	return project.Command + separator + strings.Join(args, " ")
 }
 
 func PythonRunCommand(dir, entry string) Command {
@@ -190,14 +216,48 @@ func makeSetupTarget(dir string) string {
 }
 
 func packageHasScript(dir, script string) bool {
+	return packageScript(dir, script) != ""
+}
+
+func packageScript(dir, script string) string {
 	data, err := os.ReadFile(filepath.Join(dir, "package.json"))
 	if err != nil {
-		return false
+		return ""
 	}
 	var pkg struct {
 		Scripts map[string]string `json:"scripts"`
 	}
-	return json.Unmarshal(data, &pkg) == nil && pkg.Scripts[script] != ""
+	if json.Unmarshal(data, &pkg) != nil {
+		return ""
+	}
+	return strings.TrimSpace(pkg.Scripts[script])
+}
+
+func nodeScriptCommand(command string) (string, string, bool) {
+	fields := strings.Fields(command)
+	switch {
+	case len(fields) == 3 && fields[0] == "npm" && fields[1] == "run":
+		return fields[0], fields[2], true
+	case len(fields) == 3 && fields[0] == "pnpm" && fields[1] == "run":
+		return fields[0], fields[2], true
+	case len(fields) == 3 && fields[0] == "bun" && fields[1] == "run":
+		return fields[0], fields[2], true
+	case len(fields) == 2 && fields[0] == "yarn":
+		return fields[0], fields[1], true
+	case len(fields) == 3 && fields[0] == "yarn" && fields[1] == "run":
+		return fields[0], fields[2], true
+	default:
+		return "", "", false
+	}
+}
+
+func hasArgument(fields []string, name string) bool {
+	for _, field := range fields {
+		if field == name || strings.HasPrefix(field, name+"=") {
+			return true
+		}
+	}
+	return false
 }
 
 func usesStartScript(command string) bool {

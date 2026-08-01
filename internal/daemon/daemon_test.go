@@ -630,11 +630,39 @@ func TestProxyUsesDottedProjectHostname(t *testing.T) {
 		t.Fatalf("set runtime: %v", err)
 	}
 
-	request := httptest.NewRequest(http.MethodGet, "https://devoidofbeauty.com.porto.local/", nil)
+	request := httptest.NewRequest(http.MethodGet, "https://devoidofbeauty.com.porto.localhost/", nil)
 	response := httptest.NewRecorder()
 	New(st, nil).proxyByHost(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "dotted" {
 		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestProjectCertificateHostnamesIncludeBothDomains(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "devoidofbeauty.com",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	}); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+
+	got, err := New(st, nil).projectCertificateHostnames(context.Background())
+	if err != nil {
+		t.Fatalf("project certificate hostnames: %v", err)
+	}
+	want := []string{
+		"devoidofbeauty.com.porto.local",
+		"devoidofbeauty.com.porto.localhost",
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hostnames = %v, want %v", got, want)
 	}
 }
 
