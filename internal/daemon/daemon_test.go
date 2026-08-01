@@ -225,6 +225,7 @@ func TestProjectSetupRejectsConcurrentRequest(t *testing.T) {
 }
 
 func TestProjectStaysStartingUntilHTTPReadinessPasses(t *testing.T) {
+	skipWindowsShellHelper(t)
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_DELAY", "150ms")
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_STATUS", strconv.Itoa(http.StatusOK))
@@ -252,6 +253,7 @@ func TestProjectStaysStartingUntilHTTPReadinessPasses(t *testing.T) {
 }
 
 func TestProjectRemainsStartingForNonReadyHTTPResponse(t *testing.T) {
+	skipWindowsShellHelper(t)
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_STATUS", strconv.Itoa(http.StatusServiceUnavailable))
 	st, project := testProject(t, app.Project{
@@ -281,6 +283,7 @@ func TestProjectRemainsStartingForNonReadyHTTPResponse(t *testing.T) {
 }
 
 func TestProjectCrashWinsBeforeHTTPReadiness(t *testing.T) {
+	skipWindowsShellHelper(t)
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
 	t.Setenv("PORTO_DAEMON_HTTP_HELPER_EXIT", "1")
 	st, project := testProject(t, app.Project{
@@ -631,10 +634,14 @@ func TestDaemonHTTPHelperProcess(t *testing.T) {
 
 func daemonHTTPHelperCommand() string {
 	executable := os.Args[0]
-	if runtime.GOOS == "windows" {
-		return `"` + strings.ReplaceAll(executable, `"`, `""`) + `" -test.run=TestDaemonHTTPHelperProcess`
-	}
 	return fmt.Sprintf("%q -test.run=TestDaemonHTTPHelperProcess", executable)
+}
+
+func skipWindowsShellHelper(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-backed helper process is Unix-specific")
+	}
 }
 
 func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want string) {
