@@ -632,9 +632,9 @@ func TestDaemonHTTPHelperProcess(t *testing.T) {
 func daemonHTTPHelperCommand() string {
 	executable := os.Args[0]
 	if runtime.GOOS == "windows" {
-		return `"` + strings.ReplaceAll(executable, `"`, `""`) + `" -test.run=^TestDaemonHTTPHelperProcess$`
+		return `"` + strings.ReplaceAll(executable, `"`, `""`) + `" -test.run=TestDaemonHTTPHelperProcess`
 	}
-	return fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", executable)
+	return fmt.Sprintf("%q -test.run=TestDaemonHTTPHelperProcess", executable)
 }
 
 func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want string) {
