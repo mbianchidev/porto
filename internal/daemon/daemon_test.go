@@ -232,7 +232,7 @@ func TestProjectStaysStartingUntilHTTPReadinessPasses(t *testing.T) {
 		Name:     "web",
 		Path:     t.TempDir(),
 		Strategy: "custom",
-		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+		Command:  daemonHTTPHelperCommand(),
 	})
 	server := New(st, nil)
 	server.readinessDelay = 10 * time.Millisecond
@@ -258,7 +258,7 @@ func TestProjectRemainsStartingForNonReadyHTTPResponse(t *testing.T) {
 		Name:     "web",
 		Path:     t.TempDir(),
 		Strategy: "custom",
-		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+		Command:  daemonHTTPHelperCommand(),
 	})
 	server := New(st, nil)
 	server.readinessDelay = 10 * time.Millisecond
@@ -287,7 +287,7 @@ func TestProjectCrashWinsBeforeHTTPReadiness(t *testing.T) {
 		Name:     "web",
 		Path:     t.TempDir(),
 		Strategy: "custom",
-		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+		Command:  daemonHTTPHelperCommand(),
 	})
 	server := New(st, nil)
 	server.readinessDelay = 10 * time.Millisecond
@@ -627,6 +627,14 @@ func TestDaemonHTTPHelperProcess(t *testing.T) {
 		w.WriteHeader(status)
 	}))
 	os.Exit(0)
+}
+
+func daemonHTTPHelperCommand() string {
+	executable := os.Args[0]
+	if runtime.GOOS == "windows" {
+		return `"` + strings.ReplaceAll(executable, `"`, `""`) + `" -test.run=^TestDaemonHTTPHelperProcess$`
+	}
+	return fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", executable)
 }
 
 func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want string) {
