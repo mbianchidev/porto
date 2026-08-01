@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -208,6 +209,80 @@ func TestProjectSetupRejectsConcurrentRequest(t *testing.T) {
 	<-firstDone
 }
 
+func TestProjectStaysStartingUntilHTTPReadinessPasses(t *testing.T) {
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_DELAY", "150ms")
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_STATUS", strconv.Itoa(http.StatusOK))
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "custom",
+		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+	})
+	server := New(st, nil)
+	server.readinessDelay = 10 * time.Millisecond
+
+	started, err := server.startProject(context.Background(), project.Name, true)
+	if err != nil {
+		t.Fatalf("start project: %v", err)
+	}
+	if started.Status != "starting" {
+		t.Fatalf("initial status = %q, want starting", started.Status)
+	}
+	waitForProjectStatus(t, st, project.ID, "running")
+
+	if _, err := server.stopProject(context.Background(), project.Name, false); err != nil {
+		t.Fatalf("stop project: %v", err)
+	}
+}
+
+func TestProjectRemainsStartingForNonReadyHTTPResponse(t *testing.T) {
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_STATUS", strconv.Itoa(http.StatusServiceUnavailable))
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "custom",
+		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+	})
+	server := New(st, nil)
+	server.readinessDelay = 10 * time.Millisecond
+
+	if _, err := server.startProject(context.Background(), project.Name, true); err != nil {
+		t.Fatalf("start project: %v", err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	got, err := st.GetProjectByID(context.Background(), project.ID)
+	if err != nil {
+		t.Fatalf("load project: %v", err)
+	}
+	if got.Status != "starting" {
+		t.Fatalf("status = %q, want starting", got.Status)
+	}
+
+	if _, err := server.stopProject(context.Background(), project.Name, false); err != nil {
+		t.Fatalf("stop project: %v", err)
+	}
+}
+
+func TestProjectCrashWinsBeforeHTTPReadiness(t *testing.T) {
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
+	t.Setenv("PORTO_DAEMON_HTTP_HELPER_EXIT", "1")
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "custom",
+		Command:  fmt.Sprintf("%q -test.run=^TestDaemonHTTPHelperProcess$", os.Args[0]),
+	})
+	server := New(st, nil)
+	server.readinessDelay = 10 * time.Millisecond
+
+	if _, err := server.startProject(context.Background(), project.Name, true); err != nil {
+		t.Fatalf("start project: %v", err)
+	}
+	waitForProjectStatus(t, st, project.ID, "crashed")
+}
+
 type fakeComposeCleanup struct {
 	mu       sync.Mutex
 	projects []app.Project
@@ -394,6 +469,54 @@ func TestDaemonHelperProcess(t *testing.T) {
 	}
 }
 
+func TestDaemonHTTPHelperProcess(t *testing.T) {
+	if os.Getenv("PORTO_DAEMON_HTTP_HELPER_PROCESS") != "1" {
+		return
+	}
+	if os.Getenv("PORTO_DAEMON_HTTP_HELPER_EXIT") == "1" {
+		os.Exit(12)
+	}
+	if delay := os.Getenv("PORTO_DAEMON_HTTP_HELPER_DELAY"); delay != "" {
+		parsed, err := time.ParseDuration(delay)
+		if err != nil {
+			os.Exit(13)
+		}
+		time.Sleep(parsed)
+	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", os.Getenv("PORT")))
+	if err != nil {
+		os.Exit(14)
+	}
+	status, err := strconv.Atoi(os.Getenv("PORTO_DAEMON_HTTP_HELPER_STATUS"))
+	if err != nil {
+		os.Exit(15)
+	}
+	_ = http.Serve(listener, http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(status)
+	}))
+	os.Exit(0)
+}
+
+func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		project, err := st.GetProjectByID(context.Background(), projectID)
+		if err != nil {
+			t.Fatalf("load project: %v", err)
+		}
+		if project.Status == want {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	project, err := st.GetProjectByID(context.Background(), projectID)
+	if err != nil {
+		t.Fatalf("load project after timeout: %v", err)
+	}
+	t.Fatalf("status = %q, want %q", project.Status, want)
+}
+
 func testProject(t *testing.T, project app.Project) (*store.Store, app.Project) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
@@ -485,7 +608,10 @@ func TestKillSwitchRoutesSyncActivePortsAndRunCleanup(t *testing.T) {
 	runner := &killSwitchRunner{syncArgs: make(chan []string, 1)}
 	server := New(st, nil)
 	server.killSwitch = killswitch.NewManager(runner, noopKillSwitchInstaller{})
-	server.running[id] = &projectProcess{cmd: &exec.Cmd{}}
+	server.running[id] = &projectProcess{
+		cmd:     &exec.Cmd{},
+		project: app.Project{Status: "running"},
+	}
 	mux := http.NewServeMux()
 	server.routes(mux)
 

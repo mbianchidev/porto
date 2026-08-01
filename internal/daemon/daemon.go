@@ -38,7 +38,13 @@ import (
 	"github.com/mbianchidev/porto/internal/store"
 )
 
-const projectProcessExitTimeout = 5 * time.Second
+const (
+	projectProcessExitTimeout = 5 * time.Second
+	projectReadinessInterval  = 250 * time.Millisecond
+	projectReadinessTimeout   = 2 * time.Second
+)
+
+var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
 	store           *store.Store
@@ -53,6 +59,8 @@ type Server struct {
 	sendbox         sendboxIntegration
 	compose         composeIntegration
 	setupRunner     projectSetupRunner
+	healthClient    *http.Client
+	readinessDelay  time.Duration
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
@@ -92,9 +100,17 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sendbox:         sendbox.New(nil),
 		compose:         compose.New(nil),
 		setupRunner:     projectsetup.ExecRunner{},
-		sqnsl:           sqnsl.NewManager(nil),
-		killSwitch:      killswitch.NewManager(nil, nil),
-		userHomeDir:     os.UserHomeDir,
+		healthClient: &http.Client{
+			Timeout: projectReadinessTimeout,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				Proxy:             nil,
+			},
+		},
+		readinessDelay: projectReadinessInterval,
+		sqnsl:          sqnsl.NewManager(nil),
+		killSwitch:     killswitch.NewManager(nil, nil),
+		userHomeDir:    os.UserHomeDir,
 	}
 }
 
@@ -562,17 +578,27 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	result, err := s.runProjectSetup(r.Context(), project)
+	if errors.Is(err, errProjectSetupConflict) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
 
+func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (projectsetup.Result, error) {
 	s.mu.Lock()
 	if s.settingUp[project.ID] {
 		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("%s setup is already running", project.Name), http.StatusConflict)
-		return
+		return projectsetup.Result{}, fmt.Errorf("%w: %s setup is already running", errProjectSetupConflict, project.Name)
 	}
 	if running := s.running[project.ID]; running != nil {
 		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("stop %s before running setup", project.Name), http.StatusConflict)
-		return
+		return projectsetup.Result{}, fmt.Errorf("%w: stop %s before running setup", errProjectSetupConflict, project.Name)
 	}
 	s.settingUp[project.ID] = true
 	s.mu.Unlock()
@@ -582,7 +608,7 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	setupContext := context.WithoutCancel(r.Context())
+	setupContext := context.WithoutCancel(ctx)
 	var logMu sync.Mutex
 	emit := func(stream, line string) error {
 		logMu.Lock()
@@ -590,20 +616,17 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		return s.store.AddLog(setupContext, project.ID, stream, line)
 	}
 	if err := emit("system", "Dependency setup started."); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return projectsetup.Result{}, err
 	}
 	result, err := s.setupRunner.Run(setupContext, project, emit)
 	if err != nil {
 		_ = emit("system", "Dependency setup failed: "+err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return result, err
 	}
 	if err := emit("system", "Dependency setup completed."); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return result, err
 	}
-	writeJSON(w, result)
+	return result, nil
 }
 
 func (s *Server) startProject(ctx context.Context, name string, noPull bool) (app.Project, error) {
@@ -620,7 +643,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		return p, fmt.Errorf("%s is stopping", p.Name)
 	}
 	if running := s.running[p.ID]; running != nil && running.cmd != nil && running.cmd.Process != nil {
-		p.Status = "running"
+		p.Status = running.project.Status
 		return p, nil
 	}
 	used, err := s.store.UsedPorts(ctx)
@@ -655,18 +678,60 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	runtimeProject := p
 	runtimeProject.Port = port
 	runtimeProject.PID = cmd.Process.Pid
-	runtimeProject.Status = "running"
+	runtimeProject.Status = "starting"
 	running := &projectProcess{
 		cmd:     cmd,
 		done:    make(chan struct{}),
 		project: runtimeProject,
 	}
 	s.running[p.ID] = running
-	_ = s.store.SetRuntime(ctx, p.ID, "running", cmd.Process.Pid, port)
+	_ = s.store.SetRuntime(ctx, p.ID, "starting", cmd.Process.Pid, port)
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
 	go s.waitForProject(p, running, port)
+	go s.waitForProjectReady(p, running, port)
 	return s.store.GetProject(ctx, name)
+}
+
+func (s *Server) waitForProjectReady(project app.Project, running *projectProcess, port int) {
+	ticker := time.NewTicker(s.readinessDelay)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-running.done:
+			return
+		case <-ticker.C:
+		}
+
+		response, err := s.healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			continue
+		}
+
+		s.mu.Lock()
+		if s.running[project.ID] != running || running.stopping {
+			s.mu.Unlock()
+			return
+		}
+		running.project.Status = "running"
+		err = s.store.SetRuntime(context.Background(), project.ID, "running", running.cmd.Process.Pid, port)
+		s.mu.Unlock()
+		if err != nil {
+			log.Printf("mark %s ready: %v", project.Name, err)
+			return
+		}
+		if err := s.store.AddLog(context.Background(), project.ID, "system", "HTTP readiness check passed."); err != nil {
+			log.Printf("store readiness log for %s: %v", project.Name, err)
+		}
+		s.syncKillSwitch(context.Background())
+		return
+	}
 }
 
 func (s *Server) waitForProject(project app.Project, running *projectProcess, port int) {
@@ -1010,6 +1075,15 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if _, planErr := projectsetup.Plan(created); planErr == nil {
+		if _, err := s.runProjectSetup(r.Context(), created); err != nil {
+			http.Error(w, fmt.Sprintf("branch instance created, but dependency setup failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	} else if !errors.Is(planErr, projectsetup.ErrUnsupported) {
+		http.Error(w, fmt.Sprintf("branch instance created, but dependency setup could not start: %v", planErr), http.StatusInternalServerError)
+		return
+	}
 	created.Branch = req.Branch
 	created.DefaultBranch = defaultBranch
 	created.HTTPSURL = config.ProjectHTTPSURL(created.Hostname)
@@ -1223,11 +1297,11 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		}
 		ps[i].HTTPSURL = config.ProjectHTTPSURL(ps[i].Hostname)
 		s.mu.Lock()
-		_, ok := s.running[ps[i].ID]
+		running := s.running[ps[i].ID]
 		s.mu.Unlock()
-		if ok {
-			ps[i].Status = "running"
-		} else if ps[i].Status == "running" {
+		if running != nil {
+			ps[i].Status = running.project.Status
+		} else if ps[i].Status == "running" || ps[i].Status == "starting" {
 			ps[i].Status = "stopped"
 		}
 		s.setSendboxMetadata(&ps[i], settings.SendboxEnabled)

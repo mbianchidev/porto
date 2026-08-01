@@ -74,7 +74,9 @@ func TestManagedPortsIncludesOnlyActiveProcesses(t *testing.T) {
 	projects := []app.Project{
 		{Name: "running", Status: "running", PID: 101, Port: 41002},
 		{Name: "duplicate", Status: "running", PID: 102, Port: 41002},
+		{Name: "starting", Status: "starting", PID: 106, Port: 41005},
 		{Name: "stopped", Status: "stopped", PID: 0, Port: 41003},
+		{Name: "crashed", Status: "crashed", PID: 107, Port: 41006},
 		{Name: "stale", Status: "running", PID: 0, Port: 41004},
 		{Name: "daemon", Status: "running", PID: 103, Port: 37623},
 		{Name: "router", Status: "running", PID: 104, Port: 37680},
@@ -82,7 +84,7 @@ func TestManagedPortsIncludesOnlyActiveProcesses(t *testing.T) {
 	}
 
 	got := ManagedPorts(projects)
-	want := []int{41001, 41002}
+	want := []int{41001, 41002, 41005}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("ports = %v, want %v", got, want)
 	}

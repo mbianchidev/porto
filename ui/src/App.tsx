@@ -69,7 +69,7 @@ type CleanupResult = {
 type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
 type ProjectView = 'list' | 'tiles'
-type ProjectStatusFilter = 'all' | 'running' | 'stopped' | 'error'
+type ProjectStatusFilter = 'all' | 'starting' | 'running' | 'stopped' | 'error'
 type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup' | 'remove'
 
 type LogLine = {
@@ -324,24 +324,64 @@ function App() {
   const [notice, setNotice] = useState('')
   const logConsoleRef = useRef<HTMLElement>(null)
   const normalizedProjectQuery = projectQuery.trim().toLocaleLowerCase()
+  const sourceKey = (project: Project) => project.sourcePath || project.path
+  const matchingSources = new Set(
+    projects
+      .filter((project) => {
+        if (normalizedProjectQuery === '') return true
+        return [project.name, project.branch, project.hostname, sourceKey(project)]
+          .some((value) => value.toLocaleLowerCase().includes(normalizedProjectQuery))
+      })
+      .map(sourceKey),
+  )
   const filteredProjects = projects.filter((project) => {
-    const matchesName = normalizedProjectQuery === ''
-      || project.name.toLocaleLowerCase().includes(normalizedProjectQuery)
+    const matchesName = matchingSources.has(sourceKey(project))
     const matchesStatus = projectStatusFilter === 'all'
       || project.status === projectStatusFilter
-      || (projectStatusFilter === 'error' && project.status !== 'running' && project.status !== 'stopped')
+      || (
+        projectStatusFilter === 'error'
+        && project.status !== 'starting'
+        && project.status !== 'running'
+        && project.status !== 'stopped'
+      )
     return matchesName && matchesStatus
   })
+  const projectGroupTotals = projects.reduce<Record<string, number>>((totals, project) => {
+    const key = sourceKey(project)
+    totals[key] = (totals[key] ?? 0) + 1
+    return totals
+  }, {})
+  const projectGroups = Object.entries(
+    filteredProjects.reduce<Record<string, Project[]>>((groups, project) => {
+      const key = sourceKey(project)
+      groups[key] = [...(groups[key] ?? []), project]
+      return groups
+    }, {}),
+  )
+    .map(([key, groupProjects]) => ({
+      key,
+      projects: groupProjects.sort((left, right) => {
+        if (left.managedInstance !== right.managedInstance) return left.managedInstance ? 1 : -1
+        const leftDefault = left.branch === left.defaultBranch
+        const rightDefault = right.branch === right.defaultBranch
+        if (leftDefault !== rightDefault) return leftDefault ? -1 : 1
+        return left.branch.localeCompare(right.branch)
+      }),
+      total: projectGroupTotals[key] ?? groupProjects.length,
+    }))
+    .sort((left, right) => left.projects[0].name.localeCompare(right.projects[0].name))
+  const sourceProjectCount = new Set(projects.map(sourceKey)).size
+  const managedInstanceCount = projects.filter((project) => project.managedInstance).length
   const projectStatusCounts = projects.reduce(
     (counts, project) => {
-      if (project.status === 'running' || project.status === 'stopped') {
+      if (project.status === 'starting' || project.status === 'running' || project.status === 'stopped') {
         counts[project.status] += 1
       } else {
         counts.error += 1
       }
       return counts
     },
-    { running: 0, stopped: 0, error: 0 },
+    { starting: 0, running: 0, stopped: 0, error: 0 },
   )
 
   useEffect(() => {
@@ -456,7 +496,7 @@ function App() {
         })
         if (!response.ok) throw new Error(await response.text())
         setError('')
-        setNotice(`Switched ${project.name} to ${branch}${project.status === 'running' ? ' and restarted it' : ''}.`)
+        setNotice(`Switched ${project.name} to ${branch}${project.status === 'running' || project.status === 'starting' ? ' and restarted it' : ''}.`)
         await refreshProjects()
       } catch (err) {
         setError(err instanceof Error ? err.message : 'Branch switch failed')
@@ -476,7 +516,7 @@ function App() {
         })
         if (!response.ok) throw new Error(await response.text())
         setError('')
-        setNotice(`Created a ${project.name} instance for ${branch}.`)
+        setNotice(`Created and prepared a ${project.name} instance for ${branch}.`)
         setBranchOptions({})
         await refreshProjects()
       } catch (err) {
@@ -1015,7 +1055,10 @@ function App() {
             <div>
               <p className="eyebrow">Projects</p>
               <h1>Local work, in motion.</h1>
-              <p>{projects.length} discovered {projects.length === 1 ? 'project' : 'projects'}</p>
+              <p>
+                {sourceProjectCount} source {sourceProjectCount === 1 ? 'project' : 'projects'}
+                {managedInstanceCount > 0 && ` · ${managedInstanceCount} branch ${managedInstanceCount === 1 ? 'instance' : 'instances'}`}
+              </p>
             </div>
             <div className="projectTools">
               <div className="viewSwitch" role="group" aria-label="Project view">
@@ -1048,12 +1091,12 @@ function App() {
               <input
                 type="search"
                 value={projectQuery}
-                placeholder="Filter by project name"
+                placeholder="Filter projects, branches, or hosts"
                 onChange={(event) => setProjectQuery(event.target.value)}
               />
             </label>
             <div className="statusFilters" role="group" aria-label="Filter projects by status">
-              {(['all', 'running', 'stopped', 'error'] as const).map((status) => (
+              {(['all', 'starting', 'running', 'stopped', 'error'] as const).map((status) => (
                 <button
                   type="button"
                   className={projectStatusFilter === status ? `active ${status}` : status}
@@ -1095,7 +1138,22 @@ function App() {
             </button>
           </article>
         )}
-        {filteredProjects.map((project) => (
+        {projectGroups.map((group) => (
+          <section
+            className={`projectGroup ${group.total > 1 ? 'multi' : 'single'}`}
+            key={group.key}
+          >
+            {group.total > 1 && (
+              <header className="projectGroupHeader">
+                <div>
+                  <span>Source project</span>
+                  <strong>{group.projects[0].name}</strong>
+                </div>
+                <small>{group.total} branch runtimes</small>
+              </header>
+            )}
+            <div className="projectGroupCards">
+        {group.projects.map((project) => (
           <article className="card" key={project.id}>
             <div className="cardTop">
               <div className="cardHeader">
@@ -1168,7 +1226,7 @@ function App() {
                 className="setupButton"
                 label={setupProjectID === project.id ? 'Setting up dependencies' : 'Set up dependencies'}
                 icon="setup"
-                disabled={project.status === 'running' || setupProjectID != null}
+                disabled={project.status === 'running' || project.status === 'starting' || setupProjectID != null}
                 onClick={() => setupDependencies(project)}
               />
               <ProjectActionButton
@@ -1220,6 +1278,9 @@ function App() {
               )}
             </div>
           </article>
+        ))}
+            </div>
+          </section>
         ))}
           </section>
         </>

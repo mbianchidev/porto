@@ -13,8 +13,8 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Detection priority: `Makefile`, Compose files, `package.json` scripts, Python entry points, Go mains, then Rust binaries.
 - One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
-- PID, status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
-- Dashboard branch switching with automatic restart, plus concurrent branch instances backed by managed Git worktrees.
+- PID, readiness status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
+- Dashboard branch switching with automatic restart, plus grouped concurrent branch instances backed by prepared managed Git worktrees.
 - Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
@@ -53,6 +53,8 @@ go build -o porto ./cmd/porto
 The binary carries the whole daemon and CLI, and loads the dashboard from `PORTO_UI_DIR`, `ui/dist` in the working directory, or `ui/dist` or `dist` next to the executable. The React UI is intentionally simple to self-host: run `npm --prefix ui run dev` during UI development, or build static assets with `npm --prefix ui run build`.
 
 Each project card includes **Setup dependencies**. Porto runs one setup at a time per project, writes its output to the process console, and keeps the setup running if the browser disconnects. Stop a project before setting it up.
+
+After launch, Porto reports a project as `starting` until `http://127.0.0.1:<assigned-port>/` returns HTTP 200. A live process remains `starting` while its frontend is unavailable and becomes `crashed` if it exits before readiness succeeds.
 
 ## Quickstart
 
@@ -144,7 +146,7 @@ Project output is stored in the same database. `porto logs` and the dashboard pr
 
 Each project card has a searchable picker for the repository's local and remote-tracking branches, with the default branch plus `main` and `master` pinned first when available. Selecting a different running branch stops the process, switches the worktree, updates its HTTPS hostname, and restarts it. Porto refuses the switch when the worktree is dirty or the target branch is already checked out elsewhere.
 
-Use **New instance** to run another branch without disturbing the original checkout. Porto creates a managed Git worktree under `~/.config/porto/worktrees` (or `$PORTO_HOME/worktrees`), gives it an independent process, port, logs, and controls, and keeps the default branch on the base hostname. Other branches use compact labels: `copilot/improve-elemental-resistances-system` becomes `cop-imp-ele-res-sys`, so a project named `2dnd` receives `https://2dnd-cop-imp-ele-res-sys.porto.localhost/`. Porto shortens long labels and adds a deterministic suffix when needed to keep every hostname valid and unique.
+Use **New instance** to run another branch without disturbing the original checkout. Porto creates a managed Git worktree under `~/.config/porto/worktrees` (or `$PORTO_HOME/worktrees`), runs the detected dependency setup so ignored artifacts such as `node_modules` are available, and gives the instance an independent process, port, logs, and controls. The dashboard groups these runtimes under their source project. The default branch keeps the base hostname. Other branches use compact labels: `copilot/improve-elemental-resistances-system` becomes `cop-imp-ele-res-sys`, so a project named `2dnd` receives `https://2dnd-cop-imp-ele-res-sys.porto.localhost/`. Porto shortens long labels and adds a deterministic suffix when needed to keep every hostname valid and unique.
 
 Managed instances can be removed from their project card after their worktree is clean. Porto stops the process, removes the Git worktree, and deletes only that instance's runtime metadata and logs.
 

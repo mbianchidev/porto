@@ -33,6 +33,8 @@ type Runner interface {
 
 type ExecRunner struct{}
 
+var ErrUnsupported = errors.New("no supported dependency setup")
+
 func (ExecRunner) Run(ctx context.Context, project app.Project, emit func(stream, line string) error) (Result, error) {
 	commands, err := Plan(project)
 	if err != nil {
@@ -78,7 +80,7 @@ func Plan(project app.Project) ([]Command, error) {
 	if has(project.Path, "Cargo.toml") {
 		return []Command{{Name: "cargo", Args: []string{"fetch"}}}, nil
 	}
-	return nil, fmt.Errorf("no supported dependency setup found for %s", project.Name)
+	return nil, fmt.Errorf("%w found for %s", ErrUnsupported, project.Name)
 }
 
 func NodeRunCommand(dir, script string) Command {

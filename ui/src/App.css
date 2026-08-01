@@ -117,6 +117,62 @@ main {
   gap: 18px;
 }
 
+.projectGroup.single,
+.projectGroup.single .projectGroupCards {
+  display: contents;
+}
+
+.projectGroup.multi {
+  grid-column: 1 / -1;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  padding: 12px;
+  background: rgba(103, 232, 249, 0.025);
+  box-shadow: inset 0 1px rgba(103, 232, 249, 0.18);
+}
+
+.projectGroupHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 2px 4px 12px;
+}
+
+.projectGroupHeader div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.projectGroupHeader span,
+.projectGroupHeader small {
+  color: var(--muted);
+  font: 10px/1.4 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.projectGroupHeader strong {
+  overflow: hidden;
+  color: var(--text-h);
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.projectGroupCards {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 360px), 1fr));
+  gap: 10px;
+}
+
+.projectGroup.multi .card {
+  border-color: rgba(103, 232, 249, 0.18);
+  box-shadow: none;
+}
+
 .projectFilters {
   display: grid;
   grid-template-columns: minmax(220px, 1fr) auto auto;
@@ -215,6 +271,11 @@ main {
 .statusFilters button.active.running {
   border-color: rgba(34, 197, 94, 0.35);
   background: rgba(34, 197, 94, 0.12);
+}
+
+.statusFilters button.active.starting {
+  border-color: rgba(56, 189, 248, 0.4);
+  background: rgba(56, 189, 248, 0.12);
 }
 
 .statusFilters button.active.error {
@@ -580,6 +641,15 @@ button:focus-visible {
   gap: 8px;
 }
 
+.grid.list .projectGroup.multi {
+  width: 100%;
+}
+
+.grid.list .projectGroupCards {
+  display: flex;
+  flex-direction: column;
+}
+
 .grid.list .card {
   display: grid;
   grid-template-areas: "identity branches runtime actions";
@@ -799,6 +869,11 @@ button:focus-visible {
 .status.running {
   color: #86efac;
   background: rgba(34, 197, 94, 0.16);
+}
+
+.status.starting {
+  color: #7dd3fc;
+  background: rgba(56, 189, 248, 0.16);
 }
 
 .status.crashed {
