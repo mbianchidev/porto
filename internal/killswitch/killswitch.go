@@ -575,7 +575,8 @@ func ManagedPorts(projects []app.Project) []int {
 	ports := make([]int, 0, len(projects))
 	seen := map[int]bool{}
 	for _, project := range projects {
-		if project.Status != "running" || project.PID <= 0 || project.Port <= 0 || reserved[project.Port] || seen[project.Port] {
+		active := project.Status == "starting" || project.Status == "running"
+		if !active || project.PID <= 0 || project.Port <= 0 || reserved[project.Port] || seen[project.Port] {
 			continue
 		}
 		seen[project.Port] = true

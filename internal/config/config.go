@@ -1,10 +1,13 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -16,6 +19,7 @@ const (
 	RouterTLSAddr            = "127.0.0.1:37681"
 	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
 	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
+	PortlessHTTPSMarker      = "portless-https"
 	LocalDomain              = "porto.local"
 	LocalhostDomain          = "porto.localhost"
 	BasePort                 = 41000
@@ -23,6 +27,8 @@ const (
 	BranchCleanupInterval    = 10 * time.Second
 	CertificateCheckInterval = 24 * time.Hour
 )
+
+var branchTokenSeparators = regexp.MustCompile(`[^a-z0-9]+`)
 
 func RouterTLSAddress() string {
 	if address := strings.TrimSpace(os.Getenv(RouterTLSAddrEnv)); address != "" {
@@ -32,15 +38,82 @@ func RouterTLSAddress() string {
 }
 
 func ProjectHTTPSURL(hostname string) string {
-	host := hostname + "." + LocalDomain
+	host := hostname + "." + LocalhostDomain
 	port := strings.TrimSpace(os.Getenv(RouterTLSPublicPortEnv))
 	if port == "" {
-		_, port, _ = net.SplitHostPort(RouterTLSAddress())
+		if PortlessHTTPSInstalled() {
+			port = "443"
+		} else {
+			_, port, _ = net.SplitHostPort(RouterTLSAddress())
+		}
 	}
 	if port == "" || port == "443" {
 		return "https://" + host + "/"
 	}
 	return "https://" + net.JoinHostPort(host, port) + "/"
+}
+
+func ProjectHostname(base, branch, defaultBranch string) string {
+	if branch == "" || branch == defaultBranch {
+		return base
+	}
+	return appendHostnameSuffix(base, compactBranchToken(branch))
+}
+
+func DisambiguateProjectHostname(candidate, branch string) string {
+	sum := sha256.Sum256([]byte(branch))
+	return appendHostnameSuffix(candidate, hex.EncodeToString(sum[:3]))
+}
+
+func ManagedWorktreeRoot() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "worktrees"), nil
+}
+
+func compactBranchToken(branch string) string {
+	parts := branchTokenSeparators.Split(strings.ToLower(branch), -1)
+	tokens := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == "" {
+			continue
+		}
+		if len(part) > 3 {
+			part = part[:3]
+		}
+		tokens = append(tokens, part)
+	}
+	if len(tokens) == 0 {
+		return "branch"
+	}
+	return strings.Join(tokens, "-")
+}
+
+func appendHostnameSuffix(base, suffix string) string {
+	labels := strings.Split(base, ".")
+	last := labels[len(labels)-1]
+	maxSuffix := 63 - len(last) - 1
+	if maxSuffix < 1 {
+		last = last[:min(len(last), 55)]
+		maxSuffix = 63 - len(last) - 1
+	}
+	if len(suffix) > maxSuffix {
+		sum := sha256.Sum256([]byte(suffix))
+		hash := hex.EncodeToString(sum[:3])
+		keep := maxSuffix - len(hash) - 1
+		if keep < 1 {
+			suffix = hash
+			if len(suffix) > maxSuffix {
+				suffix = suffix[:maxSuffix]
+			}
+		} else {
+			suffix = strings.Trim(suffix[:keep], "-") + "-" + hash
+		}
+	}
+	labels[len(labels)-1] = last + "-" + suffix
+	return strings.Join(labels, ".")
 }
 
 func Dir() (string, error) {
@@ -74,4 +147,30 @@ func CertificatePaths() (string, string, error) {
 	}
 	certDir := filepath.Join(dir, "certificates")
 	return filepath.Join(certDir, LocalDomain+".pem"), filepath.Join(certDir, LocalDomain+"-key.pem"), nil
+}
+
+func CertificateAuthorityPaths() (string, string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", "", err
+	}
+	certDir := filepath.Join(dir, "certificates")
+	return filepath.Join(certDir, "porto-root-ca.pem"), filepath.Join(certDir, "porto-root-ca-key.pem"), nil
+}
+
+func PortlessHTTPSMarkerPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, PortlessHTTPSMarker), nil
+}
+
+func PortlessHTTPSInstalled() bool {
+	path, err := PortlessHTTPSMarkerPath()
+	if err != nil {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
 }

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
 import './App.css'
 
 type Project = {
@@ -9,7 +9,11 @@ type Project = {
   command: string
   port: number
   hostname: string
+  baseHostname: string
   httpsUrl: string
+  sourcePath: string
+  managedInstance: boolean
+  defaultBranch: string
   pid: number
   status: string
   branch: string
@@ -65,8 +69,8 @@ type CleanupResult = {
 type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
 type ProjectView = 'list' | 'tiles'
-type ProjectStatusFilter = 'all' | 'running' | 'stopped' | 'error'
-type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup'
+type ProjectStatusFilter = 'all' | 'starting' | 'running' | 'stopped' | 'error'
+type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup' | 'remove'
 
 type LogLine = {
   projectId: number
@@ -145,9 +149,145 @@ function ProjectActionButton({
             <path d="M7 20v-3a3 3 0 0 1 3-3" />
           </>
         )}
+        {icon === 'remove' && (
+          <>
+            <path d="M5 7h14M9 7V4h6v3m-8 0 1 13h8l1-13" />
+            <path d="M10 11v5m4-5v5" />
+          </>
+        )}
       </svg>
       <span className="visuallyHidden">{label}</span>
     </button>
+  )
+}
+
+function BranchPicker({
+  label,
+  value,
+  options,
+  defaultBranch,
+  placeholder,
+  disabled,
+  onOpen,
+  onSelect,
+}: {
+  label: string
+  value: string
+  options: string[]
+  defaultBranch: string
+  placeholder: string
+  disabled: boolean
+  onOpen: () => void
+  onSelect: (branch: string) => void
+}) {
+  const id = useId()
+  const inputID = `${id}-input`
+  const listID = `${id}-list`
+  const rootRef = useRef<HTMLDivElement>(null)
+  const [open, setOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const pinned = [defaultBranch, 'main', 'master'].filter(Boolean)
+  const orderedOptions = [...new Set(options)]
+    .sort((left, right) => {
+      const leftPinned = pinned.indexOf(left)
+      const rightPinned = pinned.indexOf(right)
+      if (leftPinned !== -1 || rightPinned !== -1) {
+        if (leftPinned === -1) return 1
+        if (rightPinned === -1) return -1
+        return leftPinned - rightPinned
+      }
+      return left.localeCompare(right)
+    })
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const filteredOptions = orderedOptions.filter((branch) => (
+    normalizedQuery === '' || branch.toLocaleLowerCase().includes(normalizedQuery)
+  ))
+
+  useEffect(() => {
+    if (!open) return
+    const close = (event: PointerEvent) => {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+        setQuery('')
+      }
+    }
+    window.addEventListener('pointerdown', close)
+    return () => window.removeEventListener('pointerdown', close)
+  }, [open])
+
+  function showOptions() {
+    if (disabled) return
+    onOpen()
+    setQuery('')
+    setOpen(true)
+  }
+
+  return (
+    <div className="branchField">
+      <label htmlFor={inputID}>{label}</label>
+      <div className={`branchPicker ${open ? 'open' : ''}`} ref={rootRef}>
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5" />
+          <path d="m16 16 4 4" />
+        </svg>
+        <input
+          id={inputID}
+          type="search"
+          role="combobox"
+          aria-autocomplete="list"
+          aria-controls={listID}
+          aria-expanded={open}
+          value={open ? query : value}
+          placeholder={placeholder}
+          disabled={disabled}
+          onFocus={showOptions}
+          onClick={showOptions}
+          onChange={(event) => {
+            setQuery(event.target.value)
+            setOpen(true)
+          }}
+          onKeyDown={(event) => {
+            if (event.key === 'Escape') {
+              setOpen(false)
+              setQuery('')
+              event.currentTarget.blur()
+            }
+            if (event.key === 'Enter' && filteredOptions.length === 1) {
+              event.preventDefault()
+              onSelect(filteredOptions[0])
+              setOpen(false)
+              setQuery('')
+            }
+          }}
+        />
+        <span className="branchChevron" aria-hidden="true">⌄</span>
+        {open && (
+          <div className="branchMenu" id={listID} role="listbox">
+            {filteredOptions.length === 0 && (
+              <span className="branchEmpty">No matching branches</span>
+            )}
+            {filteredOptions.map((branch) => (
+              <button
+                type="button"
+                role="option"
+                aria-selected={branch === value}
+                className={branch === value ? 'selected' : ''}
+                key={branch}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  onSelect(branch)
+                  setOpen(false)
+                  setQuery('')
+                }}
+              >
+                <span>{branch}</span>
+                {branch === defaultBranch && <small>default</small>}
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
   )
 }
 
@@ -170,37 +310,91 @@ function App() {
   const [sqlNotSoLiteStatus, setSQLNotSoLiteStatus] = useState<IntegrationStatus | null>(null)
   const [sendboxStatus, setSendboxStatus] = useState<IntegrationStatus | null>(null)
   const [killSwitchStatus, setKillSwitchStatus] = useState<KillSwitchStatus | null>(null)
-  const [logProjectName, setLogProjectName] = useState('')
+  const [logProjectID, setLogProjectID] = useState<number | null>(null)
   const [logStream, setLogStream] = useState<LogStream>('all')
   const [logLines, setLogLines] = useState<LogLine[]>([])
   const [logRefresh, setLogRefresh] = useState(0)
   const [logFocusRequest, setLogFocusRequest] = useState(0)
-  const [setupProjectName, setSetupProjectName] = useState('')
+  const [setupProjectID, setSetupProjectID] = useState<number | null>(null)
+  const [branchOptions, setBranchOptions] = useState<Record<number, string[]>>({})
+  const [branchBusyID, setBranchBusyID] = useState<number | null>(null)
   const [logsLoading, setLogsLoading] = useState(false)
   const [logError, setLogError] = useState('')
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const logConsoleRef = useRef<HTMLElement>(null)
   const normalizedProjectQuery = projectQuery.trim().toLocaleLowerCase()
+  const sourceKey = (project: Project) => project.sourcePath || project.path
+  const matchingSources = new Set(
+    projects
+      .filter((project) => {
+        if (normalizedProjectQuery === '') return true
+        return [project.name, project.branch, project.hostname, sourceKey(project)]
+          .some((value) => value.toLocaleLowerCase().includes(normalizedProjectQuery))
+      })
+      .map(sourceKey),
+  )
   const filteredProjects = projects.filter((project) => {
-    const matchesName = normalizedProjectQuery === ''
-      || project.name.toLocaleLowerCase().includes(normalizedProjectQuery)
+    const matchesName = matchingSources.has(sourceKey(project))
     const matchesStatus = projectStatusFilter === 'all'
       || project.status === projectStatusFilter
-      || (projectStatusFilter === 'error' && project.status !== 'running' && project.status !== 'stopped')
+      || (
+        projectStatusFilter === 'error'
+        && project.status !== 'starting'
+        && project.status !== 'running'
+        && project.status !== 'stopped'
+      )
     return matchesName && matchesStatus
   })
+  const projectGroupTotals = projects.reduce<Record<string, number>>((totals, project) => {
+    const key = sourceKey(project)
+    totals[key] = (totals[key] ?? 0) + 1
+    return totals
+  }, {})
+  const projectGroups = Object.entries(
+    filteredProjects.reduce<Record<string, Project[]>>((groups, project) => {
+      const key = sourceKey(project)
+      groups[key] = [...(groups[key] ?? []), project]
+      return groups
+    }, {}),
+  )
+    .map(([key, groupProjects]) => ({
+      key,
+      projects: groupProjects.sort((left, right) => {
+        if (left.managedInstance !== right.managedInstance) return left.managedInstance ? 1 : -1
+        const leftDefault = left.branch === left.defaultBranch
+        const rightDefault = right.branch === right.defaultBranch
+        if (leftDefault !== rightDefault) return leftDefault ? -1 : 1
+        return left.branch.localeCompare(right.branch)
+      }),
+      total: projectGroupTotals[key] ?? groupProjects.length,
+    }))
+    .sort((left, right) => left.projects[0].name.localeCompare(right.projects[0].name))
+  const sourceProjectCount = new Set(projects.map(sourceKey)).size
+  const managedInstanceCount = projects.filter((project) => project.managedInstance).length
   const projectStatusCounts = projects.reduce(
     (counts, project) => {
-      if (project.status === 'running' || project.status === 'stopped') {
+      if (project.status === 'starting' || project.status === 'running' || project.status === 'stopped') {
         counts[project.status] += 1
       } else {
         counts.error += 1
       }
       return counts
     },
-    { running: 0, stopped: 0, error: 0 },
+    { starting: 0, running: 0, stopped: 0, error: 0 },
   )
+
+  useEffect(() => {
+    if (!error) return
+    const timer = window.setTimeout(() => setError(''), 7000)
+    return () => window.clearTimeout(timer)
+  }, [error])
+
+  useEffect(() => {
+    if (!notice) return
+    const timer = window.setTimeout(() => setNotice(''), 4500)
+    return () => window.clearTimeout(timer)
+  }, [notice])
 
   async function refreshProjects() {
     try {
@@ -276,6 +470,78 @@ function App() {
       setNotice('')
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Action failed')
+    }
+  }
+
+  async function loadBranches(project: Project) {
+      if (branchOptions[project.id]) return
+      try {
+        const response = await fetch(`/api/projects/${project.id}/branches`)
+        if (!response.ok) throw new Error(await response.text())
+        const result: { branches: string[] } = await response.json()
+        setBranchOptions((current) => ({ ...current, [project.id]: result.branches }))
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to load branches')
+      }
+    }
+
+  async function switchBranch(project: Project, branch: string) {
+      if (!branch || branch === project.branch) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/branch`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch }),
+        })
+        if (!response.ok) throw new Error(await response.text())
+        setError('')
+        setNotice(`Switched ${project.name} to ${branch}${project.status === 'running' || project.status === 'starting' ? ' and restarted it' : ''}.`)
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Branch switch failed')
+      } finally {
+        setBranchBusyID(null)
+      }
+    }
+
+  async function createInstance(project: Project, branch: string) {
+      if (!branch) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/instances`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ branch }),
+        })
+        if (!response.ok) throw new Error(await response.text())
+        setError('')
+        setNotice(`Created and prepared a ${project.name} instance for ${branch}.`)
+        setBranchOptions({})
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to create branch instance')
+      } finally {
+        setBranchBusyID(null)
+      }
+    }
+
+  async function removeInstance(project: Project) {
+      const dirtyWarning = project.dirty ? ' Uncommitted changes in this instance will be discarded.' : ''
+      if (!window.confirm(`Delete the ${project.branch} instance of ${project.name}?${dirtyWarning}`)) return
+      setBranchBusyID(project.id)
+      try {
+        const response = await fetch(`/api/projects/${project.id}/instance`, { method: 'DELETE' })
+        if (!response.ok) throw new Error(await response.text())
+        if (logProjectID === project.id) setLogProjectID(null)
+        setError('')
+        setNotice(`Deleted the ${project.branch} instance of ${project.name}.`)
+        setBranchOptions({})
+        await refreshProjects()
+      } catch (err) {
+        setError(err instanceof Error ? err.message : 'Unable to remove branch instance')
+      } finally {
+        setBranchBusyID(null)
     }
   }
 
@@ -402,12 +668,14 @@ function App() {
   }
 
   async function clearLogs() {
-    if (!logProjectName) return
+    if (logProjectID == null) return
+    const project = projects.find((item) => item.id === logProjectID)
+    if (!project) return
     const label = logStream === 'all' ? 'all logs' : `${logStream} logs`
-    if (!window.confirm(`Clear ${label} for ${logProjectName}?`)) return
+    if (!window.confirm(`Clear ${label} for ${project.name}?`)) return
     try {
       const response = await fetch(
-        `/api/projects/${encodeURIComponent(logProjectName)}/logs/clear?stream=${logStream}`,
+        `/api/projects/${logProjectID}/logs/clear?stream=${logStream}`,
         { method: 'POST' },
       )
       if (!response.ok) throw new Error(await response.text())
@@ -420,20 +688,20 @@ function App() {
     }
   }
 
-  function viewLogs(name: string) {
+  function viewLogs(id: number) {
     setLogLines([])
-    setLogProjectName(name)
+    setLogProjectID(id)
     setLogStream('all')
     setLogFocusRequest((value) => value + 1)
   }
 
-  async function setupDependencies(name: string) {
-    viewLogs(name)
-    setSetupProjectName(name)
+  async function setupDependencies(project: Project) {
+    viewLogs(project.id)
+    setSetupProjectID(project.id)
     setError('')
     setNotice('')
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(name)}/setup`, { method: 'POST' })
+      const response = await fetch(`/api/projects/${project.id}/setup`, { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       const result: { commands: string[] } = await response.json()
       setNotice(`Dependency setup completed with ${result.commands.join(' then ')}.`)
@@ -442,7 +710,7 @@ function App() {
       setError(err instanceof Error ? err.message : 'Dependency setup failed')
       setLogRefresh((value) => value + 1)
     } finally {
-      setSetupProjectName('')
+      setSetupProjectID(null)
     }
   }
 
@@ -464,7 +732,7 @@ function App() {
   }, [])
 
   useEffect(() => {
-    if (!logProjectName) return
+    if (logProjectID == null) return
     let active = true
     const loadLogs = async (showLoading: boolean) => {
       if (showLoading) {
@@ -473,7 +741,7 @@ function App() {
       }
       try {
         const response = await fetch(
-          `/api/projects/${encodeURIComponent(logProjectName)}/logs?limit=500&stream=${logStream}`,
+          `/api/projects/${logProjectID}/logs?limit=500&stream=${logStream}`,
         )
         if (!response.ok) throw new Error(await response.text())
         const lines: LogLine[] = await response.json()
@@ -495,18 +763,18 @@ function App() {
       active = false
       window.clearInterval(timer)
     }
-  }, [logProjectName, logStream, logRefresh])
+  }, [logProjectID, logStream, logRefresh])
 
   useEffect(() => {
-    if (!logProjectName) return
+    if (logProjectID == null) return
     const frame = window.requestAnimationFrame(() => {
       logConsoleRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' })
     })
     return () => window.cancelAnimationFrame(frame)
-  }, [logProjectName, logFocusRequest])
+  }, [logProjectID, logFocusRequest])
 
   const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
-  const logProject = projects.find((project) => project.name === logProjectName)
+  const logProject = projects.find((project) => project.id === logProjectID)
 
   return (
     <main>
@@ -524,8 +792,8 @@ function App() {
         </nav>
       </header>
 
-      {error && <div className="error">{error}</div>}
-      {notice && <div className="notice">{notice}</div>}
+      {error && <div className="errorBanner banner" role="alert">{error}</div>}
+      {notice && <div className="notice banner" role="status">{notice}</div>}
 
       {page === 'settings' && (
         <>
@@ -726,12 +994,14 @@ function App() {
         </>
       )}
 
-      {page === 'projects' && logProjectName && (
+      {page === 'projects' && logProjectID != null && (
         <section ref={logConsoleRef} className="logConsole" aria-labelledby="process-console-title">
           <div className="consoleHeader">
             <div>
               <p className="eyebrow">Process console</p>
-              <h2 id="process-console-title">{logProjectName}</h2>
+              <h2 id="process-console-title">
+                {logProject?.name ?? 'Project'}{logProject?.branch ? ` · ${logProject.branch}` : ''}
+              </h2>
               <p>
                 {logProject?.status ?? 'unknown'} · {logProject?.pid ? `PID ${logProject.pid}` : 'no active PID'}
               </p>
@@ -739,7 +1009,7 @@ function App() {
             <div className="consoleActions">
               <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
               <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
-              <button type="button" onClick={() => setLogProjectName('')}>Close</button>
+              <button type="button" onClick={() => setLogProjectID(null)}>Close</button>
             </div>
           </div>
           <div className="streamTabs" role="tablist" aria-label="Log stream">
@@ -786,7 +1056,10 @@ function App() {
             <div>
               <p className="eyebrow">Projects</p>
               <h1>Local work, in motion.</h1>
-              <p>{projects.length} discovered {projects.length === 1 ? 'project' : 'projects'}</p>
+              <p>
+                {sourceProjectCount} source {sourceProjectCount === 1 ? 'project' : 'projects'}
+                {managedInstanceCount > 0 && ` · ${managedInstanceCount} branch ${managedInstanceCount === 1 ? 'instance' : 'instances'}`}
+              </p>
             </div>
             <div className="projectTools">
               <div className="viewSwitch" role="group" aria-label="Project view">
@@ -819,12 +1092,12 @@ function App() {
               <input
                 type="search"
                 value={projectQuery}
-                placeholder="Filter by project name"
+                placeholder="Filter projects, branches, or hosts"
                 onChange={(event) => setProjectQuery(event.target.value)}
               />
             </label>
             <div className="statusFilters" role="group" aria-label="Filter projects by status">
-              {(['all', 'running', 'stopped', 'error'] as const).map((status) => (
+              {(['all', 'starting', 'running', 'stopped', 'error'] as const).map((status) => (
                 <button
                   type="button"
                   className={projectStatusFilter === status ? `active ${status}` : status}
@@ -866,7 +1139,22 @@ function App() {
             </button>
           </article>
         )}
-        {filteredProjects.map((project) => (
+        {projectGroups.map((group) => (
+          <section
+            className={`projectGroup ${group.total > 1 ? 'multi' : 'single'}`}
+            key={group.key}
+          >
+            {group.total > 1 && (
+              <header className="projectGroupHeader">
+                <div>
+                  <span>Source project</span>
+                  <strong>{group.projects[0].name}</strong>
+                </div>
+                <small>{group.total} branch runtimes</small>
+              </header>
+            )}
+            <div className="projectGroupCards">
+        {group.projects.map((project) => (
           <article className="card" key={project.id}>
             <div className="cardTop">
               <div className="cardHeader">
@@ -874,6 +1162,29 @@ function App() {
                 <p>{project.path}</p>
               </div>
               <span className={`status ${project.status}`}>{project.status}</span>
+            </div>
+
+            <div className="branchControls">
+              <BranchPicker
+                label="Running branch"
+                value={project.branch}
+                options={branchOptions[project.id] ?? [project.branch]}
+                defaultBranch={project.defaultBranch}
+                placeholder="Search branches"
+                disabled={branchBusyID === project.id}
+                onOpen={() => loadBranches(project)}
+                onSelect={(branch) => switchBranch(project, branch)}
+              />
+              <BranchPicker
+                label="New instance"
+                value=""
+                options={(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch)}
+                defaultBranch={project.defaultBranch}
+                placeholder="Search branches"
+                disabled={branchBusyID === project.id}
+                onOpen={() => loadBranches(project)}
+                onSelect={(branch) => createInstance(project, branch)}
+              />
             </div>
 
             <dl>
@@ -906,24 +1217,24 @@ function App() {
               <ProjectActionButton
                 label="Start project"
                 icon="play"
-                disabled={setupProjectName === project.name}
-                onClick={() => run(project.name, 'start')}
+                disabled={setupProjectID === project.id}
+                onClick={() => run(String(project.id), 'start')}
               />
-              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(project.name, 'stop')} />
-              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(project.name, 'restart')} />
-              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(project.name, 'kill')} />
+              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(String(project.id), 'stop')} />
+              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(String(project.id), 'restart')} />
+              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(String(project.id), 'kill')} />
               <ProjectActionButton
                 className="setupButton"
-                label={setupProjectName === project.name ? 'Setting up dependencies' : 'Set up dependencies'}
+                label={setupProjectID === project.id ? 'Setting up dependencies' : 'Set up dependencies'}
                 icon="setup"
-                disabled={project.status === 'running' || setupProjectName !== ''}
-                onClick={() => setupDependencies(project.name)}
+                disabled={project.status === 'running' || project.status === 'starting' || setupProjectID != null}
+                onClick={() => setupDependencies(project)}
               />
               <ProjectActionButton
                 className="logsButton"
                 label="View logs"
                 icon="logs"
-                onClick={() => viewLogs(project.name)}
+                onClick={() => viewLogs(project.id)}
               />
               {project.sendboxConfigured && (
                 <ProjectActionButton
@@ -936,7 +1247,7 @@ function App() {
                     || project.sendboxStatus === 'running'
                     || project.sendboxStatus === 'stopping'
                   }
-                  onClick={() => runSendbox(project.name, 'start')}
+                  onClick={() => runSendbox(String(project.id), 'start')}
                 />
               )}
               {(project.sendboxConfigured
@@ -947,7 +1258,7 @@ function App() {
                   label="Stop Sendbox"
                   icon="sendboxStop"
                   disabled={project.sendboxStatus !== 'running'}
-                  onClick={() => runSendbox(project.name, 'stop')}
+                  onClick={() => runSendbox(String(project.id), 'stop')}
                 />
               )}
               <ProjectActionButton
@@ -955,10 +1266,22 @@ function App() {
                 label="Clean merged branches"
                 icon="cleanup"
                 disabled={!savedLocalCleanup && !savedRemoteCleanup}
-                onClick={() => cleanup(project.name)}
+                onClick={() => cleanup(String(project.id))}
               />
+              {project.managedInstance && (
+                <ProjectActionButton
+                  className="removeButton"
+                  label="Delete branch instance"
+                  icon="remove"
+                  disabled={branchBusyID === project.id}
+                  onClick={() => removeInstance(project)}
+                />
+              )}
             </div>
           </article>
+        ))}
+            </div>
+          </section>
         ))}
           </section>
         </>

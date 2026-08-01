@@ -38,7 +38,13 @@ import (
 	"github.com/mbianchidev/porto/internal/store"
 )
 
-const projectProcessExitTimeout = 5 * time.Second
+const (
+	projectProcessExitTimeout = 5 * time.Second
+	projectReadinessInterval  = 250 * time.Millisecond
+	projectReadinessTimeout   = 2 * time.Second
+)
+
+var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
 	store           *store.Store
@@ -46,6 +52,7 @@ type Server struct {
 	running         map[int64]*projectProcess
 	stopping        map[int64]bool
 	settingUp       map[int64]bool
+	deleting        map[int64]bool
 	sendboxRunning  map[int64]*exec.Cmd
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
@@ -53,6 +60,8 @@ type Server struct {
 	sendbox         sendboxIntegration
 	compose         composeIntegration
 	setupRunner     projectSetupRunner
+	healthClient    *http.Client
+	readinessDelay  time.Duration
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
@@ -85,6 +94,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
 		settingUp:       map[int64]bool{},
+		deleting:        map[int64]bool{},
 		sendboxRunning:  map[int64]*exec.Cmd{},
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
@@ -92,9 +102,17 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sendbox:         sendbox.New(nil),
 		compose:         compose.New(nil),
 		setupRunner:     projectsetup.ExecRunner{},
-		sqnsl:           sqnsl.NewManager(nil),
-		killSwitch:      killswitch.NewManager(nil, nil),
-		userHomeDir:     os.UserHomeDir,
+		healthClient: &http.Client{
+			Timeout: projectReadinessTimeout,
+			Transport: &http.Transport{
+				DisableKeepAlives: true,
+				Proxy:             nil,
+			},
+		},
+		readinessDelay: projectReadinessInterval,
+		sqnsl:          sqnsl.NewManager(nil),
+		killSwitch:     killswitch.NewManager(nil, nil),
+		userHomeDir:    os.UserHomeDir,
 	}
 }
 
@@ -108,7 +126,11 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("resolve TLS certificate paths: %w", err)
 	}
-	s.tlsCertificates = certificates.New(certificatePath, keyPath)
+	authorityPath, authorityKeyPath, err := config.CertificateAuthorityPaths()
+	if err != nil {
+		return fmt.Errorf("resolve TLS certificate authority paths: %w", err)
+	}
+	s.tlsCertificates = certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath)
 	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
@@ -196,7 +218,10 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/kill", s.stop(true))
 	mux.HandleFunc("POST /api/projects/{name}/restart", s.restart)
 	mux.HandleFunc("POST /api/projects/{name}/setup", s.setupProject)
+	mux.HandleFunc("GET /api/projects/{name}/branches", s.branches)
 	mux.HandleFunc("POST /api/projects/{name}/branch", s.branch)
+	mux.HandleFunc("POST /api/projects/{name}/instances", s.createInstance)
+	mux.HandleFunc("DELETE /api/projects/{name}/instance", s.removeInstance)
 	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.cleanupBranches)
 	mux.HandleFunc("POST /api/projects/{name}/port", s.pinPort)
 	mux.HandleFunc("POST /api/projects/{name}/sendbox/start", s.startSendbox)
@@ -395,6 +420,11 @@ func (s *Server) startSendbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	if s.deleting[project.ID] {
+		s.mu.Unlock()
+		http.Error(w, "project instance is being deleted", http.StatusConflict)
+		return
+	}
 	if cmd := s.sendboxRunning[project.ID]; cmd != nil && cmd.Process != nil {
 		s.sendboxStates[project.ID] = "running"
 		s.sendboxMessages[project.ID] = "Sendbox session is running."
@@ -555,17 +585,31 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	result, err := s.runProjectSetup(r.Context(), project)
+	if errors.Is(err, errProjectSetupConflict) {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, result)
+}
 
+func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (projectsetup.Result, error) {
 	s.mu.Lock()
+	if s.deleting[project.ID] {
+		s.mu.Unlock()
+		return projectsetup.Result{}, fmt.Errorf("%w: %s instance is being deleted", errProjectSetupConflict, project.Name)
+	}
 	if s.settingUp[project.ID] {
 		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("%s setup is already running", project.Name), http.StatusConflict)
-		return
+		return projectsetup.Result{}, fmt.Errorf("%w: %s setup is already running", errProjectSetupConflict, project.Name)
 	}
 	if running := s.running[project.ID]; running != nil {
 		s.mu.Unlock()
-		http.Error(w, fmt.Sprintf("stop %s before running setup", project.Name), http.StatusConflict)
-		return
+		return projectsetup.Result{}, fmt.Errorf("%w: stop %s before running setup", errProjectSetupConflict, project.Name)
 	}
 	s.settingUp[project.ID] = true
 	s.mu.Unlock()
@@ -575,7 +619,7 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		s.mu.Unlock()
 	}()
 
-	setupContext := context.WithoutCancel(r.Context())
+	setupContext := context.WithoutCancel(ctx)
 	var logMu sync.Mutex
 	emit := func(stream, line string) error {
 		logMu.Lock()
@@ -583,20 +627,17 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 		return s.store.AddLog(setupContext, project.ID, stream, line)
 	}
 	if err := emit("system", "Dependency setup started."); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return projectsetup.Result{}, err
 	}
 	result, err := s.setupRunner.Run(setupContext, project, emit)
 	if err != nil {
 		_ = emit("system", "Dependency setup failed: "+err.Error())
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return result, err
 	}
 	if err := emit("system", "Dependency setup completed."); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return result, err
 	}
-	writeJSON(w, result)
+	return result, nil
 }
 
 func (s *Server) startProject(ctx context.Context, name string, noPull bool) (app.Project, error) {
@@ -609,11 +650,14 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	if s.settingUp[p.ID] {
 		return p, fmt.Errorf("%s dependency setup is running", p.Name)
 	}
+	if s.deleting[p.ID] {
+		return p, fmt.Errorf("%s instance is being deleted", p.Name)
+	}
 	if s.stopping[p.ID] {
 		return p, fmt.Errorf("%s is stopping", p.Name)
 	}
 	if running := s.running[p.ID]; running != nil && running.cmd != nil && running.cmd.Process != nil {
-		p.Status = "running"
+		p.Status = running.project.Status
 		return p, nil
 	}
 	used, err := s.store.UsedPorts(ctx)
@@ -635,7 +679,8 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			return p, fmt.Errorf("git pull failed: %w", err)
 		}
 	}
-	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, p.Command, port)
+	command := projectsetup.RuntimeCommand(p, port)
+	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, command, port)
 	if err != nil {
 		return p, err
 	}
@@ -647,18 +692,60 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	runtimeProject := p
 	runtimeProject.Port = port
 	runtimeProject.PID = cmd.Process.Pid
-	runtimeProject.Status = "running"
+	runtimeProject.Status = "starting"
 	running := &projectProcess{
 		cmd:     cmd,
 		done:    make(chan struct{}),
 		project: runtimeProject,
 	}
 	s.running[p.ID] = running
-	_ = s.store.SetRuntime(ctx, p.ID, "running", cmd.Process.Pid, port)
+	_ = s.store.SetRuntime(ctx, p.ID, "starting", cmd.Process.Pid, port)
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
 	go s.waitForProject(p, running, port)
+	go s.waitForProjectReady(p, running, port)
 	return s.store.GetProject(ctx, name)
+}
+
+func (s *Server) waitForProjectReady(project app.Project, running *projectProcess, port int) {
+	ticker := time.NewTicker(s.readinessDelay)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-running.done:
+			return
+		case <-ticker.C:
+		}
+
+		response, err := s.healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
+		if err != nil {
+			continue
+		}
+		_, _ = io.Copy(io.Discard, response.Body)
+		_ = response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			continue
+		}
+
+		s.mu.Lock()
+		if s.running[project.ID] != running || running.stopping {
+			s.mu.Unlock()
+			return
+		}
+		running.project.Status = "running"
+		err = s.store.SetRuntime(context.Background(), project.ID, "running", running.cmd.Process.Pid, port)
+		s.mu.Unlock()
+		if err != nil {
+			log.Printf("mark %s ready: %v", project.Name, err)
+			return
+		}
+		if err := s.store.AddLog(context.Background(), project.ID, "system", "HTTP readiness check passed."); err != nil {
+			log.Printf("store readiness log for %s: %v", project.Name, err)
+		}
+		s.syncKillSwitch(context.Background())
+		return
+	}
 }
 
 func (s *Server) waitForProject(project app.Project, running *projectProcess, port int) {
@@ -747,11 +834,11 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 
 	if running != nil {
 		if force {
-			err = process.Kill(running.cmd)
+			err = forceStopProjectProcess(running)
 		} else {
-			err = process.Terminate(running.cmd)
+			err = stopProjectProcess(running)
 		}
-		if err != nil && !projectProcessDone(running) {
+		if err != nil {
 			return p, err
 		}
 	}
@@ -776,7 +863,7 @@ func stopProjectProcess(running *projectProcess) error {
 	return errors.Join(
 		terminateErr,
 		killErr,
-		errors.New("timed out waiting for Docker Compose launcher to exit"),
+		errors.New("timed out waiting for project launcher to exit"),
 	)
 }
 
@@ -842,11 +929,288 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
-	if err := gitutil.Checkout(p.Path, req.Branch); err != nil {
+	if req.Branch == gitutil.Branch(p.Path) {
+		writeJSON(w, p)
+		return
+	}
+	if err := gitutil.CanCheckout(p.Path, req.Branch); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	defaultBranch, err := gitutil.DefaultBranch(p.SourcePath)
+	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, map[string]string{"branch": gitutil.Branch(p.Path)})
+	hostname, err := s.availableBranchHostname(r.Context(), p, req.Branch, defaultBranch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	wasRunning := p.Status == "running"
+	s.mu.Lock()
+	wasRunning = wasRunning || s.running[p.ID] != nil
+	s.mu.Unlock()
+	if wasRunning {
+		if _, err := s.stopProject(r.Context(), strconv.FormatInt(p.ID, 10), false); err != nil {
+			http.Error(w, fmt.Sprintf("stop before branch switch: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	previousBranch := gitutil.Branch(p.Path)
+	if err := gitutil.Checkout(p.Path, req.Branch); err != nil {
+		if wasRunning {
+			if _, restartErr := s.startProject(r.Context(), strconv.FormatInt(p.ID, 10), true); restartErr != nil {
+				err = errors.Join(err, fmt.Errorf("restart original branch: %w", restartErr))
+			}
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if err := s.store.SetBranchIdentity(r.Context(), p.ID, req.Branch, hostname); err != nil {
+		_ = gitutil.Checkout(p.Path, previousBranch)
+		if wasRunning {
+			_, _ = s.startProject(r.Context(), strconv.FormatInt(p.ID, 10), true)
+		}
+		http.Error(w, fmt.Sprintf("save branch switch: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if s.tlsCertificates != nil {
+		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
+			log.Printf("refresh TLS hosts after branch switch: %v", err)
+		}
+	}
+	if wasRunning {
+		if _, err := s.startProject(r.Context(), strconv.FormatInt(p.ID, 10), true); err != nil {
+			http.Error(w, fmt.Sprintf("branch switched but restart failed: %v", err), http.StatusInternalServerError)
+			return
+		}
+	}
+	s.syncKillSwitch(r.Context())
+	updated, err := s.store.GetProjectByID(r.Context(), p.ID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	updated.Branch = req.Branch
+	updated.DefaultBranch = defaultBranch
+	updated.HTTPSURL = config.ProjectHTTPSURL(updated.Hostname)
+	writeJSON(w, updated)
+}
+
+func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
+	p, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	branches, err := gitutil.Branches(p.SourcePath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defaultBranch, err := gitutil.DefaultBranch(p.SourcePath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, map[string]any{
+		"branches":      branches,
+		"current":       gitutil.Branch(p.Path),
+		"defaultBranch": defaultBranch,
+	})
+}
+
+func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Branch string `json:"branch"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil || req.Branch == "" {
+		http.Error(w, "branch required", http.StatusBadRequest)
+		return
+	}
+	project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	source, err := s.store.GetProjectByPath(r.Context(), project.SourcePath)
+	if err != nil {
+		source = project
+	}
+	resolvedBranch, err := gitutil.ResolveBranch(source.Path, req.Branch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	defaultBranch, err := gitutil.DefaultBranch(source.Path)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	worktreeRoot, err := config.ManagedWorktreeRoot()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	instance := app.Project{
+		Name:            source.Name,
+		SourcePath:      source.Path,
+		Strategy:        source.Strategy,
+		Command:         source.Command,
+		BaseHostname:    source.BaseHostname,
+		ManagedInstance: true,
+		Branch:          req.Branch,
+	}
+	instance.Hostname, err = s.availableBranchHostname(r.Context(), instance, req.Branch, defaultBranch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	worktreePath, err := gitutil.CreateWorktree(source.Path, worktreeRoot, resolvedBranch)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	instance.Path = worktreePath
+	id, err := s.store.UpsertProject(r.Context(), instance)
+	if err != nil {
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, 0)
+		http.Error(w, fmt.Sprintf("store branch instance: %v", errors.Join(err, cleanupErr)), http.StatusInternalServerError)
+		return
+	}
+	created, err := s.store.GetProjectByID(r.Context(), id)
+	if err != nil {
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+		http.Error(w, errors.Join(err, cleanupErr).Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, planErr := projectsetup.Plan(created); planErr == nil {
+		if _, err := s.runProjectSetup(r.Context(), created); err != nil {
+			cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+			http.Error(w, fmt.Sprintf("create branch instance: %v", errors.Join(err, cleanupErr)), http.StatusInternalServerError)
+			return
+		}
+	} else if !errors.Is(planErr, projectsetup.ErrUnsupported) {
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+		http.Error(w, fmt.Sprintf("create branch instance: %v", errors.Join(planErr, cleanupErr)), http.StatusInternalServerError)
+		return
+	}
+	if s.tlsCertificates != nil {
+		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
+			log.Printf("refresh TLS hosts after instance creation: %v", err)
+		}
+	}
+	created.Branch = req.Branch
+	created.DefaultBranch = defaultBranch
+	created.HTTPSURL = config.ProjectHTTPSURL(created.Hostname)
+	w.WriteHeader(http.StatusCreated)
+	writeJSON(w, created)
+}
+
+func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
+	project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusNotFound)
+		return
+	}
+	if !project.ManagedInstance {
+		http.Error(w, "only managed branch instances can be removed", http.StatusBadRequest)
+		return
+	}
+	s.mu.Lock()
+	alreadyDeleting := s.deleting[project.ID]
+	setupRunning := s.settingUp[project.ID]
+	sendboxRunning := s.sendboxRunning[project.ID] != nil
+	if !alreadyDeleting && !setupRunning && !sendboxRunning {
+		s.deleting[project.ID] = true
+	}
+	s.mu.Unlock()
+	if alreadyDeleting {
+		http.Error(w, "this instance is already being deleted", http.StatusConflict)
+		return
+	}
+	if setupRunning {
+		http.Error(w, "wait for dependency setup to finish before deleting this instance", http.StatusConflict)
+		return
+	}
+	if sendboxRunning {
+		http.Error(w, "stop Sendbox before deleting this instance", http.StatusConflict)
+		return
+	}
+	defer func() {
+		s.mu.Lock()
+		delete(s.deleting, project.ID)
+		s.mu.Unlock()
+	}()
+	cleanupContext := context.WithoutCancel(r.Context())
+	if _, err := s.stopProject(cleanupContext, strconv.FormatInt(project.ID, 10), false); err != nil {
+		http.Error(w, fmt.Sprintf("stop instance: %v", err), http.StatusInternalServerError)
+		return
+	}
+	if err := gitutil.RemoveWorktreeForce(project.SourcePath, project.Path); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	if err := s.store.DeleteProject(cleanupContext, project.ID); err != nil {
+		http.Error(w, fmt.Sprintf("delete instance: %v", err), http.StatusInternalServerError)
+		return
+	}
+	s.mu.Lock()
+	delete(s.sendboxStates, project.ID)
+	delete(s.sendboxMessages, project.ID)
+	s.mu.Unlock()
+	if s.tlsCertificates != nil {
+		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
+			log.Printf("refresh TLS hosts after instance removal: %v", err)
+		}
+	}
+	s.syncKillSwitch(r.Context())
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) rollbackInstance(ctx context.Context, sourcePath, worktreePath string, projectID int64) error {
+	cleanupContext := context.WithoutCancel(ctx)
+	var cleanupErr error
+	if err := gitutil.RemoveWorktreeForce(sourcePath, worktreePath); err != nil {
+		cleanupErr = fmt.Errorf("remove branch worktree: %w", err)
+	}
+	if projectID != 0 {
+		if err := s.store.DeleteProject(cleanupContext, projectID); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete branch instance: %w", err))
+		}
+	}
+	return cleanupErr
+}
+
+func (s *Server) availableBranchHostname(ctx context.Context, project app.Project, branch, defaultBranch string) (string, error) {
+	base := project.BaseHostname
+	if base == "" {
+		base = project.Hostname
+	}
+	candidate := config.ProjectHostname(base, branch, defaultBranch)
+	exists, err := s.store.HostnameExists(ctx, candidate, project.ID)
+	if err != nil {
+		return "", err
+	}
+	if !exists {
+		return candidate, nil
+	}
+	for attempt := 0; attempt < 10; attempt++ {
+		salt := branch + "|" + project.SourcePath
+		if attempt > 0 {
+			salt += "|" + strconv.Itoa(attempt)
+		}
+		candidate = config.DisambiguateProjectHostname(config.ProjectHostname(base, branch, defaultBranch), salt)
+		exists, err = s.store.HostnameExists(ctx, candidate, project.ID)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("cannot allocate a unique project hostname")
 }
 
 func (s *Server) cleanupBranches(w http.ResponseWriter, r *http.Request) {
@@ -969,15 +1333,32 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		return nil, err
 	}
 	for i := range ps {
+		storedBranch := ps[i].Branch
 		ps[i].Branch = gitutil.Branch(ps[i].Path)
 		ps[i].Dirty = gitutil.Dirty(ps[i].Path)
+		if ps[i].SourcePath == "" {
+			ps[i].SourcePath = ps[i].Path
+		}
+		ps[i].DefaultBranch, _ = gitutil.DefaultBranch(ps[i].SourcePath)
+		if ps[i].DefaultBranch != "" && (storedBranch != ps[i].Branch ||
+			(ps[i].Branch == ps[i].DefaultBranch && ps[i].Hostname != ps[i].BaseHostname) ||
+			(ps[i].Branch != ps[i].DefaultBranch && ps[i].Hostname == ps[i].BaseHostname)) {
+			hostname, hostnameErr := s.availableBranchHostname(ctx, ps[i], ps[i].Branch, ps[i].DefaultBranch)
+			if hostnameErr != nil {
+				return nil, fmt.Errorf("derive hostname for %s: %w", ps[i].Name, hostnameErr)
+			}
+			if err := s.store.SetBranchIdentity(ctx, ps[i].ID, ps[i].Branch, hostname); err != nil {
+				return nil, fmt.Errorf("save branch identity for %s: %w", ps[i].Name, err)
+			}
+			ps[i].Hostname = hostname
+		}
 		ps[i].HTTPSURL = config.ProjectHTTPSURL(ps[i].Hostname)
 		s.mu.Lock()
-		_, ok := s.running[ps[i].ID]
+		running := s.running[ps[i].ID]
 		s.mu.Unlock()
-		if ok {
-			ps[i].Status = "running"
-		} else if ps[i].Status == "running" {
+		if running != nil {
+			ps[i].Status = running.project.Status
+		} else if ps[i].Status == "running" || ps[i].Status == "starting" {
 			ps[i].Status = "stopped"
 		}
 		s.setSendboxMetadata(&ps[i], settings.SendboxEnabled)
@@ -1198,7 +1579,7 @@ func cleanupError(err error, result app.BranchCleanupResult) string {
 func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 	hostname, local := localHostname(r.Host)
 	if !local {
-		http.Error(w, "use porto.local or <project>.porto.local", http.StatusNotFound)
+		http.Error(w, "use porto.localhost or <project>.porto.localhost", http.StatusNotFound)
 		return
 	}
 	if hostname == "" {
@@ -1210,7 +1591,20 @@ func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found or port unknown", http.StatusNotFound)
 		return
 	}
-	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port))
+	s.mu.Lock()
+	running := s.running[p.ID]
+	if running == nil || running.stopping || running.cmd == nil || running.cmd.Process == nil {
+		s.mu.Unlock()
+		http.Error(w, "project is not running in this Porto daemon", http.StatusServiceUnavailable)
+		return
+	}
+	port := running.project.Port
+	s.mu.Unlock()
+	if port <= 0 {
+		http.Error(w, "project port is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
 	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
 }
 
@@ -1285,10 +1679,14 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 	if err != nil {
 		return nil, fmt.Errorf("list projects for TLS certificate: %w", err)
 	}
-	hostnames := make([]string, 0, len(projects))
+	hostnames := make([]string, 0, len(projects)*2)
 	for _, project := range projects {
 		if strings.Contains(project.Hostname, ".") {
-			hostnames = append(hostnames, project.Hostname+"."+config.LocalDomain)
+			hostnames = append(
+				hostnames,
+				project.Hostname+"."+config.LocalDomain,
+				project.Hostname+"."+config.LocalhostDomain,
+			)
 		}
 	}
 	return hostnames, nil

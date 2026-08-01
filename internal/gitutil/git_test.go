@@ -9,6 +9,58 @@ import (
 	"github.com/mbianchidev/porto/internal/app"
 )
 
+func TestManagedWorktreeLifecycle(t *testing.T) {
+	repo := initTestRepo(t)
+	runTestGit(t, repo, "switch", "-c", "feature/branch-instance")
+	writeAndCommit(t, repo, "feature.txt", "feature", "add feature")
+	runTestGit(t, repo, "switch", "main")
+	worktree := filepath.Join(t.TempDir(), "instance")
+
+	resolved, err := ResolveBranch(repo, "feature/branch-instance")
+	if err != nil {
+		t.Fatalf("resolve branch: %v", err)
+	}
+	created, err := CreateWorktree(repo, filepath.Dir(worktree), resolved)
+	if err != nil {
+		t.Fatalf("create worktree: %v", err)
+	}
+	worktree = created
+	if got := Branch(worktree); got != "feature/branch-instance" {
+		t.Fatalf("worktree branch = %q", got)
+	}
+	if err := CanCheckout(repo, "feature/branch-instance"); err == nil {
+		t.Fatal("checkout allowed for a branch used by another worktree")
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveWorktreeForce(repo, worktree); err != nil {
+		t.Fatalf("force remove worktree: %v", err)
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+}
+
+func TestCanCheckoutRejectsDirtyTree(t *testing.T) {
+	repo := initTestRepo(t)
+	runTestGit(t, repo, "branch", "other")
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := CanCheckout(repo, "other"); err == nil {
+		t.Fatal("dirty checkout was allowed")
+	}
+}
+
+func TestForceRemoveMissingWorktreeIsIdempotent(t *testing.T) {
+	repo := initTestRepo(t)
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := RemoveWorktreeForce(repo, missing); err != nil {
+		t.Fatalf("force remove missing worktree: %v", err)
+	}
+}
+
 func TestCleanupBranchesDeletesOnlyFullyMergedLocalBranches(t *testing.T) {
 	repo := initTestRepo(t)
 	runTestGit(t, repo, "switch", "-c", "merged")

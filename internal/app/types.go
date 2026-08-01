@@ -11,7 +11,11 @@ type Project struct {
 	Port              int       `json:"port"`
 	PinnedPort        int       `json:"pinnedPort"`
 	Hostname          string    `json:"hostname"`
+	BaseHostname      string    `json:"baseHostname"`
 	HTTPSURL          string    `json:"httpsUrl"`
+	SourcePath        string    `json:"sourcePath"`
+	ManagedInstance   bool      `json:"managedInstance"`
+	DefaultBranch     string    `json:"defaultBranch"`
 	PID               int       `json:"pid"`
 	Status            string    `json:"status"`
 	Branch            string    `json:"branch"`
