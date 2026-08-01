@@ -105,6 +105,68 @@ func TestCheckTimesOut(t *testing.T) {
 	}
 }
 
+func TestPublishedPortsParsesWarningsAndPrioritizesFrontend(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`time="now" level=warning msg="version is obsolete"
+{"Service":"backend","State":"running","Publishers":[{"PublishedPort":8080,"Protocol":"tcp"},{"PublishedPort":8080,"Protocol":"tcp"},{"PublishedPort":0,"Protocol":"tcp"}]}
+{"Service":"frontend","State":"running","Publishers":[{"PublishedPort":3000,"Protocol":"tcp"},{"PublishedPort":3000,"Protocol":"tcp"},{"PublishedPort":5353,"Protocol":"udp"}]}
+`)}
+	project := app.Project{
+		Name:     "web",
+		Path:     root,
+		Strategy: "compose",
+		Command:  UpCommand("compose.yaml"),
+		Port:     41007,
+	}
+
+	got, err := newIntegration(runner, time.Second).PublishedPorts(context.Background(), project)
+	if err != nil {
+		t.Fatalf("PublishedPorts: %v", err)
+	}
+	want := []PublishedPort{
+		{Service: "frontend", Port: 3000},
+		{Service: "backend", Port: 8080},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
+	}
+	wantCommand := Command{
+		Dir:  root,
+		Name: "docker",
+		Args: []string{"compose", "-f", "compose.yaml", "ps", "--format", "json"},
+		Env:  []string{"PORT=41007", "PORTO_PORT=41007"},
+	}
+	if !reflect.DeepEqual(runner.commands, []Command{wantCommand}) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{wantCommand})
+	}
+}
+
+func TestPublishedPortsParsesJSONArray(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`warning
+[{"Service":"web","State":"running","Publishers":[{"PublishedPort":4173,"Protocol":"tcp"}]}]
+`)}
+
+	got, err := newIntegration(runner, time.Second).PublishedPorts(context.Background(), app.Project{
+		Name:    "web",
+		Path:    root,
+		Command: UpCommand("compose.yaml"),
+	})
+	if err != nil {
+		t.Fatalf("PublishedPorts: %v", err)
+	}
+	want := []PublishedPort{{Service: "web", Port: 4173}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ports = %#v, want %#v", got, want)
+	}
+}
+
 func TestDownUsesStartedConfigAndPortEnvironment(t *testing.T) {
 	root := t.TempDir()
 	for _, name := range []string{"docker-compose.yml", "compose.yaml"} {

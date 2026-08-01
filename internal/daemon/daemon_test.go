@@ -433,6 +433,8 @@ type fakeComposeCleanup struct {
 	projects []app.Project
 	checks   int
 	checkErr error
+	ports    []compose.PublishedPort
+	portsErr error
 	err      error
 }
 
@@ -441,6 +443,12 @@ func (f *fakeComposeCleanup) Check(_ context.Context) error {
 	defer f.mu.Unlock()
 	f.checks++
 	return f.checkErr
+}
+
+func (f *fakeComposeCleanup) PublishedPorts(_ context.Context, _ app.Project) ([]compose.PublishedPort, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]compose.PublishedPort(nil), f.ports...), f.portsErr
 }
 
 func (f *fakeComposeCleanup) Down(_ context.Context, project app.Project) error {
@@ -509,6 +517,59 @@ func TestComposeStartChecksDockerBeforeLaunch(t *testing.T) {
 	}
 	if got.PID != 0 || got.Status != "stopped" {
 		t.Fatalf("failed preflight changed runtime: %+v", got)
+	}
+}
+
+func TestComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
+	skipWindowsShellHelper(t)
+	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
+	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer frontend.Close()
+	frontendURL, err := url.Parse(frontend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rawPort, err := net.SplitHostPort(frontendURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	frontendPort, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  daemonHelperCommand(),
+	})
+	server := New(st, nil)
+	server.readinessDelay = 10 * time.Millisecond
+	server.compose = &fakeComposeCleanup{ports: []compose.PublishedPort{
+		{Service: "backend", Port: frontendPort + 1},
+		{Service: "frontend", Port: frontendPort},
+	}}
+
+	started, err := server.startProject(context.Background(), project.Name, true)
+	if err != nil {
+		t.Fatalf("start project: %v", err)
+	}
+	assignedPort := started.Port
+	waitForProjectStatus(t, st, project.ID, "running")
+	got, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Port != frontendPort {
+		t.Fatalf("runtime port = %d, want published frontend port %d", got.Port, frontendPort)
+	}
+	if got.Port == assignedPort {
+		t.Fatalf("runtime port did not change from assigned port %d", assignedPort)
+	}
+	if _, err := server.stopProject(context.Background(), project.Name, false); err != nil {
+		t.Fatalf("stop project: %v", err)
 	}
 }
 
@@ -712,6 +773,11 @@ func daemonHTTPHelperCommand() string {
 	return fmt.Sprintf("%q -test.run=TestDaemonHTTPHelperProcess", executable)
 }
 
+func daemonHelperCommand() string {
+	executable := os.Args[0]
+	return fmt.Sprintf("%q -test.run=TestDaemonHelperProcess", executable)
+}
+
 func skipWindowsShellHelper(t *testing.T) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
@@ -781,7 +847,7 @@ func startTestProjectProcess(t *testing.T, server *Server, project app.Project) 
 	server.mu.Lock()
 	server.running[project.ID] = running
 	server.mu.Unlock()
-	go server.waitForProject(project, running, project.Port)
+	go server.waitForProject(project, running)
 	t.Cleanup(func() {
 		_ = process.Kill(cmd)
 		select {

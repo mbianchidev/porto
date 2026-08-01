@@ -42,6 +42,7 @@ const (
 	projectProcessExitTimeout = 5 * time.Second
 	projectReadinessInterval  = 250 * time.Millisecond
 	projectReadinessTimeout   = 2 * time.Second
+	composePortCheckInterval  = time.Second
 )
 
 var errProjectSetupConflict = errors.New("project setup conflict")
@@ -82,6 +83,7 @@ type sendboxIntegration interface {
 
 type composeIntegration interface {
 	Check(ctx context.Context) error
+	PublishedPorts(ctx context.Context, project app.Project) ([]compose.PublishedPort, error)
 	Down(ctx context.Context, project app.Project) error
 }
 
@@ -714,14 +716,17 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	_ = s.store.SetRuntime(ctx, p.ID, "starting", cmd.Process.Pid, port)
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
-	go s.waitForProject(p, running, port)
-	go s.waitForProjectReady(p, running, port)
+	go s.waitForProject(runtimeProject, running)
+	go s.waitForProjectReady(runtimeProject, running, port)
 	return s.store.GetProject(ctx, name)
 }
 
-func (s *Server) waitForProjectReady(project app.Project, running *projectProcess, port int) {
+func (s *Server) waitForProjectReady(project app.Project, running *projectProcess, assignedPort int) {
 	ticker := time.NewTicker(s.readinessDelay)
 	defer ticker.Stop()
+	candidatePorts := []int{assignedPort}
+	nextComposePortCheck := time.Time{}
+	composePortErrorLogged := false
 
 	for {
 		select {
@@ -730,13 +735,34 @@ func (s *Server) waitForProjectReady(project app.Project, running *projectProces
 		case <-ticker.C:
 		}
 
-		response, err := s.healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", port))
-		if err != nil {
-			continue
+		if project.Strategy == "compose" && !time.Now().Before(nextComposePortCheck) {
+			nextComposePortCheck = time.Now().Add(composePortCheckInterval)
+			publishedPorts, err := s.compose.PublishedPorts(context.Background(), project)
+			if err != nil {
+				if !composePortErrorLogged {
+					log.Printf("discover published ports for %s: %v", project.Name, err)
+					composePortErrorLogged = true
+				}
+			} else {
+				composePortErrorLogged = false
+				candidatePorts = mergeCandidatePorts(assignedPort, publishedPorts)
+			}
 		}
-		_, _ = io.Copy(io.Discard, response.Body)
-		_ = response.Body.Close()
-		if response.StatusCode != http.StatusOK {
+
+		readyPort := 0
+		for _, candidatePort := range candidatePorts {
+			response, err := s.healthClient.Get(fmt.Sprintf("http://127.0.0.1:%d/", candidatePort))
+			if err != nil {
+				continue
+			}
+			_, _ = io.Copy(io.Discard, response.Body)
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				readyPort = candidatePort
+				break
+			}
+		}
+		if readyPort == 0 {
 			continue
 		}
 
@@ -746,11 +772,22 @@ func (s *Server) waitForProjectReady(project app.Project, running *projectProces
 			return
 		}
 		running.project.Status = "running"
-		err = s.store.SetRuntime(context.Background(), project.ID, "running", running.cmd.Process.Pid, port)
+		running.project.Port = readyPort
+		err := s.store.SetRuntime(context.Background(), project.ID, "running", running.cmd.Process.Pid, readyPort)
 		s.mu.Unlock()
 		if err != nil {
 			log.Printf("mark %s ready: %v", project.Name, err)
 			return
+		}
+		if readyPort != assignedPort {
+			if err := s.store.AddLog(
+				context.Background(),
+				project.ID,
+				"system",
+				fmt.Sprintf("Detected Compose service on published port %d; assigned port %d was not exposed.", readyPort, assignedPort),
+			); err != nil {
+				log.Printf("store Compose port log for %s: %v", project.Name, err)
+			}
 		}
 		if err := s.store.AddLog(context.Background(), project.ID, "system", "HTTP readiness check passed."); err != nil {
 			log.Printf("store readiness log for %s: %v", project.Name, err)
@@ -760,7 +797,23 @@ func (s *Server) waitForProjectReady(project app.Project, running *projectProces
 	}
 }
 
-func (s *Server) waitForProject(project app.Project, running *projectProcess, port int) {
+func mergeCandidatePorts(assignedPort int, publishedPorts []compose.PublishedPort) []int {
+	ports := []int{assignedPort}
+	seen := map[int]struct{}{assignedPort: {}}
+	for _, published := range publishedPorts {
+		if published.Port <= 0 {
+			continue
+		}
+		if _, ok := seen[published.Port]; ok {
+			continue
+		}
+		seen[published.Port] = struct{}{}
+		ports = append(ports, published.Port)
+	}
+	return ports
+}
+
+func (s *Server) waitForProject(project app.Project, running *projectProcess) {
 	err := running.cmd.Wait()
 
 	s.mu.Lock()
@@ -772,7 +825,7 @@ func (s *Server) waitForProject(project app.Project, running *projectProcess, po
 	}
 	var runtimeErr error
 	if current {
-		runtimeErr = s.store.SetRuntime(context.Background(), project.ID, status, 0, port)
+		runtimeErr = s.store.SetRuntime(context.Background(), project.ID, status, 0, running.project.Port)
 		delete(s.running, project.ID)
 	}
 	s.mu.Unlock()
