@@ -203,7 +203,31 @@ func removeWorktree(repoPath, worktreePath string, force bool) error {
 }
 
 func Pull(path string) (string, error) {
-	return git(path, "pull", "--ff-only")
+	return pull(path, git)
+}
+
+type gitCommand func(path string, args ...string) (string, error)
+
+func pull(path string, run gitCommand) (string, error) {
+	output, err := run(path, "pull", "--ff-only")
+	if err == nil || !githubSSHAuthFailure(output) {
+		return output, err
+	}
+	fallbackOutput, fallbackErr := run(
+		path,
+		"-c", "url.https://github.com/.insteadOf=git@github.com:",
+		"-c", "url.https://github.com/.insteadOf=ssh://git@github.com/",
+		"pull", "--ff-only",
+	)
+	if fallbackErr == nil {
+		return fallbackOutput, nil
+	}
+	return strings.TrimSpace(output) + "\nGitHub HTTPS fallback:\n" + strings.TrimSpace(fallbackOutput), fallbackErr
+}
+
+func githubSSHAuthFailure(output string) bool {
+	return strings.Contains(output, "Permission denied (publickey)") &&
+		(strings.Contains(output, "git@github.com") || strings.Contains(output, "ssh://git@github.com/"))
 }
 
 func CleanupBranches(repoPath string, settings app.Settings) (app.BranchCleanupResult, error) {

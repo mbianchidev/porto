@@ -15,7 +15,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Stable automatic port assignment starting at `41000`, with pinned port overrides and responsive published-port detection for Compose projects that expose fixed host ports.
 - PID, readiness status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering, one-click copying, and clearing.
 - Dashboard branch switching with automatic restart, plus grouped concurrent branch instances backed by prepared managed Git worktrees.
-- Pre-start `git pull --ff-only` by default, with `--no-pull` when needed.
+- Pre-start `git pull --ff-only` by default, with an authenticated HTTPS retry for GitHub SSH key failures and `--no-pull` when needed.
 - Optional automatic cleanup of fully merged local and remote branches, with pruning and protected branch patterns.
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
 - Optional macOS [KillSwitch](https://github.com/mbianchidev/kill-switch) integration for active port visibility and stale dev-server cleanup.
