@@ -65,6 +65,8 @@ type CleanupResult = {
 type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
 type ProjectView = 'list' | 'tiles'
+type ProjectStatusFilter = 'all' | 'running' | 'stopped' | 'error'
+type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup'
 
 type LogLine = {
   projectId: number
@@ -79,6 +81,76 @@ async function action(name: string, verb: string): Promise<Response> {
   return response
 }
 
+function ProjectActionButton({
+  label,
+  icon,
+  className = '',
+  ...props
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & {
+  label: string
+  icon: ProjectActionIcon
+}) {
+  return (
+    <button
+      {...props}
+      className={`iconButton ${className}`.trim()}
+      type="button"
+      aria-label={label}
+      data-tooltip={label}
+    >
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        {icon === 'play' && <path d="m8 5 11 7-11 7Z" />}
+        {icon === 'stop' && <rect x="6" y="6" width="12" height="12" rx="2" />}
+        {icon === 'restart' && (
+          <>
+            <path d="M20 11a8 8 0 1 0-2.34 5.66" />
+            <path d="M20 4v7h-7" />
+          </>
+        )}
+        {icon === 'kill' && (
+          <>
+            <path d="M8.5 3h7l4.5 5v8l-4.5 5h-7L4 16V8Z" />
+            <path d="m9 9 6 6m0-6-6 6" />
+          </>
+        )}
+        {icon === 'setup' && (
+          <>
+            <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z" />
+            <path d="m4.3 7.7 7.7 4.2 7.7-4.2M12 12v9" />
+          </>
+        )}
+        {icon === 'logs' && (
+          <>
+            <path d="M5 5h14v14H5Z" />
+            <path d="m8 9 2 2-2 2m4 1h4" />
+          </>
+        )}
+        {icon === 'sendboxPlay' && (
+          <>
+            <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z" />
+            <path d="m4.3 7.7 7.7 4.2 7.7-4.2M12 12v9" />
+            <path d="m10 8 4 2.2-4 2.3Z" />
+          </>
+        )}
+        {icon === 'sendboxStop' && (
+          <>
+            <path d="m12 3 8 4.5v9L12 21l-8-4.5v-9Z" />
+            <rect x="9.5" y="8.5" width="5" height="5" rx="0.5" />
+          </>
+        )}
+        {icon === 'cleanup' && (
+          <>
+            <path d="M7 4v5a3 3 0 0 0 3 3h7" />
+            <path d="m14 9 3 3-3 3" />
+            <path d="M7 20v-3a3 3 0 0 1 3-3" />
+          </>
+        )}
+      </svg>
+      <span className="visuallyHidden">{label}</span>
+    </button>
+  )
+}
+
 function App() {
   const [page, setPage] = useState<Page>(() => window.location.hash === '#/settings' ? 'settings' : 'projects')
   const [projectView, setProjectView] = useState<ProjectView>(() => {
@@ -86,6 +158,8 @@ function App() {
     return savedView === 'tiles' ? 'tiles' : 'list'
   })
   const [projects, setProjects] = useState<Project[]>([])
+  const [projectQuery, setProjectQuery] = useState('')
+  const [projectStatusFilter, setProjectStatusFilter] = useState<ProjectStatusFilter>('all')
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
@@ -107,6 +181,26 @@ function App() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const logConsoleRef = useRef<HTMLElement>(null)
+  const normalizedProjectQuery = projectQuery.trim().toLocaleLowerCase()
+  const filteredProjects = projects.filter((project) => {
+    const matchesName = normalizedProjectQuery === ''
+      || project.name.toLocaleLowerCase().includes(normalizedProjectQuery)
+    const matchesStatus = projectStatusFilter === 'all'
+      || project.status === projectStatusFilter
+      || (projectStatusFilter === 'error' && project.status !== 'running' && project.status !== 'stopped')
+    return matchesName && matchesStatus
+  })
+  const projectStatusCounts = projects.reduce(
+    (counts, project) => {
+      if (project.status === 'running' || project.status === 'stopped') {
+        counts[project.status] += 1
+      } else {
+        counts.error += 1
+      }
+      return counts
+    },
+    { running: 0, stopped: 0, error: 0 },
+  )
 
   async function refreshProjects() {
     try {
@@ -715,6 +809,41 @@ function App() {
             </div>
           </header>
 
+          <div className="projectFilters">
+            <label className="projectSearch">
+              <span className="visuallyHidden">Filter projects by name</span>
+              <svg viewBox="0 0 24 24" aria-hidden="true">
+                <circle cx="11" cy="11" r="6.5" />
+                <path d="m16 16 4 4" />
+              </svg>
+              <input
+                type="search"
+                value={projectQuery}
+                placeholder="Filter by project name"
+                onChange={(event) => setProjectQuery(event.target.value)}
+              />
+            </label>
+            <div className="statusFilters" role="group" aria-label="Filter projects by status">
+              {(['all', 'running', 'stopped', 'error'] as const).map((status) => (
+                <button
+                  type="button"
+                  className={projectStatusFilter === status ? `active ${status}` : status}
+                  aria-pressed={projectStatusFilter === status}
+                  key={status}
+                  onClick={() => setProjectStatusFilter(status)}
+                >
+                  <span>{status}</span>
+                  <strong>
+                    {status === 'all' ? projects.length : projectStatusCounts[status]}
+                  </strong>
+                </button>
+              ))}
+            </div>
+            <span className="filterResultCount" aria-live="polite">
+              {filteredProjects.length} shown
+            </span>
+          </div>
+
           <section className={`grid ${projectView}`}>
         {projects.length === 0 && (
           <article className="empty">
@@ -722,10 +851,25 @@ function App() {
             <p>Run <code>porto scan ~/code --depth 3</code>, or restart the daemon to scan Copilot worktrees.</p>
           </article>
         )}
-        {projects.map((project) => (
+        {projects.length > 0 && filteredProjects.length === 0 && (
+          <article className="empty filteredEmpty">
+            <h2>No matching projects</h2>
+            <p>Try another name or status.</p>
+            <button
+              type="button"
+              onClick={() => {
+                setProjectQuery('')
+                setProjectStatusFilter('all')
+              }}
+            >
+              Clear filters
+            </button>
+          </article>
+        )}
+        {filteredProjects.map((project) => (
           <article className="card" key={project.id}>
-            <div className="cardHeader">
-              <div>
+            <div className="cardTop">
+              <div className="cardHeader">
                 <h2>{project.name}</h2>
                 <p>{project.path}</p>
               </div>
@@ -759,35 +903,33 @@ function App() {
             <code className="command">{project.command}</code>
 
             <div className="actions">
-              <button
-                type="button"
+              <ProjectActionButton
+                label="Start project"
+                icon="play"
                 disabled={setupProjectName === project.name}
                 onClick={() => run(project.name, 'start')}
-              >
-                Start
-              </button>
-              <button type="button" onClick={() => run(project.name, 'stop')}>Stop</button>
-              <button type="button" onClick={() => run(project.name, 'restart')}>Restart</button>
-              <button type="button" onClick={() => run(project.name, 'kill')}>Kill</button>
-              <button
+              />
+              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(project.name, 'stop')} />
+              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(project.name, 'restart')} />
+              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(project.name, 'kill')} />
+              <ProjectActionButton
                 className="setupButton"
-                type="button"
+                label={setupProjectName === project.name ? 'Setting up dependencies' : 'Set up dependencies'}
+                icon="setup"
                 disabled={project.status === 'running' || setupProjectName !== ''}
                 onClick={() => setupDependencies(project.name)}
-              >
-                {setupProjectName === project.name ? 'Setting up…' : 'Setup dependencies'}
-              </button>
-              <button
+              />
+              <ProjectActionButton
                 className="logsButton"
-                type="button"
+                label="View logs"
+                icon="logs"
                 onClick={() => viewLogs(project.name)}
-              >
-                View logs
-              </button>
+              />
               {project.sendboxConfigured && (
-                <button
+                <ProjectActionButton
                   className="sendboxButton"
-                  type="button"
+                  label="Run in Sendbox"
+                  icon="sendboxPlay"
                   disabled={
                     !savedSendboxEnabled
                     || sendboxStatus?.state !== 'ready'
@@ -795,30 +937,26 @@ function App() {
                     || project.sendboxStatus === 'stopping'
                   }
                   onClick={() => runSendbox(project.name, 'start')}
-                >
-                  Run in Sendbox
-                </button>
+                />
               )}
               {(project.sendboxConfigured
                 || project.sendboxStatus === 'running'
                 || project.sendboxStatus === 'stopping') && (
-                <button
+                <ProjectActionButton
                   className="sendboxButton"
-                  type="button"
+                  label="Stop Sendbox"
+                  icon="sendboxStop"
                   disabled={project.sendboxStatus !== 'running'}
                   onClick={() => runSendbox(project.name, 'stop')}
-                >
-                  Stop Sendbox
-                </button>
+                />
               )}
-              <button
+              <ProjectActionButton
                 className="cleanupButton"
-                type="button"
+                label="Clean merged branches"
+                icon="cleanup"
                 disabled={!savedLocalCleanup && !savedRemoteCleanup}
                 onClick={() => cleanup(project.name)}
-              >
-                Clean merged branches
-              </button>
+              />
             </div>
           </article>
         ))}
