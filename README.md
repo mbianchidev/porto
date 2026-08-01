@@ -11,7 +11,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - React dashboard served by the daemon for one-click start, stop, restart, and kill actions.
 - Project discovery across user-selected roots plus automatic daemon-start scanning of `~/.copilot/copilot-worktrees`.
 - Detection priority: `Makefile`, Compose files, `package.json` scripts, Python entry points, Go mains, then Rust binaries.
-- One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo.
+- One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo, with an actionable host-runtime preflight before Compose setup and startup.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
 - PID, readiness status, port, branch, dirty state, and persistent stdout/stderr tracking with dashboard filtering and clearing.
 - Dashboard branch switching with automatic restart, plus grouped concurrent branch instances backed by prepared managed Git worktrees.

@@ -81,6 +81,7 @@ type sendboxIntegration interface {
 }
 
 type composeIntegration interface {
+	Check(ctx context.Context) error
 	Down(ctx context.Context, project app.Project) error
 }
 
@@ -629,6 +630,12 @@ func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (proj
 	if err := emit("system", "Dependency setup started."); err != nil {
 		return projectsetup.Result{}, err
 	}
+	if project.Strategy == "compose" {
+		if err := s.compose.Check(setupContext); err != nil {
+			_ = emit("system", "Dependency setup failed: "+err.Error())
+			return projectsetup.Result{}, err
+		}
+	}
 	result, err := s.setupRunner.Run(setupContext, project, emit)
 	if err != nil {
 		_ = emit("system", "Dependency setup failed: "+err.Error())
@@ -659,6 +666,11 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	if running := s.running[p.ID]; running != nil && running.cmd != nil && running.cmd.Process != nil {
 		p.Status = running.project.Status
 		return p, nil
+	}
+	if p.Strategy == "compose" {
+		if err := s.compose.Check(ctx); err != nil {
+			return p, err
+		}
 	}
 	used, err := s.store.UsedPorts(ctx)
 	if err != nil {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -39,6 +40,68 @@ func TestFindFileUsesDiscoveryPriority(t *testing.T) {
 	got, ok := FindFile(root)
 	if !ok || got != "docker-compose.yml" {
 		t.Fatalf("FindFile() = %q, %t; want docker-compose.yml, true", got, ok)
+	}
+}
+
+func TestCheckUsesDockerServerInfo(t *testing.T) {
+	runner := &fakeRunner{output: []byte("28.3.2\n")}
+	integration := newIntegration(runner, time.Second)
+
+	if err := integration.Check(context.Background()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	want := Command{
+		Name: "docker",
+		Args: []string{"info", "--format", "{{.ServerVersion}}"},
+	}
+	if !reflect.DeepEqual(runner.commands, []Command{want}) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{want})
+	}
+}
+
+func TestCheckReportsActionableDaemonFailure(t *testing.T) {
+	runner := &fakeRunner{
+		output: []byte("failed to connect to the docker API at unix:///missing/docker.sock"),
+		err:    errors.New("exit status 1"),
+	}
+
+	err := newIntegration(runner, time.Second).Check(context.Background())
+	if !errors.Is(err, ErrDaemonUnavailable) {
+		t.Fatalf("error = %v, want ErrDaemonUnavailable", err)
+	}
+	for _, want := range []string{"start or repair OrbStack", "unix:///missing/docker.sock"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %q, want it to contain %q", err, want)
+		}
+	}
+}
+
+func TestCheckDistinguishesMissingDockerCLI(t *testing.T) {
+	runner := &fakeRunner{err: &exec.Error{Name: "docker", Err: exec.ErrNotFound}}
+
+	err := newIntegration(runner, time.Second).Check(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Porto daemon PATH") {
+		t.Fatalf("error = %v", err)
+	}
+	if errors.Is(err, ErrDaemonUnavailable) {
+		t.Fatalf("missing CLI error was classified as daemon unavailable: %v", err)
+	}
+}
+
+func TestCheckTimesOut(t *testing.T) {
+	runner := &fakeRunner{
+		run: func(ctx context.Context, _ Command) ([]byte, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		},
+	}
+	integration := newIntegration(runner, time.Second)
+	integration.checkTimeout = time.Millisecond
+
+	err := integration.Check(context.Background())
+	if !errors.Is(err, ErrDaemonUnavailable) || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("error = %v", err)
 	}
 }
 

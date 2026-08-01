@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/process"
@@ -99,6 +100,15 @@ func (f failingSetupRunner) Run(_ context.Context, project app.Project, _ func(s
 		f.cancel()
 	}
 	return projectsetup.Result{Commands: []string{"npm ci"}}, errors.New("dependency setup failed")
+}
+
+type recordingSetupRunner struct {
+	called bool
+}
+
+func (r *recordingSetupRunner) Run(_ context.Context, _ app.Project, _ func(stream, line string) error) (projectsetup.Result, error) {
+	r.called = true
+	return projectsetup.Result{}, nil
 }
 
 func TestAvailableBranchHostnameCompactsAndDisambiguates(t *testing.T) {
@@ -421,7 +431,16 @@ func TestDeletingInstanceBlocksNewLifecycleOperations(t *testing.T) {
 type fakeComposeCleanup struct {
 	mu       sync.Mutex
 	projects []app.Project
+	checks   int
+	checkErr error
 	err      error
+}
+
+func (f *fakeComposeCleanup) Check(_ context.Context) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.checks++
+	return f.checkErr
 }
 
 func (f *fakeComposeCleanup) Down(_ context.Context, project app.Project) error {
@@ -431,10 +450,66 @@ func (f *fakeComposeCleanup) Down(_ context.Context, project app.Project) error 
 	return f.err
 }
 
+func (f *fakeComposeCleanup) checkCalls() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.checks
+}
+
 func (f *fakeComposeCleanup) calls() []app.Project {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return append([]app.Project(nil), f.projects...)
+}
+
+func TestComposeSetupChecksDockerBeforeBuild(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	checker := &fakeComposeCleanup{checkErr: compose.ErrDaemonUnavailable}
+	setupRunner := &recordingSetupRunner{}
+	server := New(st, nil)
+	server.compose = checker
+	server.setupRunner = setupRunner
+
+	if _, err := server.runProjectSetup(context.Background(), project); !errors.Is(err, compose.ErrDaemonUnavailable) {
+		t.Fatalf("setup error = %v", err)
+	}
+	if setupRunner.called {
+		t.Fatal("setup runner was called after Docker preflight failed")
+	}
+	if checker.checkCalls() != 1 {
+		t.Fatalf("Docker checks = %d, want 1", checker.checkCalls())
+	}
+}
+
+func TestComposeStartChecksDockerBeforeLaunch(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     t.TempDir(),
+		Strategy: "compose",
+		Command:  "docker compose -f compose.yaml up",
+	})
+	checker := &fakeComposeCleanup{checkErr: compose.ErrDaemonUnavailable}
+	server := New(st, nil)
+	server.compose = checker
+
+	if _, err := server.startProject(context.Background(), project.Name, true); !errors.Is(err, compose.ErrDaemonUnavailable) {
+		t.Fatalf("start error = %v", err)
+	}
+	if checker.checkCalls() != 1 {
+		t.Fatalf("Docker checks = %d, want 1", checker.checkCalls())
+	}
+	got, err := st.GetProject(context.Background(), project.Name)
+	if err != nil {
+		t.Fatalf("reload project: %v", err)
+	}
+	if got.PID != 0 || got.Status != "stopped" {
+		t.Fatalf("failed preflight changed runtime: %+v", got)
+	}
 }
 
 func TestKillComposeProjectCleansContainersWithoutTrackedProcess(t *testing.T) {
