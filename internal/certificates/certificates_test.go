@@ -44,6 +44,49 @@ func TestEnsureGeneratesAndReusesCertificate(t *testing.T) {
 	}
 }
 
+func TestEnsureIncludesExactDottedProjectHostname(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	status, err := manager.Ensure("devoidofbeauty.com.porto.local")
+	if err != nil {
+		t.Fatalf("ensure certificate: %v", err)
+	}
+	if !contains(status.DNSNames, "devoidofbeauty.com.porto.local") {
+		t.Fatalf("DNS names = %v, want dotted project hostname", status.DNSNames)
+	}
+
+	pair, err := tls.LoadX509KeyPair(status.CertificatePath, status.KeyPath)
+	if err != nil {
+		t.Fatalf("load generated key pair: %v", err)
+	}
+	leaf, err := x509.ParseCertificate(pair.Certificate[0])
+	if err != nil {
+		t.Fatalf("parse generated certificate: %v", err)
+	}
+	if err := leaf.VerifyHostname("devoidofbeauty.com.porto.local"); err != nil {
+		t.Fatalf("verify dotted project hostname: %v", err)
+	}
+}
+
+func TestEnsureRegeneratesCertificateForNewHostname(t *testing.T) {
+	dir := t.TempDir()
+	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
+	first, err := manager.Ensure()
+	if err != nil {
+		t.Fatalf("ensure initial certificate: %v", err)
+	}
+	second, err := manager.Ensure("devoidofbeauty.com.porto.local")
+	if err != nil {
+		t.Fatalf("ensure expanded certificate: %v", err)
+	}
+	if first.Fingerprint == second.Fingerprint {
+		t.Fatal("certificate was not regenerated for the new hostname")
+	}
+	if !contains(second.DNSNames, "devoidofbeauty.com.porto.local") {
+		t.Fatalf("DNS names = %v, want dotted project hostname", second.DNSNames)
+	}
+}
+
 func TestRenewReplacesLiveCertificate(t *testing.T) {
 	dir := t.TempDir()
 	manager := New(filepath.Join(dir, "porto.local.pem"), filepath.Join(dir, "porto.local-key.pem"))
@@ -79,6 +122,7 @@ func TestTLSConfigServesWildcardCertificate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure certificate: %v", err)
 	}
+
 	certificatePEM, err := os.ReadFile(status.CertificatePath)
 	if err != nil {
 		t.Fatalf("read certificate: %v", err)
@@ -112,4 +156,13 @@ func TestTLSConfigServesWildcardCertificate(t *testing.T) {
 	if string(body) != "secure" {
 		t.Fatalf("TLS response = %q", body)
 	}
+}
+
+func contains(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
 }

@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/tls"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -13,7 +14,10 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,6 +56,7 @@ type Server struct {
 	sqnsl           *sqnsl.Manager
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
+	userHomeDir     func() (string, error)
 }
 
 type projectProcess struct {
@@ -89,29 +94,46 @@ func New(st *store.Store, ui fs.FS) *Server {
 		setupRunner:     projectsetup.ExecRunner{},
 		sqnsl:           sqnsl.NewManager(nil),
 		killSwitch:      killswitch.NewManager(nil, nil),
+		userHomeDir:     os.UserHomeDir,
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	if count, err := s.discoverCopilotWorktrees(ctx); err != nil {
+		log.Printf("discover Copilot worktrees: %v", err)
+	} else if count > 0 {
+		log.Printf("discovered %d project(s) in Copilot worktrees", count)
+	}
 	certificatePath, keyPath, err := config.CertificatePaths()
 	if err != nil {
 		return fmt.Errorf("resolve TLS certificate paths: %w", err)
 	}
 	s.tlsCertificates = certificates.New(certificatePath, keyPath)
-	certificateStatus, err := s.tlsCertificates.Ensure()
+	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
 	}
+	tlsAddress := config.RouterTLSAddress()
 	mux := http.NewServeMux()
 	s.routes(mux)
 	srv := &http.Server{Addr: config.DaemonAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
 	router := &http.Server{Addr: config.RouterAddr, Handler: http.HandlerFunc(s.proxyByHost), ReadHeaderTimeout: 5 * time.Second}
 	tlsRouter := &http.Server{
-		Addr:              config.RouterTLSAddr,
+		Addr:              tlsAddress,
 		Handler:           http.HandlerFunc(s.proxyByHost),
 		ReadHeaderTimeout: 5 * time.Second,
 		TLSConfig:         s.tlsCertificates.TLSConfig(),
 	}
+	routerListener, err := net.Listen("tcp", config.RouterAddr)
+	if err != nil {
+		return fmt.Errorf("listen HTTP router on %s: %w", config.RouterAddr, err)
+	}
+	defer routerListener.Close()
+	tlsListener, err := net.Listen("tcp", tlsAddress)
+	if err != nil {
+		return tlsRouterListenError(tlsAddress, err)
+	}
+	defer tlsListener.Close()
 	go func() {
 		<-ctx.Done()
 		_ = srv.Shutdown(context.Background())
@@ -119,12 +141,12 @@ func (s *Server) Run(ctx context.Context) error {
 		_ = tlsRouter.Shutdown(context.Background())
 	}()
 	go func() {
-		if err := router.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := router.Serve(routerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
 		}
 	}()
 	go func() {
-		if err := tlsRouter.ListenAndServeTLS("", ""); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := tlsRouter.Serve(tls.NewListener(tlsListener, tlsRouter.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("TLS router: %v", err)
 		}
 	}()
@@ -136,10 +158,23 @@ func (s *Server) Run(ctx context.Context) error {
 		"porto daemon listening on http://%s (routers http://%s and https://%s, certificate %s)",
 		config.DaemonAddr,
 		config.RouterAddr,
-		config.RouterTLSAddr,
+		tlsAddress,
 		certificateStatus.CertificatePath,
 	)
 	return srv.ListenAndServe()
+}
+
+func tlsRouterListenError(address string, err error) error {
+	_, rawPort, splitErr := net.SplitHostPort(address)
+	port, portErr := strconv.Atoi(rawPort)
+	if runtime.GOOS == "darwin" && splitErr == nil && portErr == nil && port < 1024 {
+		return fmt.Errorf(
+			"listen HTTPS router on %s: %w; macOS restricts ports below 1024, so use a privileged port forward or service instead of running Porto projects as root",
+			address,
+			err,
+		)
+	}
+	return fmt.Errorf("listen HTTPS router on %s: %w", address, err)
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
@@ -184,12 +219,12 @@ func (s *Server) tlsStatus(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, status)
 }
 
-func (s *Server) renewTLS(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) renewTLS(w http.ResponseWriter, r *http.Request) {
 	if s.tlsCertificates == nil {
 		http.Error(w, "TLS certificate manager is not initialized", http.StatusServiceUnavailable)
 		return
 	}
-	status, err := s.tlsCertificates.Renew()
+	status, err := s.renewProjectCertificate(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -488,7 +523,16 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	for _, p := range found {
-		_, _ = s.store.UpsertProject(r.Context(), p)
+		if _, err := s.store.UpsertProject(r.Context(), p); err != nil {
+			http.Error(w, fmt.Sprintf("store discovered project %s: %v", p.Path, err), http.StatusInternalServerError)
+			return
+		}
+	}
+	if s.tlsCertificates != nil {
+		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
+			http.Error(w, fmt.Sprintf("refresh TLS certificate: %v", err), http.StatusInternalServerError)
+			return
+		}
 	}
 	s.syncSQLNotSoLite(r.Context())
 	writeJSON(w, map[string]any{"count": len(found), "projects": found})
@@ -927,6 +971,7 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 	for i := range ps {
 		ps[i].Branch = gitutil.Branch(ps[i].Path)
 		ps[i].Dirty = gitutil.Dirty(ps[i].Path)
+		ps[i].HTTPSURL = config.ProjectHTTPSURL(ps[i].Hostname)
 		s.mu.Lock()
 		_, ok := s.running[ps[i].ID]
 		s.mu.Unlock()
@@ -1000,7 +1045,7 @@ func (s *Server) certificateRenewalLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			if _, err := s.tlsCertificates.Ensure(); err != nil {
+			if _, err := s.ensureProjectCertificate(ctx); err != nil {
 				log.Printf("renew TLS certificate: %v", err)
 			}
 		}
@@ -1186,6 +1231,67 @@ func localHostname(hostport string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func (s *Server) discoverCopilotWorktrees(ctx context.Context) (int, error) {
+	home, err := s.userHomeDir()
+	if err != nil {
+		return 0, fmt.Errorf("resolve user home directory: %w", err)
+	}
+	root := filepath.Join(home, ".copilot", "copilot-worktrees")
+	info, err := os.Stat(root)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("inspect %s: %w", root, err)
+	}
+	if !info.IsDir() {
+		return 0, fmt.Errorf("%s is not a directory", root)
+	}
+	found, err := discovery.Scan(ctx, []string{root}, discovery.Options{
+		Depth:  config.DefaultScanDepth,
+		Ignore: []string{".git", "vendor", "dist", "target"},
+	})
+	if err != nil {
+		return 0, err
+	}
+	for _, project := range found {
+		if _, err := s.store.UpsertProject(ctx, project); err != nil {
+			return 0, fmt.Errorf("store discovered project %s: %w", project.Path, err)
+		}
+	}
+	return len(found), nil
+}
+
+func (s *Server) ensureProjectCertificate(ctx context.Context) (certificates.Status, error) {
+	hostnames, err := s.projectCertificateHostnames(ctx)
+	if err != nil {
+		return certificates.Status{}, err
+	}
+	return s.tlsCertificates.Ensure(hostnames...)
+}
+
+func (s *Server) renewProjectCertificate(ctx context.Context) (certificates.Status, error) {
+	hostnames, err := s.projectCertificateHostnames(ctx)
+	if err != nil {
+		return certificates.Status{}, err
+	}
+	return s.tlsCertificates.Renew(hostnames...)
+}
+
+func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, error) {
+	projects, err := s.store.ListProjects(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list projects for TLS certificate: %w", err)
+	}
+	hostnames := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if strings.Contains(project.Hostname, ".") {
+			hostnames = append(hostnames, project.Hostname+"."+config.LocalDomain)
+		}
+	}
+	return hostnames, nil
 }
 
 func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {

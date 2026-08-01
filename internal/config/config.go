@@ -2,8 +2,10 @@ package config
 
 import (
 	"errors"
+	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -12,6 +14,8 @@ const (
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
+	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
+	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
 	LocalDomain              = "porto.local"
 	LocalhostDomain          = "porto.localhost"
 	BasePort                 = 41000
@@ -19,6 +23,25 @@ const (
 	BranchCleanupInterval    = 10 * time.Second
 	CertificateCheckInterval = 24 * time.Hour
 )
+
+func RouterTLSAddress() string {
+	if address := strings.TrimSpace(os.Getenv(RouterTLSAddrEnv)); address != "" {
+		return address
+	}
+	return RouterTLSAddr
+}
+
+func ProjectHTTPSURL(hostname string) string {
+	host := hostname + "." + LocalDomain
+	port := strings.TrimSpace(os.Getenv(RouterTLSPublicPortEnv))
+	if port == "" {
+		_, port, _ = net.SplitHostPort(RouterTLSAddress())
+	}
+	if port == "" || port == "443" {
+		return "https://" + host + "/"
+	}
+	return "https://" + net.JoinHostPort(host, port) + "/"
+}
 
 func Dir() (string, error) {
 	if custom := os.Getenv("PORTO_HOME"); custom != "" {

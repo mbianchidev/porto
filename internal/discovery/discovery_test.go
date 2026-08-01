@@ -1,11 +1,45 @@
 package discovery
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestScanDeduplicatesCanonicalProjectPaths(t *testing.T) {
+	root := t.TempDir()
+	project := filepath.Join(root, "devoidofbeauty.com")
+	if err := os.Mkdir(project, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "go.mod"), []byte("module example.com/app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "project-link")
+	if err := os.Symlink(project, alias); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+
+	projects, err := Scan(context.Background(), []string{root, alias}, Options{Depth: 2})
+	if err != nil {
+		t.Fatalf("scan: %v", err)
+	}
+	if len(projects) != 1 {
+		t.Fatalf("projects = %+v, want one canonical project", projects)
+	}
+	canonicalProject, err := filepath.EvalSymlinks(project)
+	if err != nil {
+		t.Fatalf("canonicalize project: %v", err)
+	}
+	if projects[0].Path != canonicalProject {
+		t.Fatalf("path = %q, want %q", projects[0].Path, canonicalProject)
+	}
+}
 
 func TestDetectAdditionalEcosystems(t *testing.T) {
 	tests := []struct {

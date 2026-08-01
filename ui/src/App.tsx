@@ -9,6 +9,7 @@ type Project = {
   command: string
   port: number
   hostname: string
+  httpsUrl: string
   pid: number
   status: string
   branch: string
@@ -718,7 +719,7 @@ function App() {
         {projects.length === 0 && (
           <article className="empty">
             <h2>No projects yet</h2>
-            <p>Run <code>porto scan ~/code --depth 3</code> to discover projects.</p>
+            <p>Run <code>porto scan ~/code --depth 3</code>, or restart the daemon to scan Copilot worktrees.</p>
           </article>
         )}
         {projects.map((project) => (
@@ -739,8 +740,8 @@ function App() {
               <div>
                 <dt>HTTPS host</dt>
                 <dd>
-                  <a href={`https://${project.hostname}.porto.local:37681`} target="_blank" rel="noreferrer">
-                    {project.hostname}.porto.local:37681
+                  <a href={project.httpsUrl} target="_blank" rel="noreferrer">
+                    {project.httpsUrl.replace(/^https:\/\//, '').replace(/\/$/, '')}
                   </a>
                 </dd>
               </div>

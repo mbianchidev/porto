@@ -16,6 +16,8 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -54,24 +56,25 @@ func New(certificatePath, keyPath string) *Manager {
 	return &Manager{certificatePath: certificatePath, keyPath: keyPath}
 }
 
-func (m *Manager) Ensure() (Status, error) {
+func (m *Manager) Ensure(additionalDNSNames ...string) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	dnsNames := certificateDNSNames(additionalDNSNames)
 
-	if err := m.loadLocked(time.Now()); err == nil {
+	if err := m.loadLocked(time.Now(), dnsNames); err == nil {
 		return m.statusLocked(), nil
 	}
-	if err := m.generateLocked(time.Now()); err != nil {
+	if err := m.generateLocked(time.Now(), dnsNames); err != nil {
 		return Status{}, err
 	}
 	return m.statusLocked(), nil
 }
 
-func (m *Manager) Renew() (Status, error) {
+func (m *Manager) Renew(additionalDNSNames ...string) (Status, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if err := m.generateLocked(time.Now()); err != nil {
+	if err := m.generateLocked(time.Now(), certificateDNSNames(additionalDNSNames)); err != nil {
 		return Status{}, err
 	}
 	return m.statusLocked(), nil
@@ -100,7 +103,7 @@ func (m *Manager) TLSConfig() *tls.Config {
 	}
 }
 
-func (m *Manager) loadLocked(now time.Time) error {
+func (m *Manager) loadLocked(now time.Time, dnsNames []string) error {
 	pair, err := tls.LoadX509KeyPair(m.certificatePath, m.keyPath)
 	if err != nil {
 		return err
@@ -112,7 +115,7 @@ func (m *Manager) loadLocked(now time.Time) error {
 	if err != nil {
 		return fmt.Errorf("parse TLS certificate: %w", err)
 	}
-	if err := validate(leaf, now); err != nil {
+	if err := validate(leaf, now, dnsNames); err != nil {
 		return err
 	}
 	pair.Leaf = leaf
@@ -121,7 +124,7 @@ func (m *Manager) loadLocked(now time.Time) error {
 	return nil
 }
 
-func (m *Manager) generateLocked(now time.Time) error {
+func (m *Manager) generateLocked(now time.Time, dnsNames []string) error {
 	privateKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
 		return fmt.Errorf("generate TLS private key: %w", err)
@@ -142,7 +145,7 @@ func (m *Manager) generateLocked(now time.Time) error {
 		KeyUsage:              x509.KeyUsageDigitalSignature,
 		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
 		BasicConstraintsValid: true,
-		DNSNames:              append([]string(nil), requiredDNSNames...),
+		DNSNames:              append([]string(nil), dnsNames...),
 		IPAddresses: []net.IP{
 			net.ParseIP("127.0.0.1"),
 			net.ParseIP("::1"),
@@ -164,7 +167,7 @@ func (m *Manager) generateLocked(now time.Time) error {
 	if err := writeAtomic(m.certificatePath, certificatePEM, 0o644); err != nil {
 		return fmt.Errorf("write TLS certificate: %w", err)
 	}
-	if err := m.loadLocked(now); err != nil {
+	if err := m.loadLocked(now, dnsNames); err != nil {
 		return fmt.Errorf("load generated TLS certificate: %w", err)
 	}
 	return nil
@@ -182,14 +185,14 @@ func (m *Manager) statusLocked() Status {
 	}
 }
 
-func validate(certificate *x509.Certificate, now time.Time) error {
+func validate(certificate *x509.Certificate, now time.Time, dnsNames []string) error {
 	if now.Before(certificate.NotBefore) {
 		return errors.New("TLS certificate is not valid yet")
 	}
 	if !certificate.NotAfter.After(now.Add(renewalWindow)) {
 		return errors.New("TLS certificate is expired or near expiry")
 	}
-	for _, name := range requiredDNSNames {
+	for _, name := range dnsNames {
 		found := false
 		for _, certificateName := range certificate.DNSNames {
 			if certificateName == name {
@@ -212,6 +215,26 @@ func validate(certificate *x509.Certificate, now time.Time) error {
 		return fmt.Errorf("verify TLS certificate: %w", err)
 	}
 	return nil
+}
+
+func certificateDNSNames(additional []string) []string {
+	seen := make(map[string]bool, len(requiredDNSNames)+len(additional))
+	names := make([]string, 0, len(requiredDNSNames)+len(additional))
+	for _, name := range requiredDNSNames {
+		seen[name] = true
+		names = append(names, name)
+	}
+	extras := make([]string, 0, len(additional))
+	for _, name := range additional {
+		name = strings.TrimSuffix(strings.ToLower(strings.TrimSpace(name)), ".")
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		extras = append(extras, name)
+	}
+	sort.Strings(extras)
+	return append(names, extras...)
 }
 
 func writeAtomic(path string, contents []byte, mode os.FileMode) (err error) {

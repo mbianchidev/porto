@@ -594,11 +594,57 @@ func TestProxyUsesConfiguredHostname(t *testing.T) {
 	}
 }
 
+func TestProxyUsesDottedProjectHostname(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("dotted"))
+	}))
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatalf("parse backend URL: %v", err)
+	}
+	_, rawPort, err := net.SplitHostPort(backendURL.Host)
+	if err != nil {
+		t.Fatalf("parse backend address: %v", err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatalf("parse backend port: %v", err)
+	}
+
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	id, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "devoidofbeauty.com",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	if err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if err := st.SetRuntime(context.Background(), id, "running", 123, port); err != nil {
+		t.Fatalf("set runtime: %v", err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://devoidofbeauty.com.porto.local/", nil)
+	response := httptest.NewRecorder()
+	New(st, nil).proxyByHost(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "dotted" {
+		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+}
+
 func TestLocalHostnameSupportsTLSAndLegacyDomains(t *testing.T) {
 	for host, want := range map[string]string{
-		"app.porto.local:37681":     "app",
-		"app.porto.localhost:37680": "app",
-		"PORTO.LOCAL.":              "",
+		"app.porto.local:37681":              "app",
+		"devoidofbeauty.com.porto.local":     "devoidofbeauty.com",
+		"devoidofbeauty.com.porto.localhost": "devoidofbeauty.com",
+		"app.porto.localhost:37680":          "app",
+		"PORTO.LOCAL.":                       "",
 	} {
 		got, ok := localHostname(host)
 		if !ok || got != want {
@@ -607,5 +653,45 @@ func TestLocalHostnameSupportsTLSAndLegacyDomains(t *testing.T) {
 	}
 	if _, ok := localHostname("example.com"); ok {
 		t.Fatal("non-Porto hostname was accepted")
+	}
+}
+
+func TestDiscoverCopilotWorktrees(t *testing.T) {
+	home := t.TempDir()
+	worktree := filepath.Join(home, ".copilot", "copilot-worktrees", "porto", "devoidofbeauty.com")
+	if err := os.MkdirAll(worktree, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "go.mod"), []byte("module example.com/app\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "main.go"), []byte("package main\nfunc main() {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	server := New(st, nil)
+	server.userHomeDir = func() (string, error) { return home, nil }
+
+	count, err := server.discoverCopilotWorktrees(context.Background())
+	if err != nil {
+		t.Fatalf("discover worktrees: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("count = %d, want 1", count)
+	}
+	projects, err := st.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	canonicalWorktree, err := filepath.EvalSymlinks(worktree)
+	if err != nil {
+		t.Fatalf("canonicalize worktree: %v", err)
+	}
+	if len(projects) != 1 || projects[0].Path != canonicalWorktree {
+		t.Fatalf("projects = %+v, want discovered worktree", projects)
 	}
 }
