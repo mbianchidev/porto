@@ -669,7 +669,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		p.Status = running.project.Status
 		return p, nil
 	}
-	if p.Strategy == "compose" {
+	if projectUsesCompose(p) {
 		if err := s.compose.Check(ctx); err != nil {
 			return p, err
 		}
@@ -735,7 +735,7 @@ func (s *Server) waitForProjectReady(project app.Project, running *projectProces
 		case <-ticker.C:
 		}
 
-		if project.Strategy == "compose" && !time.Now().Before(nextComposePortCheck) {
+		if projectUsesCompose(project) && !time.Now().Before(nextComposePortCheck) {
 			nextComposePortCheck = time.Now().Add(composePortCheckInterval)
 			publishedPorts, err := s.compose.PublishedPorts(context.Background(), project)
 			if err != nil {
@@ -813,6 +813,17 @@ func mergeCandidatePorts(assignedPort int, publishedPorts []compose.PublishedPor
 	return ports
 }
 
+func projectUsesCompose(project app.Project) bool {
+	if project.Strategy == "compose" {
+		return true
+	}
+	if project.Strategy != "make" {
+		return false
+	}
+	_, ok := compose.FindFile(project.Path)
+	return ok
+}
+
 func (s *Server) waitForProject(project app.Project, running *projectProcess) {
 	err := running.cmd.Wait()
 
@@ -881,7 +892,7 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 		s.mu.Unlock()
 	}()
 
-	if force && target.Strategy == "compose" {
+	if force && projectUsesCompose(target) {
 		operationContext := context.WithoutCancel(ctx)
 		if cleanupErr := s.compose.Down(operationContext, target); cleanupErr != nil {
 			return p, errors.Join(cleanupErr, forceStopProjectProcess(running))

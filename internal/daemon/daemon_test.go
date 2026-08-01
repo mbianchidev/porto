@@ -520,7 +520,7 @@ func TestComposeStartChecksDockerBeforeLaunch(t *testing.T) {
 	}
 }
 
-func TestComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
+func TestMakeWrappedComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
 	skipWindowsShellHelper(t)
 	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
 	frontend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -539,10 +539,14 @@ func TestComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	projectPath := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectPath, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	st, project := testProject(t, app.Project{
 		Name:     "web",
-		Path:     t.TempDir(),
-		Strategy: "compose",
+		Path:     projectPath,
+		Strategy: "make",
 		Command:  daemonHelperCommand(),
 	})
 	server := New(st, nil)
