@@ -175,7 +175,27 @@ func CreateWorktree(repoPath, worktreeRoot string, resolvedBranch ResolvedBranch
 }
 
 func RemoveWorktree(repoPath, worktreePath string) error {
-	out, err := git(repoPath, "worktree", "remove", "--", worktreePath)
+	return removeWorktree(repoPath, worktreePath, false)
+}
+
+func RemoveWorktreeForce(repoPath, worktreePath string) error {
+	if _, err := os.Stat(worktreePath); errors.Is(err, os.ErrNotExist) {
+		out, pruneErr := git(repoPath, "worktree", "prune")
+		if pruneErr != nil {
+			return gitFailure("prune missing Git worktree", out, pruneErr)
+		}
+		return nil
+	}
+	return removeWorktree(repoPath, worktreePath, true)
+}
+
+func removeWorktree(repoPath, worktreePath string, force bool) error {
+	args := []string{"worktree", "remove"}
+	if force {
+		args = append(args, "--force")
+	}
+	args = append(args, "--", worktreePath)
+	out, err := git(repoPath, args...)
 	if err != nil {
 		return gitFailure("remove Git worktree", out, err)
 	}

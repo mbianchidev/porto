@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/process"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
@@ -84,6 +85,20 @@ func (f fakeSetupRunner) Run(_ context.Context, _ app.Project, emit func(stream,
 		return projectsetup.Result{}, err
 	}
 	return projectsetup.Result{Commands: []string{"npm ci"}}, nil
+}
+
+type failingSetupRunner struct {
+	cancel context.CancelFunc
+}
+
+func (f failingSetupRunner) Run(_ context.Context, project app.Project, _ func(stream, line string) error) (projectsetup.Result, error) {
+	if err := os.WriteFile(filepath.Join(project.Path, "setup.partial"), []byte("partial"), 0o600); err != nil {
+		return projectsetup.Result{}, err
+	}
+	if f.cancel != nil {
+		f.cancel()
+	}
+	return projectsetup.Result{Commands: []string{"npm ci"}}, errors.New("dependency setup failed")
 }
 
 func TestAvailableBranchHostnameCompactsAndDisambiguates(t *testing.T) {
@@ -281,6 +296,123 @@ func TestProjectCrashWinsBeforeHTTPReadiness(t *testing.T) {
 		t.Fatalf("start project: %v", err)
 	}
 	waitForProjectStatus(t, st, project.ID, "crashed")
+}
+
+func TestCreateInstanceRollsBackFailedSetupAfterRequestCancellation(t *testing.T) {
+	repo := initDaemonTestRepo(t)
+	if err := os.WriteFile(filepath.Join(repo, "package.json"), []byte(`{"scripts":{"dev":"vite"}}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDaemonTestGit(t, repo, "add", "package.json")
+	runDaemonTestGit(t, repo, "commit", "-m", "add package")
+	runDaemonTestGit(t, repo, "branch", "feature")
+	t.Setenv("PORTO_HOME", t.TempDir())
+
+	st, project := testProject(t, app.Project{
+		Name:     "web",
+		Path:     repo,
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	server := New(st, nil)
+	requestContext, cancel := context.WithCancel(context.Background())
+	server.setupRunner = failingSetupRunner{cancel: cancel}
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/projects/"+strconv.FormatInt(project.ID, 10)+"/instances", strings.NewReader(`{"branch":"feature"}`))
+	request = request.WithContext(requestContext)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+	if response.Code != http.StatusInternalServerError {
+		t.Fatalf("create status = %d: %s", response.Code, response.Body.String())
+	}
+	projects, err := st.ListProjects(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(projects) != 1 || projects[0].ID != project.ID {
+		t.Fatalf("projects after rollback = %+v", projects)
+	}
+	if err := gitutil.CanCheckout(repo, "feature"); err != nil {
+		t.Fatalf("feature branch still has a worktree: %v", err)
+	}
+}
+
+func TestDeleteManagedInstanceDiscardsDirtyWorktree(t *testing.T) {
+	repo := initDaemonTestRepo(t)
+	runDaemonTestGit(t, repo, "branch", "feature")
+	resolved, err := gitutil.ResolveBranch(repo, "feature")
+	if err != nil {
+		t.Fatal(err)
+	}
+	worktree, err := gitutil.CreateWorktree(repo, t.TempDir(), resolved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, source := testProject(t, app.Project{
+		Name:     "web",
+		Path:     repo,
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	instanceID, err := st.UpsertProject(context.Background(), app.Project{
+		Name:            source.Name,
+		Path:            worktree,
+		SourcePath:      repo,
+		Strategy:        source.Strategy,
+		Command:         source.Command,
+		ManagedInstance: true,
+		Branch:          "feature",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := New(st, nil)
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/projects/"+strconv.FormatInt(instanceID, 10)+"/instance", nil))
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("delete status = %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
+		t.Fatalf("worktree still exists: %v", err)
+	}
+	if _, err := st.GetProjectByID(context.Background(), instanceID); !IsNotFound(err) {
+		t.Fatalf("deleted instance lookup error = %v", err)
+	}
+
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, httptest.NewRequest(http.MethodDelete, "/api/projects/"+strconv.FormatInt(source.ID, 10)+"/instance", nil))
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("source delete status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDeletingInstanceBlocksNewLifecycleOperations(t *testing.T) {
+	st, project := testProject(t, app.Project{
+		Name:            "web",
+		Path:            t.TempDir(),
+		SourcePath:      t.TempDir(),
+		Strategy:        "package",
+		Command:         "npm run dev",
+		ManagedInstance: true,
+	})
+	server := New(st, nil)
+	server.deleting[project.ID] = true
+
+	if _, err := server.startProject(context.Background(), strconv.FormatInt(project.ID, 10), true); err == nil || !strings.Contains(err.Error(), "being deleted") {
+		t.Fatalf("start error = %v", err)
+	}
+	if _, err := server.runProjectSetup(context.Background(), project); !errors.Is(err, errProjectSetupConflict) {
+		t.Fatalf("setup error = %v", err)
+	}
 }
 
 type fakeComposeCleanup struct {
@@ -746,11 +878,13 @@ func TestProxyUsesConfiguredHostname(t *testing.T) {
 	if err := st.SetRuntime(context.Background(), id, "running", 123, port); err != nil {
 		t.Fatalf("set runtime: %v", err)
 	}
+	server := New(st, nil)
+	trackProxyProject(server, id, port)
 
 	request := httptest.NewRequest(http.MethodGet, "https://custom-app.porto.local/", nil)
 	request.Host = "custom-app.porto.local:37681"
 	response := httptest.NewRecorder()
-	New(st, nil).proxyByHost(response, request)
+	server.proxyByHost(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "proxied" {
 		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
 	}
@@ -791,12 +925,85 @@ func TestProxyUsesDottedProjectHostname(t *testing.T) {
 	if err := st.SetRuntime(context.Background(), id, "running", 123, port); err != nil {
 		t.Fatalf("set runtime: %v", err)
 	}
+	server := New(st, nil)
+	trackProxyProject(server, id, port)
 
 	request := httptest.NewRequest(http.MethodGet, "https://devoidofbeauty.com.porto.localhost/", nil)
 	response := httptest.NewRecorder()
-	New(st, nil).proxyByHost(response, request)
+	server.proxyByHost(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "dotted" {
 		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestProxyRejectsUntrackedStalePort(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("different app"))
+	}))
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rawPort, err := net.SplitHostPort(backendURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, project := testProject(t, app.Project{
+		Name:     "application",
+		Hostname: "stale-app",
+		Path:     t.TempDir(),
+		Strategy: "package",
+		Command:  "npm run dev",
+	})
+	if err := st.SetRuntime(context.Background(), project.ID, "crashed", 0, port); err != nil {
+		t.Fatal(err)
+	}
+
+	request := httptest.NewRequest(http.MethodGet, "https://stale-app.porto.local/", nil)
+	response := httptest.NewRecorder()
+	New(st, nil).proxyByHost(response, request)
+	if response.Code != http.StatusServiceUnavailable || strings.Contains(response.Body.String(), "different app") {
+		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func trackProxyProject(server *Server, projectID int64, port int) {
+	server.running[projectID] = &projectProcess{
+		cmd: &exec.Cmd{Process: &os.Process{Pid: os.Getpid()}},
+		project: app.Project{
+			ID:     projectID,
+			Port:   port,
+			Status: "starting",
+		},
+	}
+}
+
+func initDaemonTestRepo(t *testing.T) string {
+	t.Helper()
+	repo := t.TempDir()
+	runDaemonTestGit(t, repo, "init", "-b", "main")
+	runDaemonTestGit(t, repo, "config", "user.email", "test@example.com")
+	runDaemonTestGit(t, repo, "config", "user.name", "Test User")
+	runDaemonTestGit(t, repo, "config", "commit.gpgsign", "false")
+	if err := os.WriteFile(filepath.Join(repo, "README.md"), []byte("test"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runDaemonTestGit(t, repo, "add", "README.md")
+	runDaemonTestGit(t, repo, "commit", "-m", "initial")
+	return repo
+}
+
+func runDaemonTestGit(t *testing.T, dir string, args ...string) {
+	t.Helper()
+	command := exec.Command("git", args...)
+	command.Dir = dir
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("git %s: %v\n%s", strings.Join(args, " "), err, output)
 	}
 }
 

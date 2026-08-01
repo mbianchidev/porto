@@ -52,6 +52,7 @@ type Server struct {
 	running         map[int64]*projectProcess
 	stopping        map[int64]bool
 	settingUp       map[int64]bool
+	deleting        map[int64]bool
 	sendboxRunning  map[int64]*exec.Cmd
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
@@ -93,6 +94,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
 		settingUp:       map[int64]bool{},
+		deleting:        map[int64]bool{},
 		sendboxRunning:  map[int64]*exec.Cmd{},
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
@@ -418,6 +420,11 @@ func (s *Server) startSendbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.mu.Lock()
+	if s.deleting[project.ID] {
+		s.mu.Unlock()
+		http.Error(w, "project instance is being deleted", http.StatusConflict)
+		return
+	}
 	if cmd := s.sendboxRunning[project.ID]; cmd != nil && cmd.Process != nil {
 		s.sendboxStates[project.ID] = "running"
 		s.sendboxMessages[project.ID] = "Sendbox session is running."
@@ -592,6 +599,10 @@ func (s *Server) setupProject(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (projectsetup.Result, error) {
 	s.mu.Lock()
+	if s.deleting[project.ID] {
+		s.mu.Unlock()
+		return projectsetup.Result{}, fmt.Errorf("%w: %s instance is being deleted", errProjectSetupConflict, project.Name)
+	}
 	if s.settingUp[project.ID] {
 		s.mu.Unlock()
 		return projectsetup.Result{}, fmt.Errorf("%w: %s setup is already running", errProjectSetupConflict, project.Name)
@@ -638,6 +649,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	}
 	if s.settingUp[p.ID] {
 		return p, fmt.Errorf("%s dependency setup is running", p.Name)
+	}
+	if s.deleting[p.ID] {
+		return p, fmt.Errorf("%s instance is being deleted", p.Name)
 	}
 	if s.stopping[p.ID] {
 		return p, fmt.Errorf("%s is stopping", p.Name)
@@ -1061,28 +1075,31 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 	instance.Path = worktreePath
 	id, err := s.store.UpsertProject(r.Context(), instance)
 	if err != nil {
-		_ = gitutil.RemoveWorktree(source.Path, worktreePath)
-		http.Error(w, fmt.Sprintf("store branch instance: %v", err), http.StatusInternalServerError)
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, 0)
+		http.Error(w, fmt.Sprintf("store branch instance: %v", errors.Join(err, cleanupErr)), http.StatusInternalServerError)
+		return
+	}
+	created, err := s.store.GetProjectByID(r.Context(), id)
+	if err != nil {
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+		http.Error(w, errors.Join(err, cleanupErr).Error(), http.StatusInternalServerError)
+		return
+	}
+	if _, planErr := projectsetup.Plan(created); planErr == nil {
+		if _, err := s.runProjectSetup(r.Context(), created); err != nil {
+			cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+			http.Error(w, fmt.Sprintf("create branch instance: %v", errors.Join(err, cleanupErr)), http.StatusInternalServerError)
+			return
+		}
+	} else if !errors.Is(planErr, projectsetup.ErrUnsupported) {
+		cleanupErr := s.rollbackInstance(r.Context(), source.Path, worktreePath, id)
+		http.Error(w, fmt.Sprintf("create branch instance: %v", errors.Join(planErr, cleanupErr)), http.StatusInternalServerError)
 		return
 	}
 	if s.tlsCertificates != nil {
 		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
 			log.Printf("refresh TLS hosts after instance creation: %v", err)
 		}
-	}
-	created, err := s.store.GetProjectByID(r.Context(), id)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	if _, planErr := projectsetup.Plan(created); planErr == nil {
-		if _, err := s.runProjectSetup(r.Context(), created); err != nil {
-			http.Error(w, fmt.Sprintf("branch instance created, but dependency setup failed: %v", err), http.StatusInternalServerError)
-			return
-		}
-	} else if !errors.Is(planErr, projectsetup.ErrUnsupported) {
-		http.Error(w, fmt.Sprintf("branch instance created, but dependency setup could not start: %v", planErr), http.StatusInternalServerError)
-		return
 	}
 	created.Branch = req.Branch
 	created.DefaultBranch = defaultBranch
@@ -1101,22 +1118,48 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "only managed branch instances can be removed", http.StatusBadRequest)
 		return
 	}
-	if gitutil.Dirty(project.Path) {
-		http.Error(w, "commit or stash local changes before removing this instance", http.StatusConflict)
+	s.mu.Lock()
+	alreadyDeleting := s.deleting[project.ID]
+	setupRunning := s.settingUp[project.ID]
+	sendboxRunning := s.sendboxRunning[project.ID] != nil
+	if !alreadyDeleting && !setupRunning && !sendboxRunning {
+		s.deleting[project.ID] = true
+	}
+	s.mu.Unlock()
+	if alreadyDeleting {
+		http.Error(w, "this instance is already being deleted", http.StatusConflict)
 		return
 	}
-	if _, err := s.stopProject(r.Context(), strconv.FormatInt(project.ID, 10), false); err != nil {
+	if setupRunning {
+		http.Error(w, "wait for dependency setup to finish before deleting this instance", http.StatusConflict)
+		return
+	}
+	if sendboxRunning {
+		http.Error(w, "stop Sendbox before deleting this instance", http.StatusConflict)
+		return
+	}
+	defer func() {
+		s.mu.Lock()
+		delete(s.deleting, project.ID)
+		s.mu.Unlock()
+	}()
+	cleanupContext := context.WithoutCancel(r.Context())
+	if _, err := s.stopProject(cleanupContext, strconv.FormatInt(project.ID, 10), false); err != nil {
 		http.Error(w, fmt.Sprintf("stop instance: %v", err), http.StatusInternalServerError)
 		return
 	}
-	if err := gitutil.RemoveWorktree(project.SourcePath, project.Path); err != nil {
+	if err := gitutil.RemoveWorktreeForce(project.SourcePath, project.Path); err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
 	}
-	if err := s.store.DeleteProject(r.Context(), project.ID); err != nil {
+	if err := s.store.DeleteProject(cleanupContext, project.ID); err != nil {
 		http.Error(w, fmt.Sprintf("delete instance: %v", err), http.StatusInternalServerError)
 		return
 	}
+	s.mu.Lock()
+	delete(s.sendboxStates, project.ID)
+	delete(s.sendboxMessages, project.ID)
+	s.mu.Unlock()
 	if s.tlsCertificates != nil {
 		if _, err := s.ensureProjectCertificate(r.Context()); err != nil {
 			log.Printf("refresh TLS hosts after instance removal: %v", err)
@@ -1124,6 +1167,20 @@ func (s *Server) removeInstance(w http.ResponseWriter, r *http.Request) {
 	}
 	s.syncKillSwitch(r.Context())
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) rollbackInstance(ctx context.Context, sourcePath, worktreePath string, projectID int64) error {
+	cleanupContext := context.WithoutCancel(ctx)
+	var cleanupErr error
+	if err := gitutil.RemoveWorktreeForce(sourcePath, worktreePath); err != nil {
+		cleanupErr = fmt.Errorf("remove branch worktree: %w", err)
+	}
+	if projectID != 0 {
+		if err := s.store.DeleteProject(cleanupContext, projectID); err != nil {
+			cleanupErr = errors.Join(cleanupErr, fmt.Errorf("delete branch instance: %w", err))
+		}
+	}
+	return cleanupErr
 }
 
 func (s *Server) availableBranchHostname(ctx context.Context, project app.Project, branch, defaultBranch string) (string, error) {
@@ -1534,7 +1591,20 @@ func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "project not found or port unknown", http.StatusNotFound)
 		return
 	}
-	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", p.Port))
+	s.mu.Lock()
+	running := s.running[p.ID]
+	if running == nil || running.stopping || running.cmd == nil || running.cmd.Process == nil {
+		s.mu.Unlock()
+		http.Error(w, "project is not running in this Porto daemon", http.StatusServiceUnavailable)
+		return
+	}
+	port := running.project.Port
+	s.mu.Unlock()
+	if port <= 0 {
+		http.Error(w, "project port is unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
 	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
 }
 

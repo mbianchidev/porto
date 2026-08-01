@@ -31,8 +31,11 @@ func TestManagedWorktreeLifecycle(t *testing.T) {
 	if err := CanCheckout(repo, "feature/branch-instance"); err == nil {
 		t.Fatal("checkout allowed for a branch used by another worktree")
 	}
-	if err := RemoveWorktree(repo, worktree); err != nil {
-		t.Fatalf("remove worktree: %v", err)
+	if err := os.WriteFile(filepath.Join(worktree, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RemoveWorktreeForce(repo, worktree); err != nil {
+		t.Fatalf("force remove worktree: %v", err)
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists: %v", err)
@@ -47,6 +50,14 @@ func TestCanCheckoutRejectsDirtyTree(t *testing.T) {
 	}
 	if err := CanCheckout(repo, "other"); err == nil {
 		t.Fatal("dirty checkout was allowed")
+	}
+}
+
+func TestForceRemoveMissingWorktreeIsIdempotent(t *testing.T) {
+	repo := initTestRepo(t)
+	missing := filepath.Join(t.TempDir(), "missing")
+	if err := RemoveWorktreeForce(repo, missing); err != nil {
+		t.Fatalf("force remove missing worktree: %v", err)
 	}
 }
 

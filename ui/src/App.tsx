@@ -527,14 +527,15 @@ function App() {
     }
 
   async function removeInstance(project: Project) {
-      if (!window.confirm(`Remove the ${project.branch} instance of ${project.name}?`)) return
+      const dirtyWarning = project.dirty ? ' Uncommitted changes in this instance will be discarded.' : ''
+      if (!window.confirm(`Delete the ${project.branch} instance of ${project.name}?${dirtyWarning}`)) return
       setBranchBusyID(project.id)
       try {
         const response = await fetch(`/api/projects/${project.id}/instance`, { method: 'DELETE' })
         if (!response.ok) throw new Error(await response.text())
         if (logProjectID === project.id) setLogProjectID(null)
         setError('')
-        setNotice(`Removed the ${project.branch} instance of ${project.name}.`)
+        setNotice(`Deleted the ${project.branch} instance of ${project.name}.`)
         setBranchOptions({})
         await refreshProjects()
       } catch (err) {
@@ -1270,7 +1271,7 @@ function App() {
               {project.managedInstance && (
                 <ProjectActionButton
                   className="removeButton"
-                  label="Remove branch instance"
+                  label="Delete branch instance"
                   icon="remove"
                   disabled={branchBusyID === project.id}
                   onClick={() => removeInstance(project)}
