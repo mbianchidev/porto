@@ -11,6 +11,7 @@ type Project struct {
 	Port              int       `json:"port"`
 	PinnedPort        int       `json:"pinnedPort"`
 	Hostname          string    `json:"hostname"`
+	HTTPSURL          string    `json:"httpsUrl"`
 	PID               int       `json:"pid"`
 	Status            string    `json:"status"`
 	Branch            string    `json:"branch"`

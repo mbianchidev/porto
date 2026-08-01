@@ -9,7 +9,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 
 - Go CLI and daemon with a small SQLite database under `~/.config/porto/porto.db` (override with `PORTO_HOME`).
 - React dashboard served by the daemon for one-click start, stop, restart, and kill actions.
-- Project discovery across user-selected roots with `--depth` and ignore lists.
+- Project discovery across user-selected roots plus automatic daemon-start scanning of `~/.copilot/copilot-worktrees`.
 - Detection priority: `Makefile`, Compose files, `package.json` scripts, Python entry points, Go mains, then Rust binaries.
 - One-click dependency setup using Make setup targets, no-cache Compose builds, Node lockfiles, Python virtual environments, Go modules, or Cargo.
 - Stable automatic port assignment starting at `41000`, with pinned port overrides.
@@ -19,7 +19,7 @@ Porto is an open-source CLI, daemon, and lightweight React dashboard for managin
 - Optional [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) database discovery for orchestrated projects that contain SQLite files.
 - Optional macOS [KillSwitch](https://github.com/mbianchidev/kill-switch) integration for active port visibility and stale dev-server cleanup.
 - Optional [Sendbox](https://github.com/mbianchidev/sendbox) sessions for projects with a `.sendbox.yaml` configuration.
-- HTTPS hostname routing via `https://<project>.porto.local:37681` with an automatically generated self-signed certificate.
+- HTTPS hostname routing for simple and dotted project names, with configurable portless `https://<project>.porto.local/` links and an automatically generated self-signed certificate.
 - Zero-configuration HTTP compatibility via `http://<project>.porto.localhost:37680`.
 - Multiplatform design using Go and a pure-Go SQLite driver for Linux, macOS, and Windows.
 
@@ -70,13 +70,15 @@ Open the dashboard at:
 http://127.0.0.1:37623
 ```
 
-If a project has hostname `api`, access it through the HTTPS router after configuring local name resolution and trusting Porto's certificate:
+If a project has hostname `api`, access it through the default HTTPS router after configuring local name resolution and trusting Porto's certificate:
 
 ```text
 https://api.porto.local:37681
 ```
 
 The existing zero-configuration HTTP route remains available at `http://api.porto.localhost:37680`.
+
+Project names keep valid dots in their generated hostnames. For example, `devoidofbeauty.com` is routed as `devoidofbeauty.com.porto.local`, not `devoidofbeauty-com.porto.local`.
 
 ## CLI
 
@@ -95,7 +97,9 @@ porto sendbox start|stop <project>
 
 ## Discovery rules
 
-Porto walks each selected root up to the requested depth. It always ignores `node_modules` and also honors the comma-separated `--ignore` list. When a runnable project is found, detection stops for that subtree.
+Porto walks each selected root up to the requested depth. It always ignores `node_modules` and also honors the comma-separated `--ignore` list. When a runnable project is found, detection stops for that subtree. Paths are canonicalized so overlapping roots or symlink aliases do not create duplicate projects.
+
+The daemon also scans the current user's `~/.copilot/copilot-worktrees` directory at startup when it exists. This uses the current home directory reported by the operating system and does not hardcode a username.
 
 Run strategy priority:
 
@@ -186,12 +190,12 @@ When the daemon starts, Porto creates an ECDSA self-signed certificate and priva
 ~/.config/porto/certificates/porto.local-key.pem
 ```
 
-Use `porto cert path` to print the active paths or `porto cert generate` to replace the certificate. Renewal updates a running daemon immediately, and the daemon checks daily for certificates within 30 days of expiry. The certificate covers `porto.local`, `*.porto.local`, `porto.localhost`, `*.porto.localhost`, `localhost`, and loopback IP addresses. Porto never installs the certificate into the system trust store; trust `porto.local.pem` manually only on development machines where you control the file. On Unix, the private key is written with owner-only permissions. On Windows, access relies on the ACL inherited from the user's configuration directory.
+Use `porto cert path` to print the active paths or `porto cert generate` to replace the certificate. Renewal updates a running daemon immediately, and the daemon checks daily for certificates within 30 days of expiry. The certificate covers `porto.local`, `*.porto.local`, `porto.localhost`, `*.porto.localhost`, `localhost`, loopback IP addresses, and exact SANs for discovered dotted project hosts such as `devoidofbeauty.com.porto.local`. Adding a new dotted hostname regenerates the self-signed certificate, so trust the current `porto.local.pem` after discovery is complete. Porto never installs the certificate into the system trust store; trust it manually only on development machines where you control the file. On Unix, the private key is written with owner-only permissions. On Windows, access relies on the ACL inherited from the user's configuration directory.
 
 The HTTPS router listens on `127.0.0.1:37681`. Porto does not edit DNS or host files. Because `.local` is reserved for mDNS, configure exact names in your local DNS or hosts file, for example:
 
 ```text
-127.0.0.1 porto.local api.porto.local
+127.0.0.1 porto.local api.porto.local devoidofbeauty.com.porto.local
 ```
 
 Hosts files do not support wildcard entries, so add each project hostname separately. For a one-off request without changing DNS:
@@ -201,6 +205,15 @@ curl --resolve api.porto.local:37681:127.0.0.1 https://api.porto.local:37681
 ```
 
 The HTTP router continues listening on `127.0.0.1:37680` and accepts both `<project>.porto.local` and `<project>.porto.localhost`. The `.porto.localhost` form normally resolves to loopback without configuration.
+
+Set `PORTO_TLS_ADDR` to change the TLS listener. Binding `127.0.0.1:443` produces portless dashboard links, but macOS restricts ports below 1024. Do not run the Porto daemon with `sudo`, because projects launched by the daemon would also run as root. Instead, keep Porto on its unprivileged default and forward only port 443. For example, with `socat` installed:
+
+```sh
+sudo socat TCP-LISTEN:443,bind=127.0.0.1,reuseaddr,fork TCP:127.0.0.1:37681
+PORTO_TLS_PUBLIC_PORT=443 porto daemon start
+```
+
+`PORTO_TLS_PUBLIC_PORT=443` tells the dashboard that the external listener is port 443, so project links are rendered as `https://devoidofbeauty.com.porto.local/`. Run the privileged forward under a suitable macOS service manager for a persistent setup. In environments where Porto itself receives a privileged socket safely, `PORTO_TLS_ADDR=127.0.0.1:443` can be used directly. Without either setup, keep the working default `:37681` URL.
 
 ## Development
 

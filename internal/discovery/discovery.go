@@ -35,6 +35,10 @@ func Scan(ctx context.Context, roots []string, opts Options) ([]app.Project, err
 		if err != nil {
 			return nil, err
 		}
+		abs = filepath.Clean(abs)
+		if resolved, resolveErr := filepath.EvalSymlinks(abs); resolveErr == nil {
+			abs = resolved
+		}
 		baseDepth := strings.Count(abs, string(os.PathSeparator))
 		err = filepath.WalkDir(abs, func(path string, d os.DirEntry, err error) error {
 			if err != nil {
@@ -54,10 +58,15 @@ func Scan(ctx context.Context, roots []string, opts Options) ([]app.Project, err
 			if strings.Count(path, string(os.PathSeparator))-baseDepth > opts.Depth {
 				return filepath.SkipDir
 			}
-			p, ok := Detect(path)
-			if ok && !seen[path] {
+			canonicalPath := filepath.Clean(path)
+			if resolved, resolveErr := filepath.EvalSymlinks(canonicalPath); resolveErr == nil {
+				canonicalPath = resolved
+			}
+			p, ok := Detect(canonicalPath)
+			if ok && !seen[canonicalPath] {
+				p.Path = canonicalPath
 				projects = append(projects, p)
-				seen[path] = true
+				seen[canonicalPath] = true
 				return filepath.SkipDir
 			}
 			return nil

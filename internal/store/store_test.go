@@ -3,12 +3,117 @@ package store
 import (
 	"context"
 	"database/sql"
+	"os"
 	"path/filepath"
 	"reflect"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/app"
 )
+
+func TestSafeHostPreservesValidDomainLabels(t *testing.T) {
+	for name, want := range map[string]string{
+		"devoidofbeauty.com": "devoidofbeauty.com",
+		"My App.Com":         "my-app.com",
+		"..foo..bar..":       "foo.bar",
+		"---":                "project",
+	} {
+		if got := safeHost(name); got != want {
+			t.Fatalf("safeHost(%q) = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestOpenMigratesGeneratedDottedHostname(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porto.db")
+	st, err := Open(path)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO projects(name,path,strategy,command,hostname,updated_at)
+VALUES('devoidofbeauty.com','/tmp/devoidofbeauty','go','go run .','devoidofbeauty-com','2026-01-01T00:00:00Z')`); err != nil {
+		t.Fatalf("insert legacy project: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	st, err = Open(path)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	project, err := st.GetProject(context.Background(), "devoidofbeauty.com")
+	if err != nil {
+		t.Fatalf("get migrated project: %v", err)
+	}
+	if project.Hostname != "devoidofbeauty.com" {
+		t.Fatalf("hostname = %q, want dotted hostname", project.Hostname)
+	}
+}
+
+func TestOpenMergesCanonicalProjectPathDuplicates(t *testing.T) {
+	root := t.TempDir()
+	projectPath := filepath.Join(root, "project")
+	if err := os.Mkdir(projectPath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	aliasPath := filepath.Join(root, "project-link")
+	if err := os.Symlink(projectPath, aliasPath); err != nil {
+		t.Skipf("create symlink: %v", err)
+	}
+	dbPath := filepath.Join(t.TempDir(), "porto.db")
+	st, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	result, err := st.db.Exec(`INSERT INTO projects(name,path,strategy,command,pinned_port,hostname,auto_start,updated_at)
+VALUES('project',?,'go','go run .',42000,'custom-project',1,'2026-01-01T00:00:00Z')`, aliasPath)
+	if err != nil {
+		t.Fatalf("insert alias project: %v", err)
+	}
+	aliasID, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("alias id: %v", err)
+	}
+	if _, err := st.db.Exec(`INSERT INTO projects(name,path,strategy,command,hostname,updated_at)
+VALUES('project-copy',?,'go','go run .','project-copy','2026-01-01T00:00:00Z')`, projectPath); err != nil {
+		t.Fatalf("insert canonical project: %v", err)
+	}
+	if err := st.AddLog(context.Background(), aliasID, "stdout", "preserved"); err != nil {
+		t.Fatalf("add alias log: %v", err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("close store: %v", err)
+	}
+
+	st, err = Open(dbPath)
+	if err != nil {
+		t.Fatalf("reopen store: %v", err)
+	}
+	defer st.Close()
+	projects, err := st.ListProjects(context.Background())
+	if err != nil {
+		t.Fatalf("list projects: %v", err)
+	}
+	canonicalPath, err := filepath.EvalSymlinks(projectPath)
+	if err != nil {
+		t.Fatalf("canonicalize project: %v", err)
+	}
+	if len(projects) != 1 || projects[0].Path != canonicalPath {
+		t.Fatalf("projects = %+v, want one canonical project", projects)
+	}
+	if projects[0].Hostname != "custom-project" || projects[0].PinnedPort != 42000 || !projects[0].AutoStart {
+		t.Fatalf("merged project lost configuration: %+v", projects[0])
+	}
+	logs, err := st.Logs(context.Background(), projects[0].ID, 10)
+	if err != nil {
+		t.Fatalf("list logs: %v", err)
+	}
+	if len(logs) != 1 || logs[0].Line != "preserved" {
+		t.Fatalf("logs = %+v, want preserved alias log", logs)
+	}
+}
 
 func TestSettingsRoundTrip(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))

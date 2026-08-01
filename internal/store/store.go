@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,7 +31,19 @@ func Open(path string) (*Store, error) {
 		return nil, err
 	}
 	s := &Store{db: db}
-	return s, s.migrate()
+	if err := s.migrate(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.migrateProjectPaths(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	if err := s.migrateGeneratedHostnames(); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
+	return s, nil
 }
 
 func (s *Store) Close() error { return s.db.Close() }
@@ -94,13 +107,15 @@ CREATE TABLE IF NOT EXISTS settings (
 
 func (s *Store) UpsertProject(ctx context.Context, p app.Project) (int64, error) {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	p.Path = canonicalProjectPath(p.Path)
 	if p.Hostname == "" {
 		p.Hostname = safeHost(p.Name)
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO projects(name,path,strategy,command,hostname,updated_at)
 VALUES(?,?,?,?,?,?)
 ON CONFLICT(path) DO UPDATE SET name=excluded.name, strategy=excluded.strategy, command=excluded.command,
-hostname=CASE WHEN projects.hostname='' THEN excluded.hostname ELSE projects.hostname END, updated_at=excluded.updated_at`, p.Name, p.Path, p.Strategy, p.Command, p.Hostname, now)
+hostname=CASE WHEN projects.hostname='' OR projects.hostname=? THEN excluded.hostname ELSE projects.hostname END, updated_at=excluded.updated_at`,
+		p.Name, p.Path, p.Strategy, p.Command, p.Hostname, now, legacySafeHost(p.Name))
 	if err != nil {
 		return 0, err
 	}
@@ -313,11 +328,43 @@ func scanProject(row scanner) (app.Project, error) {
 
 func safeHost(name string) string {
 	name = strings.ToLower(name)
+	labels := make([]string, 0, strings.Count(name, ".")+1)
+	for _, rawLabel := range strings.Split(name, ".") {
+		var label strings.Builder
+		lastDash := false
+		for _, r := range rawLabel {
+			valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+			if valid {
+				if label.Len() < 63 {
+					label.WriteRune(r)
+				}
+				lastDash = false
+				continue
+			}
+			if !lastDash && label.Len() > 0 && label.Len() < 63 {
+				label.WriteByte('-')
+				lastDash = true
+			}
+		}
+		cleaned := strings.Trim(label.String(), "-")
+		if cleaned != "" {
+			labels = append(labels, cleaned)
+		}
+	}
+	out := strings.Join(labels, ".")
+	if out == "" {
+		return "project"
+	}
+	return out
+}
+
+func legacySafeHost(name string) string {
+	name = strings.ToLower(name)
 	var b strings.Builder
 	lastDash := false
 	for _, r := range name {
-		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
-		if ok {
+		valid := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9')
+		if valid {
 			b.WriteRune(r)
 			lastDash = false
 			continue
@@ -327,11 +374,175 @@ func safeHost(name string) string {
 			lastDash = true
 		}
 	}
-	out := strings.Trim(b.String(), "-")
-	if out == "" {
-		return fmt.Sprintf("project-%d", time.Now().Unix())
+	return strings.Trim(b.String(), "-")
+}
+
+func (s *Store) migrateGeneratedHostnames() error {
+	rows, err := s.db.Query(`SELECT id,name,hostname FROM projects`)
+	if err != nil {
+		return err
 	}
-	return out
+	defer rows.Close()
+	type update struct {
+		id       int64
+		hostname string
+	}
+	var updates []update
+	for rows.Next() {
+		var id int64
+		var name, hostname string
+		if err := rows.Scan(&id, &name, &hostname); err != nil {
+			return err
+		}
+		generated := safeHost(name)
+		if generated != hostname && hostname == legacySafeHost(name) {
+			updates = append(updates, update{id: id, hostname: generated})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+	for _, item := range updates {
+		if _, err := s.db.Exec(`UPDATE projects SET hostname=? WHERE id=?`, item.hostname, item.id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) migrateProjectPaths() error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	rows, err := tx.Query(`SELECT id,name,path,strategy,command,port,pinned_port,hostname,pid,status,auto_start,last_started,updated_at
+FROM projects ORDER BY id`)
+	if err != nil {
+		return err
+	}
+	type storedProject struct {
+		id          int64
+		name        string
+		path        string
+		strategy    string
+		command     string
+		port        int
+		pinnedPort  int
+		hostname    string
+		pid         int
+		status      string
+		autoStart   int
+		lastStarted string
+		updatedAt   string
+	}
+	groups := map[string][]storedProject{}
+	for rows.Next() {
+		var project storedProject
+		if err := rows.Scan(
+			&project.id,
+			&project.name,
+			&project.path,
+			&project.strategy,
+			&project.command,
+			&project.port,
+			&project.pinnedPort,
+			&project.hostname,
+			&project.pid,
+			&project.status,
+			&project.autoStart,
+			&project.lastStarted,
+			&project.updatedAt,
+		); err != nil {
+			_ = rows.Close()
+			return err
+		}
+		canonical := canonicalProjectPath(project.path)
+		groups[canonical] = append(groups[canonical], project)
+	}
+	if err := rows.Err(); err != nil {
+		_ = rows.Close()
+		return err
+	}
+	if err := rows.Close(); err != nil {
+		return err
+	}
+
+	for canonical, projects := range groups {
+		keeperIndex := 0
+		for i := 1; i < len(projects); i++ {
+			if projects[i].updatedAt > projects[keeperIndex].updatedAt {
+				keeperIndex = i
+			}
+		}
+		keeper := projects[keeperIndex]
+		for i, duplicate := range projects {
+			if i == keeperIndex {
+				continue
+			}
+			if keeper.hostname == "" || keeper.hostname == safeHost(keeper.name) {
+				if duplicate.hostname != "" && duplicate.hostname != safeHost(duplicate.name) {
+					keeper.hostname = duplicate.hostname
+				}
+			}
+			if keeper.pinnedPort == 0 && duplicate.pinnedPort != 0 {
+				keeper.pinnedPort = duplicate.pinnedPort
+			}
+			if duplicate.autoStart == 1 {
+				keeper.autoStart = 1
+			}
+			if keeper.status != "running" && duplicate.status == "running" {
+				keeper.port = duplicate.port
+				keeper.pid = duplicate.pid
+				keeper.status = duplicate.status
+			}
+			if duplicate.lastStarted > keeper.lastStarted {
+				keeper.lastStarted = duplicate.lastStarted
+			}
+			if _, err := tx.Exec(`UPDATE logs SET project_id=? WHERE project_id=?`, keeper.id, duplicate.id); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(`DELETE FROM projects WHERE id=?`, duplicate.id); err != nil {
+				return err
+			}
+		}
+		_, err := tx.Exec(`UPDATE projects SET
+name=?,path=?,strategy=?,command=?,port=?,pinned_port=?,hostname=?,pid=?,status=?,auto_start=?,last_started=?,updated_at=?
+WHERE id=?`,
+			keeper.name,
+			canonical,
+			keeper.strategy,
+			keeper.command,
+			keeper.port,
+			keeper.pinnedPort,
+			keeper.hostname,
+			keeper.pid,
+			keeper.status,
+			keeper.autoStart,
+			keeper.lastStarted,
+			keeper.updatedAt,
+			keeper.id,
+		)
+		if err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func canonicalProjectPath(path string) string {
+	if absolute, err := filepath.Abs(path); err == nil {
+		path = absolute
+	}
+	path = filepath.Clean(path)
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
 }
 
 func boolInt(value bool) int {

@@ -55,7 +55,7 @@ func run(args []string) error {
 	case "logs":
 		return logs(db, args[1:])
 	case "cert", "certificate":
-		return certificateAction(args[1:])
+		return certificateAction(db, args[1:])
 	case "branch":
 		return branch(args[1:])
 	case "port":
@@ -255,7 +255,7 @@ func parseLogArgs(args []string) (project, stream string, limit int, clear bool,
 	return project, stream, limit, clear, nil
 }
 
-func certificateAction(args []string) error {
+func certificateAction(st *store.Store, args []string) error {
 	if len(args) != 1 {
 		return errors.New("usage: porto cert path|generate")
 	}
@@ -273,7 +273,17 @@ func certificateAction(args []string) error {
 		if daemonUp() {
 			return api("POST", "/api/tls/renew", nil, os.Stdout)
 		}
-		status, err := certificates.New(certificatePath, keyPath).Renew()
+		projects, err := st.ListProjects(context.Background())
+		if err != nil {
+			return err
+		}
+		hostnames := make([]string, 0, len(projects))
+		for _, project := range projects {
+			if strings.Contains(project.Hostname, ".") {
+				hostnames = append(hostnames, project.Hostname+"."+config.LocalDomain)
+			}
+		}
+		status, err := certificates.New(certificatePath, keyPath).Renew(hostnames...)
 		if err != nil {
 			return err
 		}
