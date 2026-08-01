@@ -478,7 +478,9 @@ func daemonCmd(st *store.Store, args []string) error {
 	}
 	switch args[0] {
 	case "start":
-		return daemon.New(st, dashboardFS()).Run(context.Background())
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return daemon.New(st, dashboardFS()).Run(ctx)
 	case "status":
 		if daemonUp() {
 			fmt.Println("running")

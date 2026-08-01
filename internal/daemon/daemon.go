@@ -43,6 +43,8 @@ const (
 	projectReadinessInterval  = 250 * time.Millisecond
 	projectReadinessTimeout   = 2 * time.Second
 	composePortCheckInterval  = time.Second
+	httpShutdownTimeout       = 5 * time.Second
+	daemonShutdownTimeout     = 15 * time.Second
 )
 
 var errProjectSetupConflict = errors.New("project setup conflict")
@@ -160,12 +162,6 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	defer tlsListener.Close()
 	go func() {
-		<-ctx.Done()
-		_ = srv.Shutdown(context.Background())
-		_ = router.Shutdown(context.Background())
-		_ = tlsRouter.Shutdown(context.Background())
-	}()
-	go func() {
 		if err := router.Serve(routerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
 		}
@@ -186,7 +182,133 @@ func (s *Server) Run(ctx context.Context) error {
 		tlsAddress,
 		certificateStatus.CertificatePath,
 	)
-	return srv.ListenAndServe()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- srv.ListenAndServe()
+	}()
+
+	var serveResult error
+	serveReturned := false
+	select {
+	case serveResult = <-serveErr:
+		serveReturned = true
+	case <-ctx.Done():
+	}
+
+	shutdownErr := s.shutdown(srv, router, tlsRouter)
+	if !serveReturned {
+		serveResult = <-serveErr
+	}
+	if errors.Is(serveResult, http.ErrServerClosed) {
+		serveResult = nil
+	}
+	return errors.Join(serveResult, shutdownErr)
+}
+
+func (s *Server) shutdown(servers ...*http.Server) error {
+	httpContext, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)
+	var shutdownErrors []error
+	for _, server := range servers {
+		if err := server.Shutdown(httpContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
+	}
+	cancelHTTP()
+
+	appContext, cancelApps := context.WithTimeout(context.Background(), daemonShutdownTimeout)
+	defer cancelApps()
+	return errors.Join(errors.Join(shutdownErrors...), s.stopManagedApplications(appContext))
+}
+
+func (s *Server) stopManagedApplications(ctx context.Context) error {
+	s.mu.Lock()
+	projectIDs := make([]int64, 0, len(s.running))
+	for projectID := range s.running {
+		projectIDs = append(projectIDs, projectID)
+	}
+	sendboxProcesses := make(map[int64]*exec.Cmd, len(s.sendboxRunning))
+	for projectID, cmd := range s.sendboxRunning {
+		sendboxProcesses[projectID] = cmd
+		s.sendboxStates[projectID] = "stopping"
+		s.sendboxMessages[projectID] = "Stopping Sendbox session."
+	}
+	s.mu.Unlock()
+
+	results := make(chan error, len(projectIDs)+1)
+	for _, projectID := range projectIDs {
+		go func() {
+			_, err := s.stopProject(ctx, strconv.FormatInt(projectID, 10), false)
+			results <- err
+		}()
+	}
+	go func() {
+		results <- s.stopSendboxProcesses(ctx, sendboxProcesses)
+	}()
+
+	var stopErrors []error
+	for range len(projectIDs) + 1 {
+		if err := <-results; err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
+	return errors.Join(stopErrors...)
+}
+
+func (s *Server) stopSendboxProcesses(ctx context.Context, commands map[int64]*exec.Cmd) error {
+	var stopErrors []error
+	for _, cmd := range commands {
+		if err := process.Terminate(cmd); err != nil {
+			stopErrors = append(stopErrors, err)
+		}
+	}
+	if s.waitForSendboxProcesses(ctx, commands, projectProcessExitTimeout) {
+		return errors.Join(stopErrors...)
+	}
+	for projectID, cmd := range commands {
+		s.mu.Lock()
+		running := s.sendboxRunning[projectID] == cmd
+		s.mu.Unlock()
+		if running {
+			if err := process.Kill(cmd); err != nil {
+				stopErrors = append(stopErrors, err)
+			}
+		}
+	}
+	if !s.waitForSendboxProcesses(ctx, commands, projectProcessExitTimeout) {
+		stopErrors = append(stopErrors, errors.New("timed out waiting for Sendbox sessions to exit"))
+	}
+	return errors.Join(stopErrors...)
+}
+
+func (s *Server) waitForSendboxProcesses(ctx context.Context, commands map[int64]*exec.Cmd, timeout time.Duration) bool {
+	if len(commands) == 0 {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		running := false
+		for projectID, cmd := range commands {
+			if s.sendboxRunning[projectID] == cmd {
+				running = true
+				break
+			}
+		}
+		s.mu.Unlock()
+		if !running {
+			return true
+		}
+		select {
+		case <-ctx.Done():
+			return false
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 func tlsRouterListenError(address string, err error) error {

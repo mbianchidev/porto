@@ -735,6 +735,62 @@ func TestComposeCleanupOnlyRunsForForceKill(t *testing.T) {
 	}
 }
 
+func TestShutdownStopsAllManagedProjects(t *testing.T) {
+	skipWindowsShellHelper(t)
+	st, first := testProject(t, app.Project{
+		Name:     "first",
+		Path:     t.TempDir(),
+		Strategy: "custom",
+		Command:  daemonHelperCommand(),
+	})
+	secondID, err := st.UpsertProject(context.Background(), app.Project{
+		Name:     "second",
+		Path:     t.TempDir(),
+		Strategy: "custom",
+		Command:  daemonHelperCommand(),
+	})
+	if err != nil {
+		t.Fatalf("insert second project: %v", err)
+	}
+	second, err := st.GetProjectByID(context.Background(), secondID)
+	if err != nil {
+		t.Fatalf("load second project: %v", err)
+	}
+	server := New(st, nil)
+	for _, project := range []app.Project{first, second} {
+		if err := st.SetRuntime(context.Background(), project.ID, "running", 1, 41000+int(project.ID)); err != nil {
+			t.Fatalf("set %s runtime: %v", project.Name, err)
+		}
+		project, err = st.GetProjectByID(context.Background(), project.ID)
+		if err != nil {
+			t.Fatalf("reload %s: %v", project.Name, err)
+		}
+		startTestProjectProcess(t, server, project)
+	}
+
+	shutdownContext, cancel := context.WithTimeout(context.Background(), daemonShutdownTimeout)
+	defer cancel()
+	if err := server.stopManagedApplications(shutdownContext); err != nil {
+		t.Fatalf("stop managed applications: %v", err)
+	}
+
+	server.mu.Lock()
+	running := len(server.running)
+	server.mu.Unlock()
+	if running != 0 {
+		t.Fatalf("running projects = %d, want 0", running)
+	}
+	for _, projectID := range []int64{first.ID, second.ID} {
+		project, err := st.GetProjectByID(context.Background(), projectID)
+		if err != nil {
+			t.Fatalf("reload project %d: %v", projectID, err)
+		}
+		if project.Status != "stopped" || project.PID != 0 {
+			t.Fatalf("project %d runtime = %+v", projectID, project)
+		}
+	}
+}
+
 func TestDaemonHelperProcess(t *testing.T) {
 	if os.Getenv("PORTO_DAEMON_HELPER_PROCESS") != "1" {
 		return
