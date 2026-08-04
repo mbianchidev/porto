@@ -1,9 +1,10 @@
-# Porto - Local Development Orchestrator
+# Porto - Self-hosted app Orchestrator
 
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
 
-Porto is an open-source CLI, daemon, and lightweight React dashboard for managing runnable projects on a development machine. It discovers local repos, tracks their process IDs and ports in a small SQLite database, prevents port collisions, can pull the active Git branch before startup, captures logs, and exposes friendly local hostnames.
+Porto is an open-source CLI, daemon, and lightweight React dashboard for managing runnable self-hosted projects and apps on a development machine or NAS/home system. 
+It discovers repos, tracks their process IDs and ports in a small SQLite database, prevents port collisions, can pull the active Git branch before startup, captures logs, and exposes friendly local hostnames with self-signed SSL certificates.
 
 ## Features
 
