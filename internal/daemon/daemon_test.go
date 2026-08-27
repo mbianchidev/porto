@@ -807,16 +807,16 @@ func TestDaemonHTTPHelperProcess(t *testing.T) {
 	if os.Getenv("PORTO_DAEMON_HTTP_HELPER_EXIT") == "1" {
 		os.Exit(12)
 	}
+	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", os.Getenv("PORT")))
+	if err != nil {
+		os.Exit(14)
+	}
 	if delay := os.Getenv("PORTO_DAEMON_HTTP_HELPER_DELAY"); delay != "" {
 		parsed, err := time.ParseDuration(delay)
 		if err != nil {
 			os.Exit(13)
 		}
 		time.Sleep(parsed)
-	}
-	listener, err := net.Listen("tcp", net.JoinHostPort("127.0.0.1", os.Getenv("PORT")))
-	if err != nil {
-		os.Exit(14)
 	}
 	status, err := strconv.Atoi(os.Getenv("PORTO_DAEMON_HTTP_HELPER_STATUS"))
 	if err != nil {
