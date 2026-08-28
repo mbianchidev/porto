@@ -31,7 +31,7 @@ Use `porto https status` to inspect installation, listener, and trust state. `po
 
 ## Certificates
 
-The daemon creates a persistent ECDSA local certificate authority and a renewable server certificate under:
+The daemon creates a persistent ECDSA local certificate authority and a renewable server certificate in the `certificates` folder under Porto's platform-specific user configuration directory. On Linux, the default paths are:
 
 ```text
 ~/.config/porto/certificates/porto.local.pem
@@ -61,4 +61,3 @@ curl --resolve api.porto.local:37681:127.0.0.1 https://api.porto.local:37681
 The HTTP router accepts both `<project>.porto.localhost` and `<project>.porto.local`. Without the portless helper, HTTPS remains available on port `37681`. Use `PORTO_TLS_ADDR` and `PORTO_TLS_PUBLIC_PORT` for custom forwarding.
 
 Never run the Porto daemon with `sudo`, because managed projects inherit the daemon's privileges.
-

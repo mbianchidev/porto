@@ -55,3 +55,4 @@ The resulting `porto` binary contains the daemon and CLI. It looks for dashboard
 
 For dashboard development, run `npm --prefix ui run dev`. See [continuous integration and releases](ci-cd.md) for all local validation commands and release details.
 
+To place Porto on your `PATH` and keep the daemon running across daily sessions, continue with the [daily-use guide](daily-use.md).

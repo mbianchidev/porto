@@ -59,9 +59,12 @@ porto https install
 
 See [local networking](docs/networking.md) for certificate, DNS, dotted-hostname, and custom-forwarding details.
 
+For an always-available setup, follow the [daily-use guide](docs/daily-use.md) to install Porto in a stable location and start it at login or boot.
+
 ## Documentation
 
 - [Installation](docs/installation.md) — release archives, source builds, and dashboard assets
+- [Daily use](docs/daily-use.md) — durable installation, login or boot startup, upgrades, and home systems
 - [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding

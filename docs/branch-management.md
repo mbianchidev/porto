@@ -16,7 +16,7 @@ porto branch <project> <branch>
 
 ## Run concurrent branch instances
 
-Use **New instance** to run another branch without disturbing the original checkout. Porto creates a managed Git worktree under `~/.config/porto/worktrees`, or `$PORTO_HOME/worktrees` when `PORTO_HOME` is set. It then runs the detected dependency setup so ignored artifacts such as `node_modules` are available.
+Use **New instance** to run another branch without disturbing the original checkout. Porto creates a `worktrees` directory under its platform-specific user configuration directory, or `$PORTO_HOME/worktrees` when `PORTO_HOME` is set. It then runs the detected dependency setup so ignored artifacts such as `node_modules` are available.
 
 Each instance receives an independent process, port, logs, and controls. The dashboard groups these runtimes under their source project.
 
@@ -31,4 +31,3 @@ Open the dashboard's **Branch hygiene** panel to enable automatic local or remot
 The current branch, default branch, unmerged branches, and configured protected names or glob patterns are never removed.
 
 Remote cleanup is disabled by default and requires confirmation because it permanently deletes branches from the primary Git remote. Optional pruning runs `git fetch --prune` with interactive credential prompts disabled. Squash-merged and rebase-merged branches are left alone unless Git can prove their complete history is merged.
-

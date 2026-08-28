@@ -61,10 +61,12 @@ For Compose projects, `porto kill` runs `docker compose down --remove-orphans`. 
 
 ## State and logs
 
-Porto stores project metadata, runtime state, pinned ports, and output in SQLite:
+Porto stores project metadata, runtime state, pinned ports, and output in `porto/porto.db` under the platform's user configuration directory. Common defaults are:
 
 ```text
-~/.config/porto/porto.db
+Linux:   ~/.config/porto/porto.db
+macOS:   ~/Library/Application Support/porto/porto.db
+Windows: %AppData%\porto\porto.db
 ```
 
 Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or portable setups.
@@ -72,4 +74,3 @@ Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or port
 `porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project.
 
 For Git branch workflows, see [branch management](branch-management.md). For project URLs and TLS, see [local networking](networking.md).
-
