@@ -73,4 +73,6 @@ Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or port
 
 `porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project.
 
+Dashboard cards also show each project's process ID, readiness status, assigned port, branch, and dirty state. The process console supports filtering and one-click copying and clearing.
+
 For Git branch workflows, see [branch management](branch-management.md). For project URLs and TLS, see [local networking](networking.md).

@@ -46,4 +46,3 @@ porto sendbox stop <project>
 Porto runs `sendbox run --config <project>/.sendbox.yaml --project <project>` and captures its output in the project's existing logs under the `sendbox` and `sendbox-stderr` streams. Porto does not install, require, or run Sendbox when no managed project contains `.sendbox.yaml`.
 
 Sendbox sessions are independent from normal Porto processes. They do not receive Porto's automatic port assignment and are not routed through Porto's local hostnames. Avoid running both modes simultaneously when they would bind the same host port.
-

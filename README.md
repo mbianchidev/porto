@@ -1,4 +1,4 @@
-# Porto - Self-hosted app Orchestrator
+# Porto — Self-hosted App Orchestrator
 
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
@@ -10,7 +10,7 @@ Porto is an open-source control plane for the projects running on your developme
 ## Why Porto
 
 - **One place for every project.** Scan roots once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
-- **Automatic setup and startup.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate commands.
+- **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects through zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
@@ -39,6 +39,8 @@ porto daemon start
 
 The daemon runs in the foreground. Leave it open and use a second terminal for project commands.
 
+### 4. Start a project
+
 ```sh
 porto start api
 porto logs api --stream stdout -n 100
@@ -51,7 +53,7 @@ Replace `api` with a project name shown by `porto list`. Open the dashboard at:
 http://127.0.0.1:37623
 ```
 
-Running projects are also available without setup at `http://<project>.porto.localhost:37680`. On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
+Running projects are also available without DNS setup at `http://<project>.porto.localhost:37680`. On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
 
 ```sh
 porto https install

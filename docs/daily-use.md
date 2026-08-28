@@ -37,7 +37,7 @@ Keep the archive layout intact whenever the installation is moved or upgraded.
 
 ## Start the daemon automatically
 
-The daemon runs in the foreground and gracefully stops its managed projects when it receives the operating system's normal termination signal. Use the service manager for your platform rather than leaving a terminal open.
+The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.
 
 ### Linux with a systemd user service
 
@@ -67,6 +67,17 @@ Enable and start the service:
 systemctl --user daemon-reload
 systemctl --user enable --now porto
 systemctl --user status porto
+```
+
+Stop and start it around an upgrade, or disable login startup entirely:
+
+```sh
+# Pause and resume for an upgrade:
+systemctl --user stop porto
+systemctl --user start porto
+
+# Stop now and disable automatic startup:
+systemctl --user disable --now porto
 ```
 
 On an always-on home system, allow the user service to start at boot and continue without an interactive login:
@@ -122,6 +133,14 @@ launchctl bootstrap "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.porto.daemon.
 launchctl print "gui/$(id -u)/dev.porto.daemon"
 ```
 
+Unload it before an upgrade, then repeat the `bootstrap` command to start it again:
+
+```sh
+launchctl bootout "gui/$(id -u)" "$HOME/Library/LaunchAgents/dev.porto.daemon.plist"
+```
+
+To prevent it from loading at future logins, remove the plist after unloading it.
+
 The LaunchAgent starts when that user logs in. Add runtime directories to its `PATH` when projects depend on tools installed by a version manager.
 
 ### Windows with Task Scheduler
@@ -133,6 +152,8 @@ Create a task that:
 3. passes `daemon start` as its arguments;
 4. starts in `%LOCALAPPDATA%\Porto`;
 5. runs without elevated privileges and restarts on failure.
+
+Use **End** to stop the current task and **Disable** to prevent it from starting at future logins. Stop active projects before ending the task because Task Scheduler can terminate it without a graceful signal.
 
 The working directory preserves dashboard asset discovery. Add required development tools to the user `Path` because managed projects inherit the task's environment.
 
@@ -159,7 +180,8 @@ The dashboard at `http://127.0.0.1:37623` provides the same lifecycle controls p
 - Run **Setup dependencies** after the initial scan and when project dependencies change.
 - Pin ports only for tools that need a fixed address; otherwise let Porto avoid collisions automatically.
 - Leave the daemon running and stop projects you no longer need.
-- Stop the service when you want Porto to gracefully stop every project it currently manages.
+- On Linux and macOS, stopping the user service normally lets Porto gracefully stop every project it currently manages.
+- On Windows, stop active projects before ending the scheduled task because Task Scheduler can terminate a task without a graceful signal.
 
 Starting the daemon does not automatically start every stored project. Start only the projects needed for the current development session.
 
@@ -182,9 +204,8 @@ Do not expose Porto's loopback control endpoints directly to a LAN or the intern
 
 ## Upgrade and back up
 
-Stop the service before replacing the binary and `ui/dist`; this gracefully stops managed projects. Copy the complete new release into the stable installation directory, then start the service again.
+Stop active projects and then stop the service or scheduled task before replacing the binary and `ui/dist`. On Linux and macOS, a normal service stop also lets Porto gracefully stop its managed projects. Copy the complete new release into the stable installation directory, then start the service again.
 
 Porto keeps its database, certificates, managed worktrees, and other state in the platform's user configuration directory. Set `PORTO_HOME` to use a fixed custom location. If you set it, use the same value in the shell and service definition so every Porto command opens the same state.
 
 Back up that directory while the daemon is stopped. Treat the certificate authority private key as sensitive.
-
