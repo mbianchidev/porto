@@ -1,11 +1,12 @@
-# Porto — Self-hosted App Orchestrator
+# Porto - Self-hosted App Orchestrator
 
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
 
 Porto is an open-source control plane for the projects running on your development machine, NAS, or home system. It discovers mixed-stack repositories and gives you one CLI and dashboard to set them up, start and stop them, inspect logs, manage branches, and open them at predictable local URLs.
 
-![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/51024275-79dd-46ad-9bfb-72d4ad1f79a1)
+![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/03f957c8-33ba-4fb8-be9c-a41edd4e85cf)
+
 
 ## Why Porto
 
