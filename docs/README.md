@@ -19,6 +19,11 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 - [Optional integrations](integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox
 - [KillSwitch integration](kill-switch.md) — detailed requirements, commands, port ownership, and troubleshooting
 
+## Product and design
+
+- [Product overview](product.md) — intended users, purpose, positioning, capabilities, and principles
+- [Design system](design.md) — visual language, layout, components, and interaction rules
+
 ## Develop and release
 
 - [Continuous integration and releases](ci-cd.md) — local validation, GitHub Actions, release steps, and artifacts

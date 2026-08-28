@@ -72,6 +72,8 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
 - [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox
+- [Product overview](docs/product.md) — users, purpose, positioning, and product principles
+- [Design system](docs/design.md) — visual language, components, and interaction rules
 - [Continuous integration and releases](docs/ci-cd.md) — local checks, automation, and release artifacts
 - [Documentation index](docs/README.md) — all guides
 
