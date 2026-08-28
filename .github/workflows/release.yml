@@ -11,7 +11,7 @@ on:
         type: string
 
 concurrency:
-  group: release-${{ inputs.tag || github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 permissions:
@@ -39,17 +39,31 @@ jobs:
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-$REF_NAME}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
-            echo "::error::Release tag must look like vX.Y.Z or vX.Y.Z-suffix, got '${tag}'"
+          version="${tag#v}"
+          if [[ "$tag" != v* || ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::Release tag must be a valid SemVer prefixed with v, got '${tag}'"
             exit 1
           fi
+
+          version_without_build="${version%%+*}"
+          if [[ "$version_without_build" == *-* ]]; then
+            prerelease_version="${version_without_build#*-}"
+            IFS='.' read -r -a prerelease_identifiers <<< "$prerelease_version"
+            for identifier in "${prerelease_identifiers[@]}"; do
+              if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" != "0" && "$identifier" == 0* ]]; then
+                echo "::error::Numeric pre-release identifiers must not contain leading zeroes: '${identifier}'"
+                exit 1
+              fi
+            done
+          fi
+
           prerelease=false
-          if [[ "$tag" == *-* ]]; then
+          if [[ "$version_without_build" == *-* ]]; then
             prerelease=true
           fi
           {
             echo "tag=${tag}"
-            echo "version=${tag#v}"
+            echo "version=${version}"
             echo "prerelease=${prerelease}"
           } >> "$GITHUB_OUTPUT"
 
@@ -137,7 +151,7 @@ jobs:
         with:
           subject-path: 'dist/porto_*'
 
-      - name: Create release
+      - name: Publish release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
@@ -145,8 +159,42 @@ jobs:
           PRERELEASE: ${{ needs.build.outputs.prerelease }}
         run: |
           set -euo pipefail
+
+          shopt -s nullglob
+          archives=(dist/porto_*)
+          if [ "${#archives[@]}" -ne 6 ] || [ ! -f dist/SHA256SUMS ]; then
+            echo "::error::Expected six release archives and SHA256SUMS"
+            printf '%s\n' "${archives[@]}"
+            exit 1
+          fi
+          (cd dist && sha256sum --check SHA256SUMS)
+          assets=(dist/SHA256SUMS "${archives[@]}")
+
+          update_release() {
+            echo "Updating existing release ${TAG}"
+            gh release upload "$TAG" "${assets[@]}" --clobber
+            gh release edit "$TAG" \
+              --verify-tag \
+              --title "Porto ${TAG}" \
+              --draft=false \
+              --prerelease="$PRERELEASE"
+          }
+
+          if gh release view "$TAG" --json tagName --jq '.tagName' >/dev/null 2>&1; then
+            update_release
+            exit 0
+          fi
+
           args=(--verify-tag --generate-notes --title "Porto ${TAG}")
           if [ "$PRERELEASE" = "true" ]; then
             args+=(--prerelease)
           fi
-          gh release create "$TAG" "${args[@]}" dist/*
+
+          if ! gh release create "$TAG" "${args[@]}" "${assets[@]}"; then
+            # Another run may have created the release after the existence check.
+            if gh release view "$TAG" --json tagName --jq '.tagName' >/dev/null 2>&1; then
+              update_release
+            else
+              exit 1
+            fi
+          fi

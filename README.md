@@ -244,7 +244,7 @@ npm --prefix ui run lint
 
 GitHub Actions runs formatting, `go vet`, the Go test suite on Linux, macOS, and Windows, a cross-compilation pass for every release target, and the dashboard lint and build on Node 22.12, 24, and 26. CodeQL and a weekly `govulncheck` plus `npm audit` job cover security, and Dependabot keeps Go modules, dashboard packages, and actions current.
 
-Pushing a `vX.Y.Z` tag builds and publishes archives for Linux, macOS, and Windows on `amd64` and `arm64`, together with a `SHA256SUMS` file and signed build provenance attestations. See [CI/CD details](docs/ci-cd.md).
+Use `./release.sh <version>` to validate and prepare a release commit plus annotated tag locally, then rerun it with `--push` to publish. Pushing the tag builds archives for Linux, macOS, and Windows on `amd64` and `arm64`, together with a `SHA256SUMS` file and signed build provenance attestations. Release job reruns safely refresh an existing release and its assets. See [CI/CD details](docs/ci-cd.md).
 
 ## License
 

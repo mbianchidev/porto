@@ -23,17 +23,32 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
 
 ## Cutting a release
 
-1. Make sure `main` is green.
-2. Tag the commit and push the tag:
+1. Make sure `main` is green, checked out, clean, and tracking `origin/main`.
+2. Optionally run the complete release validation without changing tracked files or Git history:
 
    ```sh
-   git tag -a v1.2.3 -m "Porto v1.2.3"
-   git push origin v1.2.3
+   ./release.sh 0.2.0 --dry-run
    ```
 
-3. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages every target, and publishes a GitHub release with generated notes.
+3. Prepare the release locally:
 
-Tags must match `vX.Y.Z` or `vX.Y.Z-suffix`; a suffix such as `v1.2.3-rc.1` is published as a pre-release. Re-running a release manually from the Actions tab requires the tag to exist already, because publishing uses `gh release create --verify-tag`.
+   ```sh
+   ./release.sh 0.2.0
+   ```
+
+   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates `ui/package.json` and `ui/package-lock.json` with `npm version`, runs the local checks below, creates a `chore(release): v0.2.0` commit when the package files changed, and creates an annotated tag. Nothing is pushed by default.
+
+4. Inspect the local commit and tag, then publish them explicitly:
+
+   ```sh
+   ./release.sh 0.2.0 --push
+   ```
+
+   Pass `--push` on the initial invocation to prepare and publish in one step. The script fetches first and atomically pushes `main` and the tag, so the release workflow cannot start from a tag without its release commit.
+
+5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages every target, and publishes a GitHub release with generated notes.
+
+Tags must contain a strict SemVer prefixed with `v`. A suffix such as `v1.2.3-rc.1` is published as a pre-release. Re-running a release job is safe: if the GitHub release already exists, the workflow preserves its notes, refreshes its metadata, and replaces the same-named assets. A manual run from the Actions tab still requires the tag to exist.
 
 ## Release artifacts
 
