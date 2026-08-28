@@ -1,0 +1,123 @@
+{
+  "schemaVersion": 2,
+  "generatedAt": "2026-08-28T12:26:16Z",
+  "title": "Design System: Porto",
+  "extensions": {
+    "colorMeta": {
+      "graphite-ink": { "role": "neutral", "displayName": "Graphite Ink", "canonical": "#222521", "tonalRamp": ["#252824", "#454b43", "#636c60", "#818c7e", "#a1a89e", "#c0c5be", "#daddd9", "#f2f3f2"] },
+      "putty-canvas": { "role": "neutral", "displayName": "Putty Canvas", "canonical": "#c8c2b4", "tonalRamp": ["#2c2920", "#524c3c", "#766c56", "#978c72", "#b1a995", "#cbc6b8", "#e1ddd6", "#f4f3f0"] },
+      "panel-graphite": { "role": "neutral", "displayName": "Panel Graphite", "canonical": "#252925", "tonalRamp": ["#242824", "#444b44", "#616b61", "#7e8b7e", "#9ea89e", "#bfc5bf", "#d9ddd9", "#f2f3f2"] },
+      "olive-signal": { "role": "primary", "displayName": "Olive Signal", "canonical": "#64703a", "tonalRamp": ["#2d321a", "#545e31", "#788646", "#9aab5e", "#b3c086", "#cdd5ae", "#e2e7d0", "#f4f6ee"] },
+      "amber-signal": { "role": "secondary", "displayName": "Amber Signal", "canonical": "#bd7725", "tonalRamp": ["#40280d", "#774b17", "#ab6b21", "#d78b32", "#e1a865", "#ebc599", "#f3ddc3", "#fbf3ea"] },
+      "fault-red": { "role": "tertiary", "displayName": "Fault Red", "canonical": "#a43e32", "tonalRamp": ["#3b1612", "#6d2921", "#9c3b30", "#c65143", "#d47d72", "#e2a8a1", "#eeccc8", "#f9edeb"] }
+    },
+    "typographyMeta": {
+      "display": { "displayName": "Display", "purpose": "Page-level h1 in the page intro only." },
+      "headline": { "displayName": "Headline", "purpose": "Drawer titles and settings section intros." },
+      "title": { "displayName": "Title", "purpose": "Uppercase mono section labels inside panels and the log console." },
+      "body": { "displayName": "Body", "purpose": "Running copy, channel identity name, drawer paragraph text." },
+      "label": { "displayName": "Label", "purpose": "Engraved uppercase mono metadata: ports, PIDs, states, timestamps, commands." }
+    },
+    "shadows": [
+      { "name": "printed-flat", "value": "1px 2px 0 rgba(52, 56, 50, 0.32)", "purpose": "Resting buttons, panels, notices, drawer sub-panels." },
+      { "name": "printed-raised", "value": "2px 3px 0 rgba(52, 56, 50, 0.26)", "purpose": "Channels, control bar, app header base offset." },
+      { "name": "ambient-lift", "value": "3px 4px 12px rgba(45, 43, 36, 0.24)", "purpose": "App header and expanded project channel." },
+      { "name": "ambient-float", "value": "4px 7px 18px rgba(45, 43, 36, 0.34)", "purpose": "Branch menu and icon-button tooltips floating above layout." }
+    ],
+    "motion": [
+      { "name": "banner-in", "value": "180ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Error/notice banner reveal via clip-path inset." },
+      { "name": "drawer-reveal", "value": "220ms cubic-bezier(0.16, 1, 0.3, 1)", "purpose": "Service drawer opening beneath a project channel." },
+      { "name": "chevron-rotate", "value": "150ms ease-out", "purpose": "Channel chevron flips 180deg when a drawer expands." },
+      { "name": "tooltip-fade", "value": "120ms ease", "purpose": "Icon-button tooltip opacity/translate on hover or focus." }
+    ],
+    "breakpoints": [
+      { "name": "compress", "value": "1080px" },
+      { "name": "stack", "value": "860px" },
+      { "name": "mobile", "value": "620px" }
+    ]
+  },
+  "components": [
+    {
+      "name": "Primary Button",
+      "kind": "button",
+      "refersTo": "button-primary",
+      "description": "Default action button used throughout channels, drawers, and forms.",
+      "html": "<button class=\"ds-btn-primary\" type=\"button\">Restart</button>",
+      "css": ".ds-btn-primary { border: 1px solid #343832; border-radius: 2px; padding: 7px 10px; background: #f4f0e5; box-shadow: 1px 2px 0 rgba(52, 56, 50, 0.32); color: #222521; font: 600 11px/1.2 'Avenir Next', Avenir, 'Helvetica Neue', Arial, sans-serif; cursor: pointer; } .ds-btn-primary:hover { border-color: #171a17; background: #fffdf7; } .ds-btn-primary:focus-visible { outline: 3px solid #bd7725; outline-offset: 2px; } .ds-btn-primary:active { box-shadow: none; transform: translate(1px, 1px); }"
+    },
+    {
+      "name": "Icon Action Button",
+      "kind": "button",
+      "refersTo": "icon-button",
+      "description": "Icon-only quick action (start/stop/restart/logs, and maintenance actions) with a tooltip and accessible label.",
+      "html": "<button class=\"ds-icon-btn\" type=\"button\" aria-label=\"View logs\" data-tooltip=\"View logs\"><svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"M5 5h14v14H5Z\"/><path d=\"m8 9 2 2-2 2m4 1h4\"/></svg></button>",
+      "css": ".ds-icon-btn { position: relative; display: inline-grid; place-items: center; width: 31px; height: 31px; padding: 0; border: 1px solid transparent; border-radius: 2px; background: transparent; color: #334d63; cursor: pointer; } .ds-icon-btn::after { content: attr(data-tooltip); position: absolute; z-index: 80; right: 0; bottom: calc(100% + 7px); width: max-content; max-width: 190px; padding: 5px 7px; border: 1px solid #0f110f; border-radius: 2px; background: #252925; color: #fffdf7; font: 11px/1.25 'Avenir Next', Avenir, 'Helvetica Neue', Arial, sans-serif; box-shadow: 3px 5px 14px rgba(32, 31, 27, 0.35); opacity: 0; transform: translateY(3px); transition: opacity 120ms ease, transform 120ms ease; pointer-events: none; white-space: nowrap; } .ds-icon-btn:hover::after, .ds-icon-btn:focus-visible::after { opacity: 1; transform: translateY(0); }"
+    },
+    {
+      "name": "Status Lamp",
+      "kind": "custom",
+      "refersTo": "status-lamp",
+      "description": "A 9px circular indicator LED whose color encodes running/starting/crashed/stopped state; always paired with a text state label.",
+      "html": "<span class=\"ds-lamp ds-lamp-running\" aria-hidden=\"true\"></span>",
+      "css": ".ds-lamp { display: inline-block; width: 9px; height: 9px; border: 1px solid rgba(18, 20, 17, 0.75); border-radius: 50%; background: #7c7e76; box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45); } .ds-lamp-running { background: #738644; } .ds-lamp-starting { background: #bd7725; } .ds-lamp-crashed { background: #a43e32; } .ds-lamp-stopped { background: #85867f; }"
+    },
+    {
+      "name": "Search Input",
+      "kind": "input",
+      "refersTo": "input-field",
+      "description": "Project search / branch combobox input with an underline-glow focus treatment.",
+      "html": "<div class=\"ds-search\"><svg viewBox=\"0 0 24 24\" width=\"15\" height=\"15\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"1.8\" stroke-linecap=\"round\" aria-hidden=\"true\"><circle cx=\"11\" cy=\"11\" r=\"7\"/><path d=\"m20 20-3.5-3.5\"/></svg><input type=\"search\" placeholder=\"Search projects\" /></div>",
+      "css": ".ds-search { display: flex; align-items: center; gap: 8px; border: 1px solid #8c897e; border-radius: 2px; padding: 0 10px; background: #f4f0e5; color: #70756d; } .ds-search:focus-within { border-color: #343832; box-shadow: inset 0 -2px 0 #64703a; color: #222521; } .ds-search input { width: 100%; border: 0; outline: 0; padding: 7px 0; background: transparent; color: inherit; font: 13px/1.3 'Avenir Next', Avenir, 'Helvetica Neue', Arial, sans-serif; }"
+    },
+    {
+      "name": "Primary Navigation",
+      "kind": "nav",
+      "refersTo": "nav-link",
+      "description": "Dark pill-strip primary navigation with a light active tab.",
+      "html": "<nav class=\"ds-nav\" aria-label=\"Primary navigation\"><a class=\"ds-nav-link active\" href=\"#/\">Control board</a><a class=\"ds-nav-link\" href=\"#/settings\">Settings</a></nav>",
+      "css": ".ds-nav { display: flex; gap: 2px; border: 1px solid #111310; border-radius: 3px; padding: 2px; background: #191c19; } .ds-nav-link { border-radius: 2px; padding: 7px 10px; color: #adafa5; font-size: 12px; text-decoration: none; } .ds-nav-link:hover { color: #fffdf7; } .ds-nav-link.active { background: #ddd9cd; color: #222521; box-shadow: 1px 2px 0 #0d0f0d; } .ds-nav-link:focus-visible { outline: 3px solid #bd7725; outline-offset: 3px; }"
+    },
+    {
+      "name": "Project Channel Row",
+      "kind": "custom",
+      "refersTo": "project-channel",
+      "description": "The core signature unit: a compact multi-column channel row (lamp, identity, branch, route, state, chevron) with always-visible quick actions.",
+      "html": "<article class=\"ds-channel\"><button class=\"ds-channel-toggle\" type=\"button\" aria-expanded=\"false\"><span class=\"ds-lamp ds-lamp-running\" aria-hidden=\"true\"></span><span class=\"ds-channel-id\"><strong>porto-api</strong><small>make</small></span><span class=\"ds-channel-datum\"><small>Branch</small><strong>main</strong></span><span class=\"ds-channel-datum\"><small>Route</small><strong>porto-api.local · 4173</strong></span><span class=\"ds-channel-state\"><small>State</small><strong>running</strong></span><svg viewBox=\"0 0 24 24\" width=\"17\" height=\"17\" fill=\"none\" stroke=\"#70756d\" stroke-width=\"1.8\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><path d=\"m8 10 4 4 4-4\"/></svg></button></article>",
+      "css": ".ds-channel { border: 1px solid #343832; border-radius: 3px; background: #f4f0e5; box-shadow: 2px 3px 0 rgba(52, 56, 50, 0.26); } .ds-channel-toggle { display: grid; grid-template-columns: 12px minmax(180px, 1.15fr) minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(88px, 0.5fr) 18px; gap: 13px; align-items: center; width: 100%; border: 0; padding: 8px 10px 8px 13px; background: transparent; color: #222521; text-align: left; cursor: pointer; } .ds-channel-toggle:hover { background: #eeeadf; } .ds-channel-id strong { font-size: 14px; letter-spacing: -0.01em; } .ds-channel-id small, .ds-channel-datum small, .ds-channel-state small { display: block; color: #70756d; font: 9px/1.1 ui-monospace, monospace; letter-spacing: 0.06em; text-transform: uppercase; } .ds-channel-datum strong { font: 11px/1.3 ui-monospace, monospace; } .ds-channel-state strong { color: #4c514b; font: 700 10px/1.2 ui-monospace, monospace; letter-spacing: 0.04em; text-transform: uppercase; }"
+    }
+  ],
+  "narrative": {
+    "northStar": "The Broadcast Patchbay",
+    "overview": "Porto reads as a piece of painted-metal broadcast equipment, not a web dashboard: a fleet signal rail, engraved channel labels, physical-feeling status lamps, and a service drawer that racks open in place. The thesis is one dense process-control board, not a collection of cards — every project is a compact channel strip in a fixed, ranked stack, and the first viewport is a dark control header, a fleet signal rail, a filter strip, and ranked channels with no oversized summary blocks. The palette is putty, graphite, olive, amber, and fault red: warm neutral metal tones carrying three status colors that never wander from their operational meaning.\n\nThe story order is deliberate: read fleet health first (the fleet rail's four lamp counters), find the affected project (status lamp + name in the channel row), act immediately (four always-visible quick actions per channel), then expand in place for branch, routing, maintenance, and logs. Nothing about the layout is decorative — gaps, radii, and shadows all read as hardware fit-and-finish rather than software polish.",
+    "keyCharacteristics": [
+      "Dense, single-column ranked channel stack; no card grid, no oversized hero or summary tiles.",
+      "Dark graphite control surfaces (header, fleet rail, log console) bracket putty/panel-toned working surfaces.",
+      "Status meaning is carried by exactly three signal colors: olive (healthy), amber (in-progress/attention), fault red (crashed/destructive).",
+      "Monospace, uppercase, letter-spaced labels everywhere data or state is reported — the \"engraved label\" language.",
+      "Flat hardware surfaces with hard-offset \"printed\" shadows at rest; soft ambient shadows are reserved for things that lift off the surface (header bar, expanded channel, open menus, tooltips)."
+    ],
+    "rules": [
+      { "name": "The Three-Signal Rule", "body": "Only olive, amber, and fault red carry operational meaning (healthy, in-progress, fault). No other hue is introduced for status; a link uses a desaturated blue-gray (#334d63) precisely so it never competes with the signal vocabulary.", "section": "colors" },
+      { "name": "The Metal-Not-Paper Rule", "body": "All panel surfaces stay inside the putty→panel-raised→panel-graphite family. Pure white (Panel White) is reserved for text-on-dark and transient hover states, never a resting page or panel background.", "section": "colors" },
+      { "name": "The Engraved Label Rule", "body": "Any text describing a machine fact (branch, port, PID, state, route, timestamp, command) is rendered in uppercase, letter-spaced mono at 9–11px. Prose and proper names stay in sans. Mixing the two inside one string is the signal that something is a live readout, not copy.", "section": "typography" },
+      { "name": "The Fused Instrument Rule", "body": "The fleet rail and control bar never separate into two visually distinct cards — they are one header instrument with a dark reporting row on top and a lighter control row beneath.", "section": "layout" },
+      { "name": "The Printed Edge Rule", "body": "Flat surfaces at rest use a hard, unblurred offset shadow (a \"printed\" edge), never a soft blur. Soft blurred shadows are earned only by elements that pop open or float: the header, an expanded drawer, a dropdown, a tooltip.", "section": "elevation" },
+      { "name": "The Sharp Metal Rule", "body": "No radius in the system exceeds 4px. A rounder corner reads as software chrome, not painted equipment, and breaks the world.", "section": "shapes" }
+    ],
+    "dos": [
+      "Do keep the fleet rail and control bar fused as one instrument (no gap, rail's bottom radius squared into the bar's top).",
+      "Do reserve olive/amber/fault-red exclusively for health/progress/fault meaning; use the desaturated blue-gray for links instead of introducing a fourth signal hue.",
+      "Do use hard, unblurred \"printed\" offset shadows on resting surfaces; reserve soft ambient shadows for elements that open, lift, or float (header, expanded drawer, menus, tooltips).",
+      "Do render machine-reported values (branch, port, PID, state, timestamps, commands) in uppercase, letter-spaced mono; keep prose and proper names in sans.",
+      "Do expand project detail inline in a serviceDrawer beneath its channel row, never in a modal, side panel, or separate route.",
+      "Do give every icon-only control an aria-label, a visible tooltip, and visually-hidden text."
+    ],
+    "donts": [
+      "Don't turn project channels into a card grid with generous whitespace — the system is a dense, single-column, fixed-rank stack.",
+      "Don't use a border radius greater than 4px anywhere; rounder corners break the painted-metal/mechanical read.",
+      "Don't add decorative or looping motion; the only animation is a ~150–220ms reveal/rotate on state changes (banner-in, drawer-reveal, chevron rotation, tooltip fade), all disabled under prefers-reduced-motion.",
+      "Don't hide a project's state behind an icon alone — the status lamp always pairs with a text state label.",
+      "Don't introduce a fourth accent color for status; if a new state is needed, map it onto olive/amber/fault-red rather than adding a hue."
+    ]
+  }
+}

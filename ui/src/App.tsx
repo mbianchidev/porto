@@ -68,7 +68,6 @@ type CleanupResult = {
 
 type LogStream = 'all' | 'stdout' | 'stderr'
 type Page = 'projects' | 'settings'
-type ProjectView = 'list' | 'tiles'
 type ProjectStatusFilter = 'all' | 'starting' | 'running' | 'stopped' | 'error'
 type ProjectActionIcon = 'play' | 'stop' | 'restart' | 'kill' | 'setup' | 'logs' | 'sendboxPlay' | 'sendboxStop' | 'cleanup' | 'remove'
 
@@ -309,13 +308,10 @@ function BranchPicker({
 
 function App() {
   const [page, setPage] = useState<Page>(() => window.location.hash === '#/settings' ? 'settings' : 'projects')
-  const [projectView, setProjectView] = useState<ProjectView>(() => {
-    const savedView = window.localStorage.getItem('porto-project-view')
-    return savedView === 'tiles' ? 'tiles' : 'list'
-  })
   const [projects, setProjects] = useState<Project[]>([])
   const [projectQuery, setProjectQuery] = useState('')
   const [projectStatusFilter, setProjectStatusFilter] = useState<ProjectStatusFilter>('all')
+  const [expandedProjectID, setExpandedProjectID] = useState<number | null>(null)
   const [settings, setSettings] = useState<Settings | null>(null)
   const [savedLocalCleanup, setSavedLocalCleanup] = useState(false)
   const [savedRemoteCleanup, setSavedRemoteCleanup] = useState(false)
@@ -399,6 +395,7 @@ function App() {
     },
     { starting: 0, running: 0, stopped: 0, error: 0 },
   )
+  const attentionCount = projectStatusCounts.starting + projectStatusCounts.error
 
   useEffect(() => {
     if (!error) return
@@ -723,9 +720,20 @@ function App() {
 
   function viewLogs(id: number) {
     setLogLines([])
+    setExpandedProjectID(id)
     setLogProjectID(id)
     setLogStream('all')
     setLogFocusRequest((value) => value + 1)
+  }
+
+  function toggleProject(id: number) {
+    setExpandedProjectID((current) => {
+      if (current === id) {
+        if (logProjectID === id) setLogProjectID(null)
+        return null
+      }
+      return id
+    })
   }
 
   async function setupDependencies(project: Project) {
@@ -807,22 +815,31 @@ function App() {
   }, [logProjectID, logFocusRequest])
 
   const killSwitchBusy = ['checking', 'installing', 'syncing', 'cleaning'].includes(killSwitchStatus?.state ?? '')
-  const logProject = projects.find((project) => project.id === logProjectID)
 
   return (
     <main>
       <header className="appHeader">
         <a className="brand" href="#/" aria-label="Porto projects">
-          <span className="brandMark" aria-hidden="true">P</span>
+          <span className="brandMark" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+          </span>
           <span>
             <strong>Porto</strong>
-            <small>Local orchestrator</small>
+            <small>Local process control</small>
           </span>
         </a>
-        <nav className="primaryNav" aria-label="Primary navigation">
-          <a className={page === 'projects' ? 'active' : ''} href="#/">Projects</a>
-          <a className={page === 'settings' ? 'active' : ''} href="#/settings">Settings</a>
-        </nav>
+        <div className="headerControls">
+          <span className="liveSignal">
+            <span aria-hidden="true" />
+            Auto-refresh 5s
+          </span>
+          <nav className="primaryNav" aria-label="Primary navigation">
+            <a className={page === 'projects' ? 'active' : ''} href="#/">Control board</a>
+            <a className={page === 'settings' ? 'active' : ''} href="#/settings">Settings</a>
+          </nav>
+        </div>
       </header>
 
       {error && <div className="errorBanner banner" role="alert">{error}</div>}
@@ -832,8 +849,7 @@ function App() {
         <>
           <header className="pageIntro">
             <div>
-              <p className="eyebrow">Settings</p>
-              <h1>Keep the dashboard focused.</h1>
+              <h1>System settings</h1>
               <p>Configure branch cleanup and optional integrations away from daily project controls.</p>
             </div>
             <a className="buttonLink" href="#/">Back to projects</a>
@@ -841,7 +857,6 @@ function App() {
 
           <section className="hygiene" aria-labelledby="branch-hygiene-title">
         <div className="hygieneIntro">
-          <p className="eyebrow">Branch hygiene</p>
           <h2 id="branch-hygiene-title">Keep merged work out of the way.</h2>
           <p>
             Porto checks every 10 seconds and removes only branches whose full
@@ -902,7 +917,6 @@ function App() {
 
           <section className="integration" aria-labelledby="sqlite-integration-title">
         <div className="hygieneIntro">
-          <p className="eyebrow">Optional integration</p>
           <h2 id="sqlite-integration-title">Discover project SQLite databases.</h2>
           <p>
             Porto installs and runs sql-not-so-lite only when an orchestrated
@@ -932,7 +946,6 @@ function App() {
 
           <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
         <div className="hygieneIntro">
-          <p className="eyebrow">Optional integration</p>
           <h2 id="sendbox-integration-title">Run configured projects in Sendbox.</h2>
           <p>
             Porto starts Sendbox independently for projects with
@@ -962,7 +975,6 @@ function App() {
 
           <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
         <div className="hygieneIntro">
-          <p className="eyebrow">Optional integration</p>
           <h2 id="kill-switch-integration-title">Hand active dev ports to KillSwitch.</h2>
           <p>
             Porto registers only ports for processes it is actively managing.
@@ -1027,104 +1039,36 @@ function App() {
         </>
       )}
 
-      {page === 'projects' && logProjectID != null && (
-        <section ref={logConsoleRef} className="logConsole" aria-labelledby="process-console-title">
-          <div className="consoleHeader">
-            <div>
-              <p className="eyebrow">Process console</p>
-              <h2 id="process-console-title">
-                {logProject?.name ?? 'Project'}{logProject?.branch ? ` · ${logProject.branch}` : ''}
-              </h2>
-              <p>
-                {logProject?.status ?? 'unknown'} · {logProject?.pid ? `PID ${logProject.pid}` : 'no active PID'}
-              </p>
-            </div>
-            <div className="consoleActions">
-              <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
-              <button
-                type="button"
-                disabled={logsLoading || logError !== '' || logLines.length === 0}
-                onClick={copyLogs}
-              >
-                Copy visible
-              </button>
-              <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
-              <button type="button" onClick={() => setLogProjectID(null)}>Close</button>
-            </div>
-          </div>
-          <div className="streamTabs" role="tablist" aria-label="Log stream">
-            {(['all', 'stdout', 'stderr'] as const).map((stream) => (
-              <button
-                type="button"
-                role="tab"
-                aria-selected={logStream === stream}
-                className={logStream === stream ? 'active' : ''}
-                key={stream}
-                onClick={() => {
-                  setLogLines([])
-                  setLogStream(stream)
-                }}
-              >
-                {stream}
-              </button>
-            ))}
-          </div>
-          <div className="logViewport" role="log" aria-live="polite" aria-busy={logsLoading}>
-            {logError && <div className="logEmpty errorLine">{logError}</div>}
-            {!logError && logsLoading && logLines.length === 0 && (
-              <div className="logEmpty">Loading process output…</div>
-            )}
-            {!logError && !logsLoading && logLines.length === 0 && (
-              <div className="logEmpty">No {logStream === 'all' ? '' : `${logStream} `}output captured yet.</div>
-            )}
-            {!logError && logLines.map((line, index) => (
-              <div className={`logLine ${line.stream}`} key={`${line.createdAt}-${index}`}>
-                <time dateTime={line.createdAt}>
-                  {new Date(line.createdAt).toLocaleTimeString([], { hour12: false })}
-                </time>
-                <span className="streamLabel">{line.stream}</span>
-                <span className="logMessage">{line.line}</span>
-              </div>
-            ))}
-          </div>
-        </section>
-      )}
-
       {page === 'projects' && (
         <>
-          <header className="projectsHeader">
-            <div>
-              <p className="eyebrow">Projects</p>
-              <h1>Local work, in motion.</h1>
-              <p>
-                {sourceProjectCount} source {sourceProjectCount === 1 ? 'project' : 'projects'}
-                {managedInstanceCount > 0 && ` · ${managedInstanceCount} branch ${managedInstanceCount === 1 ? 'instance' : 'instances'}`}
-              </p>
-            </div>
-            <div className="projectTools">
-              <div className="viewSwitch" role="group" aria-label="Project view">
-                {(['list', 'tiles'] as const).map((view) => (
-                  <button
-                    type="button"
-                    className={projectView === view ? 'active' : ''}
-                    aria-pressed={projectView === view}
-                    key={view}
-                    onClick={() => {
-                      setProjectView(view)
-                      window.localStorage.setItem('porto-project-view', view)
-                    }}
-                  >
-                    {view === 'list' ? 'List' : 'Tiles'}
-                  </button>
-                ))}
-              </div>
-              <button type="button" onClick={refreshProjects}>Refresh</button>
-            </div>
-          </header>
+          <section className="fleetRail" aria-label="Fleet status">
+            <span className="fleetRailTitle">Fleet signal</span>
+            <span className="fleetDatum">
+              <span className="statusLamp running" aria-hidden="true" />
+              Running <strong>{projectStatusCounts.running}</strong>
+            </span>
+            <span className="fleetDatum">
+              <span className="statusLamp starting" aria-hidden="true" />
+              Starting <strong>{projectStatusCounts.starting}</strong>
+            </span>
+            <span className="fleetDatum">
+              <span className="statusLamp stopped" aria-hidden="true" />
+              Stopped <strong>{projectStatusCounts.stopped}</strong>
+            </span>
+            <span className="fleetDatum">
+              <span className="statusLamp crashed" aria-hidden="true" />
+              Fault <strong>{projectStatusCounts.error}</strong>
+            </span>
+            <span className={`fleetMessage ${attentionCount > 0 ? 'attention' : ''}`}>
+              {attentionCount > 0
+                ? `${attentionCount} ${attentionCount === 1 ? 'channel needs' : 'channels need'} attention`
+                : 'All channels stable'}
+            </span>
+          </section>
 
-          <div className="projectFilters">
+          <div className="controlBar">
             <label className="projectSearch">
-              <span className="visuallyHidden">Filter projects by name</span>
+              <span className="visuallyHidden">Filter projects</span>
               <svg viewBox="0 0 24 24" aria-hidden="true">
                 <circle cx="11" cy="11" r="6.5" />
                 <path d="m16 16 4 4" />
@@ -1153,176 +1097,316 @@ function App() {
               ))}
             </div>
             <span className="filterResultCount" aria-live="polite">
-              {filteredProjects.length} shown
+              {filteredProjects.length} / {projects.length} channels
+              {' · '}
+              {sourceProjectCount} sources
+              {managedInstanceCount > 0 && ` · ${managedInstanceCount} instances`}
             </span>
+            <button className="refreshControl" type="button" onClick={refreshProjects}>Refresh</button>
           </div>
 
-          <section className={`grid ${projectView}`}>
-        {projects.length === 0 && (
-          <article className="empty">
-            <h2>No projects yet</h2>
-            <p>Run <code>porto scan ~/code --depth 3</code>, or restart the daemon to scan Copilot worktrees.</p>
-          </article>
-        )}
-        {projects.length > 0 && filteredProjects.length === 0 && (
-          <article className="empty filteredEmpty">
-            <h2>No matching projects</h2>
-            <p>Try another name or status.</p>
-            <button
-              type="button"
-              onClick={() => {
-                setProjectQuery('')
-                setProjectStatusFilter('all')
-              }}
-            >
-              Clear filters
-            </button>
-          </article>
-        )}
-        {projectGroups.map((group) => (
-          <section
-            className={`projectGroup ${group.total > 1 ? 'multi' : 'single'}`}
-            key={group.key}
-          >
-            {group.total > 1 && (
-              <header className="projectGroupHeader">
-                <div>
-                  <span>Source project</span>
-                  <strong>{group.projects[0].name}</strong>
-                </div>
-                <small>{group.total} branch runtimes</small>
-              </header>
+          <section className="channelBoard" aria-label="Project channels">
+            {projects.length === 0 && (
+              <article className="empty">
+                <h2>No projects detected</h2>
+                <p>Run <code>porto scan ~/code --depth 3</code>, or restart the daemon to scan Copilot worktrees.</p>
+              </article>
             )}
-            <div className="projectGroupCards">
-        {group.projects.map((project) => (
-          <article className="card" key={project.id}>
-            <div className="cardTop">
-              <div className="cardHeader">
-                <h2>{project.name}</h2>
-                <p>{project.path}</p>
-              </div>
-              <span className={`status ${project.status}`}>{project.status}</span>
-            </div>
-
-            <div className="branchControls">
-              <BranchPicker
-                label="Running branch"
-                value={project.branch}
-                options={branchOptions[project.id] ?? [project.branch]}
-                defaultBranch={project.defaultBranch}
-                placeholder="Search branches"
-                disabled={branchBusyID === project.id}
-                onOpen={() => loadBranches(project)}
-                onSelect={(branch) => switchBranch(project, branch)}
-              />
-              <BranchPicker
-                label="New instance"
-                value=""
-                options={(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch)}
-                defaultBranch={project.defaultBranch}
-                placeholder="Search branches"
-                disabled={branchBusyID === project.id}
-                onOpen={() => loadBranches(project)}
-                onSelect={(branch) => createInstance(project, branch)}
-              />
-            </div>
-
-            <dl>
-              <div><dt>Port</dt><dd>{project.port || 'unassigned'}</dd></div>
-              <div><dt>PID</dt><dd>{project.pid || '—'}</dd></div>
-              <div><dt>Branch</dt><dd>{project.branch}{project.dirty ? ' *' : ''}</dd></div>
-              <div><dt>Strategy</dt><dd>{project.strategy}</dd></div>
-              <div>
-                <dt>HTTPS host</dt>
-                <dd>
-                  <a href={project.httpsUrl} target="_blank" rel="noreferrer">
-                    {project.httpsUrl.replace(/^https:\/\//, '').replace(/\/$/, '')}
-                  </a>
-                </dd>
-              </div>
-              <div>
-                <dt>Sendbox</dt>
-                <dd
-                  className={`sendboxState ${project.sendboxStatus}`}
-                  title={project.sendboxMessage}
+            {projects.length > 0 && filteredProjects.length === 0 && (
+              <article className="empty filteredEmpty">
+                <h2>No channels match</h2>
+                <p>Change the search or status filter to restore the board.</p>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setProjectQuery('')
+                    setProjectStatusFilter('all')
+                  }}
                 >
-                  {project.sendboxConfigured ? project.sendboxStatus : 'not configured'}
-                </dd>
-              </div>
-            </dl>
+                  Clear filters
+                </button>
+              </article>
+            )}
+            {projectGroups.map((group) => (
+              <section
+                className={`projectGroup ${group.total > 1 ? 'multi' : 'single'}`}
+                key={group.key}
+              >
+                {group.total > 1 && (
+                  <header className="projectGroupHeader">
+                    <div>
+                      <strong>{group.projects[0].name}</strong>
+                      <span>Source project</span>
+                    </div>
+                    <small>{group.total} branch channels</small>
+                  </header>
+                )}
+                <div className="channelStack">
+                  {group.projects.map((project) => {
+                    const expanded = expandedProjectID === project.id
+                    const detailsID = `project-details-${project.id}`
+                    return (
+                      <article
+                        className={`projectChannel ${project.status} ${expanded ? 'expanded' : ''}`}
+                        key={project.id}
+                      >
+                        <div className="channelFace">
+                          <button
+                            className="channelToggle"
+                            type="button"
+                            aria-expanded={expanded}
+                            aria-controls={detailsID}
+                            onClick={() => toggleProject(project.id)}
+                          >
+                            <span className={`statusLamp ${project.status}`} aria-hidden="true" />
+                            <span className="channelIdentity">
+                              <strong>{project.name}</strong>
+                              <small>{project.managedInstance ? 'Branch instance' : project.strategy}</small>
+                            </span>
+                            <span className="channelDatum">
+                              <small>Branch</small>
+                              <strong>{project.branch}{project.dirty ? ' *' : ''}</strong>
+                            </span>
+                            <span className="channelDatum channelRoute">
+                              <small>Route</small>
+                              <strong>{project.hostname || 'host pending'}{project.port ? ` · ${project.port}` : ''}</strong>
+                            </span>
+                            <span className={`channelState ${project.status}`}>
+                              <small>State</small>
+                              <strong>{project.status}</strong>
+                            </span>
+                            <svg className="channelChevron" viewBox="0 0 24 24" aria-hidden="true">
+                              <path d="m8 10 4 4 4-4" />
+                            </svg>
+                          </button>
+                          <div className="quickActions" aria-label={`${project.name} quick actions`}>
+                            <ProjectActionButton
+                              label="Start project"
+                              icon="play"
+                              disabled={setupProjectID === project.id}
+                              onClick={() => run(String(project.id), 'start')}
+                            />
+                            <ProjectActionButton
+                              label="Stop project"
+                              icon="stop"
+                              onClick={() => run(String(project.id), 'stop')}
+                            />
+                            <ProjectActionButton
+                              label="Restart project"
+                              icon="restart"
+                              onClick={() => run(String(project.id), 'restart')}
+                            />
+                            <ProjectActionButton
+                              className="logsButton"
+                              label="View logs"
+                              icon="logs"
+                              onClick={() => viewLogs(project.id)}
+                            />
+                          </div>
+                        </div>
 
-            <code className="command">{project.command}</code>
+                        {expanded && (
+                          <div className="serviceDrawer" id={detailsID}>
+                            <div className="drawerHeader">
+                              <div>
+                                <h2>{project.name} service channel</h2>
+                                <p>{project.path}</p>
+                              </div>
+                              <div className="drawerReadouts" aria-label="Runtime readouts">
+                                <span><small>PID</small><strong>{project.pid || '—'}</strong></span>
+                                <span><small>Port</small><strong>{project.port || '—'}</strong></span>
+                                <span><small>Strategy</small><strong>{project.strategy}</strong></span>
+                              </div>
+                            </div>
 
-            <div className="actions">
-              <ProjectActionButton
-                label="Start project"
-                icon="play"
-                disabled={setupProjectID === project.id}
-                onClick={() => run(String(project.id), 'start')}
-              />
-              <ProjectActionButton label="Stop project" icon="stop" onClick={() => run(String(project.id), 'stop')} />
-              <ProjectActionButton label="Restart project" icon="restart" onClick={() => run(String(project.id), 'restart')} />
-              <ProjectActionButton label="Kill project" icon="kill" onClick={() => run(String(project.id), 'kill')} />
-              <ProjectActionButton
-                className="setupButton"
-                label={setupProjectID === project.id ? 'Setting up dependencies' : 'Set up dependencies'}
-                icon="setup"
-                disabled={project.status === 'running' || project.status === 'starting' || setupProjectID != null}
-                onClick={() => setupDependencies(project)}
-              />
-              <ProjectActionButton
-                className="logsButton"
-                label="View logs"
-                icon="logs"
-                onClick={() => viewLogs(project.id)}
-              />
-              {project.sendboxConfigured && (
-                <ProjectActionButton
-                  className="sendboxButton"
-                  label="Run in Sendbox"
-                  icon="sendboxPlay"
-                  disabled={
-                    !savedSendboxEnabled
-                    || sendboxStatus?.state !== 'ready'
-                    || project.sendboxStatus === 'running'
-                    || project.sendboxStatus === 'stopping'
-                  }
-                  onClick={() => runSendbox(String(project.id), 'start')}
-                />
-              )}
-              {(project.sendboxConfigured
-                || project.sendboxStatus === 'running'
-                || project.sendboxStatus === 'stopping') && (
-                <ProjectActionButton
-                  className="sendboxButton"
-                  label="Stop Sendbox"
-                  icon="sendboxStop"
-                  disabled={project.sendboxStatus !== 'running'}
-                  onClick={() => runSendbox(String(project.id), 'stop')}
-                />
-              )}
-              <ProjectActionButton
-                className="cleanupButton"
-                label="Clean merged branches"
-                icon="cleanup"
-                disabled={!savedLocalCleanup && !savedRemoteCleanup}
-                onClick={() => cleanup(String(project.id))}
-              />
-              {project.managedInstance && (
-                <ProjectActionButton
-                  className="removeButton"
-                  label="Delete branch instance"
-                  icon="remove"
-                  disabled={branchBusyID === project.id}
-                  onClick={() => removeInstance(project)}
-                />
-              )}
-            </div>
-          </article>
-        ))}
-            </div>
-          </section>
-        ))}
+                            <div className="drawerGrid">
+                              <section className="drawerPanel" aria-labelledby={`routing-${project.id}`}>
+                                <h3 id={`routing-${project.id}`}>Routing and runtime</h3>
+                                <dl className="runtimeGrid">
+                                  <div><dt>Branch</dt><dd>{project.branch}{project.dirty ? ' · modified' : ''}</dd></div>
+                                  <div>
+                                    <dt>HTTPS route</dt>
+                                    <dd>
+                                      <a href={project.httpsUrl} target="_blank" rel="noreferrer">
+                                        {project.httpsUrl.replace(/^https:\/\//, '').replace(/\/$/, '')}
+                                      </a>
+                                    </dd>
+                                  </div>
+                                  <div>
+                                    <dt>Sendbox</dt>
+                                    <dd
+                                      className={`sendboxState ${project.sendboxStatus}`}
+                                      title={project.sendboxMessage}
+                                    >
+                                      {project.sendboxConfigured ? project.sendboxStatus : 'not configured'}
+                                    </dd>
+                                  </div>
+                                  <div><dt>Source</dt><dd>{project.sourcePath || project.path}</dd></div>
+                                </dl>
+                              </section>
+
+                              <section className="drawerPanel" aria-labelledby={`branches-${project.id}`}>
+                                <h3 id={`branches-${project.id}`}>Branch routing</h3>
+                                <div className="branchControls">
+                                  <BranchPicker
+                                    label="Running branch"
+                                    value={project.branch}
+                                    options={branchOptions[project.id] ?? [project.branch]}
+                                    defaultBranch={project.defaultBranch}
+                                    placeholder="Search branches"
+                                    disabled={branchBusyID === project.id}
+                                    onOpen={() => loadBranches(project)}
+                                    onSelect={(branch) => switchBranch(project, branch)}
+                                  />
+                                  <BranchPicker
+                                    label="New instance"
+                                    value=""
+                                    options={(branchOptions[project.id] ?? []).filter((branch) => branch !== project.branch)}
+                                    defaultBranch={project.defaultBranch}
+                                    placeholder="Search branches"
+                                    disabled={branchBusyID === project.id}
+                                    onOpen={() => loadBranches(project)}
+                                    onSelect={(branch) => createInstance(project, branch)}
+                                  />
+                                </div>
+                              </section>
+                            </div>
+
+                            <div className="commandStrip">
+                              <span>Launch command</span>
+                              <code>{project.command}</code>
+                            </div>
+
+                            <div className="maintenanceBar">
+                              <span>Maintenance controls</span>
+                              <div className="actions">
+                                <ProjectActionButton
+                                  label="Kill project"
+                                  icon="kill"
+                                  onClick={() => run(String(project.id), 'kill')}
+                                />
+                                <ProjectActionButton
+                                  className="setupButton"
+                                  label={setupProjectID === project.id ? 'Setting up dependencies' : 'Set up dependencies'}
+                                  icon="setup"
+                                  disabled={project.status === 'running' || project.status === 'starting' || setupProjectID != null}
+                                  onClick={() => setupDependencies(project)}
+                                />
+                                {project.sendboxConfigured && (
+                                  <ProjectActionButton
+                                    className="sendboxButton"
+                                    label="Run in Sendbox"
+                                    icon="sendboxPlay"
+                                    disabled={
+                                      !savedSendboxEnabled
+                                      || sendboxStatus?.state !== 'ready'
+                                      || project.sendboxStatus === 'running'
+                                      || project.sendboxStatus === 'stopping'
+                                    }
+                                    onClick={() => runSendbox(String(project.id), 'start')}
+                                  />
+                                )}
+                                {(project.sendboxConfigured
+                                  || project.sendboxStatus === 'running'
+                                  || project.sendboxStatus === 'stopping') && (
+                                  <ProjectActionButton
+                                    className="sendboxButton"
+                                    label="Stop Sendbox"
+                                    icon="sendboxStop"
+                                    disabled={project.sendboxStatus !== 'running'}
+                                    onClick={() => runSendbox(String(project.id), 'stop')}
+                                  />
+                                )}
+                                <ProjectActionButton
+                                  className="cleanupButton"
+                                  label="Clean merged branches"
+                                  icon="cleanup"
+                                  disabled={!savedLocalCleanup && !savedRemoteCleanup}
+                                  onClick={() => cleanup(String(project.id))}
+                                />
+                                {project.managedInstance && (
+                                  <ProjectActionButton
+                                    className="removeButton"
+                                    label="Delete branch instance"
+                                    icon="remove"
+                                    disabled={branchBusyID === project.id}
+                                    onClick={() => removeInstance(project)}
+                                  />
+                                )}
+                              </div>
+                            </div>
+
+                            {logProjectID === project.id && (
+                              <section
+                                ref={logConsoleRef}
+                                className="logConsole"
+                                aria-labelledby={`process-console-title-${project.id}`}
+                              >
+                                <div className="consoleHeader">
+                                  <div>
+                                    <h3 id={`process-console-title-${project.id}`}>Process console</h3>
+                                    <p>
+                                      {project.branch} · {project.status} · {project.pid ? `PID ${project.pid}` : 'no active PID'}
+                                    </p>
+                                  </div>
+                                  <div className="consoleActions">
+                                    <button type="button" onClick={() => setLogRefresh((value) => value + 1)}>Refresh</button>
+                                    <button
+                                      type="button"
+                                      disabled={logsLoading || logError !== '' || logLines.length === 0}
+                                      onClick={copyLogs}
+                                    >
+                                      Copy visible
+                                    </button>
+                                    <button className="destructiveAction" type="button" onClick={clearLogs}>Clear visible</button>
+                                    <button type="button" onClick={() => setLogProjectID(null)}>Close console</button>
+                                  </div>
+                                </div>
+                                <div className="streamTabs" role="tablist" aria-label="Log stream">
+                                  {(['all', 'stdout', 'stderr'] as const).map((stream) => (
+                                    <button
+                                      type="button"
+                                      role="tab"
+                                      aria-selected={logStream === stream}
+                                      className={logStream === stream ? 'active' : ''}
+                                      key={stream}
+                                      onClick={() => {
+                                        setLogLines([])
+                                        setLogStream(stream)
+                                      }}
+                                    >
+                                      {stream}
+                                    </button>
+                                  ))}
+                                </div>
+                                <div className="logViewport" role="log" aria-live="polite" aria-busy={logsLoading}>
+                                  {logError && <div className="logEmpty errorLine">{logError}</div>}
+                                  {!logError && logsLoading && logLines.length === 0 && (
+                                    <div className="logEmpty">Loading process output…</div>
+                                  )}
+                                  {!logError && !logsLoading && logLines.length === 0 && (
+                                    <div className="logEmpty">No {logStream === 'all' ? '' : `${logStream} `}output captured yet.</div>
+                                  )}
+                                  {!logError && logLines.map((line, index) => (
+                                    <div className={`logLine ${line.stream}`} key={`${line.createdAt}-${index}`}>
+                                      <time dateTime={line.createdAt}>
+                                        {new Date(line.createdAt).toLocaleTimeString([], { hour12: false })}
+                                      </time>
+                                      <span className="streamLabel">{line.stream}</span>
+                                      <span className="logMessage">{line.line}</span>
+                                    </div>
+                                  ))}
+                                </div>
+                              </section>
+                            )}
+                          </div>
+                        )}
+                      </article>
+                    )
+                  })}
+                </div>
+              </section>
+            ))}
           </section>
         </>
       )}

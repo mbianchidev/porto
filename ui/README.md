@@ -2,7 +2,7 @@
 
 The React dashboard provides two hash-routed pages:
 
-- `#/` shows discovered projects. The compact list view is the default; users can switch to tiles, and the preference is saved in local storage.
+- `#/` shows a dense project control board with fleet health, compact channel rows, quick actions, and expandable inline runtime, branch, maintenance, and log details.
 - `#/settings` contains branch cleanup and optional integration settings.
 
 ## Development

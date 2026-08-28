@@ -1,53 +1,68 @@
 :root {
-  --text: #a8b3cf;
-  --muted: #7c859f;
-  --text-h: #f7f7fb;
-  --bg: #0f1220;
-  --panel: #171a2b;
-  --border: #2a2f45;
-  --code-bg: #20243a;
-  --accent: #67e8f9;
-  --accent-bg: rgba(103, 232, 249, 0.1);
-  --accent-border: rgba(103, 232, 249, 0.35);
-  --sans: Inter, ui-sans-serif, system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, SFMono-Regular, Consolas, monospace;
-  font: 16px/1.5 var(--sans);
-  color: var(--text);
-  background: radial-gradient(circle at top left, #1f2a44, var(--bg) 36rem);
+  --ink: #222521;
+  --ink-soft: #4c514b;
+  --ink-faint: #70756d;
+  --canvas: #c8c2b4;
+  --panel: #e9e5d9;
+  --panel-raised: #f4f0e5;
+  --panel-dark: #252925;
+  --line: #8c897e;
+  --line-strong: #343832;
+  --olive: #64703a;
+  --olive-soft: #d5d9b8;
+  --amber: #bd7725;
+  --amber-soft: #f1d3a8;
+  --red: #a43e32;
+  --red-soft: #ebc0b8;
+  --white: #fffdf7;
+  --sans: 'Avenir Next', Avenir, 'Helvetica Neue', Arial, sans-serif;
+  --mono: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font: 15px/1.45 var(--sans);
+  color: var(--ink);
+  background: var(--canvas);
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
+* {
+  box-sizing: border-box;
+}
+
 body {
   margin: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: clip;
+  background:
+    linear-gradient(rgba(34, 37, 33, 0.06) 1px, transparent 1px) 0 0 / 100% 24px,
+    var(--canvas);
 }
 
 h1,
 h2,
+h3,
+h4,
 p {
   margin-top: 0;
 }
 
 h1,
-h2 {
-  color: var(--text-h);
+h2,
+h3,
+h4 {
+  color: var(--ink);
 }
 
 h1 {
-  font-size: clamp(2rem, 6vw, 4.6rem);
-  line-height: 0.95;
-  letter-spacing: -0.06em;
-  margin-bottom: 18px;
+  margin-bottom: 6px;
+  font-size: clamp(1.75rem, 3vw, 2.6rem);
+  line-height: 1.05;
+  letter-spacing: -0.035em;
 }
 
 code {
   font-family: var(--mono);
-  border-radius: 6px;
-  color: var(--text-h);
-  background: var(--code-bg);
-  padding: 3px 6px;
+  color: inherit;
 }
