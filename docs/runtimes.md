@@ -211,7 +211,7 @@ porto kubernetes files default api-7d9f --container api --path /app
 porto kubernetes files default api-7d9f --container api --path /app/config.json --read
 ```
 
-The dashboard adds pod overview, logs, command execution, bounded text-file editing, resource statistics, events, and effective manifest views. Pod operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+The dashboard adds pod overview, streaming logs, a WebSocket-backed interactive terminal, bounded text-file editing, resource statistics, events, and effective manifest views. Pod operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
 
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
 
@@ -249,7 +249,9 @@ Lifecycle and access:
 
 ```sh
 porto vm start test-ubuntu
+porto vm shell test-ubuntu
 porto vm exec test-ubuntu uname -a
+porto vm copy ./fixture.txt test-ubuntu:/tmp/fixture.txt
 porto vm snapshot test-ubuntu before-upgrade
 porto vm restore test-ubuntu before-upgrade
 porto vm stop test-ubuntu

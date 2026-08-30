@@ -426,6 +426,30 @@ func vmCmd(args []string) error {
 			return errors.New("usage: porto vm exec <name> <command...>")
 		}
 		return runtimePOST("/api/vms/instances/"+url.PathEscape(args[1])+"/exec", map[string]any{"command": args[2:]})
+	case "shell", "ssh":
+		if len(args) != 2 {
+			return errors.New("usage: porto vm shell <name>")
+		}
+		command := exec.Command("limactl", "shell", args[1])
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("open VM shell: %w", err)
+		}
+		return nil
+	case "copy":
+		if len(args) != 3 {
+			return errors.New("usage: porto vm copy <source> <destination>")
+		}
+		command := exec.Command("limactl", "copy", args[1], args[2])
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("copy VM file: %w", err)
+		}
+		return nil
 	case "snapshot", "restore":
 		if len(args) != 3 {
 			return fmt.Errorf("usage: porto vm %s <name> <snapshot>", args[0])
