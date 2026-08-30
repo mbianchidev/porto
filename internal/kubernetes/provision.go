@@ -72,6 +72,14 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if request.Version != "" && !versionPattern.MatchString(request.Version) {
 		return Cluster{}, fmt.Errorf("invalid k3s version %q", request.Version)
 	}
+	kubeconfigPath := filepath.Join(p.kubeconfigRoot, request.Name+".yaml")
+	for _, existingPath := range []string{kubeconfigPath, p.clusterMetadataPath(request.Name)} {
+		if _, statErr := os.Stat(existingPath); statErr == nil {
+			return Cluster{}, fmt.Errorf("Kubernetes cluster %s already exists", request.Name)
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return Cluster{}, fmt.Errorf("inspect Kubernetes cluster state: %w", statErr)
+		}
+	}
 	request.ControlPlane = normalizeMachine(request.ControlPlane)
 	for index := range request.NodeGroups {
 		group := &request.NodeGroups[index]
@@ -96,6 +104,11 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		for index := len(created) - 1; index >= 0; index-- {
 			if deleteErr := p.vms.Delete(context.Background(), created[index], true); deleteErr != nil {
 				cleanupErrors = append(cleanupErrors, deleteErr)
+			}
+		}
+		for _, cleanupPath := range []string{kubeconfigPath, p.clusterMetadataPath(request.Name)} {
+			if removeErr := os.Remove(cleanupPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				cleanupErrors = append(cleanupErrors, removeErr)
 			}
 		}
 		err = errors.Join(err, errors.Join(cleanupErrors...))
@@ -160,7 +173,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		return Cluster{}, fmt.Errorf("read Kubernetes kubeconfig: %w", err)
 	}
 	kubeconfig := strings.ReplaceAll(string(kubeconfigOutput), "https://127.0.0.1:6443", "https://"+serverIP+":6443")
-	kubeconfigPath := filepath.Join(p.kubeconfigRoot, request.Name+".yaml")
 	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
 		return Cluster{}, fmt.Errorf("create kubeconfig directory: %w", err)
 	}
@@ -384,15 +396,24 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		return err
 	}
 	prefix := "porto-" + clusterName + "-"
-	var actionErrors []error
+	names := make([]string, 0)
 	for _, instance := range instances {
-		if !strings.HasPrefix(instance.Name, prefix) {
-			continue
+		if strings.HasPrefix(instance.Name, prefix) {
+			names = append(names, instance.Name)
 		}
+	}
+	sort.Strings(names)
+	if !running {
+		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
+			names[left], names[right] = names[right], names[left]
+		}
+	}
+	var actionErrors []error
+	for _, name := range names {
 		if running {
-			err = p.vms.Start(ctx, instance.Name)
+			err = p.vms.Start(ctx, name)
 		} else {
-			err = p.vms.Stop(ctx, instance.Name)
+			err = p.vms.Stop(ctx, name)
 		}
 		if err != nil {
 			actionErrors = append(actionErrors, err)

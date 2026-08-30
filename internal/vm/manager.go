@@ -162,11 +162,12 @@ func (m *Manager) Create(ctx context.Context, request CreateRequest) (Instance, 
 	}
 	if request.Start {
 		if err := m.Start(ctx, request.Name); err != nil {
-			return Instance{}, err
+			return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
 		}
 		if strings.TrimSpace(request.Provision) != "" {
 			if _, err := m.Exec(ctx, request.Name, []string{"sh", "-lc", request.Provision}, nil); err != nil {
-				return Instance{}, fmt.Errorf("provision VM %s: %w", request.Name, err)
+				provisionErr := fmt.Errorf("provision VM %s: %w", request.Name, err)
+				return Instance{}, errors.Join(provisionErr, m.Delete(context.Background(), request.Name, true))
 			}
 		}
 	}
