@@ -1,0 +1,296 @@
+# Local runtimes
+
+Porto can manage native development applications, Docker resources, local Kubernetes clusters, and standalone Linux virtual machines from the same daemon, CLI, and dashboard.
+
+Native project orchestration remains the default. Docker, Kubernetes, and VM providers are optional and report clear unavailable states when their required tools are not installed or running.
+
+Enable providers independently:
+
+```sh
+porto runtime enable docker
+porto runtime enable kubernetes
+porto runtime enable vms
+porto runtime status
+```
+
+Disable a provider with `porto runtime disable <provider>`. Disable Docker only after `porto docker deactivate` when Porto owns the canonical socket.
+
+## Architecture
+
+Porto separates the control plane from runtime providers:
+
+- The Porto daemon owns the HTTP API, dashboard state, project lifecycle, local routes, and Docker API proxy.
+- Native projects continue to run directly on the host.
+- Docker resource operations use the standard `docker` CLI and selected Docker context.
+- The Porto Docker socket proxies the selected upstream Docker Engine endpoint.
+- Kubernetes inspection uses the selected `kubectl` context.
+- Porto-created Kubernetes clusters use Lima VMs running k3s.
+- Standalone Linux VMs use Lima and remain separate from Kubernetes node groups.
+
+This design keeps existing tools and scripts compatible while giving Porto one operational view.
+
+## Requirements
+
+Core Porto only requires the dependencies listed in the [installation guide](installation.md).
+
+Additional runtime features require:
+
+| Capability | Requirement |
+| --- | --- |
+| Containers, images, builds, networks, volumes, Compose | Docker CLI and a reachable Docker-compatible Engine |
+| Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
+| Porto-created Kubernetes clusters | `limactl`, `kubectl`, guest internet access, and host virtualization support |
+| Standalone virtual machines | `limactl` and host virtualization support |
+
+Missing optional tools do not prevent native projects or the Porto daemon from running.
+
+## Docker-compatible endpoint
+
+The daemon creates a user-owned socket:
+
+```text
+<PORTO_HOME>/run/docker.sock
+```
+
+It proxies Docker Engine API requests to the endpoint selected when the daemon starts. Override that upstream explicitly:
+
+```sh
+PORTO_DOCKER_UPSTREAM=unix:///path/to/docker.sock porto daemon start
+```
+
+If the selected upstream becomes available after the daemon starts, disable and re-enable the Docker provider or restart the daemon so Porto can resolve it again.
+
+Install a named Docker context:
+
+```sh
+porto docker context-install
+docker --context porto info
+```
+
+To make standard tools use Porto with `DOCKER_HOST` unset, activate the canonical Unix socket:
+
+```sh
+porto docker activate
+```
+
+Porto never overwrites an existing non-symlink socket. Replacing another runtime's symbolic link requires explicit intent:
+
+```sh
+porto docker activate --replace
+```
+
+Writing `/var/run/docker.sock` normally requires administrator privileges. When the operating system rejects the operation, Porto prints a command that preserves the correct `PORTO_HOME`. Deactivation removes only the link Porto owns and restores the previous symbolic link:
+
+```sh
+porto docker deactivate
+```
+
+The Porto-owned proxy socket uses mode `0600`. Treat access to any Docker socket as host-administrator access.
+
+### Docker resources
+
+```sh
+porto docker status
+porto docker containers
+porto docker images
+porto docker builds
+porto docker networks
+porto docker volumes
+
+porto docker container restart <container>
+porto docker pull alpine:latest
+porto docker build . --tag example:dev
+```
+
+Top-level inventory aliases are also available:
+
+```sh
+porto containers
+porto images
+porto builds
+porto networks
+porto volumes
+```
+
+Compose projects continue to use their standard Compose files. Porto exposes Compose project and service labels from Docker so the dashboard can group related containers.
+
+## Kubernetes
+
+Porto can inspect any context already available to `kubectl`:
+
+```sh
+porto kubernetes status
+porto kubernetes contexts
+porto kubernetes pods --namespace all
+porto kubernetes services --namespace default
+porto kubernetes nodes
+```
+
+Pass `--context` when a command should not use the current context.
+
+### Create a local cluster
+
+Porto provisions one Lima VM for the k3s server and one VM for each requested worker. CPU, RAM, and disk values are per VM.
+
+```sh
+porto kubernetes cluster create dev \
+  --cpus 2 \
+  --memory 2048 \
+  --disk 20 \
+  --workers 2 \
+  --worker-cpus 4 \
+  --worker-memory 4096 \
+  --worker-disk 30
+```
+
+Pin a k3s version when reproducibility is required:
+
+```sh
+porto kubernetes cluster create dev --version v1.33.4+k3s1
+```
+
+Porto stores the generated kubeconfig under:
+
+```text
+<PORTO_HOME>/kubernetes/<cluster>.yaml
+```
+
+The context is named `porto-<cluster>`.
+
+Inspect or install the generated context into the default kubeconfig:
+
+```sh
+porto kubernetes kubeconfig dev
+porto kubernetes context-install dev
+```
+
+Context installation creates a one-time `.porto-backup` before replacing an existing kubeconfig.
+
+Scale a worker group:
+
+```sh
+porto kubernetes cluster scale dev workers --nodes 3 --cpus 4 --memory 4096 --disk 30
+```
+
+Lifecycle commands preserve the VM disks unless the cluster is deleted:
+
+```sh
+porto kubernetes cluster stop dev
+porto kubernetes cluster start dev
+porto kubernetes cluster delete dev
+```
+
+Cluster deletion requires explicit confirmation through the daemon API and removes the matching Porto-managed node VMs and kubeconfig.
+
+### Pod inspection
+
+List pods and read logs:
+
+```sh
+porto kubernetes pods --namespace all
+porto kubernetes logs default api-7d9f --container api
+porto kubernetes logs default api-7d9f --container api --previous
+```
+
+Run a command:
+
+```sh
+porto kubernetes exec default api-7d9f --container api -- sh -lc 'id && pwd'
+```
+
+List or read files:
+
+```sh
+porto kubernetes files default api-7d9f --container api --path /app
+porto kubernetes files default api-7d9f --container api --path /app/config.json --read
+```
+
+The dashboard adds pod overview, logs, command execution, bounded text-file editing, resource statistics, events, and effective manifest views. Pod operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+
+File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
+
+## Virtual machines
+
+Porto exposes a versioned VM image catalog:
+
+- Ubuntu 24.04 LTS
+- CentOS Stream 10
+- openSUSE Tumbleweed
+- NixOS unstable
+- Arch Linux
+- Alpine Linux
+- Kali Linux rolling
+
+List images and instances:
+
+```sh
+porto vm status
+porto vm images
+porto vm list
+```
+
+Create and start a machine:
+
+```sh
+porto vm create test-ubuntu \
+  --image ubuntu-24.04 \
+  --cpus 4 \
+  --memory 4096 \
+  --disk 30
+```
+
+Lifecycle and access:
+
+```sh
+porto vm start test-ubuntu
+porto vm exec test-ubuntu uname -a
+porto vm snapshot test-ubuntu before-upgrade
+porto vm restore test-ubuntu before-upgrade
+porto vm stop test-ubuntu
+porto vm delete test-ubuntu
+```
+
+Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically.
+
+The image catalog maps to Lima templates. Template availability depends on the installed Lima version and host architecture; Porto surfaces provider failures without changing native project state.
+
+## API
+
+Runtime APIs are served from the existing local daemon:
+
+```text
+GET    /api/runtime
+GET    /api/docker/status
+GET    /api/docker/containers
+GET    /api/docker/images
+GET    /api/docker/builds
+GET    /api/docker/networks
+GET    /api/docker/volumes
+
+GET    /api/kubernetes/status
+GET    /api/kubernetes/contexts
+GET    /api/kubernetes/clusters
+GET    /api/kubernetes/pods
+GET    /api/kubernetes/services
+GET    /api/kubernetes/nodes
+
+GET    /api/vms/status
+GET    /api/vms/images
+GET    /api/vms/instances
+```
+
+Mutation routes validate JSON input, use argument arrays rather than host-shell concatenation, and require explicit confirmation for deleting clusters, VMs, or pod filesystem paths.
+
+## Failure behavior
+
+- Optional runtime failures do not stop native project orchestration.
+- Missing CLIs, unreachable daemons, unavailable Kubernetes APIs, and permission failures return actionable errors.
+- Porto refuses destructive canonical Docker socket changes it cannot safely reverse.
+- Failed cluster creation removes VMs created during that attempt and reports cleanup errors.
+- Runtime command timeouts are bounded; image builds and provisioning receive longer explicit limits.
+
+## Desktop and web
+
+The same frontend is served in the browser and loaded by Porto Desktop. `localhost-ing` remains the native-project control surface, while the resource sections expose Docker, Kubernetes, and VM inventories.
+
+Closing the browser or desktop window does not stop the daemon. Stopping the daemon still performs the existing graceful shutdown of native projects and Sendbox sessions managed by that daemon.

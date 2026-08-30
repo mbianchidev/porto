@@ -7,15 +7,62 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 
 	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/store"
 	"github.com/mbianchidev/porto/internal/vm"
 )
+
+func runtimeCmd(st *store.Store, args []string) error {
+	if len(args) == 0 || args[0] == "status" {
+		if daemonUp() {
+			return api("GET", "/api/runtime", nil, os.Stdout)
+		}
+		settings, err := st.Settings(context.Background())
+		if err != nil {
+			return err
+		}
+		return writeOutput(map[string]bool{
+			"docker":     settings.DockerEnabled,
+			"kubernetes": settings.KubernetesEnabled,
+			"vms":        settings.VMsEnabled,
+		})
+	}
+	if len(args) != 2 || (args[0] != "enable" && args[0] != "disable") {
+		return errors.New("usage: porto runtime status|enable|disable <docker|kubernetes|vms>")
+	}
+	feature := args[1]
+	if feature != "docker" && feature != "kubernetes" && feature != "vms" {
+		return fmt.Errorf("unknown runtime feature %q", feature)
+	}
+	if daemonUp() {
+		return api("POST", "/api/runtime/features/"+feature+"/"+args[0], nil, os.Stdout)
+	}
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		return err
+	}
+	enabled := args[0] == "enable"
+	switch feature {
+	case "docker":
+		settings.DockerEnabled = enabled
+	case "kubernetes":
+		settings.KubernetesEnabled = enabled
+	case "vms":
+		settings.VMsEnabled = enabled
+	}
+	if err := st.SetSettings(context.Background(), settings); err != nil {
+		return err
+	}
+	return writeOutput(map[string]bool{feature: enabled})
+}
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
@@ -34,6 +81,9 @@ func dockerCmd(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto docker context-install")
 		}
+		if runtime.GOOS == "windows" {
+			return errors.New("Porto Docker named-pipe proxy is not available in this build")
+		}
 		socketPath, err := config.DockerSocketPath()
 		if err != nil {
 			return err
@@ -43,6 +93,9 @@ func dockerCmd(args []string) error {
 		}
 		return writeOutput(map[string]string{"context": "porto", "endpoint": "unix://" + socketPath})
 	case "activate":
+		if runtime.GOOS == "windows" {
+			return errors.New("canonical Docker named-pipe activation is not available in this build")
+		}
 		fs := flag.NewFlagSet("docker activate", flag.ContinueOnError)
 		replace := fs.Bool("replace", false, "replace an existing Docker socket symlink and remember it for restoration")
 		if err := fs.Parse(args[1:]); err != nil {
@@ -64,6 +117,9 @@ func dockerCmd(args []string) error {
 		}
 		return writeOutput(state)
 	case "deactivate":
+		if runtime.GOOS == "windows" {
+			return errors.New("canonical Docker named-pipe deactivation is not available in this build")
+		}
 		if len(args) != 1 {
 			return errors.New("usage: porto docker deactivate")
 		}
@@ -122,6 +178,20 @@ func kubernetesCmd(args []string) error {
 	switch args[0] {
 	case "status", "contexts", "nodes", "clusters":
 		return runtimeGET("/api/kubernetes/" + args[0])
+	case "kubeconfig":
+		if len(args) != 2 {
+			return errors.New("usage: porto kubernetes kubeconfig <cluster>")
+		}
+		path, err := clusterKubeconfigPath(args[1])
+		if err != nil {
+			return err
+		}
+		return writeOutput(map[string]string{"cluster": args[1], "context": "porto-" + args[1], "path": path})
+	case "context-install":
+		if len(args) != 2 {
+			return errors.New("usage: porto kubernetes context-install <cluster>")
+		}
+		return installClusterContext(args[1])
 	case "pods", "services":
 		fs := flag.NewFlagSet("kubernetes "+args[0], flag.ContinueOnError)
 		contextName := fs.String("context", "", "Kubernetes context")
@@ -434,4 +504,108 @@ func shellDisplay(value string) string {
 		return value
 	}
 	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
+}
+
+func clusterKubeconfigPath(cluster string) (string, error) {
+	if cluster == "" || strings.ContainsAny(cluster, `/\\`+"\x00\r\n") {
+		return "", errors.New("invalid Kubernetes cluster name")
+	}
+	dir, err := config.KubernetesConfigDir()
+	if err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, cluster+".yaml")
+	if info, err := os.Stat(path); err != nil || info.IsDir() {
+		if err == nil {
+			err = errors.New("path is a directory")
+		}
+		return "", fmt.Errorf("Porto kubeconfig for %s is unavailable: %w", cluster, err)
+	}
+	return path, nil
+}
+
+func installClusterContext(cluster string) error {
+	source, err := clusterKubeconfigPath(cluster)
+	if err != nil {
+		return err
+	}
+	target, err := defaultKubeconfigPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
+		return fmt.Errorf("create kubeconfig directory: %w", err)
+	}
+	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
+		data, readErr := os.ReadFile(source)
+		if readErr != nil {
+			return readErr
+		}
+		if writeErr := atomicWrite(target, data, 0o600); writeErr != nil {
+			return writeErr
+		}
+		return writeOutput(map[string]string{"context": "porto-" + cluster, "path": target})
+	} else if err != nil {
+		return fmt.Errorf("inspect kubeconfig: %w", err)
+	}
+
+	command := exec.Command("kubectl", "config", "view", "--flatten", "--raw")
+	command.Env = append(os.Environ(), "KUBECONFIG="+target+string(os.PathListSeparator)+source)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("merge Kubernetes context: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	if !strings.Contains(string(output), "apiVersion:") {
+		return errors.New("kubectl returned an invalid merged kubeconfig")
+	}
+	backup := target + ".porto-backup"
+	if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
+		current, readErr := os.ReadFile(target)
+		if readErr != nil {
+			return fmt.Errorf("read kubeconfig backup source: %w", readErr)
+		}
+		if writeErr := atomicWrite(backup, current, 0o600); writeErr != nil {
+			return fmt.Errorf("backup kubeconfig: %w", writeErr)
+		}
+	}
+	if err := atomicWrite(target, output, 0o600); err != nil {
+		return fmt.Errorf("install Kubernetes context: %w", err)
+	}
+	return writeOutput(map[string]string{"context": "porto-" + cluster, "path": target, "backup": backup})
+}
+
+func defaultKubeconfigPath() (string, error) {
+	if configured := strings.TrimSpace(os.Getenv("KUBECONFIG")); configured != "" {
+		return strings.Split(configured, string(os.PathListSeparator))[0], nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".kube", "config"), nil
+}
+
+func atomicWrite(path string, data []byte, mode os.FileMode) error {
+	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(mode); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(data); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
 }

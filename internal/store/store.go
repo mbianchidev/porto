@@ -94,7 +94,10 @@ CREATE TABLE IF NOT EXISTS settings (
  protected_branches TEXT NOT NULL,
  sql_not_so_lite_enabled INTEGER NOT NULL DEFAULT 0,
  kill_switch_enabled INTEGER NOT NULL DEFAULT 0,
- sendbox_enabled INTEGER NOT NULL DEFAULT 0
+ sendbox_enabled INTEGER NOT NULL DEFAULT 0,
+ docker_enabled INTEGER NOT NULL DEFAULT 0,
+ kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
+ vms_enabled INTEGER NOT NULL DEFAULT 0
 );
 `)
 	if err != nil {
@@ -107,6 +110,15 @@ CREATE TABLE IF NOT EXISTS settings (
 		return err
 	}
 	if err := s.ensureSettingsColumn("sendbox_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("docker_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("kubernetes_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("vms_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	for name, definition := range map[string]string{
@@ -267,9 +279,10 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var settings app.Settings
 	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled, killSwitchEnabled, sendboxEnabled int
+	var dockerEnabled, kubernetesEnabled, vmsEnabled int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled FROM settings WHERE id=1`).
-		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected, &sqlNotSoLiteEnabled, &killSwitchEnabled, &sendboxEnabled)
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,kubernetes_enabled,vms_enabled FROM settings WHERE id=1`).
+		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected, &sqlNotSoLiteEnabled, &killSwitchEnabled, &sendboxEnabled, &dockerEnabled, &kubernetesEnabled, &vmsEnabled)
 	if err != nil {
 		return settings, err
 	}
@@ -282,6 +295,9 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	settings.SQLNotSoLiteEnabled = sqlNotSoLiteEnabled == 1
 	settings.KillSwitchEnabled = killSwitchEnabled == 1
 	settings.SendboxEnabled = sendboxEnabled == 1
+	settings.DockerEnabled = dockerEnabled == 1
+	settings.KubernetesEnabled = kubernetesEnabled == 1
+	settings.VMsEnabled = vmsEnabled == 1
 	return settings, nil
 }
 
@@ -290,7 +306,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=? WHERE id=1`,
+	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,kubernetes_enabled=?,vms_enabled=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -298,6 +314,9 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.SQLNotSoLiteEnabled),
 		boolInt(settings.KillSwitchEnabled),
 		boolInt(settings.SendboxEnabled),
+		boolInt(settings.DockerEnabled),
+		boolInt(settings.KubernetesEnabled),
+		boolInt(settings.VMsEnabled),
 	)
 	return err
 }

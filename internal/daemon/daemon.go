@@ -75,6 +75,8 @@ type Server struct {
 	userHomeDir     func() (string, error)
 	docker          *portodocker.Manager
 	dockerProxy     *portodocker.Proxy
+	runtimeMu       sync.Mutex
+	runtimeContext  context.Context
 	kubernetes      *kubernetes.Manager
 	clusters        *kubernetes.ClusterProvisioner
 	vms             *vm.Manager
@@ -141,6 +143,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	s.runtimeContext = ctx
 	if count, err := s.discoverCopilotWorktrees(ctx); err != nil {
 		log.Printf("discover Copilot worktrees: %v", err)
 	} else if count > 0 {
@@ -155,15 +158,21 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("resolve TLS certificate authority paths: %w", err)
 	}
 	s.tlsCertificates = certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath)
-	upstream, upstreamErr := s.docker.Endpoint(ctx)
-	if upstreamErr != nil {
-		log.Printf("Docker endpoint unavailable: %v", upstreamErr)
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return fmt.Errorf("load runtime settings: %w", err)
 	}
-	if s.dockerSocket != "" {
-		s.dockerProxy = portodocker.NewProxy(s.dockerSocket, upstream)
-		if err := s.dockerProxy.Start(ctx); err != nil {
+	if settings.DockerEnabled {
+		if err := s.startDockerProxy(ctx); err != nil {
 			return fmt.Errorf("start Docker API proxy: %w", err)
 		}
+		defer func() {
+			closeContext, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+			defer cancel()
+			if err := s.stopDockerProxy(closeContext); err != nil {
+				log.Printf("close Docker API proxy: %v", err)
+			}
+		}()
 	}
 	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
@@ -245,13 +254,58 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	cancelHTTP()
 	if s.dockerProxy != nil {
 		proxyContext, cancelProxy := context.WithTimeout(context.Background(), httpShutdownTimeout)
-		shutdownErrors = append(shutdownErrors, s.dockerProxy.Close(proxyContext))
+		shutdownErrors = append(shutdownErrors, s.stopDockerProxy(proxyContext))
 		cancelProxy()
 	}
 
 	appContext, cancelApps := context.WithTimeout(context.Background(), daemonShutdownTimeout)
 	defer cancelApps()
 	return errors.Join(errors.Join(shutdownErrors...), s.stopManagedApplications(appContext))
+}
+
+func (s *Server) startDockerProxy(ctx context.Context) error {
+	if runtime.GOOS == "windows" {
+		return errors.New("Porto Docker named-pipe proxy is not available in this build")
+	}
+	if s.dockerSocket == "" {
+		return errors.New("Porto Docker socket path is unavailable")
+	}
+	s.runtimeMu.Lock()
+	if s.dockerProxy != nil {
+		s.runtimeMu.Unlock()
+		return nil
+	}
+	s.runtimeMu.Unlock()
+	upstream, err := s.docker.Endpoint(ctx)
+	if err != nil {
+		log.Printf("Docker upstream unavailable; restart or re-enable Docker after the runtime becomes available: %v", err)
+		upstream = ""
+	}
+	proxy := portodocker.NewProxy(s.dockerSocket, upstream)
+	if err := proxy.Start(ctx); err != nil {
+		return err
+	}
+	s.runtimeMu.Lock()
+	if s.dockerProxy != nil {
+		s.runtimeMu.Unlock()
+		closeContext, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		return proxy.Close(closeContext)
+	}
+	s.dockerProxy = proxy
+	s.runtimeMu.Unlock()
+	return nil
+}
+
+func (s *Server) stopDockerProxy(ctx context.Context) error {
+	s.runtimeMu.Lock()
+	proxy := s.dockerProxy
+	s.dockerProxy = nil
+	s.runtimeMu.Unlock()
+	if proxy == nil {
+		return nil
+	}
+	return proxy.Close(ctx)
 }
 
 func (s *Server) stopManagedApplications(ctx context.Context) error {
@@ -854,6 +908,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, command, port)
 	if err != nil {
 		return p, err
+	}
+	if projectUsesCompose(p) {
+		cmd.Env = append(cmd.Env, "COMPOSE_PROJECT_NAME="+compose.ProjectName(p))
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()

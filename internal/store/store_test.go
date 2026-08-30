@@ -24,6 +24,34 @@ func TestSafeHostPreservesValidDomainLabels(t *testing.T) {
 	}
 }
 
+func TestRuntimeFeatureSettingsDefaultOffAndRoundTrip(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if settings.DockerEnabled || settings.KubernetesEnabled || settings.VMsEnabled {
+		t.Fatalf("optional runtimes must default off: %+v", settings)
+	}
+	settings.DockerEnabled = true
+	settings.KubernetesEnabled = true
+	settings.VMsEnabled = true
+	if err := st.SetSettings(context.Background(), settings); err != nil {
+		t.Fatalf("save settings: %v", err)
+	}
+	reloaded, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatalf("reload settings: %v", err)
+	}
+	if !reloaded.DockerEnabled || !reloaded.KubernetesEnabled || !reloaded.VMsEnabled {
+		t.Fatalf("runtime settings did not persist: %+v", reloaded)
+	}
+}
+
 func TestOpenMigratesGeneratedDottedHostname(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "porto.db")
 	st, err := Open(path)

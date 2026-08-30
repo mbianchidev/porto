@@ -27,6 +27,7 @@ type Manager struct {
 }
 
 type Status struct {
+	Enabled   bool   `json:"enabled"`
 	Available bool   `json:"available"`
 	Provider  string `json:"provider"`
 	Version   string `json:"version,omitempty"`

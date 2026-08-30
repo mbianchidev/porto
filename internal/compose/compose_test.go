@@ -89,6 +89,15 @@ func TestCheckDistinguishesMissingDockerCLI(t *testing.T) {
 	}
 }
 
+func TestProjectNameIsStableAndInstanceSafe(t *testing.T) {
+	if got := ProjectName(app.Project{ID: 42, Name: "Web App"}); got != "porto-42" {
+		t.Fatalf("ProjectName with ID = %q", got)
+	}
+	if got := ProjectName(app.Project{Name: "Web App!"}); got != "porto-web-app" {
+		t.Fatalf("ProjectName fallback = %q", got)
+	}
+}
+
 func TestCheckTimesOut(t *testing.T) {
 	runner := &fakeRunner{
 		run: func(ctx context.Context, _ Command) ([]byte, error) {
@@ -137,7 +146,7 @@ func TestPublishedPortsParsesWarningsAndPrioritizesFrontend(t *testing.T) {
 		Dir:  root,
 		Name: "docker",
 		Args: []string{"compose", "-f", "compose.yaml", "ps", "--format", "json"},
-		Env:  []string{"PORT=41007", "PORTO_PORT=41007"},
+		Env:  []string{"PORT=41007", "PORTO_PORT=41007", "COMPOSE_PROJECT_NAME=porto-web"},
 	}
 	if !reflect.DeepEqual(runner.commands, []Command{wantCommand}) {
 		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{wantCommand})
@@ -192,7 +201,7 @@ func TestDownUsesStartedConfigAndPortEnvironment(t *testing.T) {
 		Dir:  root,
 		Name: "docker",
 		Args: []string{"compose", "-f", "compose.yaml", "down", "--remove-orphans"},
-		Env:  []string{"PORT=41007", "PORTO_PORT=41007"},
+		Env:  []string{"PORT=41007", "PORTO_PORT=41007", "COMPOSE_PROJECT_NAME=porto-web"},
 	}
 	if !reflect.DeepEqual(runner.commands, []Command{want}) {
 		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{want})

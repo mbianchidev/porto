@@ -43,6 +43,9 @@ type Settings struct {
 	SQLNotSoLiteEnabled bool     `json:"sqlNotSoLiteEnabled"`
 	KillSwitchEnabled   bool     `json:"killSwitchEnabled"`
 	SendboxEnabled      bool     `json:"sendboxEnabled"`
+	DockerEnabled       bool     `json:"dockerEnabled"`
+	KubernetesEnabled   bool     `json:"kubernetesEnabled"`
+	VMsEnabled          bool     `json:"vmsEnabled"`
 }
 
 type BranchCleanupResult struct {

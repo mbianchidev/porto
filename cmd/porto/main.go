@@ -81,6 +81,8 @@ func run(args []string) error {
 		return kubernetesCmd(args[1:])
 	case "vm", "vms", "machine", "machines":
 		return vmCmd(args[1:])
+	case "runtime":
+		return runtimeCmd(db, args[1:])
 	case "container", "containers", "image", "images", "build", "builds", "network", "networks", "volume", "volumes":
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
@@ -572,9 +574,10 @@ Commands:
   porto docker context-install|activate|deactivate
   porto docker container <start|stop|restart|pause|unpause|remove> <id>
   porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
-  porto kubernetes status|contexts|pods|services|nodes
+  porto kubernetes status|contexts|pods|services|nodes|kubeconfig|context-install
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
   porto kubernetes cluster create|start|stop|delete
+  porto runtime status|enable|disable <docker|kubernetes|vms>
   porto vm status|images|list|create|start|stop|delete|exec|snapshot|restore`)
 }

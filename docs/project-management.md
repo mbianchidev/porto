@@ -16,6 +16,12 @@ porto branch <project> <branch>
 porto port <project> <port>
 porto kill-switch status|install|sync|cleanup
 porto sendbox start|stop <project>
+porto docker status|containers|images|builds|networks|volumes
+porto docker context-install|activate|deactivate
+porto kubernetes status|contexts|pods|services|nodes
+porto kubernetes cluster create|start|stop|scale|delete
+porto runtime status|enable|disable <docker|kubernetes|vms>
+porto vm status|images|list|create|start|stop|delete|exec|snapshot|restore
 ```
 
 `porto daemon start` runs in the foreground. Stopping it with `Ctrl+C` or `SIGTERM` gracefully stops all projects and Sendbox sessions managed by that daemon.
@@ -76,3 +82,5 @@ Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or port
 Dashboard cards also show each project's process ID, readiness status, assigned port, branch, and dirty state. The process console supports filtering and one-click copying and clearing.
 
 For Git branch workflows, see [branch management](branch-management.md). For project URLs and TLS, see [local networking](networking.md).
+
+For containers, the Docker-compatible endpoint, local Kubernetes clusters, pod inspection, and Linux virtual machines, see [local runtimes](runtimes.md).

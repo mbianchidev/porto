@@ -128,6 +128,7 @@ func (i *Integration) PublishedPorts(ctx context.Context, project app.Project) (
 		Env: []string{
 			"PORT=" + strconv.Itoa(project.Port),
 			"PORTO_PORT=" + strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
 		},
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
@@ -153,6 +154,7 @@ func (i *Integration) Down(ctx context.Context, project app.Project) error {
 		Env: []string{
 			"PORT=" + strconv.Itoa(project.Port),
 			"PORTO_PORT=" + strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
 		},
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
@@ -249,6 +251,26 @@ func servicePriority(service string) int {
 		}
 	}
 	return 3
+}
+
+func ProjectName(project app.Project) string {
+	if project.ID > 0 {
+		return "porto-" + strconv.FormatInt(project.ID, 10)
+	}
+	name := strings.ToLower(project.Name)
+	var builder strings.Builder
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		} else {
+			builder.WriteByte('-')
+		}
+	}
+	normalized := strings.Trim(builder.String(), "-_")
+	if normalized == "" {
+		normalized = "project"
+	}
+	return "porto-" + normalized
 }
 
 func daemonUnavailableError(output []byte, err error) error {

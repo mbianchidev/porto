@@ -38,6 +38,14 @@ Requirements:
 - Go 1.25 or newer
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
+Optional runtime features use standard host tools:
+
+- Docker CLI and a Docker-compatible Engine for containers, images, builds, networks, volumes, and Compose
+- `kubectl` for Kubernetes inspection
+- `limactl` for Porto-created Kubernetes clusters and standalone Linux VMs
+
+Porto keeps native project orchestration available when optional runtime tools are missing.
+
 From the repository root:
 
 ```sh

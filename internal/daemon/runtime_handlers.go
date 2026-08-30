@@ -1,13 +1,18 @@
 package daemon
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
+	"os"
 	"strconv"
 	"strings"
+	"time"
 
+	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/vm"
@@ -17,65 +22,98 @@ const maxRuntimeRequestBytes = 2 * 1024 * 1024
 
 func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
+	mux.HandleFunc("GET /api/runtime/features", s.runtimeFeatures)
+	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
-	mux.HandleFunc("GET /api/docker/containers", s.dockerContainers)
-	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.dockerContainerAction)
-	mux.HandleFunc("GET /api/docker/images", s.dockerImages)
-	mux.HandleFunc("POST /api/docker/images/pull", s.dockerPullImage)
-	mux.HandleFunc("DELETE /api/docker/images/{id}", s.dockerRemoveImage)
-	mux.HandleFunc("GET /api/docker/builds", s.dockerBuilds)
-	mux.HandleFunc("POST /api/docker/builds", s.dockerBuild)
-	mux.HandleFunc("GET /api/docker/networks", s.dockerNetworks)
-	mux.HandleFunc("POST /api/docker/networks", s.dockerCreateNetwork)
-	mux.HandleFunc("DELETE /api/docker/networks/{name}", s.dockerRemoveNetwork)
-	mux.HandleFunc("GET /api/docker/volumes", s.dockerVolumes)
-	mux.HandleFunc("POST /api/docker/volumes", s.dockerCreateVolume)
-	mux.HandleFunc("DELETE /api/docker/volumes/{name}", s.dockerRemoveVolume)
+	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
+	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
+	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
+	mux.HandleFunc("POST /api/docker/images/pull", s.requireRuntime("docker", s.dockerPullImage))
+	mux.HandleFunc("DELETE /api/docker/images/{id}", s.requireRuntime("docker", s.dockerRemoveImage))
+	mux.HandleFunc("GET /api/docker/builds", s.requireRuntime("docker", s.dockerBuilds))
+	mux.HandleFunc("POST /api/docker/builds", s.requireRuntime("docker", s.dockerBuild))
+	mux.HandleFunc("GET /api/docker/networks", s.requireRuntime("docker", s.dockerNetworks))
+	mux.HandleFunc("POST /api/docker/networks", s.requireRuntime("docker", s.dockerCreateNetwork))
+	mux.HandleFunc("DELETE /api/docker/networks/{name}", s.requireRuntime("docker", s.dockerRemoveNetwork))
+	mux.HandleFunc("GET /api/docker/volumes", s.requireRuntime("docker", s.dockerVolumes))
+	mux.HandleFunc("POST /api/docker/volumes", s.requireRuntime("docker", s.dockerCreateVolume))
+	mux.HandleFunc("DELETE /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerRemoveVolume))
 
 	mux.HandleFunc("GET /api/kubernetes/status", s.kubernetesStatus)
-	mux.HandleFunc("GET /api/kubernetes/contexts", s.kubernetesContexts)
-	mux.HandleFunc("GET /api/kubernetes/pods", s.kubernetesPods)
-	mux.HandleFunc("GET /api/kubernetes/services", s.kubernetesServices)
-	mux.HandleFunc("GET /api/kubernetes/nodes", s.kubernetesNodes)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.kubernetesPod)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.kubernetesPodLogs)
-	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.kubernetesPodExec)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/files", s.kubernetesPodFiles)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/file", s.kubernetesPodFile)
-	mux.HandleFunc("PUT /api/kubernetes/pods/{namespace}/{pod}/file", s.kubernetesWritePodFile)
-	mux.HandleFunc("DELETE /api/kubernetes/pods/{namespace}/{pod}/file", s.kubernetesDeletePodFile)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/stats", s.kubernetesPodStats)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/events", s.kubernetesPodEvents)
-	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/manifest", s.kubernetesPodManifest)
-	mux.HandleFunc("GET /api/kubernetes/clusters", s.kubernetesClusters)
-	mux.HandleFunc("POST /api/kubernetes/clusters", s.createKubernetesCluster)
-	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.startKubernetesCluster)
-	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.stopKubernetesCluster)
-	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.scaleKubernetesNodeGroup)
-	mux.HandleFunc("DELETE /api/kubernetes/clusters/{name}", s.deleteKubernetesCluster)
+	mux.HandleFunc("GET /api/kubernetes/contexts", s.requireRuntime("kubernetes", s.kubernetesContexts))
+	mux.HandleFunc("GET /api/kubernetes/pods", s.requireRuntime("kubernetes", s.kubernetesPods))
+	mux.HandleFunc("GET /api/kubernetes/services", s.requireRuntime("kubernetes", s.kubernetesServices))
+	mux.HandleFunc("GET /api/kubernetes/nodes", s.requireRuntime("kubernetes", s.kubernetesNodes))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
+	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/files", s.requireRuntime("kubernetes", s.kubernetesPodFiles))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesPodFile))
+	mux.HandleFunc("PUT /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesWritePodFile))
+	mux.HandleFunc("DELETE /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesDeletePodFile))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/stats", s.requireRuntime("kubernetes", s.kubernetesPodStats))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/events", s.requireRuntime("kubernetes", s.kubernetesPodEvents))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/manifest", s.requireRuntime("kubernetes", s.kubernetesPodManifest))
+	mux.HandleFunc("GET /api/kubernetes/clusters", s.requireRuntime("kubernetes", s.kubernetesClusters))
+	mux.HandleFunc("POST /api/kubernetes/clusters", s.requireRuntime("kubernetes", s.createKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
+	mux.HandleFunc("DELETE /api/kubernetes/clusters/{name}", s.requireRuntime("kubernetes", s.deleteKubernetesCluster))
 
 	mux.HandleFunc("GET /api/vms/status", s.vmStatus)
 	mux.HandleFunc("GET /api/vms/images", s.vmImages)
-	mux.HandleFunc("GET /api/vms/instances", s.vmInstances)
-	mux.HandleFunc("POST /api/vms/instances", s.createVM)
-	mux.HandleFunc("POST /api/vms/instances/{name}/start", s.startVM)
-	mux.HandleFunc("POST /api/vms/instances/{name}/stop", s.stopVM)
-	mux.HandleFunc("POST /api/vms/instances/{name}/exec", s.execVM)
-	mux.HandleFunc("POST /api/vms/instances/{name}/snapshot", s.snapshotVM)
-	mux.HandleFunc("POST /api/vms/instances/{name}/restore", s.restoreVMSnapshot)
-	mux.HandleFunc("DELETE /api/vms/instances/{name}", s.deleteVM)
+	mux.HandleFunc("GET /api/vms/instances", s.requireRuntime("vms", s.vmInstances))
+	mux.HandleFunc("POST /api/vms/instances", s.requireRuntime("vms", s.createVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/start", s.requireRuntime("vms", s.startVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/stop", s.requireRuntime("vms", s.stopVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/exec", s.requireRuntime("vms", s.execVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/snapshot", s.requireRuntime("vms", s.snapshotVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/restore", s.requireRuntime("vms", s.restoreVMSnapshot))
+	mux.HandleFunc("DELETE /api/vms/instances/{name}", s.requireRuntime("vms", s.deleteVM))
 }
 
 func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	dockerStatus := portodocker.Status{Enabled: settings.DockerEnabled, Message: "Docker runtime is disabled"}
+	if settings.DockerEnabled {
+		dockerStatus = s.docker.Status(r.Context(), s.dockerSocket)
+		dockerStatus.Enabled = true
+	}
+	kubernetesStatus := kubernetes.Status{Enabled: settings.KubernetesEnabled, Message: "Kubernetes runtime is disabled"}
+	if settings.KubernetesEnabled {
+		kubernetesStatus = s.kubernetes.Status(r.Context(), r.URL.Query().Get("context"))
+		kubernetesStatus.Enabled = true
+	}
+	vmStatus := vm.Status{Enabled: settings.VMsEnabled, Provider: "lima", Message: "VM runtime is disabled"}
+	if settings.VMsEnabled {
+		vmStatus = s.vms.Status(r.Context())
+		vmStatus.Enabled = true
+	}
 	writeJSON(w, map[string]any{
-		"docker":     s.docker.Status(r.Context(), s.dockerSocket),
-		"kubernetes": s.kubernetes.Status(r.Context(), r.URL.Query().Get("context")),
-		"vms":        s.vms.Status(r.Context()),
+		"docker":     dockerStatus,
+		"kubernetes": kubernetesStatus,
+		"vms":        vmStatus,
 	})
 }
 
 func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.docker.Status(r.Context(), s.dockerSocket))
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !settings.DockerEnabled {
+		writeJSON(w, portodocker.Status{Message: "Docker runtime is disabled"})
+		return
+	}
+	status := s.docker.Status(r.Context(), s.dockerSocket)
+	status.Enabled = true
+	writeJSON(w, status)
 }
 
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
@@ -191,7 +229,18 @@ func (s *Server) dockerRemoveVolume(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) kubernetesStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.kubernetes.Status(r.Context(), r.URL.Query().Get("context")))
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !settings.KubernetesEnabled {
+		writeJSON(w, kubernetes.Status{Message: "Kubernetes runtime is disabled"})
+		return
+	}
+	status := s.kubernetes.Status(r.Context(), r.URL.Query().Get("context"))
+	status.Enabled = true
+	writeJSON(w, status)
 }
 
 func (s *Server) kubernetesContexts(w http.ResponseWriter, r *http.Request) {
@@ -437,7 +486,18 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) vmStatus(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, s.vms.Status(r.Context()))
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if !settings.VMsEnabled {
+		writeJSON(w, vm.Status{Provider: "lima", Message: "VM runtime is disabled"})
+		return
+	}
+	status := s.vms.Status(r.Context())
+	status.Enabled = true
+	writeJSON(w, status)
 }
 
 func (s *Server) vmImages(w http.ResponseWriter, _ *http.Request) {
@@ -582,4 +642,122 @@ func runtimeContext(r *http.Request) string {
 func queryBool(r *http.Request, name string) bool {
 	value := strings.TrimSpace(strings.ToLower(r.URL.Query().Get(name)))
 	return value == "1" || value == "true" || value == "yes"
+}
+
+func (s *Server) runtimeFeatures(w http.ResponseWriter, r *http.Request) {
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, runtimeFeatureSnapshot(settings))
+}
+
+func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
+	feature := r.PathValue("feature")
+	action := r.PathValue("action")
+	if action != "enable" && action != "disable" {
+		http.Error(w, "runtime feature action must be enable or disable", http.StatusBadRequest)
+		return
+	}
+	settings, err := s.store.Settings(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	enabled := action == "enable"
+	switch feature {
+	case "docker":
+		settings.DockerEnabled = enabled
+	case "kubernetes":
+		settings.KubernetesEnabled = enabled
+	case "vms":
+		settings.VMsEnabled = enabled
+	default:
+		http.Error(w, "unknown runtime feature", http.StatusNotFound)
+		return
+	}
+
+	if feature == "docker" {
+		if enabled {
+			runContext := s.runtimeContext
+			if runContext == nil {
+				runContext = context.Background()
+			}
+			if err := s.startDockerProxy(runContext); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+		} else {
+			statePath, pathErr := config.DockerEndpointStatePath()
+			if pathErr != nil {
+				writeRuntimeError(w, pathErr)
+				return
+			}
+			if _, statErr := os.Stat(statePath); statErr == nil {
+				http.Error(w, "deactivate the canonical Docker endpoint before disabling Docker", http.StatusConflict)
+				return
+			} else if !errors.Is(statErr, os.ErrNotExist) {
+				writeRuntimeError(w, statErr)
+				return
+			}
+			stopContext, cancel := context.WithTimeout(r.Context(), 5*time.Second)
+			defer cancel()
+			if err := s.stopDockerProxy(stopContext); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+		}
+	}
+
+	if err := s.store.SetSettings(r.Context(), settings); err != nil {
+		if feature == "docker" && enabled {
+			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			stopErr := s.stopDockerProxy(stopContext)
+			cancel()
+			writeRuntimeError(w, errors.Join(err, stopErr))
+			return
+		}
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, runtimeFeatureSnapshot(settings))
+}
+
+func (s *Server) requireRuntime(feature string, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		settings, err := s.store.Settings(r.Context())
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if !runtimeFeatureEnabled(settings, feature) {
+			writeJSONStatus(w, http.StatusConflict, map[string]string{
+				"message": feature + " runtime is disabled; enable it in Settings or with the Porto CLI",
+			})
+			return
+		}
+		next(w, r)
+	}
+}
+
+func runtimeFeatureEnabled(settings app.Settings, feature string) bool {
+	switch feature {
+	case "docker":
+		return settings.DockerEnabled
+	case "kubernetes":
+		return settings.KubernetesEnabled
+	case "vms":
+		return settings.VMsEnabled
+	default:
+		return false
+	}
+}
+
+func runtimeFeatureSnapshot(settings app.Settings) map[string]bool {
+	return map[string]bool{
+		"docker":     settings.DockerEnabled,
+		"kubernetes": settings.KubernetesEnabled,
+		"vms":        settings.VMsEnabled,
+	}
 }
