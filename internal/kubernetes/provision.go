@@ -335,6 +335,46 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	return p.updateNodeGroupMetadata(clusterName, group, version)
 }
 
+func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image string) error {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	image = strings.TrimSpace(image)
+	if image == "" || strings.HasPrefix(image, "-") || strings.ContainsAny(image, "\x00\r\n") {
+		return errors.New("invalid container image reference")
+	}
+	saveContext, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	imageArchive, err := p.runner.Run(saveContext, runtimes.Command{
+		Name: "docker",
+		Args: []string{"image", "save", image},
+	})
+	if err != nil {
+		return runtimes.CommandError("export Docker image "+image, imageArchive, err)
+	}
+	instances, err := p.vms.List(ctx)
+	if err != nil {
+		return err
+	}
+	prefix := "porto-" + clusterName + "-"
+	imported := 0
+	var importErrors []error
+	for _, instance := range instances {
+		if !strings.HasPrefix(instance.Name, prefix) {
+			continue
+		}
+		if _, err := p.vms.Exec(ctx, instance.Name, []string{"sudo", "k3s", "ctr", "images", "import", "-"}, imageArchive); err != nil {
+			importErrors = append(importErrors, fmt.Errorf("import image into %s: %w", instance.Name, err))
+			continue
+		}
+		imported++
+	}
+	if imported == 0 && len(importErrors) == 0 {
+		return fmt.Errorf("no node VMs found for Kubernetes cluster %s", clusterName)
+	}
+	return errors.Join(importErrors...)
+}
+
 func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string, running bool) error {
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)

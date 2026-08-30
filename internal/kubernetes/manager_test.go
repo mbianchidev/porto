@@ -155,3 +155,25 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 		t.Fatalf("cluster metadata missing: %v", err)
 	}
 }
+
+func TestImportImageCopiesArchiveToEveryClusterNode(t *testing.T) {
+	runner := newFakeRunner()
+	runner.instances["porto-dev-server-1"] = true
+	runner.instances["porto-dev-workers-1"] = true
+	runner.instances["unrelated"] = true
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.ImportImage(context.Background(), "dev", "example:dev"); err != nil {
+		t.Fatalf("import image: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	imports := 0
+	for _, command := range runner.commands {
+		if command.Name == "limactl" && strings.Contains(strings.Join(command.Args, " "), "k3s ctr images import") {
+			imports++
+		}
+	}
+	if imports != 2 {
+		t.Fatalf("image imports = %d, want 2", imports)
+	}
+}

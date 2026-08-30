@@ -94,6 +94,17 @@ type BuildRequest struct {
 	NoCache    bool   `json:"noCache"`
 }
 
+type ContainerStats struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	CPU      string `json:"cpu"`
+	Memory   string `json:"memory"`
+	MemoryPC string `json:"memoryPercent"`
+	Network  string `json:"network"`
+	BlockIO  string `json:"blockIO"`
+	PIDs     string `json:"pids"`
+}
+
 type CreateNetworkRequest struct {
 	Name     string `json:"name"`
 	Driver   string `json:"driver"`
@@ -299,6 +310,76 @@ func (m *Manager) ContainerAction(ctx context.Context, id, action string) error 
 	return err
 }
 
+func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
+	return m.inspect(ctx, "container", id)
+}
+
+func (m *Manager) ContainerLogs(ctx context.Context, id string, tail int) ([]byte, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	if tail <= 0 || tail > 10000 {
+		tail = 500
+	}
+	return m.run(ctx, "read Docker container logs", "logs", "--timestamps", "--tail", strconv.Itoa(tail), id)
+}
+
+func (m *Manager) ExecContainer(ctx context.Context, id string, command []string, stdin []byte) ([]byte, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
+		return nil, errors.New("container command is required")
+	}
+	args := []string{"exec"}
+	if stdin != nil {
+		args = append(args, "--interactive")
+	}
+	args = append(args, id)
+	args = append(args, command...)
+	commandContext, cancel := context.WithTimeout(ctx, 30*time.Minute)
+	defer cancel()
+	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "docker", Args: args, Stdin: stdin})
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return nil, errors.New("Docker container command timed out")
+	}
+	if err != nil {
+		return nil, runtimes.CommandError("execute Docker container command", output, err)
+	}
+	return output, nil
+}
+
+func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) {
+	output, err := m.run(ctx, "read Docker container stats", "stats", "--no-stream", "--format", "{{json .}}")
+	if err != nil {
+		return nil, err
+	}
+	return decodeLines(output, func(item map[string]string) ContainerStats {
+		return ContainerStats{
+			ID:       item["ID"],
+			Name:     item["Name"],
+			CPU:      item["CPUPerc"],
+			Memory:   item["MemUsage"],
+			MemoryPC: item["MemPerc"],
+			Network:  item["NetIO"],
+			BlockIO:  item["BlockIO"],
+			PIDs:     item["PIDs"],
+		}
+	})
+}
+
+func (m *Manager) InspectImage(ctx context.Context, id string) (json.RawMessage, error) {
+	return m.inspect(ctx, "image", id)
+}
+
+func (m *Manager) InspectNetwork(ctx context.Context, id string) (json.RawMessage, error) {
+	return m.inspect(ctx, "network", id)
+}
+
+func (m *Manager) InspectVolume(ctx context.Context, id string) (json.RawMessage, error) {
+	return m.inspect(ctx, "volume", id)
+}
+
 func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error {
 	if err := validateObjectID(id); err != nil {
 		return err
@@ -408,6 +489,20 @@ func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {
 	}
 	_, err := m.run(ctx, "create Porto Docker context", "context", "create", "porto", "--docker", "host="+endpoint)
 	return err
+}
+
+func (m *Manager) inspect(ctx context.Context, kind, id string) (json.RawMessage, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	output, err := m.run(ctx, "inspect Docker "+kind, kind, "inspect", id)
+	if err != nil {
+		return nil, err
+	}
+	if !json.Valid(output) {
+		return nil, fmt.Errorf("Docker %s inspect returned invalid JSON", kind)
+	}
+	return json.RawMessage(output), nil
 }
 
 func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byte, error) {

@@ -26,16 +26,23 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
+	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
+	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
+	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
+	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
 	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
 	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
+	mux.HandleFunc("GET /api/docker/images/{id}", s.requireRuntime("docker", s.dockerImage))
 	mux.HandleFunc("POST /api/docker/images/pull", s.requireRuntime("docker", s.dockerPullImage))
 	mux.HandleFunc("DELETE /api/docker/images/{id}", s.requireRuntime("docker", s.dockerRemoveImage))
 	mux.HandleFunc("GET /api/docker/builds", s.requireRuntime("docker", s.dockerBuilds))
 	mux.HandleFunc("POST /api/docker/builds", s.requireRuntime("docker", s.dockerBuild))
 	mux.HandleFunc("GET /api/docker/networks", s.requireRuntime("docker", s.dockerNetworks))
+	mux.HandleFunc("GET /api/docker/networks/{name}", s.requireRuntime("docker", s.dockerNetwork))
 	mux.HandleFunc("POST /api/docker/networks", s.requireRuntime("docker", s.dockerCreateNetwork))
 	mux.HandleFunc("DELETE /api/docker/networks/{name}", s.requireRuntime("docker", s.dockerRemoveNetwork))
 	mux.HandleFunc("GET /api/docker/volumes", s.requireRuntime("docker", s.dockerVolumes))
+	mux.HandleFunc("GET /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerVolume))
 	mux.HandleFunc("POST /api/docker/volumes", s.requireRuntime("docker", s.dockerCreateVolume))
 	mux.HandleFunc("DELETE /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerRemoveVolume))
 
@@ -59,6 +66,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/images/import", s.requireRuntime("kubernetes", s.importKubernetesImage))
 	mux.HandleFunc("DELETE /api/kubernetes/clusters/{name}", s.requireRuntime("kubernetes", s.deleteKubernetesCluster))
 
 	mux.HandleFunc("GET /api/vms/status", s.vmStatus)
@@ -121,6 +129,43 @@ func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 	writeRuntimeResult(w, value, err)
 }
 
+func (s *Server) dockerContainer(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.InspectContainer(r.Context(), r.PathValue("id"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) dockerContainerLogs(w http.ResponseWriter, r *http.Request) {
+	tail, _ := strconv.Atoi(r.URL.Query().Get("tail"))
+	output, err := s.docker.ContainerLogs(r.Context(), r.PathValue("id"), tail)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+	_, _ = w.Write(output)
+}
+
+func (s *Server) dockerContainerExec(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Command []string `json:"command"`
+		Stdin   string   `json:"stdin"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	output, err := s.docker.ExecContainer(r.Context(), r.PathValue("id"), request.Command, []byte(request.Stdin))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"output": string(output)})
+}
+
+func (s *Server) dockerContainerStats(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.ContainerStats(r.Context())
+	writeRuntimeResult(w, value, err)
+}
+
 func (s *Server) dockerContainerAction(w http.ResponseWriter, r *http.Request) {
 	if err := s.docker.ContainerAction(r.Context(), r.PathValue("id"), r.PathValue("action")); err != nil {
 		writeRuntimeError(w, err)
@@ -131,6 +176,11 @@ func (s *Server) dockerContainerAction(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dockerImages(w http.ResponseWriter, r *http.Request) {
 	value, err := s.docker.Images(r.Context())
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) dockerImage(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.InspectImage(r.Context(), r.PathValue("id"))
 	writeRuntimeResult(w, value, err)
 }
 
@@ -180,6 +230,11 @@ func (s *Server) dockerNetworks(w http.ResponseWriter, r *http.Request) {
 	writeRuntimeResult(w, value, err)
 }
 
+func (s *Server) dockerNetwork(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.InspectNetwork(r.Context(), r.PathValue("name"))
+	writeRuntimeResult(w, value, err)
+}
+
 func (s *Server) dockerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	var request portodocker.CreateNetworkRequest
 	if !decodeRuntimeJSON(w, r, &request) {
@@ -202,6 +257,11 @@ func (s *Server) dockerRemoveNetwork(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) dockerVolumes(w http.ResponseWriter, r *http.Request) {
 	value, err := s.docker.Volumes(r.Context())
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) dockerVolume(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.InspectVolume(r.Context(), r.PathValue("name"))
 	writeRuntimeResult(w, value, err)
 }
 
@@ -471,6 +531,20 @@ func (s *Server) scaleKubernetesNodeGroup(w http.ResponseWriter, r *http.Request
 		return
 	}
 	writeJSON(w, map[string]string{"status": "scaled"})
+}
+
+func (s *Server) importKubernetesImage(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Image string `json:"image"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	if err := s.clusters.ImportImage(r.Context(), r.PathValue("name"), request.Image); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "imported", "image": request.Image})
 }
 
 func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request) {

@@ -363,6 +363,14 @@ func kubernetesClusterCmd(args []string) error {
 			"/api/kubernetes/clusters/"+url.PathEscape(fs.Arg(0))+"/node-groups/"+url.PathEscape(fs.Arg(1)),
 			request,
 		)
+	case "image-import":
+		if len(args) != 3 {
+			return errors.New("usage: porto kubernetes cluster image-import <cluster> <image>")
+		}
+		return runtimePOST(
+			"/api/kubernetes/clusters/"+url.PathEscape(args[1])+"/images/import",
+			map[string]string{"image": args[2]},
+		)
 	case "delete":
 		if len(args) != 2 {
 			return errors.New("usage: porto kubernetes cluster delete <name>")

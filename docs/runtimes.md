@@ -172,6 +172,12 @@ Scale a worker group:
 porto kubernetes cluster scale dev workers --nodes 3 --cpus 4 --memory 4096 --disk 30
 ```
 
+Import an image from the active Docker runtime into every k3s node without pushing to an external registry:
+
+```sh
+porto kubernetes cluster image-import dev example:dev
+```
+
 Lifecycle commands preserve the VM disks unless the cluster is deleted:
 
 ```sh
