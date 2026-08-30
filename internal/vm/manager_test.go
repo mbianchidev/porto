@@ -101,6 +101,22 @@ func TestManagedInventoryFiltersUnownedLimaInstances(t *testing.T) {
 	}
 }
 
+func TestKubernetesNodeCreationReturnsManagedInstanceButIsNotStandalone(t *testing.T) {
+	manager := NewWithStateDir(&recordingRunner{}, t.TempDir())
+	instance, err := manager.CreateNode(context.Background(), CreateRequest{
+		Name: "test-vm", Image: "ubuntu-24.04", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
+	})
+	if err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if instance.Name != "test-vm" {
+		t.Fatalf("unexpected node instance: %+v", instance)
+	}
+	if err := manager.EnsureStandalone("test-vm"); err == nil || !strings.Contains(err.Error(), "kubernetes-node") {
+		t.Fatalf("expected standalone ownership rejection, got %v", err)
+	}
+}
+
 func TestSnapshotUsesCurrentLimaSyntax(t *testing.T) {
 	runner := &recordingRunner{}
 	manager := New(runner)

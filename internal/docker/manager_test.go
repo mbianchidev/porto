@@ -129,6 +129,31 @@ func TestActivateAndDeactivateEndpoint(t *testing.T) {
 	}
 }
 
+func TestActivateRejectsCanonicalSocketAsUpstream(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket endpoint test")
+	}
+	dir, err := os.MkdirTemp("/tmp", "porto-docker-loop-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	target := filepath.Join(dir, "porto.sock")
+	listener, err := net.Listen("unix", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer listener.Close()
+	canonical := filepath.Join(dir, "docker.sock")
+	_, err = ActivateEndpoint(canonical, target, "unix://"+canonical, filepath.Join(dir, "state.json"), false)
+	if err == nil || !strings.Contains(err.Error(), "distinct upstream") {
+		t.Fatalf("expected recursive upstream rejection, got %v", err)
+	}
+	if _, statErr := os.Lstat(canonical); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("canonical endpoint was modified: %v", statErr)
+	}
+}
+
 func TestProxyForwardsDockerAPI(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket proxy test")

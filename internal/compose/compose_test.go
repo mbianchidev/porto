@@ -130,6 +130,53 @@ func TestPreparePortsOverridesPublishedCollisions(t *testing.T) {
 	}
 }
 
+func TestPreparePortsLeavesOverrideEmptyWithoutPublishedPorts(t *testing.T) {
+	t.Setenv("PORTO_HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`{"services":{"worker":{"image":"example"}}}`)}
+	plan, err := newIntegration(runner, time.Second).PreparePorts(context.Background(), app.Project{
+		ID: 2, Name: "worker", Path: root, Strategy: "compose", Command: UpCommand("compose.yaml"),
+	}, map[int]bool{})
+	if err != nil {
+		t.Fatalf("PreparePorts: %v", err)
+	}
+	if plan.OverridePath != "" || len(plan.Ports) != 0 {
+		t.Fatalf("unexpected empty port plan: %+v", plan)
+	}
+}
+
+func TestPreparePortsPreservesUDPBindings(t *testing.T) {
+	t.Setenv("PORTO_HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`{
+		  "services": {
+		    "dns": {"ports":[
+		      {"target":53,"published":"5353","protocol":"udp"},
+		      {"target":8080,"published":"8080","protocol":"tcp"}
+		    ]}
+		  }
+		}`)}
+	plan, err := newIntegration(runner, time.Second).PreparePorts(context.Background(), app.Project{
+		ID: 3, Name: "dns", Path: root, Strategy: "compose", Command: UpCommand("compose.yaml"),
+	}, map[int]bool{})
+	if err != nil {
+		t.Fatalf("PreparePorts: %v", err)
+	}
+	override, err := os.ReadFile(plan.OverridePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(override), ":53/udp") || !strings.Contains(string(override), ":8080/tcp") {
+		t.Fatalf("override dropped a protocol:\n%s", override)
+	}
+}
+
 func TestCheckTimesOut(t *testing.T) {
 	runner := &fakeRunner{
 		run: func(ctx context.Context, _ Command) ([]byte, error) {

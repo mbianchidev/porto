@@ -243,7 +243,7 @@ func (m *Manager) Get(ctx context.Context, name string) (Instance, error) {
 	if err := validateName(name); err != nil {
 		return Instance{}, err
 	}
-	instances, err := m.List(ctx)
+	instances, err := m.ListAll(ctx)
 	if err != nil {
 		return Instance{}, err
 	}
@@ -253,6 +253,26 @@ func (m *Manager) Get(ctx context.Context, name string) (Instance, error) {
 		}
 	}
 	return Instance{}, fmt.Errorf("VM %q not found", name)
+}
+
+func (m *Manager) EnsureStandalone(name string) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if m.stateDir == "" {
+		return nil
+	}
+	metadata, err := m.readMetadata(name)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("VM %q is not managed by Porto", name)
+		}
+		return fmt.Errorf("read VM ownership: %w", err)
+	}
+	if metadata.Kind != "standalone" {
+		return fmt.Errorf("VM %q is a %s resource and must be managed through its owning subsystem", name, metadata.Kind)
+	}
+	return nil
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {

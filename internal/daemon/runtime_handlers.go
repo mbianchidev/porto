@@ -600,6 +600,9 @@ func (s *Server) createVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
 	if err := s.vms.Start(r.Context(), r.PathValue("name")); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -608,6 +611,9 @@ func (s *Server) startVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
 	if err := s.vms.Stop(r.Context(), r.PathValue("name")); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -616,6 +622,9 @@ func (s *Server) stopVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) execVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
 	var request struct {
 		Command []string `json:"command"`
 		Stdin   string   `json:"stdin"`
@@ -632,6 +641,9 @@ func (s *Server) execVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
 	var request struct {
 		Name string `json:"name"`
 	}
@@ -646,6 +658,9 @@ func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
 	var request struct {
 		Name string `json:"name"`
 	}
@@ -662,6 +677,9 @@ func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
 func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request) {
 	if !queryBool(r, "confirm") {
 		http.Error(w, "confirm=true is required to delete a VM", http.StatusBadRequest)
+		return
+	}
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
 	if err := s.vms.Delete(r.Context(), r.PathValue("name"), queryBool(r, "force")); err != nil {
@@ -848,4 +866,12 @@ func (s *Server) dockerEndpointStatus(status portodocker.Status) portodocker.Sta
 		return status
 	}
 	return portodocker.AddEndpointStatus(status, config.CanonicalDockerSocketPath(), statePath)
+}
+
+func (s *Server) requireStandaloneVM(w http.ResponseWriter, name string) bool {
+	if err := s.vms.EnsureStandalone(name); err != nil {
+		writeRuntimeError(w, err)
+		return false
+	}
+	return true
 }

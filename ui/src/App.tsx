@@ -88,7 +88,7 @@ function AppShell() {
         {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
         {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
-        {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} />}
+        {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={kubeContext} />}
         {route === 'containers' && <Containers />}
         {route === 'images' && <Images />}
         {route === 'builds' && <Builds />}

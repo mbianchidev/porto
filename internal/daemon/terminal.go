@@ -43,15 +43,12 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 
 	sessionContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	args := make([]string, 0, 12)
-	if contextName := runtimeContext(r); contextName != "" {
-		args = append(args, "--context", contextName)
-	}
-	args = append(args, "exec", "--stdin", "--tty", "--namespace", namespace, pod)
+	args := []string{"exec", "--stdin", "--tty", "--namespace", namespace, pod}
 	if container != "" {
 		args = append(args, "--container", container)
 	}
 	args = append(args, "--", shell)
+	args = s.kubernetes.CommandArgs(runtimeContext(r), args...)
 	command := exec.CommandContext(sessionContext, "kubectl", args...)
 	stdin, err := command.StdinPipe()
 	if err != nil {

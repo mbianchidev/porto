@@ -176,7 +176,7 @@ func dockerBuildCmd(args []string) error {
 	target := fs.String("target", "", "build target")
 	platform := fs.String("platform", "", "target platform")
 	noCache := fs.Bool("no-cache", false, "disable build cache")
-	if err := fs.Parse(args); err != nil {
+	if err := parseInterspersed(fs, args, map[string]bool{"no-cache": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
@@ -244,7 +244,7 @@ func kubernetesLogsCmd(args []string) error {
 	container := fs.String("container", "", "container name")
 	previous := fs.Bool("previous", false, "show the previous container instance")
 	tail := fs.Int("tail", 500, "maximum lines")
-	if err := fs.Parse(args); err != nil {
+	if err := parseInterspersed(fs, args, map[string]bool{"previous": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
@@ -281,7 +281,7 @@ func kubernetesExecCmd(args []string) error {
 	fs := flag.NewFlagSet("kubernetes exec", flag.ContinueOnError)
 	contextName := fs.String("context", "", "Kubernetes context")
 	container := fs.String("container", "", "container name")
-	if err := fs.Parse(flagArgs); err != nil {
+	if err := parseInterspersed(fs, flagArgs, nil); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 || len(command) == 0 {
@@ -304,7 +304,7 @@ func kubernetesFilesCmd(args []string) error {
 	container := fs.String("container", "", "container name")
 	remotePath := fs.String("path", "/", "container path")
 	read := fs.Bool("read", false, "read a file instead of listing a directory")
-	if err := fs.Parse(args); err != nil {
+	if err := parseInterspersed(fs, args, map[string]bool{"read": true}); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
@@ -340,7 +340,7 @@ func kubernetesClusterCmd(args []string) error {
 		workerCPUs := fs.Int("worker-cpus", 2, "CPUs per worker")
 		workerMemory := fs.Int("worker-memory", 2048, "memory MiB per worker")
 		workerDisk := fs.Int("worker-disk", 20, "disk GiB per worker")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseInterspersed(fs, args[1:], nil); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
@@ -369,7 +369,7 @@ func kubernetesClusterCmd(args []string) error {
 		memory := fs.Int("memory", 2048, "memory MiB per node")
 		disk := fs.Int("disk", 20, "disk GiB per node")
 		version := fs.String("version", "", "pinned k3s version for new nodes")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseInterspersed(fs, args[1:], nil); err != nil {
 			return err
 		}
 		if fs.NArg() != 2 || *count < 0 {
@@ -422,7 +422,7 @@ func vmCmd(args []string) error {
 		architecture := fs.String("arch", "", "aarch64 or x86_64")
 		provision := fs.String("provision", "", "post-start shell command")
 		stopped := fs.Bool("stopped", false, "create without starting")
-		if err := fs.Parse(args[1:]); err != nil {
+		if err := parseInterspersed(fs, args[1:], map[string]bool{"stopped": true}); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
@@ -661,4 +661,31 @@ func atomicWrite(path string, data []byte, mode os.FileMode) error {
 		return err
 	}
 	return os.Rename(tempPath, path)
+}
+
+func parseInterspersed(fs *flag.FlagSet, args []string, booleanFlags map[string]bool) error {
+	flags := make([]string, 0, len(args))
+	positionals := make([]string, 0, len(args))
+	for index := 0; index < len(args); index++ {
+		arg := args[index]
+		if arg == "--" {
+			positionals = append(positionals, args[index+1:]...)
+			break
+		}
+		if !strings.HasPrefix(arg, "-") || arg == "-" {
+			positionals = append(positionals, arg)
+			continue
+		}
+		flags = append(flags, arg)
+		name := strings.TrimLeft(arg, "-")
+		if strings.Contains(name, "=") || booleanFlags[name] {
+			continue
+		}
+		if index+1 >= len(args) {
+			return fmt.Errorf("flag %s requires a value", arg)
+		}
+		index++
+		flags = append(flags, args[index])
+	}
+	return fs.Parse(append(flags, positionals...))
 }

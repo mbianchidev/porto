@@ -129,9 +129,11 @@ function LogConsole({ project, onClose }: { project: Project; onClose: () => voi
 export function LocalhostIng({
   settings,
   sendboxStatus,
+  kubeContext,
 }: {
   settings: Settings | null
   sendboxStatus: IntegrationStatus | null
+  kubeContext: string
 }) {
   const { notifyError, notifyNotice } = useMessages()
   const [projectQuery, setProjectQuery] = useState('')
@@ -157,9 +159,11 @@ export function LocalhostIng({
     [settings?.dockerEnabled],
   )
   const kubernetesDeployments = usePolledResource<KubernetesPod[]>(
-    (signal) => settings?.kubernetesEnabled ? apiGet('/api/kubernetes/pods?namespace=all', signal) : Promise.resolve([]),
+    (signal) => settings?.kubernetesEnabled
+      ? apiGet(`/api/kubernetes/pods?namespace=all&context=${encodeURIComponent(kubeContext)}`, signal)
+      : Promise.resolve([]),
     5000,
-    [settings?.kubernetesEnabled],
+    [settings?.kubernetesEnabled, kubeContext],
   )
   const projects = data ?? []
   const selectedProject = projects.find((project) => project.id === selectedProjectID) ?? null

@@ -47,7 +47,7 @@ func ActivateEndpoint(canonicalPath, targetPath, upstream, statePath string, rep
 			if existing, stateErr := ReadEndpointState(statePath); stateErr == nil {
 				return existing, nil
 			}
-			if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+			if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) || sameDockerEndpoint(state.Upstream, canonicalPath) {
 				return EndpointState{}, errors.New("refusing to activate Docker endpoint without a distinct upstream runtime")
 			}
 			return state, writeEndpointState(statePath, state)
@@ -56,7 +56,7 @@ func ActivateEndpoint(canonicalPath, targetPath, upstream, statePath string, rep
 			return EndpointState{}, fmt.Errorf("%s already points to %s; pass --replace to switch explicitly", canonicalPath, current)
 		}
 		state.PreviousLink = current
-		if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+		if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) || sameDockerEndpoint(state.Upstream, canonicalPath) {
 			state.Upstream = "unix://" + current
 		}
 		if err := os.Remove(canonicalPath); err != nil {
@@ -65,7 +65,7 @@ func ActivateEndpoint(canonicalPath, targetPath, upstream, statePath string, rep
 	default:
 		return EndpointState{}, fmt.Errorf("refusing to replace existing non-symlink Docker endpoint %s", canonicalPath)
 	}
-	if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+	if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) || sameDockerEndpoint(state.Upstream, canonicalPath) {
 		if state.PreviousLink != "" {
 			_ = os.Symlink(state.PreviousLink, canonicalPath)
 		}

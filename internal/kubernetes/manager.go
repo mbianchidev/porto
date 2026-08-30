@@ -544,13 +544,7 @@ func (m *Manager) run(
 	stdin []byte,
 	args ...string,
 ) ([]byte, error) {
-	if contextName != "" {
-		if kubeconfigPath := m.kubeconfigForContext(contextName); kubeconfigPath != "" {
-			args = append([]string{"--kubeconfig", kubeconfigPath, "--context", contextName}, args...)
-		} else {
-			args = append([]string{"--context", contextName}, args...)
-		}
-	}
+	args = m.CommandArgs(contextName, args...)
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin})
@@ -561,6 +555,16 @@ func (m *Manager) run(
 		return nil, runtimes.CommandError("kubectl "+strings.Join(args, " "), output, err)
 	}
 	return output, nil
+}
+
+func (m *Manager) CommandArgs(contextName string, args ...string) []string {
+	if contextName == "" {
+		return args
+	}
+	if kubeconfigPath := m.kubeconfigForContext(contextName); kubeconfigPath != "" {
+		return append([]string{"--kubeconfig", kubeconfigPath, "--context", contextName}, args...)
+	}
+	return append([]string{"--context", contextName}, args...)
 }
 
 func (m *Manager) runWithKubeconfig(

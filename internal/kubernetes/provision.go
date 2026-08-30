@@ -186,26 +186,18 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err != nil {
 		return Cluster{}, fmt.Errorf("read Kubernetes kubeconfig: %w", err)
 	}
+	contextName := "porto-" + request.Name
 	kubeconfig := strings.ReplaceAll(
 		string(kubeconfigOutput),
 		"https://127.0.0.1:6443",
 		"https://127.0.0.1:"+strconv.Itoa(request.APIPort),
 	)
+	kubeconfig = rewriteKubeconfigNames(kubeconfig, contextName)
 	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
 		return Cluster{}, fmt.Errorf("create kubeconfig directory: %w", err)
 	}
 	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o600); err != nil {
 		return Cluster{}, fmt.Errorf("write kubeconfig: %w", err)
-	}
-	contextName := "porto-" + request.Name
-	renameContext, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	output, err := p.runner.Run(renameContext, runtimes.Command{
-		Name: "kubectl",
-		Args: []string{"--kubeconfig", kubeconfigPath, "config", "rename-context", "default", contextName},
-	})
-	if err != nil {
-		return Cluster{}, runtimes.CommandError("rename Porto Kubernetes context", output, err)
 	}
 	cluster = Cluster{
 		Name:           request.Name,
@@ -643,4 +635,14 @@ func availableLocalPort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func rewriteKubeconfigNames(kubeconfig, name string) string {
+	replacer := strings.NewReplacer(
+		"name: default", "name: "+name,
+		"cluster: default", "cluster: "+name,
+		"user: default", "user: "+name,
+		"current-context: default", "current-context: "+name,
+	)
+	return replacer.Replace(kubeconfig)
 }

@@ -129,12 +129,16 @@ jobs:
             if [ "$goarch" = "amd64" ]; then
               electron_arch="x64"
             fi
+            electron_platform="$goos"
+            if [ "$goos" = "windows" ]; then
+              electron_platform="win32"
+            fi
             desktop_name="porto-desktop_${VERSION}_${goos}_${goarch}"
             rm -rf ui/electron/release
             (
               cd ui/electron
               npx electron-packager . Porto \
-                --platform="$goos" \
+                --platform="$electron_platform" \
                 --arch="$electron_arch" \
                 --out=release \
                 --overwrite \

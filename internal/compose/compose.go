@@ -251,19 +251,22 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 	plan := PortPlan{ConfigFile: file}
 	for _, service := range serviceNames {
 		for _, configured := range composeConfig.Services[service].Ports {
-			if configured.Target <= 0 || (configured.Protocol != "" && configured.Protocol != "tcp") {
+			protocol := strings.ToLower(configured.Protocol)
+			if protocol == "" {
+				protocol = "tcp"
+			}
+			if configured.Target <= 0 {
 				continue
 			}
+			if protocol != "tcp" && protocol != "udp" {
+				return PortPlan{}, fmt.Errorf("unsupported published protocol %q for %s/%s", protocol, project.Name, service)
+			}
 			preferred, _ := strconv.Atoi(configured.Published)
-			published, err := ports.Pick(preferred, config.BasePort, used)
+			published, err := ports.PickProtocol(preferred, config.BasePort, used, protocol)
 			if err != nil {
 				return PortPlan{}, fmt.Errorf("allocate Docker Compose port for %s/%s: %w", project.Name, service, err)
 			}
 			used[published] = true
-			protocol := configured.Protocol
-			if protocol == "" {
-				protocol = "tcp"
-			}
 			plan.Ports = append(plan.Ports, PlannedPort{
 				Service: service, Target: configured.Target, Published: published, Protocol: protocol,
 			})
@@ -273,13 +276,13 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 	if err != nil {
 		return PortPlan{}, err
 	}
-	plan.OverridePath = override
 	if len(plan.Ports) == 0 {
 		if err := os.Remove(override); err != nil && !errors.Is(err, os.ErrNotExist) {
 			return PortPlan{}, err
 		}
 		return plan, nil
 	}
+	plan.OverridePath = override
 	if err := writePortOverride(override, plan.Ports); err != nil {
 		return PortPlan{}, err
 	}

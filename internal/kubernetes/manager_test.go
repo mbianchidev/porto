@@ -107,6 +107,26 @@ func TestStatusAndPodDecoding(t *testing.T) {
 	}
 }
 
+func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfigPath := filepath.Join(dir, "dev.yaml")
+	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	manager := NewWithKubeconfigRoot(runner, dir)
+	if _, err := manager.Pods(context.Background(), "porto-dev", "all"); err != nil {
+		t.Fatalf("list managed pods: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	args := runner.commands[len(runner.commands)-1].Args
+	joined := strings.Join(args, " ")
+	if !strings.Contains(joined, "--kubeconfig "+kubeconfigPath+" --context porto-dev") {
+		t.Fatalf("managed context did not use private kubeconfig: %v", args)
+	}
+}
+
 func TestFileOperationsKeepPathAsArgument(t *testing.T) {
 	runner := newFakeRunner()
 	manager := New(runner)
@@ -159,6 +179,9 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	}
 	if !strings.Contains(string(data), "https://127.0.0.1:") || strings.Contains(string(data), "https://127.0.0.1:6443") {
 		t.Fatalf("kubeconfig did not use the forwarded host API port: %s", data)
+	}
+	if strings.Contains(string(data), "name: default") || !strings.Contains(string(data), "name: porto-dev") {
+		t.Fatalf("kubeconfig identifiers were not made cluster-specific: %s", data)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "dev.json")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)

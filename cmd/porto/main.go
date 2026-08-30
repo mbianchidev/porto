@@ -530,8 +530,18 @@ func daemonUp() bool {
 	if err != nil {
 		return false
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var health struct {
+		Status     string `json:"status"`
+		APIVersion int    `json:"apiVersion"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return false
+	}
+	return health.Status == "ok" && health.APIVersion == config.APIVersion
 }
 
 func api(method, path string, body any, out io.Writer) error {
