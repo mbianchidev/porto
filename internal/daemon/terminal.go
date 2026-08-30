@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/coder/websocket"
 )
@@ -82,7 +83,9 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 	writeOutput := func(data []byte) error {
 		writeMu.Lock()
 		defer writeMu.Unlock()
-		return connection.Write(sessionContext, websocket.MessageBinary, data)
+		writeContext, cancelWrite := context.WithTimeout(sessionContext, 10*time.Second)
+		defer cancelWrite()
+		return connection.Write(writeContext, websocket.MessageBinary, data)
 	}
 	outputErrors := make(chan error, 2)
 	go streamTerminalOutput(stdout, writeOutput, outputErrors)
@@ -108,17 +111,21 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 	go func() { waitDone <- command.Wait() }()
 
 	var sessionErr error
+	processExited := false
 	select {
 	case sessionErr = <-waitDone:
+		processExited = true
 	case sessionErr = <-inputDone:
 		cancel()
 		sessionErr = errors.Join(sessionErr, <-waitDone)
 	}
-	cancel()
 	for range 2 {
 		if outputErr := <-outputErrors; outputErr != nil && !errors.Is(outputErr, context.Canceled) {
 			sessionErr = errors.Join(sessionErr, outputErr)
 		}
+	}
+	if processExited {
+		cancel()
 	}
 	if sessionErr != nil {
 		_ = connection.Close(websocket.StatusInternalError, "terminal session ended")
