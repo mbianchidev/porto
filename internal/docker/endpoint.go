@@ -114,6 +114,18 @@ func ReadEndpointState(statePath string) (EndpointState, error) {
 	return state, nil
 }
 
+func AddEndpointStatus(status Status, canonicalPath, statePath string) Status {
+	status.CanonicalPath = canonicalPath
+	if target, err := os.Readlink(canonicalPath); err == nil {
+		status.CanonicalLink = target
+		status.Canonical = samePath(target, status.ProxySocket)
+	}
+	if state, err := ReadEndpointState(statePath); err == nil {
+		status.PreviousLink = state.PreviousLink
+	}
+	return status
+}
+
 func writeEndpointState(path string, state EndpointState) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("Docker endpoint state path is empty")

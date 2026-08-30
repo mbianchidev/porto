@@ -92,6 +92,7 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 	if settings.DockerEnabled {
 		dockerStatus = s.docker.Status(r.Context(), s.dockerSocket)
 		dockerStatus.Enabled = true
+		dockerStatus = s.dockerEndpointStatus(dockerStatus)
 	}
 	kubernetesStatus := kubernetes.Status{Enabled: settings.KubernetesEnabled, Message: "Kubernetes runtime is disabled"}
 	if settings.KubernetesEnabled {
@@ -122,6 +123,7 @@ func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	status := s.docker.Status(r.Context(), s.dockerSocket)
 	status.Enabled = true
+	status = s.dockerEndpointStatus(status)
 	writeJSON(w, status)
 }
 
@@ -835,4 +837,15 @@ func runtimeFeatureSnapshot(settings app.Settings) map[string]bool {
 		"kubernetes": settings.KubernetesEnabled,
 		"vms":        settings.VMsEnabled,
 	}
+}
+
+func (s *Server) dockerEndpointStatus(status portodocker.Status) portodocker.Status {
+	statePath, err := config.DockerEndpointStatePath()
+	if err != nil {
+		if status.Message == "" {
+			status.Message = err.Error()
+		}
+		return status
+	}
+	return portodocker.AddEndpointStatus(status, config.CanonicalDockerSocketPath(), statePath)
 }

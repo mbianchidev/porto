@@ -32,6 +32,10 @@ type Status struct {
 	ClientVersion string `json:"clientVersion"`
 	ServerVersion string `json:"serverVersion"`
 	ProxySocket   string `json:"proxySocket,omitempty"`
+	CanonicalPath string `json:"canonicalPath,omitempty"`
+	CanonicalLink string `json:"canonicalLink,omitempty"`
+	Canonical     bool   `json:"canonical"`
+	PreviousLink  string `json:"previousLink,omitempty"`
 	Message       string `json:"message,omitempty"`
 }
 

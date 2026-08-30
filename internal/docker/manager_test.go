@@ -116,6 +116,10 @@ func TestActivateAndDeactivateEndpoint(t *testing.T) {
 	if err != nil || activeTarget != target {
 		t.Fatalf("unexpected active link %q: %v", activeTarget, err)
 	}
+	status := AddEndpointStatus(Status{ProxySocket: target}, canonical, statePath)
+	if !status.Canonical || status.PreviousLink != previous {
+		t.Fatalf("unexpected endpoint status: %+v", status)
+	}
 	if err := DeactivateEndpoint(statePath); err != nil {
 		t.Fatalf("deactivate: %v", err)
 	}

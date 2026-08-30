@@ -73,8 +73,13 @@ func dockerCmd(args []string) error {
 		if daemonUp() {
 			return api("GET", "/api/docker/status", nil, os.Stdout)
 		}
-		socketPath, _ := config.DockerSocketPath()
-		return writeOutput(portodocker.New(nil).Status(context.Background(), socketPath))
+		socketPath, statePath, pathErr := dockerEndpointPaths()
+		if pathErr != nil {
+			return pathErr
+		}
+		status := portodocker.New(nil).Status(context.Background(), socketPath)
+		status.Enabled = true
+		return writeOutput(portodocker.AddEndpointStatus(status, config.CanonicalDockerSocketPath(), statePath))
 	case "containers", "images", "builds", "networks", "volumes":
 		return runtimeGET("/api/docker/" + args[0])
 	case "context-install":
