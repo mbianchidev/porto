@@ -8,6 +8,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/vm"
 )
@@ -109,7 +110,7 @@ func TestStatusAndPodDecoding(t *testing.T) {
 
 func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	dir := t.TempDir()
-	kubeconfigPath := filepath.Join(dir, "dev.yaml")
+	kubeconfigPath := filepath.Join(dir, config.KubernetesClusterFileToken("dev")+".yaml")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -173,7 +174,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if len(cluster.Nodes) != 3 || cluster.Context != "porto-dev" {
 		t.Fatalf("unexpected cluster: %+v", cluster)
 	}
-	data, err := os.ReadFile(filepath.Join(dir, "dev.yaml"))
+	data, err := os.ReadFile(provisioner.clusterKubeconfigPath("dev"))
 	if err != nil {
 		t.Fatalf("read kubeconfig: %v", err)
 	}
@@ -183,7 +184,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if strings.Contains(string(data), "name: default") || !strings.Contains(string(data), "name: porto-dev") {
 		t.Fatalf("kubeconfig identifiers were not made cluster-specific: %s", data)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "dev.json")); err != nil {
+	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)
 	}
 }

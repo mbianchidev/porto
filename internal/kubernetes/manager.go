@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -596,7 +597,7 @@ func (m *Manager) kubeconfigForContext(contextName string) string {
 	if cluster == "" || strings.ContainsAny(cluster, `/\\`+"\x00\r\n") {
 		return ""
 	}
-	kubeconfigPath := filepath.Join(m.kubeconfigRoot, cluster+".yaml")
+	kubeconfigPath := filepath.Join(m.kubeconfigRoot, config.KubernetesClusterFileToken(cluster)+".yaml")
 	if info, err := os.Stat(kubeconfigPath); err == nil && !info.IsDir() {
 		return kubeconfigPath
 	}

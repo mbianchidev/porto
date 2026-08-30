@@ -567,7 +567,7 @@ func clusterKubeconfigPath(cluster string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, cluster+".yaml")
+	path := filepath.Join(dir, config.KubernetesClusterFileToken(cluster)+".yaml")
 	if info, err := os.Stat(path); err != nil || info.IsDir() {
 		if err == nil {
 			err = errors.New("path is a directory")

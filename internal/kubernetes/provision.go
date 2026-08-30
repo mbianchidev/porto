@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/vm"
 )
@@ -74,7 +75,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if request.Version != "" && !versionPattern.MatchString(request.Version) {
 		return Cluster{}, fmt.Errorf("invalid k3s version %q", request.Version)
 	}
-	kubeconfigPath := filepath.Join(p.kubeconfigRoot, request.Name+".yaml")
+	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
 	for _, existingPath := range []string{kubeconfigPath, p.clusterMetadataPath(request.Name)} {
 		if _, statErr := os.Stat(existingPath); statErr == nil {
 			return Cluster{}, fmt.Errorf("Kubernetes cluster %s already exists", request.Name)
@@ -227,7 +228,7 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 			deleteErrors = append(deleteErrors, err)
 		}
 	}
-	kubeconfigPath := filepath.Join(p.kubeconfigRoot, clusterName+".yaml")
+	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
 	if err := os.Remove(kubeconfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		deleteErrors = append(deleteErrors, err)
 	}
@@ -252,21 +253,25 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 	}
 	clusters := make([]Cluster, 0)
 	for _, entry := range entries {
-		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
-		name := strings.TrimSuffix(entry.Name(), ".yaml")
-		if !clusterNamePattern.MatchString(name) {
-			continue
+		data, readErr := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
+		if readErr != nil {
+			return nil, fmt.Errorf("read Kubernetes cluster metadata %s: %w", entry.Name(), readErr)
+		}
+		var request ClusterRequest
+		if decodeErr := json.Unmarshal(data, &request); decodeErr != nil {
+			return nil, fmt.Errorf("decode Kubernetes cluster metadata %s: %w", entry.Name(), decodeErr)
+		}
+		name := request.Name
+		if !clusterNamePattern.MatchString(name) || entry.Name() != config.KubernetesClusterFileToken(name)+".json" {
+			return nil, fmt.Errorf("invalid Kubernetes cluster metadata identity in %s", entry.Name())
 		}
 		cluster := Cluster{
 			Name:           name,
 			Context:        "porto-" + name,
-			KubeconfigPath: filepath.Join(p.kubeconfigRoot, entry.Name()),
-		}
-		request, metadataErr := p.readClusterMetadata(name)
-		if metadataErr != nil {
-			return nil, fmt.Errorf("read Kubernetes cluster metadata for %s: %w", name, metadataErr)
+			KubeconfigPath: p.clusterKubeconfigPath(name),
 		}
 		if request.APIPort > 0 {
 			cluster.Server = "https://127.0.0.1:" + strconv.Itoa(request.APIPort)
@@ -526,7 +531,11 @@ func (p *ClusterProvisioner) readClusterMetadata(clusterName string) (ClusterReq
 }
 
 func (p *ClusterProvisioner) clusterMetadataPath(clusterName string) string {
-	return filepath.Join(p.kubeconfigRoot, clusterName+".json")
+	return filepath.Join(p.kubeconfigRoot, config.KubernetesClusterFileToken(clusterName)+".json")
+}
+
+func (p *ClusterProvisioner) clusterKubeconfigPath(clusterName string) string {
+	return filepath.Join(p.kubeconfigRoot, config.KubernetesClusterFileToken(clusterName)+".yaml")
 }
 
 func (p *ClusterProvisioner) cleanupVMs(names []string) error {

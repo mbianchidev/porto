@@ -423,13 +423,20 @@ func decodeInstance(raw map[string]any) Instance {
 		Name:         stringValue(raw, "name", "Name"),
 		Status:       stringValue(raw, "status", "Status"),
 		Architecture: stringValue(raw, "arch", "Arch"),
-		CPUs:         int(numberValue(raw, "cpus", "CPUs")),
+		CPUs:         boundedInt(numberValue(raw, "cpus", "CPUs"), 0, 4096),
 		MemoryBytes:  numberValue(raw, "memory", "Memory"),
 		DiskBytes:    numberValue(raw, "disk", "Disk"),
-		SSHLocalPort: int(numberValue(raw, "sshLocalPort", "SSHLocalPort")),
+		SSHLocalPort: boundedInt(numberValue(raw, "sshLocalPort", "SSHLocalPort"), 0, 65535),
 		Directory:    stringValue(raw, "dir", "Dir"),
 		Addresses:    stringSliceValue(raw, "addresses", "Addresses"),
 	}
+}
+
+func boundedInt(value, minimum, maximum int64) int {
+	if value < minimum || value > maximum {
+		return 0
+	}
+	return int(value)
 }
 
 func stringValue(values map[string]any, keys ...string) string {

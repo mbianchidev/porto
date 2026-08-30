@@ -204,6 +204,11 @@ func KubernetesConfigDir() (string, error) {
 	return kubeconfigDir, nil
 }
 
+func KubernetesClusterFileToken(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:12])
+}
+
 func VMStateDir() (string, error) {
 	dir, err := Dir()
 	if err != nil {

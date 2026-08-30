@@ -164,13 +164,10 @@ Pin a k3s version when reproducibility is required:
 porto kubernetes cluster create dev --version v1.33.4+k3s1
 ```
 
-Porto stores the generated kubeconfig under:
-
-```text
-<PORTO_HOME>/kubernetes/<cluster>.yaml
-```
-
-The context is named `porto-<cluster>`.
+Porto stores each generated kubeconfig under an opaque, fixed-length filename
+inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`
+to resolve its path. The context, cluster, and user entries are all named
+`porto-<cluster>` so multiple generated kubeconfigs can be merged safely.
 
 Inspect or install the generated context into the default kubeconfig:
 
