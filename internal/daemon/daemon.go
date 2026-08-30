@@ -28,14 +28,18 @@ import (
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/discovery"
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/vm"
 )
 
 const (
@@ -69,6 +73,12 @@ type Server struct {
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
 	userHomeDir     func() (string, error)
+	docker          *portodocker.Manager
+	dockerProxy     *portodocker.Proxy
+	kubernetes      *kubernetes.Manager
+	clusters        *kubernetes.ClusterProvisioner
+	vms             *vm.Manager
+	dockerSocket    string
 }
 
 type projectProcess struct {
@@ -94,6 +104,10 @@ type projectSetupRunner interface {
 }
 
 func New(st *store.Store, ui fs.FS) *Server {
+	runner := runtimes.ExecRunner{}
+	dockerSocket, _ := config.DockerSocketPath()
+	kubeconfigDir, _ := config.KubernetesConfigDir()
+	vmManager := vm.New(runner)
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
@@ -118,6 +132,11 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sqnsl:          sqnsl.NewManager(nil),
 		killSwitch:     killswitch.NewManager(nil, nil),
 		userHomeDir:    os.UserHomeDir,
+		docker:         portodocker.New(runner),
+		kubernetes:     kubernetes.New(runner),
+		clusters:       kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir),
+		vms:            vmManager,
+		dockerSocket:   dockerSocket,
 	}
 }
 
@@ -136,6 +155,16 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("resolve TLS certificate authority paths: %w", err)
 	}
 	s.tlsCertificates = certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath)
+	upstream, upstreamErr := s.docker.Endpoint(ctx)
+	if upstreamErr != nil {
+		log.Printf("Docker endpoint unavailable: %v", upstreamErr)
+	}
+	if s.dockerSocket != "" {
+		s.dockerProxy = portodocker.NewProxy(s.dockerSocket, upstream)
+		if err := s.dockerProxy.Start(ctx); err != nil {
+			return fmt.Errorf("start Docker API proxy: %w", err)
+		}
+	}
 	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
@@ -214,6 +243,11 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 		}
 	}
 	cancelHTTP()
+	if s.dockerProxy != nil {
+		proxyContext, cancelProxy := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		shutdownErrors = append(shutdownErrors, s.dockerProxy.Close(proxyContext))
+		cancelProxy()
+	}
 
 	appContext, cancelApps := context.WithTimeout(context.Background(), daemonShutdownTimeout)
 	defer cancelApps()
@@ -353,6 +387,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.stopSendbox)
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
+	s.runtimeRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
 }
 

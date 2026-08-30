@@ -20,7 +20,7 @@ import (
 const (
 	defaultCheckTimeout = 5 * time.Second
 	defaultDownTimeout  = 2 * time.Minute
-	runtimeGuidance     = "start or repair OrbStack, Docker Desktop, Colima, or another Docker-compatible runtime, then retry"
+	runtimeGuidance     = "start or repair the configured Docker-compatible runtime, then retry"
 )
 
 var ErrDaemonUnavailable = errors.New("docker daemon is unavailable to Porto")

@@ -70,7 +70,7 @@ func TestCheckReportsActionableDaemonFailure(t *testing.T) {
 	if !errors.Is(err, ErrDaemonUnavailable) {
 		t.Fatalf("error = %v, want ErrDaemonUnavailable", err)
 	}
-	for _, want := range []string{"start or repair OrbStack", "unix:///missing/docker.sock"} {
+	for _, want := range []string{"start or repair the configured Docker-compatible runtime", "unix:///missing/docker.sock"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error = %q, want it to contain %q", err, want)
 		}

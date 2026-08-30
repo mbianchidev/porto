@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
@@ -19,6 +20,8 @@ const (
 	RouterTLSAddr            = "127.0.0.1:37681"
 	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
 	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
+	DockerUpstreamEnv        = "PORTO_DOCKER_UPSTREAM"
+	DockerCanonicalSocketEnv = "PORTO_DOCKER_CANONICAL_SOCKET"
 	PortlessHTTPSMarker      = "portless-https"
 	LocalDomain              = "porto.local"
 	LocalhostDomain          = "porto.localhost"
@@ -138,6 +141,62 @@ func DBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "porto.db"), nil
+}
+
+func RuntimeDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	runtimeDir := filepath.Join(dir, "run")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(runtimeDir, 0o700); err != nil {
+		return "", err
+	}
+	return runtimeDir, nil
+}
+
+func DockerSocketPath() (string, error) {
+	dir, err := RuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "docker.sock"), nil
+}
+
+func DockerEndpointStatePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "docker-endpoint.json"), nil
+}
+
+func CanonicalDockerSocketPath() string {
+	if path := strings.TrimSpace(os.Getenv(DockerCanonicalSocketEnv)); path != "" {
+		return path
+	}
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\docker_engine`
+	}
+	return "/var/run/docker.sock"
+}
+
+func KubernetesConfigDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	kubeconfigDir := filepath.Join(dir, "kubernetes")
+	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(kubeconfigDir, 0o700); err != nil {
+		return "", err
+	}
+	return kubeconfigDir, nil
 }
 
 func CertificatePaths() (string, string, error) {

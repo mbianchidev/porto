@@ -75,6 +75,14 @@ func run(args []string) error {
 		return killSwitchCmd(db, args[1:])
 	case "sendbox":
 		return sendboxAction(args[1:])
+	case "docker":
+		return dockerCmd(args[1:])
+	case "kubernetes", "k8s":
+		return kubernetesCmd(args[1:])
+	case "vm", "vms", "machine", "machines":
+		return vmCmd(args[1:])
+	case "container", "containers", "image", "images", "build", "builds", "network", "networks", "volume", "volumes":
+		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:])
 	case "help", "--help", "-h":
@@ -559,5 +567,14 @@ Commands:
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
-  porto sendbox start|stop <project>`)
+  porto sendbox start|stop <project>
+  porto docker status|containers|images|builds|networks|volumes
+  porto docker context-install|activate|deactivate
+  porto docker container <start|stop|restart|pause|unpause|remove> <id>
+  porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
+  porto kubernetes status|contexts|pods|services|nodes
+  porto kubernetes logs <namespace> <pod> [--container name] [--previous]
+  porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
+  porto kubernetes cluster create|start|stop|delete
+  porto vm status|images|list|create|start|stop|delete|exec|snapshot|restore`)
 }
