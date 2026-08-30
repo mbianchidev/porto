@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -43,6 +44,7 @@ type NodeGroupSpec struct {
 type ClusterRequest struct {
 	Name         string          `json:"name"`
 	Version      string          `json:"version"`
+	APIPort      int             `json:"apiPort,omitempty"`
 	ControlPlane MachineSpec     `json:"controlPlane"`
 	NodeGroups   []NodeGroupSpec `json:"nodeGroups"`
 }
@@ -81,6 +83,12 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		}
 	}
 	request.ControlPlane = normalizeMachine(request.ControlPlane)
+	if request.APIPort == 0 {
+		request.APIPort, err = availableLocalPort()
+		if err != nil {
+			return Cluster{}, err
+		}
+	}
 	for index := range request.NodeGroups {
 		group := &request.NodeGroups[index]
 		if !clusterNamePattern.MatchString(group.Name) {
@@ -115,13 +123,18 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	}()
 
 	serverName := clusterMachineName(request.Name, "server", 1)
-	if _, err = p.vms.Create(ctx, vm.CreateRequest{
+	if _, err = p.vms.CreateNode(ctx, vm.CreateRequest{
 		Name:      serverName,
 		Image:     "ubuntu-24.04",
 		CPUs:      request.ControlPlane.CPUs,
 		MemoryMiB: request.ControlPlane.MemoryMiB,
 		DiskGiB:   request.ControlPlane.DiskGiB,
-		Start:     true,
+		Network:   "user-v2",
+		PortForwards: []vm.PortForward{{
+			GuestPort: 6443,
+			HostPort:  request.APIPort,
+		}},
+		Start: true,
 	}); err != nil {
 		return Cluster{}, fmt.Errorf("create Kubernetes control-plane VM: %w", err)
 	}
@@ -150,12 +163,13 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	for _, group := range request.NodeGroups {
 		for nodeIndex := 1; nodeIndex <= group.Count; nodeIndex++ {
 			nodeName := clusterMachineName(request.Name, group.Name, nodeIndex)
-			if _, err = p.vms.Create(ctx, vm.CreateRequest{
+			if _, err = p.vms.CreateNode(ctx, vm.CreateRequest{
 				Name:      nodeName,
 				Image:     "ubuntu-24.04",
 				CPUs:      group.Machine.CPUs,
 				MemoryMiB: group.Machine.MemoryMiB,
 				DiskGiB:   group.Machine.DiskGiB,
+				Network:   "user-v2",
 				Start:     true,
 			}); err != nil {
 				return Cluster{}, fmt.Errorf("create Kubernetes worker VM %s: %w", nodeName, err)
@@ -172,7 +186,11 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err != nil {
 		return Cluster{}, fmt.Errorf("read Kubernetes kubeconfig: %w", err)
 	}
-	kubeconfig := strings.ReplaceAll(string(kubeconfigOutput), "https://127.0.0.1:6443", "https://"+serverIP+":6443")
+	kubeconfig := strings.ReplaceAll(
+		string(kubeconfigOutput),
+		"https://127.0.0.1:6443",
+		"https://127.0.0.1:"+strconv.Itoa(request.APIPort),
+	)
 	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
 		return Cluster{}, fmt.Errorf("create kubeconfig directory: %w", err)
 	}
@@ -193,7 +211,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		Name:           request.Name,
 		Context:        contextName,
 		KubeconfigPath: kubeconfigPath,
-		Server:         "https://" + serverIP + ":6443",
+		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
 	}
 	if err = p.writeClusterMetadata(request); err != nil {
@@ -206,17 +224,15 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
-	instances, err := p.vms.List(ctx)
+	request, err := p.readClusterMetadata(clusterName)
 	if err != nil {
-		return err
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	prefix := "porto-" + clusterName + "-"
 	var deleteErrors []error
-	for _, instance := range instances {
-		if strings.HasPrefix(instance.Name, prefix) {
-			if err := p.vms.Delete(ctx, instance.Name, true); err != nil {
-				deleteErrors = append(deleteErrors, err)
-			}
+	names := clusterNodeNames(request)
+	for index := len(names) - 1; index >= 0; index-- {
+		if err := p.vms.Delete(ctx, names[index], true); err != nil {
+			deleteErrors = append(deleteErrors, err)
 		}
 	}
 	kubeconfigPath := filepath.Join(p.kubeconfigRoot, clusterName+".yaml")
@@ -237,7 +253,11 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list Porto kubeconfigs: %w", err)
 	}
-	instances, instanceErr := p.vms.List(ctx)
+	instances, instanceErr := p.vms.ListAll(ctx)
+	instanceByName := make(map[string]vm.Instance, len(instances))
+	for _, instance := range instances {
+		instanceByName[instance.Name] = instance
+	}
 	clusters := make([]Cluster, 0)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
@@ -252,11 +272,17 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Context:        "porto-" + name,
 			KubeconfigPath: filepath.Join(p.kubeconfigRoot, entry.Name()),
 		}
+		request, metadataErr := p.readClusterMetadata(name)
+		if metadataErr != nil {
+			return nil, fmt.Errorf("read Kubernetes cluster metadata for %s: %w", name, metadataErr)
+		}
+		if request.APIPort > 0 {
+			cluster.Server = "https://127.0.0.1:" + strconv.Itoa(request.APIPort)
+		}
 		if instanceErr == nil {
-			prefix := "porto-" + name + "-"
-			for _, instance := range instances {
-				if strings.HasPrefix(instance.Name, prefix) {
-					cluster.Nodes = append(cluster.Nodes, instance.Name)
+			for _, nodeName := range clusterNodeNames(request) {
+				if _, ok := instanceByName[nodeName]; ok {
+					cluster.Nodes = append(cluster.Nodes, nodeName)
 				}
 			}
 			sort.Strings(cluster.Nodes)
@@ -288,23 +314,42 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 		return err
 	}
 	group.Machine = normalizeMachine(group.Machine)
-	instances, err := p.vms.List(ctx)
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	if version == "" {
+		version = request.Version
+	}
+	currentGroup := NodeGroupSpec{Name: group.Name, Count: 0, Machine: group.Machine}
+	groupIndex := -1
+	for index := range request.NodeGroups {
+		if request.NodeGroups[index].Name == group.Name {
+			currentGroup = request.NodeGroups[index]
+			groupIndex = index
+			break
+		}
+	}
+	instances, err := p.vms.ListAll(ctx)
 	if err != nil {
 		return err
 	}
-	prefix := "porto-" + clusterName + "-" + group.Name + "-"
-	current := make([]string, 0)
+	instanceByName := make(map[string]vm.Instance, len(instances))
 	for _, instance := range instances {
-		if strings.HasPrefix(instance.Name, prefix) {
-			current = append(current, instance.Name)
+		instanceByName[instance.Name] = instance
+	}
+	currentComplete := true
+	for index := 1; index <= currentGroup.Count; index++ {
+		if _, exists := instanceByName[clusterMachineName(clusterName, group.Name, index)]; !exists {
+			currentComplete = false
+			break
 		}
 	}
-	sort.Strings(current)
-	if len(current) == group.Count {
+	if currentGroup.Count == group.Count && currentComplete {
 		return p.updateNodeGroupMetadata(clusterName, group, version)
 	}
 	serverName := clusterMachineName(clusterName, "server", 1)
-	if len(current) < group.Count {
+	if currentGroup.Count <= group.Count {
 		serverIPOutput, err := p.vms.Exec(ctx, serverName, []string{"hostname", "-I"}, nil)
 		if err != nil {
 			return fmt.Errorf("resolve Kubernetes server address: %w", err)
@@ -316,14 +361,18 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 		serverIP := firstField(serverIPOutput)
 		token := strings.TrimSpace(string(tokenOutput))
 		created := make([]string, 0)
-		for index := len(current) + 1; index <= group.Count; index++ {
+		for index := 1; index <= group.Count; index++ {
 			nodeName := clusterMachineName(clusterName, group.Name, index)
-			if _, createErr := p.vms.Create(ctx, vm.CreateRequest{
+			if _, exists := instanceByName[nodeName]; exists {
+				continue
+			}
+			if _, createErr := p.vms.CreateNode(ctx, vm.CreateRequest{
 				Name:      nodeName,
 				Image:     "ubuntu-24.04",
 				CPUs:      group.Machine.CPUs,
 				MemoryMiB: group.Machine.MemoryMiB,
 				DiskGiB:   group.Machine.DiskGiB,
+				Network:   "user-v2",
 				Start:     true,
 			}); createErr != nil {
 				return errors.Join(createErr, p.cleanupVMs(created))
@@ -334,8 +383,22 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 			}
 		}
 	} else {
-		for index := len(current) - 1; index >= group.Count; index-- {
-			nodeName := current[index]
+		for index := currentGroup.Count; index > group.Count; index-- {
+			nodeName := clusterMachineName(clusterName, group.Name, index)
+			if _, exists := instanceByName[nodeName]; !exists {
+				continue
+			}
+			if _, err := p.vms.Exec(ctx, serverName, []string{"sudo", "k3s", "kubectl", "cordon", nodeName}, nil); err != nil {
+				return fmt.Errorf("cordon Kubernetes node %s: %w", nodeName, err)
+			}
+			if _, err := p.vms.Exec(ctx, serverName, []string{
+				"sudo", "k3s", "kubectl", "drain", nodeName,
+				"--ignore-daemonsets",
+				"--delete-emptydir-data=false",
+				"--timeout=2m",
+			}, nil); err != nil {
+				return fmt.Errorf("drain Kubernetes node %s: %w", nodeName, err)
+			}
 			if _, err := p.vms.Exec(ctx, serverName, []string{"sudo", "k3s", "kubectl", "delete", "node", nodeName, "--ignore-not-found=true"}, nil); err != nil {
 				return fmt.Errorf("remove Kubernetes node %s: %w", nodeName, err)
 			}
@@ -344,7 +407,18 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 			}
 		}
 	}
-	return p.updateNodeGroupMetadata(clusterName, group, version)
+	if groupIndex >= 0 {
+		request.NodeGroups[groupIndex] = group
+	} else {
+		request.NodeGroups = append(request.NodeGroups, group)
+	}
+	if version != "" {
+		request.Version = version
+	}
+	if err := p.writeClusterMetadata(request); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image string) error {
@@ -364,19 +438,15 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	if err != nil {
 		return runtimes.CommandError("export Docker image "+image, imageArchive, err)
 	}
-	instances, err := p.vms.List(ctx)
+	request, err := p.readClusterMetadata(clusterName)
 	if err != nil {
-		return err
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	prefix := "porto-" + clusterName + "-"
 	imported := 0
 	var importErrors []error
-	for _, instance := range instances {
-		if !strings.HasPrefix(instance.Name, prefix) {
-			continue
-		}
-		if _, err := p.vms.Exec(ctx, instance.Name, []string{"sudo", "k3s", "ctr", "images", "import", "-"}, imageArchive); err != nil {
-			importErrors = append(importErrors, fmt.Errorf("import image into %s: %w", instance.Name, err))
+	for _, nodeName := range clusterNodeNames(request) {
+		if _, err := p.vms.Exec(ctx, nodeName, []string{"sudo", "k3s", "ctr", "images", "import", "-"}, imageArchive); err != nil {
+			importErrors = append(importErrors, fmt.Errorf("import image into %s: %w", nodeName, err))
 			continue
 		}
 		imported++
@@ -391,18 +461,11 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
-	instances, err := p.vms.List(ctx)
+	request, err := p.readClusterMetadata(clusterName)
 	if err != nil {
-		return err
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	prefix := "porto-" + clusterName + "-"
-	names := make([]string, 0)
-	for _, instance := range instances {
-		if strings.HasPrefix(instance.Name, prefix) {
-			names = append(names, instance.Name)
-		}
-	}
-	sort.Strings(names)
+	names := clusterNodeNames(request)
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
 			names[left], names[right] = names[right], names[left]
@@ -555,10 +618,29 @@ func clusterMachineName(cluster, group string, index int) string {
 	return "porto-" + cluster + "-" + group + "-" + strconv.Itoa(index)
 }
 
+func clusterNodeNames(request ClusterRequest) []string {
+	names := []string{clusterMachineName(request.Name, "server", 1)}
+	for _, group := range request.NodeGroups {
+		for index := 1; index <= group.Count; index++ {
+			names = append(names, clusterMachineName(request.Name, group.Name, index))
+		}
+	}
+	return names
+}
+
 func firstField(output []byte) string {
 	fields := strings.Fields(string(output))
 	if len(fields) == 0 {
 		return ""
 	}
 	return fields[0]
+}
+
+func availableLocalPort() (int, error) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		return 0, fmt.Errorf("allocate Kubernetes API port: %w", err)
+	}
+	defer listener.Close()
+	return listener.Addr().(*net.TCPAddr).Port, nil
 }

@@ -8,7 +8,15 @@ import { ActionButton } from '../components/ActionButton'
 import { BranchPicker } from '../components/BranchPicker'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { StatusLamp } from '../components/StatusLamp'
-import type { CleanupResult, IntegrationStatus, LogLine, Project, Settings } from '../types'
+import type {
+  CleanupResult,
+  DockerContainer,
+  IntegrationStatus,
+  KubernetesPod,
+  LogLine,
+  Project,
+  Settings,
+} from '../types'
 
 async function writeClipboard(text: string) {
   if (navigator.clipboard?.writeText) {
@@ -142,6 +150,16 @@ export function LocalhostIng({
     (signal) => apiGet('/api/projects', signal),
     5000,
     [],
+  )
+  const dockerDeployments = usePolledResource<DockerContainer[]>(
+    (signal) => settings?.dockerEnabled ? apiGet('/api/docker/containers', signal) : Promise.resolve([]),
+    5000,
+    [settings?.dockerEnabled],
+  )
+  const kubernetesDeployments = usePolledResource<KubernetesPod[]>(
+    (signal) => settings?.kubernetesEnabled ? apiGet('/api/kubernetes/pods?namespace=all', signal) : Promise.resolve([]),
+    5000,
+    [settings?.kubernetesEnabled],
   )
   const projects = data ?? []
   const selectedProject = projects.find((project) => project.id === selectedProjectID) ?? null
@@ -311,6 +329,16 @@ export function LocalhostIng({
     }
   }
 
+  async function runContainer(container: DockerContainer, verb: 'start' | 'stop' | 'restart') {
+    try {
+      await apiSend(`/api/docker/containers/${encodeURIComponent(container.id)}/${verb}`, 'POST')
+      notifyNotice('localhost-ing', `${container.name} ${verb} requested.`)
+      dockerDeployments.reload()
+    } catch (err) {
+      notifyError('localhost-ing', errorMessage(err, `Unable to ${verb} ${container.name}`))
+    }
+  }
+
   async function scanForProjects(event: FormEvent) {
     event.preventDefault()
     const root = scanRoot.trim()
@@ -472,6 +500,77 @@ export function LocalhostIng({
               </div>
             </section>
           ))}
+          {(dockerDeployments.data?.length ?? 0) + (kubernetesDeployments.data?.length ?? 0) > 0 && (
+            <section className="projectGroup multi runtimeDeployments">
+              <header className="projectGroupHeader">
+                <div><strong>Runtime deployments</strong><span>Containers and Kubernetes</span></div>
+                <small>{(dockerDeployments.data?.length ?? 0) + (kubernetesDeployments.data?.length ?? 0)} workloads</small>
+              </header>
+              <div className="channelStack">
+                {(dockerDeployments.data ?? []).map((container) => (
+                  <article className={`projectChannel ${container.state}`} key={`container-${container.id}`}>
+                    <div className="channelFace">
+                      <a className="channelToggle runtimeDeploymentLink" href="#/containers">
+                        <StatusLamp state={container.state === 'running' ? 'running' : container.state === 'paused' ? 'starting' : 'stopped'} />
+                        <span className="channelIdentity">
+                          <strong>{container.composeService || container.name.replace(/^\//, '')}</strong>
+                          <small>{container.composeProject ? `Compose · ${container.composeProject}` : 'Container'}</small>
+                        </span>
+                        <span className="channelDatum">
+                          <small>Image</small>
+                          <strong>{container.image}</strong>
+                        </span>
+                        <span className="channelDatum channelRoute">
+                          <small>Ports</small>
+                          <strong>{container.ports || 'none published'}</strong>
+                        </span>
+                        <span className={`channelState ${container.state}`}>
+                          <small>State</small>
+                          <strong>{container.state}</strong>
+                        </span>
+                      </a>
+                      <div className="quickActions" aria-label={`${container.name} quick actions`}>
+                        <ActionButton label="Start container" icon="play" onClick={() => runContainer(container, 'start')} />
+                        <ActionButton label="Stop container" icon="stop" onClick={() => runContainer(container, 'stop')} />
+                        <ActionButton label="Restart container" icon="restart" onClick={() => runContainer(container, 'restart')} />
+                        <a className="iconButton" href="#/containers" aria-label="Inspect container" data-tooltip="Inspect container">
+                          <span aria-hidden="true">→</span>
+                        </a>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+                {(kubernetesDeployments.data ?? []).map((pod) => (
+                  <article className={`projectChannel ${pod.phase.toLocaleLowerCase()}`} key={`pod-${pod.namespace}-${pod.name}`}>
+                    <div className="channelFace">
+                      <a className="channelToggle runtimeDeploymentLink" href="#/pods">
+                        <StatusLamp state={pod.phase === 'Running' ? 'running' : pod.phase === 'Pending' ? 'starting' : 'crashed'} />
+                        <span className="channelIdentity">
+                          <strong>{pod.name}</strong>
+                          <small>Kubernetes pod</small>
+                        </span>
+                        <span className="channelDatum">
+                          <small>Namespace</small>
+                          <strong>{pod.namespace}</strong>
+                        </span>
+                        <span className="channelDatum channelRoute">
+                          <small>Node</small>
+                          <strong>{pod.node || 'not scheduled'}</strong>
+                        </span>
+                        <span className={`channelState ${pod.phase.toLocaleLowerCase()}`}>
+                          <small>State</small>
+                          <strong>{pod.phase}</strong>
+                        </span>
+                      </a>
+                      <div className="quickActions">
+                        <a className="buttonLink" href="#/pods">Inspect pod</a>
+                      </div>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+          )}
         </section>
 
         {selectedProject && (

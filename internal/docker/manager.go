@@ -487,6 +487,9 @@ func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) err
 
 func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {
 	endpoint := "unix://" + socketPath
+	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
+		endpoint = "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`)
+	}
 	if _, err := m.run(ctx, "inspect Porto Docker context", "context", "inspect", "porto"); err == nil {
 		_, err = m.run(ctx, "update Porto Docker context", "context", "update", "porto", "--docker", "host="+endpoint)
 		return err

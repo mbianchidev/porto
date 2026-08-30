@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -73,5 +74,50 @@ func TestStatusReportsLimaVersion(t *testing.T) {
 	status := New(&recordingRunner{}).Status(context.Background())
 	if !status.Available || !strings.Contains(status.Version, "2.0.0") {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestManagedInventoryFiltersUnownedLimaInstances(t *testing.T) {
+	manager := NewWithStateDir(&recordingRunner{}, t.TempDir())
+	if err := manager.writeMetadata(Metadata{Name: "test-vm", Kind: "standalone", Image: "ubuntu-24.04"}); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	instances, err := manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("list managed VMs: %v", err)
+	}
+	if len(instances) != 1 || instances[0].Name != "test-vm" {
+		t.Fatalf("unexpected managed VMs: %+v", instances)
+	}
+	if err := os.Remove(manager.metadataPath("test-vm")); err != nil {
+		t.Fatal(err)
+	}
+	instances, err = manager.List(context.Background())
+	if err != nil {
+		t.Fatalf("list unmanaged VMs: %v", err)
+	}
+	if len(instances) != 0 {
+		t.Fatalf("unowned Lima instance leaked into Porto inventory: %+v", instances)
+	}
+}
+
+func TestSnapshotUsesCurrentLimaSyntax(t *testing.T) {
+	runner := &recordingRunner{}
+	manager := New(runner)
+	if err := manager.CreateSnapshot(context.Background(), "test-vm", "before"); err != nil {
+		t.Fatalf("create snapshot: %v", err)
+	}
+	if err := manager.RestoreSnapshot(context.Background(), "test-vm", "before"); err != nil {
+		t.Fatalf("restore snapshot: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	create := strings.Join(runner.commands[0].Args, " ")
+	restore := strings.Join(runner.commands[1].Args, " ")
+	if create != "snapshot create test-vm --tag before" {
+		t.Fatalf("create command = %q", create)
+	}
+	if restore != "snapshot apply test-vm --tag before" {
+		t.Fatalf("restore command = %q", restore)
 	}
 }

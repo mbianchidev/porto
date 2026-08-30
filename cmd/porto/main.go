@@ -87,6 +87,9 @@ func run(args []string) error {
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:])
+	case "version", "--version":
+		fmt.Println(config.Version)
+		return nil
 	case "help", "--help", "-h":
 		usage()
 		return nil
@@ -561,6 +564,7 @@ func usage() {
 Commands:
   porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
   porto list
+  porto version
   porto daemon start|status
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]

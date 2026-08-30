@@ -105,7 +105,7 @@ func TestActivateAndDeactivateEndpoint(t *testing.T) {
 		t.Fatalf("create previous link: %v", err)
 	}
 	statePath := filepath.Join(dir, "state.json")
-	state, err := ActivateEndpoint(canonical, target, statePath, true)
+	state, err := ActivateEndpoint(canonical, target, "unix://"+previous, statePath, true)
 	if err != nil {
 		t.Fatalf("activate: %v", err)
 	}

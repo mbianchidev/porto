@@ -150,13 +150,15 @@ export function KubernetesOverview({
     if (clusterName.trim() === '') return
     setSubmittingCluster(true)
     try {
-      await apiSend('/api/kubernetes/clusters', 'POST', {
+      const cluster = await apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
         name: clusterName.trim(),
         version: clusterVersion,
         controlPlane,
         nodeGroups: [],
       })
       notifyNotice('kubernetes', `Provisioning cluster ${clusterName.trim()}. Add node groups from its inspector once it is ready.`)
+      onContextChange(cluster.context)
+      setSelectedClusterName(cluster.name)
       setClusterName('')
       setClusterVersion('')
       setControlPlane(DEFAULT_MACHINE)

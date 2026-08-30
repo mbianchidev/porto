@@ -52,6 +52,12 @@ The daemon creates a user-owned socket:
 <PORTO_HOME>/run/docker.sock
 ```
 
+On Windows, Porto exposes the equivalent named pipe:
+
+```text
+\\.\pipe\porto_docker_engine
+```
+
 It proxies Docker Engine API requests to the endpoint selected when the daemon starts. Override that upstream explicitly:
 
 ```sh
@@ -87,6 +93,10 @@ porto docker deactivate
 
 The Porto-owned proxy socket uses mode `0600`. Treat access to any Docker socket as host-administrator access.
 
+Windows clients use the named `porto` Docker context. Canonical
+`\\.\pipe\docker_engine` takeover is intentionally not automatic because
+Windows named pipes cannot be replaced with a reversible symbolic link.
+
 ### Docker resources
 
 ```sh
@@ -112,7 +122,12 @@ porto networks
 porto volumes
 ```
 
-Compose projects continue to use their standard Compose files. Porto exposes Compose project and service labels from Docker so the dashboard can group related containers.
+Compose projects continue to use their standard Compose files. Porto assigns a
+stable Compose project name per Porto project and generates a temporary
+`!override` file that remaps published TCP ports onto free localhost ports.
+This keeps concurrent projects and branch worktrees isolated without editing
+the source Compose file. Porto exposes Compose project and service labels from
+Docker so the dashboard can group related containers.
 
 ## Kubernetes
 
@@ -130,7 +145,7 @@ Pass `--context` when a command should not use the current context.
 
 ### Create a local cluster
 
-Porto provisions one Lima VM for the k3s server and one VM for each requested worker. CPU, RAM, and disk values are per VM.
+Porto provisions one Lima VM for the k3s server and one VM for each requested worker. CPU, RAM, and disk values are per VM. Nodes share Lima's `user-v2` network, and the Kubernetes API is forwarded to an allocated loopback port used by the generated kubeconfig.
 
 ```sh
 porto kubernetes cluster create dev \
@@ -258,7 +273,7 @@ porto vm stop test-ubuntu
 porto vm delete test-ubuntu
 ```
 
-Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically.
+Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically. Porto records ownership metadata and hides unrelated Lima instances and Kubernetes node VMs from the standalone machine inventory.
 
 The image catalog maps to Lima templates. Template availability depends on the installed Lima version and host architecture; Porto surfaces provider failures without changing native project state.
 

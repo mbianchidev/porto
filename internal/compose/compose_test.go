@@ -98,6 +98,38 @@ func TestProjectNameIsStableAndInstanceSafe(t *testing.T) {
 	}
 }
 
+func TestPreparePortsOverridesPublishedCollisions(t *testing.T) {
+	t.Setenv("PORTO_HOME", t.TempDir())
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{output: []byte(`{
+	  "services": {
+	    "web": {"ports":[{"target":80,"published":"8080","protocol":"tcp"}]},
+	    "api": {"ports":[{"target":3000,"published":"3000","protocol":"tcp"}]}
+	  }
+	}`)}
+	project := app.Project{ID: 7, Name: "web", Path: root, Strategy: "compose", Command: UpCommand("compose.yaml")}
+	plan, err := newIntegration(runner, time.Second).PreparePorts(context.Background(), project, map[int]bool{3000: true, 8080: true})
+	if err != nil {
+		t.Fatalf("PreparePorts: %v", err)
+	}
+	if len(plan.Ports) != 2 || plan.Ports[0].Published == 8080 || plan.Ports[1].Published == 3000 {
+		t.Fatalf("unexpected port plan: %+v", plan)
+	}
+	override, err := os.ReadFile(plan.OverridePath)
+	if err != nil {
+		t.Fatalf("read override: %v", err)
+	}
+	text := string(override)
+	for _, want := range []string{"ports: !override", "127.0.0.1:", ":80/tcp", ":3000/tcp"} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("override missing %q:\n%s", want, text)
+		}
+	}
+}
+
 func TestCheckTimesOut(t *testing.T) {
 	runner := &fakeRunner{
 		run: func(ctx context.Context, _ Command) ([]byte, error) {

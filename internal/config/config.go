@@ -15,6 +15,8 @@ import (
 
 const (
 	AppName                  = "porto"
+	Version                  = "1.0.0"
+	APIVersion               = 1
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
@@ -159,6 +161,9 @@ func RuntimeDir() (string, error) {
 }
 
 func DockerSocketPath() (string, error) {
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\porto_docker_engine`, nil
+	}
 	dir, err := RuntimeDir()
 	if err != nil {
 		return "", err
@@ -197,6 +202,21 @@ func KubernetesConfigDir() (string, error) {
 		return "", err
 	}
 	return kubeconfigDir, nil
+}
+
+func VMStateDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	vmDir := filepath.Join(dir, "vms")
+	if err := os.MkdirAll(vmDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(vmDir, 0o700); err != nil {
+		return "", err
+	}
+	return vmDir, nil
 }
 
 func CertificatePaths() (string, string, error) {

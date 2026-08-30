@@ -50,6 +50,17 @@ func runtimeCmd(st *store.Store, args []string) error {
 		return err
 	}
 	enabled := args[0] == "enable"
+	if feature == "docker" && !enabled {
+		statePath, pathErr := config.DockerEndpointStatePath()
+		if pathErr != nil {
+			return pathErr
+		}
+		if _, statErr := os.Stat(statePath); statErr == nil {
+			return errors.New("deactivate the canonical Docker endpoint before disabling Docker")
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			return fmt.Errorf("inspect Docker endpoint state: %w", statErr)
+		}
+	}
 	switch feature {
 	case "docker":
 		settings.DockerEnabled = enabled
@@ -86,9 +97,6 @@ func dockerCmd(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto docker context-install")
 		}
-		if runtime.GOOS == "windows" {
-			return errors.New("Porto Docker named-pipe proxy is not available in this build")
-		}
 		socketPath, err := config.DockerSocketPath()
 		if err != nil {
 			return err
@@ -116,7 +124,15 @@ func dockerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, statePath, *replace)
+		upstream, upstreamErr := portodocker.New(nil).Endpoint(context.Background())
+		if upstreamErr != nil {
+			if previousState, stateErr := portodocker.ReadEndpointState(statePath); stateErr == nil {
+				upstream = previousState.Upstream
+			} else {
+				return upstreamErr
+			}
+		}
+		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, upstream, statePath, *replace)
 		if err != nil {
 			return dockerPrivilegeHint(err)
 		}

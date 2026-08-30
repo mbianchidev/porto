@@ -18,7 +18,9 @@ async function isDaemonHealthy() {
   const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS)
   try {
     const response = await fetch(`${DAEMON_URL}/api/health`, { signal: controller.signal })
-    return response.ok
+    if (!response.ok) return false
+    const health = await response.json()
+    return health.apiVersion === 1
   } catch {
     return false
   } finally {
@@ -85,9 +87,13 @@ function createWindow() {
   })
   let retries = 0
   const openExternalURL = (targetURL) => {
-    const parsed = new URL(targetURL)
-    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      shell.openExternal(parsed.toString())
+    try {
+      const parsed = new URL(targetURL)
+      if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+        shell.openExternal(parsed.toString())
+      }
+    } catch (error) {
+      console.error('Refusing to open invalid external URL', error)
     }
   }
   window.webContents.on('will-navigate', (event, targetURL) => {

@@ -1,4 +1,4 @@
-//go:build !windows
+//go:build windows
 
 package docker
 
@@ -12,11 +12,11 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Microsoft/go-winio"
 )
 
 type Proxy struct {
@@ -38,22 +38,16 @@ func (p *Proxy) SocketPath() string {
 
 func (p *Proxy) Start(ctx context.Context) error {
 	if p.socketPath == "" {
-		return errors.New("Porto Docker proxy socket path is empty")
+		return errors.New("Porto Docker proxy pipe path is empty")
 	}
-	if err := os.MkdirAll(filepath.Dir(p.socketPath), 0o700); err != nil {
-		return fmt.Errorf("create Docker proxy directory: %w", err)
-	}
-	if err := removeStaleSocket(p.socketPath); err != nil {
-		return err
-	}
-	listener, err := net.Listen("unix", p.socketPath)
+	listener, err := winio.ListenPipe(p.socketPath, &winio.PipeConfig{
+		SecurityDescriptor: "D:P(A;;GA;;;OW)",
+		MessageMode:        false,
+		InputBufferSize:    64 * 1024,
+		OutputBufferSize:   64 * 1024,
+	})
 	if err != nil {
-		return fmt.Errorf("listen on Porto Docker socket %s: %w", p.socketPath, err)
-	}
-	if err := os.Chmod(p.socketPath, 0o600); err != nil {
-		_ = listener.Close()
-		_ = os.Remove(p.socketPath)
-		return fmt.Errorf("protect Porto Docker socket: %w", err)
+		return fmt.Errorf("listen on Porto Docker pipe %s: %w", p.socketPath, err)
 	}
 	server := &http.Server{
 		Handler:           http.HandlerFunc(p.serveHTTP),
@@ -69,12 +63,12 @@ func (p *Proxy) Start(ctx context.Context) error {
 		shutdownContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		if err := p.Close(shutdownContext); err != nil {
-			log.Printf("stop Docker API proxy: %v", err)
+			log.Printf("stop Docker API pipe proxy: %v", err)
 		}
 	}()
 	go func() {
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
-			log.Printf("Docker API proxy: %v", err)
+			log.Printf("Docker API pipe proxy: %v", err)
 		}
 	}()
 	return nil
@@ -89,12 +83,7 @@ func (p *Proxy) Close(ctx context.Context) error {
 	if server == nil {
 		return nil
 	}
-	shutdownErr := server.Shutdown(ctx)
-	removeErr := os.Remove(p.socketPath)
-	if errors.Is(removeErr, os.ErrNotExist) {
-		removeErr = nil
-	}
-	return errors.Join(shutdownErr, removeErr)
+	return server.Shutdown(ctx)
 }
 
 func (p *Proxy) serveHTTP(w http.ResponseWriter, r *http.Request) {
@@ -113,9 +102,9 @@ func (p *Proxy) reverseProxy() (*httputil.ReverseProxy, error) {
 	if endpoint == "" {
 		return nil, errors.New("no upstream Docker endpoint is configured; set PORTO_DOCKER_UPSTREAM or select a working Docker context")
 	}
-	if strings.HasPrefix(endpoint, "unix://") || filepath.IsAbs(endpoint) {
-		socketPath := strings.TrimPrefix(endpoint, "unix://")
-		if samePath(socketPath, p.socketPath) {
+	if strings.HasPrefix(endpoint, "npipe://") || strings.HasPrefix(endpoint, `\\.\pipe\`) {
+		pipePath := windowsPipePath(endpoint)
+		if strings.EqualFold(pipePath, p.socketPath) {
 			return nil, errors.New("Porto Docker proxy cannot use itself as the upstream endpoint")
 		}
 		target := &url.URL{Scheme: "http", Host: "docker"}
@@ -124,8 +113,7 @@ func (p *Proxy) reverseProxy() (*httputil.ReverseProxy, error) {
 		proxy.Transport = &http.Transport{
 			DisableCompression: true,
 			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var dialer net.Dialer
-				return dialer.DialContext(ctx, "unix", socketPath)
+				return winio.DialPipeContext(ctx, pipePath)
 			},
 		}
 		proxy.ErrorHandler = proxyError
@@ -150,19 +138,11 @@ func proxyError(w http.ResponseWriter, _ *http.Request, err error) {
 	_ = json.NewEncoder(w).Encode(map[string]string{"message": fmt.Sprintf("Docker upstream request failed: %v", err)})
 }
 
-func removeStaleSocket(path string) error {
-	info, err := os.Lstat(path)
-	if errors.Is(err, os.ErrNotExist) {
-		return nil
+func windowsPipePath(endpoint string) string {
+	path := strings.TrimPrefix(endpoint, "npipe://")
+	path = strings.ReplaceAll(path, "/", `\`)
+	if strings.HasPrefix(path, `\\.\pipe\`) {
+		return path
 	}
-	if err != nil {
-		return fmt.Errorf("inspect Docker proxy socket: %w", err)
-	}
-	if info.Mode()&os.ModeSocket == 0 {
-		return fmt.Errorf("refusing to replace non-socket path %s", path)
-	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("remove stale Docker proxy socket: %w", err)
-	}
-	return nil
+	return `\\.\pipe\` + strings.TrimLeft(path, `\.`)
 }

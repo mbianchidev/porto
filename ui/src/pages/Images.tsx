@@ -25,7 +25,8 @@ export function Images() {
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
-  const selected = items.find((image) => image.id === selectedID) ?? null
+  const imageKey = (image: DockerImage) => `${image.repository}:${image.tag}:${image.digest || image.id}`
+  const selected = items.find((image) => imageKey(image) === selectedID) ?? null
   const available = status.data?.available ?? false
 
   async function pullImage(event: FormEvent) {
@@ -46,11 +47,14 @@ export function Images() {
   }
 
   async function removeImage(image: DockerImage, force: boolean) {
-    if (!window.confirm(`${force ? 'Force-remove' : 'Remove'} image ${image.repository}:${image.tag}?`)) return
+    const reference = image.repository && image.repository !== '<none>' && image.tag && image.tag !== '<none>'
+      ? `${image.repository}:${image.tag}`
+      : image.id
+    if (!window.confirm(`${force ? 'Force-remove' : 'Remove'} image ${reference}?`)) return
     try {
-      await apiSend(`/api/docker/images/${image.id}${force ? '?force=true' : ''}`, 'DELETE')
-      notifyNotice('images', `Removed ${image.repository}:${image.tag}.`)
-      if (selectedID === image.id) setSelectedID(null)
+      await apiSend(`/api/docker/images/${encodeURIComponent(reference)}${force ? '?force=true' : ''}`, 'DELETE')
+      notifyNotice('images', `Removed ${reference}.`)
+      if (selectedID === imageKey(image)) setSelectedID(null)
       images.reload()
     } catch (err) {
       notifyError('images', errorMessage(err, `Unable to remove ${image.repository}:${image.tag}`))
@@ -89,10 +93,10 @@ export function Images() {
         ) : (
           <InventoryList
             items={filtered}
-            getKey={(image) => image.id}
+            getKey={imageKey}
             columnsTemplate={COLUMNS_TEMPLATE}
             selectedKey={selectedID}
-            onSelect={(image) => setSelectedID(image.id)}
+            onSelect={(image) => setSelectedID(imageKey(image))}
             ariaLabel="Docker images"
             emptyMessage={images.error || 'No images found.'}
             columns={[

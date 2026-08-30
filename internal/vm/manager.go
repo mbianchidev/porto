@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -22,8 +24,9 @@ var (
 )
 
 type Manager struct {
-	runner  runtimes.Runner
-	timeout time.Duration
+	runner   runtimes.Runner
+	timeout  time.Duration
+	stateDir string
 }
 
 type Status struct {
@@ -55,21 +58,39 @@ type Instance struct {
 }
 
 type CreateRequest struct {
-	Name         string `json:"name"`
-	Image        string `json:"image"`
-	CPUs         int    `json:"cpus"`
-	MemoryMiB    int    `json:"memoryMiB"`
-	DiskGiB      int    `json:"diskGiB"`
-	Architecture string `json:"architecture"`
-	Provision    string `json:"provision"`
-	Start        bool   `json:"start"`
+	Name         string        `json:"name"`
+	Image        string        `json:"image"`
+	CPUs         int           `json:"cpus"`
+	MemoryMiB    int           `json:"memoryMiB"`
+	DiskGiB      int           `json:"diskGiB"`
+	Architecture string        `json:"architecture"`
+	Provision    string        `json:"provision"`
+	Start        bool          `json:"start"`
+	Network      string        `json:"network,omitempty"`
+	PortForwards []PortForward `json:"portForwards,omitempty"`
+}
+
+type PortForward struct {
+	GuestPort int `json:"guestPort"`
+	HostPort  int `json:"hostPort"`
+}
+
+type Metadata struct {
+	Name      string    `json:"name"`
+	Kind      string    `json:"kind"`
+	Image     string    `json:"image"`
+	CreatedAt time.Time `json:"createdAt"`
 }
 
 func New(runner runtimes.Runner) *Manager {
+	return NewWithStateDir(runner, "")
+}
+
+func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, timeout: defaultTimeout}
+	return &Manager{runner: runner, timeout: defaultTimeout, stateDir: stateDir}
 }
 
 func (m *Manager) Status(ctx context.Context) Status {
@@ -97,6 +118,27 @@ func (m *Manager) Images() []Image {
 }
 
 func (m *Manager) List(ctx context.Context) ([]Instance, error) {
+	instances, err := m.ListAll(ctx)
+	if err != nil || m.stateDir == "" {
+		return instances, err
+	}
+	standalone := make([]Instance, 0, len(instances))
+	for _, instance := range instances {
+		metadata, metadataErr := m.readMetadata(instance.Name)
+		if errors.Is(metadataErr, os.ErrNotExist) {
+			continue
+		}
+		if metadataErr != nil {
+			return nil, fmt.Errorf("read VM ownership for %s: %w", instance.Name, metadataErr)
+		}
+		if metadata.Kind == "standalone" {
+			standalone = append(standalone, instance)
+		}
+	}
+	return standalone, nil
+}
+
+func (m *Manager) ListAll(ctx context.Context) ([]Instance, error) {
 	output, err := m.run(ctx, 20*time.Second, "list Lima instances", "list", "--json")
 	if err != nil {
 		return nil, err
@@ -126,6 +168,14 @@ func (m *Manager) List(ctx context.Context) ([]Instance, error) {
 }
 
 func (m *Manager) Create(ctx context.Context, request CreateRequest) (Instance, error) {
+	return m.create(ctx, request, "standalone")
+}
+
+func (m *Manager) CreateNode(ctx context.Context, request CreateRequest) (Instance, error) {
+	return m.create(ctx, request, "kubernetes-node")
+}
+
+func (m *Manager) create(ctx context.Context, request CreateRequest, kind string) (Instance, error) {
 	if err := validateName(request.Name); err != nil {
 		return Instance{}, err
 	}
@@ -142,23 +192,38 @@ func (m *Manager) Create(ctx context.Context, request CreateRequest) (Instance, 
 	if request.DiskGiB <= 0 {
 		request.DiskGiB = 20
 	}
-	args := []string{
-		"create",
-		"--tty=false",
-		"--name", request.Name,
-		"--cpus", strconv.Itoa(request.CPUs),
-		"--memory", strconv.Itoa(request.MemoryMiB) + "MiB",
-		"--disk", strconv.Itoa(request.DiskGiB) + "GiB",
-	}
+	args := []string{"create", "--tty=false", "--name", request.Name}
 	if request.Architecture != "" {
 		if request.Architecture != "aarch64" && request.Architecture != "x86_64" {
 			return Instance{}, fmt.Errorf("unsupported VM architecture %q", request.Architecture)
 		}
-		args = append(args, "--arch", request.Architecture)
 	}
-	args = append(args, image.Template)
+	configPath := ""
+	if request.Network != "" || len(request.PortForwards) > 0 {
+		var err error
+		configPath, err = m.writeCreateConfig(request, image)
+		if err != nil {
+			return Instance{}, err
+		}
+		defer os.Remove(configPath)
+		args = append(args, configPath)
+	} else {
+		args = append(
+			args,
+			"--cpus", strconv.Itoa(request.CPUs),
+			"--memory", strconv.Itoa(request.MemoryMiB)+"MiB",
+			"--disk", strconv.Itoa(request.DiskGiB)+"GiB",
+		)
+		if request.Architecture != "" {
+			args = append(args, "--arch", request.Architecture)
+		}
+		args = append(args, image.Template)
+	}
 	if _, err := m.run(ctx, 10*time.Minute, "create Lima instance", args...); err != nil {
 		return Instance{}, err
+	}
+	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Image: request.Image, CreatedAt: time.Now().UTC()}); err != nil {
+		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
 		if err := m.Start(ctx, request.Name); err != nil {
@@ -202,6 +267,22 @@ func (m *Manager) Delete(ctx context.Context, name string, force bool) error {
 	if err := validateName(name); err != nil {
 		return err
 	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
+	deleteErr := m.deleteUntracked(ctx, name, force)
+	if deleteErr != nil {
+		return deleteErr
+	}
+	if m.stateDir != "" {
+		if err := os.Remove(m.metadataPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove VM metadata: %w", err)
+		}
+	}
+	return nil
+}
+
+func (m *Manager) deleteUntracked(ctx context.Context, name string, force bool) error {
 	args := []string{"delete"}
 	if force {
 		args = append(args, "--force")
@@ -213,6 +294,9 @@ func (m *Manager) Delete(ctx context.Context, name string, force bool) error {
 
 func (m *Manager) Exec(ctx context.Context, name string, command []string, stdin []byte) ([]byte, error) {
 	if err := validateName(name); err != nil {
+		return nil, err
+	}
+	if err := m.ensureManaged(name); err != nil {
 		return nil, err
 	}
 	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
@@ -243,10 +327,13 @@ func (m *Manager) CreateSnapshot(ctx context.Context, name, snapshot string) err
 	if err := validateName(name); err != nil {
 		return err
 	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
 	if err := validateName(snapshot); err != nil {
 		return fmt.Errorf("invalid snapshot name: %w", err)
 	}
-	_, err := m.run(ctx, 10*time.Minute, "create VM snapshot", "snapshot", "create", name, "--name", snapshot)
+	_, err := m.run(ctx, 10*time.Minute, "create VM snapshot", "snapshot", "create", name, "--tag", snapshot)
 	return err
 }
 
@@ -254,10 +341,13 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, name, snapshot string) er
 	if err := validateName(name); err != nil {
 		return err
 	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
 	if err := validateName(snapshot); err != nil {
 		return fmt.Errorf("invalid snapshot name: %w", err)
 	}
-	_, err := m.run(ctx, 10*time.Minute, "restore VM snapshot", "snapshot", "revert", name, "--name", snapshot)
+	_, err := m.run(ctx, 10*time.Minute, "restore VM snapshot", "snapshot", "apply", name, "--tag", snapshot)
 	return err
 }
 
@@ -265,15 +355,21 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, name, snapshot string) err
 	if err := validateName(name); err != nil {
 		return err
 	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
 	if err := validateName(snapshot); err != nil {
 		return fmt.Errorf("invalid snapshot name: %w", err)
 	}
-	_, err := m.run(ctx, 10*time.Minute, "delete VM snapshot", "snapshot", "delete", name, "--name", snapshot)
+	_, err := m.run(ctx, 10*time.Minute, "delete VM snapshot", "snapshot", "delete", name, "--tag", snapshot)
 	return err
 }
 
 func (m *Manager) action(ctx context.Context, action, name string) error {
 	if err := validateName(name); err != nil {
+		return err
+	}
+	if err := m.ensureManaged(name); err != nil {
 		return err
 	}
 	_, err := m.run(ctx, 5*time.Minute, action+" Lima instance", action, name)
@@ -365,4 +461,109 @@ func validateName(name string) error {
 		return fmt.Errorf("VM name must match %s", vmNamePattern)
 	}
 	return nil
+}
+
+func (m *Manager) ensureManaged(name string) error {
+	if m.stateDir == "" {
+		return nil
+	}
+	if _, err := m.readMetadata(name); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("VM %q is not managed by Porto", name)
+		}
+		return fmt.Errorf("read VM ownership: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) metadataPath(name string) string {
+	return filepath.Join(m.stateDir, name+".json")
+}
+
+func (m *Manager) writeMetadata(metadata Metadata) error {
+	if m.stateDir == "" {
+		return nil
+	}
+	if err := os.MkdirAll(m.stateDir, 0o700); err != nil {
+		return fmt.Errorf("create VM metadata directory: %w", err)
+	}
+	data, err := json.MarshalIndent(metadata, "", "  ")
+	if err != nil {
+		return fmt.Errorf("encode VM metadata: %w", err)
+	}
+	if err := os.WriteFile(m.metadataPath(metadata.Name), data, 0o600); err != nil {
+		return fmt.Errorf("write VM metadata: %w", err)
+	}
+	return nil
+}
+
+func (m *Manager) readMetadata(name string) (Metadata, error) {
+	data, err := os.ReadFile(m.metadataPath(name))
+	if err != nil {
+		return Metadata{}, err
+	}
+	var metadata Metadata
+	if err := json.Unmarshal(data, &metadata); err != nil {
+		return Metadata{}, fmt.Errorf("decode VM metadata: %w", err)
+	}
+	return metadata, nil
+}
+
+func (m *Manager) writeCreateConfig(request CreateRequest, image Image) (string, error) {
+	if request.Network != "" && request.Network != "user-v2" {
+		return "", fmt.Errorf("unsupported Lima network %q", request.Network)
+	}
+	var builder strings.Builder
+	builder.WriteString("base: ")
+	builder.WriteString(image.Template)
+	builder.WriteString("\ncpus: ")
+	builder.WriteString(strconv.Itoa(request.CPUs))
+	builder.WriteString("\nmemory: ")
+	builder.WriteString(strconv.Quote(strconv.Itoa(request.MemoryMiB) + "MiB"))
+	builder.WriteString("\ndisk: ")
+	builder.WriteString(strconv.Quote(strconv.Itoa(request.DiskGiB) + "GiB"))
+	builder.WriteByte('\n')
+	if request.Architecture != "" {
+		builder.WriteString("arch: ")
+		builder.WriteString(strconv.Quote(request.Architecture))
+		builder.WriteByte('\n')
+	}
+	if request.Network != "" {
+		builder.WriteString("networks:\n  - lima: ")
+		builder.WriteString(request.Network)
+		builder.WriteByte('\n')
+	}
+	if len(request.PortForwards) > 0 {
+		builder.WriteString("portForwards:\n")
+		for _, forward := range request.PortForwards {
+			if forward.GuestPort <= 0 || forward.GuestPort > 65535 || forward.HostPort <= 0 || forward.HostPort > 65535 {
+				return "", errors.New("VM port forwards must use ports between 1 and 65535")
+			}
+			builder.WriteString("  - guestPort: ")
+			builder.WriteString(strconv.Itoa(forward.GuestPort))
+			builder.WriteString("\n    hostPort: ")
+			builder.WriteString(strconv.Itoa(forward.HostPort))
+			builder.WriteString("\n    proto: tcp\n    static: true\n")
+		}
+	}
+	temp, err := os.CreateTemp("", "porto-lima-*.yaml")
+	if err != nil {
+		return "", fmt.Errorf("create Lima configuration: %w", err)
+	}
+	path := temp.Name()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(path)
+		return "", err
+	}
+	if _, err := temp.WriteString(builder.String()); err != nil {
+		_ = temp.Close()
+		_ = os.Remove(path)
+		return "", fmt.Errorf("write Lima configuration: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		_ = os.Remove(path)
+		return "", fmt.Errorf("close Lima configuration: %w", err)
+	}
+	return path, nil
 }

@@ -6,7 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path"
+	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -20,8 +23,9 @@ const (
 )
 
 type Manager struct {
-	runner  runtimes.Runner
-	timeout time.Duration
+	runner         runtimes.Runner
+	timeout        time.Duration
+	kubeconfigRoot string
 }
 
 type Status struct {
@@ -131,10 +135,14 @@ type FileContent struct {
 }
 
 func New(runner runtimes.Runner) *Manager {
+	return NewWithKubeconfigRoot(runner, "")
+}
+
+func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, timeout: defaultTimeout}
+	return &Manager{runner: runner, timeout: defaultTimeout, kubeconfigRoot: kubeconfigRoot}
 }
 
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
@@ -175,33 +183,48 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 
 func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 	output, err := m.run(ctx, "", 10*time.Second, nil, "config", "view", "-o", "json")
-	if err != nil {
+	var config kubeconfigView
+	if err == nil {
+		if decodeErr := json.Unmarshal(output, &config); decodeErr != nil {
+			return nil, fmt.Errorf("decode Kubernetes contexts: %w", decodeErr)
+		}
+	}
+	contextsByName := make(map[string]ContextInfo)
+	addContextConfig(contextsByName, config)
+	if m.kubeconfigRoot != "" {
+		entries, readErr := os.ReadDir(m.kubeconfigRoot)
+		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+			return nil, fmt.Errorf("list Porto kubeconfigs: %w", readErr)
+		}
+		for _, entry := range entries {
+			if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+				continue
+			}
+			managedOutput, managedErr := m.runWithKubeconfig(
+				ctx,
+				filepath.Join(m.kubeconfigRoot, entry.Name()),
+				10*time.Second,
+				nil,
+				"config", "view", "-o", "json",
+			)
+			if managedErr != nil {
+				return nil, fmt.Errorf("read managed Kubernetes context %s: %w", entry.Name(), managedErr)
+			}
+			var managedConfig kubeconfigView
+			if err := json.Unmarshal(managedOutput, &managedConfig); err != nil {
+				return nil, fmt.Errorf("decode managed Kubernetes context %s: %w", entry.Name(), err)
+			}
+			addContextConfig(contextsByName, managedConfig)
+		}
+	}
+	contexts := make([]ContextInfo, 0, len(contextsByName))
+	for _, item := range contextsByName {
+		contexts = append(contexts, item)
+	}
+	if len(contexts) == 0 && err != nil {
 		return nil, err
 	}
-	var config struct {
-		CurrentContext string `json:"current-context"`
-		Contexts       []struct {
-			Name    string `json:"name"`
-			Context struct {
-				Cluster   string `json:"cluster"`
-				AuthInfo  string `json:"user"`
-				Namespace string `json:"namespace"`
-			} `json:"context"`
-		} `json:"contexts"`
-	}
-	if err := json.Unmarshal(output, &config); err != nil {
-		return nil, fmt.Errorf("decode Kubernetes contexts: %w", err)
-	}
-	contexts := make([]ContextInfo, 0, len(config.Contexts))
-	for _, item := range config.Contexts {
-		contexts = append(contexts, ContextInfo{
-			Name:      item.Name,
-			Cluster:   item.Context.Cluster,
-			AuthInfo:  item.Context.AuthInfo,
-			Namespace: item.Context.Namespace,
-			Current:   item.Name == config.CurrentContext,
-		})
-	}
+	sort.Slice(contexts, func(left, right int) bool { return contexts[left].Name < contexts[right].Name })
 	return contexts, nil
 }
 
@@ -522,7 +545,11 @@ func (m *Manager) run(
 	args ...string,
 ) ([]byte, error) {
 	if contextName != "" {
-		args = append([]string{"--context", contextName}, args...)
+		if kubeconfigPath := m.kubeconfigForContext(contextName); kubeconfigPath != "" {
+			args = append([]string{"--kubeconfig", kubeconfigPath, "--context", contextName}, args...)
+		} else {
+			args = append([]string{"--context", contextName}, args...)
+		}
 	}
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -534,6 +561,66 @@ func (m *Manager) run(
 		return nil, runtimes.CommandError("kubectl "+strings.Join(args, " "), output, err)
 	}
 	return output, nil
+}
+
+func (m *Manager) runWithKubeconfig(
+	ctx context.Context,
+	kubeconfigPath string,
+	timeout time.Duration,
+	stdin []byte,
+	args ...string,
+) ([]byte, error) {
+	args = append([]string{"--kubeconfig", kubeconfigPath}, args...)
+	commandContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin})
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return nil, fmt.Errorf("kubectl %s timed out after %s", strings.Join(args, " "), timeout)
+	}
+	if err != nil {
+		return nil, runtimes.CommandError("kubectl "+strings.Join(args, " "), output, err)
+	}
+	return output, nil
+}
+
+func (m *Manager) kubeconfigForContext(contextName string) string {
+	const prefix = "porto-"
+	if m.kubeconfigRoot == "" || !strings.HasPrefix(contextName, prefix) {
+		return ""
+	}
+	cluster := strings.TrimPrefix(contextName, prefix)
+	if cluster == "" || strings.ContainsAny(cluster, `/\\`+"\x00\r\n") {
+		return ""
+	}
+	kubeconfigPath := filepath.Join(m.kubeconfigRoot, cluster+".yaml")
+	if info, err := os.Stat(kubeconfigPath); err == nil && !info.IsDir() {
+		return kubeconfigPath
+	}
+	return ""
+}
+
+type kubeconfigView struct {
+	CurrentContext string `json:"current-context"`
+	Contexts       []struct {
+		Name    string `json:"name"`
+		Context struct {
+			Cluster   string `json:"cluster"`
+			AuthInfo  string `json:"user"`
+			Namespace string `json:"namespace"`
+		} `json:"context"`
+	} `json:"contexts"`
+}
+
+func addContextConfig(contexts map[string]ContextInfo, config kubeconfigView) {
+	for _, item := range config.Contexts {
+		contexts[item.Name] = ContextInfo{
+			Name:      item.Name,
+			Cluster:   item.Context.Cluster,
+			AuthInfo:  item.Context.AuthInfo,
+			Namespace: item.Context.Namespace,
+			Current:   item.Name == config.CurrentContext,
+		}
+	}
 }
 
 func validateResource(namespace, name string) error {

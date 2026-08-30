@@ -405,9 +405,18 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
       {openFile && (
         <div className="fileEditor">
           <div className="commandStrip"><span>Editing</span><code>{openFile.path}{openFile.truncated ? ' (truncated)' : ''}</code></div>
-          <textarea value={draft} onChange={(event) => setDraft(event.target.value)} rows={12} spellCheck={false} />
+          {openFile.truncated && (
+            <p className="errorLine">This file exceeds the safe preview limit. Editing is disabled to prevent truncating its contents.</p>
+          )}
+          <textarea
+            value={draft}
+            readOnly={openFile.truncated}
+            onChange={(event) => setDraft(event.target.value)}
+            rows={12}
+            spellCheck={false}
+          />
           <div className="actions">
-            <button type="button" onClick={saveFile} disabled={saving}>{saving ? 'Saving…' : 'Save file'}</button>
+            <button type="button" onClick={saveFile} disabled={saving || openFile.truncated}>{saving ? 'Saving…' : 'Save file'}</button>
             <button className="destructiveAction" type="button" onClick={deleteFile}>Delete file</button>
             <button type="button" onClick={() => setOpenFile(null)}>Close</button>
           </div>

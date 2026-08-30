@@ -90,6 +90,10 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 	outputErrors := make(chan error, 2)
 	go streamTerminalOutput(stdout, writeOutput, outputErrors)
 	go streamTerminalOutput(stderr, writeOutput, outputErrors)
+	outputDone := make(chan error, 1)
+	go func() {
+		outputDone <- errors.Join(<-outputErrors, <-outputErrors)
+	}()
 
 	inputDone := make(chan error, 1)
 	go func() {
@@ -107,25 +111,17 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 		}
 	}()
 
-	waitDone := make(chan error, 1)
-	go func() { waitDone <- command.Wait() }()
-
 	var sessionErr error
-	processExited := false
 	select {
-	case sessionErr = <-waitDone:
-		processExited = true
+	case sessionErr = <-outputDone:
+		sessionErr = errors.Join(sessionErr, command.Wait())
 	case sessionErr = <-inputDone:
 		cancel()
-		sessionErr = errors.Join(sessionErr, <-waitDone)
+		sessionErr = errors.Join(sessionErr, <-outputDone, command.Wait())
 	}
-	for range 2 {
-		if outputErr := <-outputErrors; outputErr != nil && !errors.Is(outputErr, context.Canceled) {
-			sessionErr = errors.Join(sessionErr, outputErr)
-		}
-	}
-	if processExited {
-		cancel()
+	cancel()
+	if errors.Is(sessionErr, context.Canceled) {
+		sessionErr = nil
 	}
 	if sessionErr != nil {
 		_ = connection.Close(websocket.StatusInternalError, "terminal session ended")

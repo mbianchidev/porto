@@ -477,6 +477,14 @@
   text-align: left;
 }
 
+.runtimeDeploymentLink {
+  text-decoration: none;
+}
+
+.runtimeDeployments {
+  margin-top: 6px;
+}
+
 .channelToggle:hover {
   border-color: transparent;
   background: #eeeadf;

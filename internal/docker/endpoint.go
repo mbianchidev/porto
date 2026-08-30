@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -13,11 +14,12 @@ import (
 type EndpointState struct {
 	CanonicalPath string    `json:"canonicalPath"`
 	TargetPath    string    `json:"targetPath"`
+	Upstream      string    `json:"upstream"`
 	PreviousLink  string    `json:"previousLink,omitempty"`
 	ActivatedAt   time.Time `json:"activatedAt"`
 }
 
-func ActivateEndpoint(canonicalPath, targetPath, statePath string, replace bool) (EndpointState, error) {
+func ActivateEndpoint(canonicalPath, targetPath, upstream, statePath string, replace bool) (EndpointState, error) {
 	targetInfo, err := os.Stat(targetPath)
 	if err != nil {
 		return EndpointState{}, fmt.Errorf("inspect Porto Docker socket: %w", err)
@@ -28,6 +30,7 @@ func ActivateEndpoint(canonicalPath, targetPath, statePath string, replace bool)
 	state := EndpointState{
 		CanonicalPath: canonicalPath,
 		TargetPath:    targetPath,
+		Upstream:      upstream,
 		ActivatedAt:   time.Now().UTC(),
 	}
 	info, err := os.Lstat(canonicalPath)
@@ -41,17 +44,32 @@ func ActivateEndpoint(canonicalPath, targetPath, statePath string, replace bool)
 			return EndpointState{}, fmt.Errorf("read canonical Docker endpoint: %w", readErr)
 		}
 		if samePath(current, targetPath) {
+			if existing, stateErr := ReadEndpointState(statePath); stateErr == nil {
+				return existing, nil
+			}
+			if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+				return EndpointState{}, errors.New("refusing to activate Docker endpoint without a distinct upstream runtime")
+			}
 			return state, writeEndpointState(statePath, state)
 		}
 		if !replace {
 			return EndpointState{}, fmt.Errorf("%s already points to %s; pass --replace to switch explicitly", canonicalPath, current)
 		}
 		state.PreviousLink = current
+		if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+			state.Upstream = "unix://" + current
+		}
 		if err := os.Remove(canonicalPath); err != nil {
 			return EndpointState{}, fmt.Errorf("remove previous Docker endpoint link: %w", err)
 		}
 	default:
 		return EndpointState{}, fmt.Errorf("refusing to replace existing non-symlink Docker endpoint %s", canonicalPath)
+	}
+	if state.Upstream == "" || sameDockerEndpoint(state.Upstream, targetPath) {
+		if state.PreviousLink != "" {
+			_ = os.Symlink(state.PreviousLink, canonicalPath)
+		}
+		return EndpointState{}, errors.New("refusing to activate Docker endpoint without a distinct upstream runtime")
 	}
 	if err := os.Symlink(targetPath, canonicalPath); err != nil {
 		if state.PreviousLink != "" {
@@ -67,6 +85,16 @@ func ActivateEndpoint(canonicalPath, targetPath, statePath string, replace bool)
 		return EndpointState{}, err
 	}
 	return state, nil
+}
+
+func sameDockerEndpoint(endpoint, socketPath string) bool {
+	return strings.HasPrefix(endpoint, "unix://") && samePath(strings.TrimPrefix(endpoint, "unix://"), socketPath)
+}
+
+func samePath(left, right string) bool {
+	leftPath, leftErr := filepath.Abs(left)
+	rightPath, rightErr := filepath.Abs(right)
+	return leftErr == nil && rightErr == nil && filepath.Clean(leftPath) == filepath.Clean(rightPath)
 }
 
 func DeactivateEndpoint(statePath string) error {
@@ -146,6 +174,18 @@ func writeEndpointState(path string, state EndpointState) error {
 	if err := temp.Chmod(0o600); err != nil {
 		_ = temp.Close()
 		return fmt.Errorf("protect Docker endpoint state: %w", err)
+	}
+	if uidValue, gidValue := os.Getenv("SUDO_UID"), os.Getenv("SUDO_GID"); uidValue != "" && gidValue != "" {
+		uid, uidErr := strconv.Atoi(uidValue)
+		gid, gidErr := strconv.Atoi(gidValue)
+		if uidErr != nil || gidErr != nil {
+			_ = temp.Close()
+			return errors.New("invalid SUDO_UID or SUDO_GID while writing Docker endpoint state")
+		}
+		if err := temp.Chown(uid, gid); err != nil {
+			_ = temp.Close()
+			return fmt.Errorf("restore Docker endpoint state ownership: %w", err)
+		}
 	}
 	if _, err := temp.Write(data); err != nil {
 		_ = temp.Close()

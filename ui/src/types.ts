@@ -120,6 +120,8 @@ export type DockerContainer = {
   networks: string
   mounts: string
   createdAt: string
+  composeProject?: string
+  composeService?: string
 }
 
 export type DockerImage = {

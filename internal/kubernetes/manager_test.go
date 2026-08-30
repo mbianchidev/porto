@@ -157,8 +157,8 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read kubeconfig: %v", err)
 	}
-	if !strings.Contains(string(data), "https://192.168.105.2:6443") {
-		t.Fatalf("kubeconfig did not use server VM address: %s", data)
+	if !strings.Contains(string(data), "https://127.0.0.1:") || strings.Contains(string(data), "https://127.0.0.1:6443") {
+		t.Fatalf("kubeconfig did not use the forwarded host API port: %s", data)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "dev.json")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)
@@ -171,6 +171,14 @@ func TestImportImageCopiesArchiveToEveryClusterNode(t *testing.T) {
 	runner.instances["porto-dev-workers-1"] = true
 	runner.instances["unrelated"] = true
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "dev",
+		NodeGroups: []NodeGroupSpec{{
+			Name: "workers", Count: 1,
+		}},
+	}); err != nil {
+		t.Fatalf("write cluster metadata: %v", err)
+	}
 	if err := provisioner.ImportImage(context.Background(), "dev", "example:dev"); err != nil {
 		t.Fatalf("import image: %v", err)
 	}
@@ -184,5 +192,29 @@ func TestImportImageCopiesArchiveToEveryClusterNode(t *testing.T) {
 	}
 	if imports != 2 {
 		t.Fatalf("image imports = %d, want 2", imports)
+	}
+}
+
+func TestClusterDeletionUsesExactMetadataOwnership(t *testing.T) {
+	runner := newFakeRunner()
+	runner.instances["porto-app-server-1"] = true
+	runner.instances["porto-app-v2-server-1"] = true
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app-v2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisioner.Delete(context.Background(), "app"); err != nil {
+		t.Fatalf("delete app cluster: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.instances["porto-app-server-1"] {
+		t.Fatal("app server VM was not deleted")
+	}
+	if !runner.instances["porto-app-v2-server-1"] {
+		t.Fatal("app-v2 server VM was deleted by prefix collision")
 	}
 }
