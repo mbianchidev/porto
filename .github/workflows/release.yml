@@ -21,7 +21,7 @@ jobs:
   build:
     name: Test and package
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 60
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       prerelease: ${{ steps.version.outputs.prerelease }}
@@ -87,6 +87,10 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run lint
           npm --prefix ui run build
+          npm --prefix ui/electron ci
+          npm --prefix ui/electron audit
+          node --check ui/electron/main.js
+          node --check ui/electron/preload.js
 
       - name: Package release archives
         env:
@@ -120,9 +124,35 @@ jobs:
             else
               tar -czf "dist/${name}.tar.gz" -C stage "${name}"
             fi
+
+            electron_arch="$goarch"
+            if [ "$goarch" = "amd64" ]; then
+              electron_arch="x64"
+            fi
+            desktop_name="porto-desktop_${VERSION}_${goos}_${goarch}"
+            rm -rf ui/electron/release
+            (
+              cd ui/electron
+              npx electron-packager . Porto \
+                --platform="$goos" \
+                --arch="$electron_arch" \
+                --out=release \
+                --overwrite \
+                --prune=true \
+                --extra-resource="../../${root}/${binary}" \
+                --extra-resource="../dist"
+            )
+            packaged_app="$(find ui/electron/release -mindepth 1 -maxdepth 1 -type d -print -quit)"
+            test -n "$packaged_app"
+            mv "$packaged_app" "stage/${desktop_name}"
+            if [ "$goos" = "windows" ]; then
+              (cd stage && zip -qr "../dist/${desktop_name}.zip" "${desktop_name}")
+            else
+              tar -czf "dist/${desktop_name}.tar.gz" -C stage "${desktop_name}"
+            fi
             echo "::endgroup::"
           done
-          (cd dist && sha256sum porto_* > SHA256SUMS)
+          (cd dist && sha256sum porto*_* > SHA256SUMS)
           ls -l dist
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -149,7 +179,7 @@ jobs:
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
-          subject-path: 'dist/porto_*'
+          subject-path: 'dist/porto*_*'
 
       - name: Publish release
         env:
@@ -161,9 +191,9 @@ jobs:
           set -euo pipefail
 
           shopt -s nullglob
-          archives=(dist/porto_*)
-          if [ "${#archives[@]}" -ne 6 ] || [ ! -f dist/SHA256SUMS ]; then
-            echo "::error::Expected six release archives and SHA256SUMS"
+          archives=(dist/porto*_*)
+          if [ "${#archives[@]}" -ne 12 ] || [ ! -f dist/SHA256SUMS ]; then
+            echo "::error::Expected twelve CLI/desktop release archives and SHA256SUMS"
             printf '%s\n' "${archives[@]}"
             exit 1
           fi

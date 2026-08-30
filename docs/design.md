@@ -1,6 +1,6 @@
 ---
 name: Porto
-description: A dense, engraved process-control board for supervising local and self-hosted projects
+description: A dense, engraved desktop control board for supervising local apps, containers, clusters, and virtual machines
 colors:
   graphite-ink: "#222521"
   graphite-soft: "#4c514b"
@@ -95,13 +95,13 @@ components:
 
 **Creative North Star: "The Broadcast Patchbay"**
 
-Porto reads as a piece of painted-metal broadcast equipment, not a web dashboard: a fleet signal rail, engraved channel labels, physical-feeling status lamps, and a service drawer that racks open in place. The thesis is one dense process-control board, not a collection of cards — every project is a compact channel strip in a fixed, ranked stack, and the first viewport is a dark control header, a fleet signal rail, a filter strip, and ranked channels with no oversized summary blocks. The palette is putty, graphite, olive, amber, and fault red: warm neutral metal tones carrying three status colors that never wander from their operational meaning.
+Porto reads as a piece of painted-metal broadcast equipment, not a generic infrastructure dashboard: a fixed graphite source rail, fused fleet signal and control strips, engraved inventory labels, physical-feeling status lamps, and a service inspector docked beside the selected workload. The thesis is one dense process-control desk, not a collection of cards — local apps, containers, images, builds, storage, networks, Kubernetes, and VMs use the same ranked inventory grammar. The palette is putty, graphite, olive, amber, and fault red: warm neutral metal tones carrying three status colors that never wander from their operational meaning.
 
-The story order is deliberate: read fleet health first (the fleet rail's four lamp counters), find the affected project (status lamp + name in the channel row), act immediately (four always-visible quick actions per channel), then expand in place for branch, routing, maintenance, and logs. Nothing about the layout is decorative — gaps, radii, and shadows all read as hardware fit-and-finish rather than software polish.
+The story order is deliberate: choose a workload family from the rail, read its fleet health, find the affected resource in the ranked inventory, act immediately through visible controls, then inspect routing, runtime details, logs, terminals, files, metrics, or maintenance without losing the list. Nothing about the layout is decorative — gaps, radii, and shadows all read as hardware fit-and-finish rather than software polish.
 
 **Key Characteristics:**
-- Dense, single-column ranked channel stack; no card grid, no oversized hero or summary tiles.
-- Dark graphite control surfaces (header, fleet rail, log console) bracket putty/panel-toned working surfaces.
+- Stable graphite source rail with dense ranked inventories; no card grid, no oversized hero or summary tiles.
+- Dark graphite control surfaces (rail, fleet rail, readouts, log console) bracket putty/panel-toned working surfaces.
 - Status meaning is carried by exactly three signal colors: olive (healthy), amber (in-progress/attention), fault red (crashed/destructive).
 - Monospace, uppercase, letter-spaced labels everywhere data or state is reported — the "engraved label" language.
 - Flat hardware surfaces with hard-offset "printed" shadows at rest; soft ambient shadows are reserved for things that lift off the surface (header bar, expanded channel, open menus, tooltips).
@@ -154,14 +154,14 @@ The palette is a warm, desaturated putty-and-graphite metal system with three na
 
 ## Layout
 
-The page is a single centered column (`min(1480px, calc(100% - 28px))`) with a tight top/bottom rhythm (14px top, 40px bottom) — there is no side rail, no dashboard grid of cards. Vertical rhythm between major regions (header, banners, page intro, fleet rail + control bar, channel board) runs 8–13px; internal component padding runs 5–13px. Nothing exceeds ~24px of gap anywhere in the system — density is the point.
+The application shell uses a fixed 232px graphite rail and a fluid main workbench. Resource screens place a ranked inventory beside a 380px inspector; `localhost-ing` uses the same model for native and Compose project channels. Vertical rhythm between banners, fleet rail, control bar, inventory, and inspector runs 8–13px; internal component padding runs 5–13px. Nothing exceeds ~24px of gap anywhere in the system — density is the point.
 
-The fleet signal rail and the filter/control bar are visually fused into one control unit: the rail has bottom corners squared to 0 and the control bar's top border is removed, so together they read as a single instrument panel with two rows rather than two separate cards. Project channels stack in a single-column `channelStack` (4px gaps); multi-branch projects are wrapped in a bordered `projectGroup.multi` container with a small header, so a source project with several branch instances still reads as one physical unit with sub-channels, not a scattered list.
+The fleet signal rail and the filter/control bar are visually fused into one control unit: the rail has bottom corners squared to 0 and the control bar's top border is removed, so together they read as a single instrument panel with two rows rather than two separate cards. Project channels and resource rows stack in compact inventories; multi-branch projects remain grouped under a shared source header. Selection keeps the inventory stable and opens detail in the adjacent inspector.
 
 **Responsive behavior:**
-- **≤1080px:** channel columns compress (branch/route columns narrow); the two-column drawer grid collapses to one column.
-- **≤860px:** header and page intro stack vertically; fleet attention message and the route column hide; control bar drops to a 2-column grid with search spanning full width; hygiene/integration panels go single-column.
-- **≤620px:** full mobile stack — header controls, primary nav (equal-width tabs), fleet rail, control bar, and channel rows all collapse to their narrowest form; the branch/port datum column hides entirely (state column takes its place); quick-action icon buttons grow to 40×40px for touch; command strip and log line columns re-flow to stacked/narrower grids.
+- **≤1080px:** inventory columns compress and multi-column inspector panels collapse to one column.
+- **≤860px:** the rail becomes an off-canvas navigation panel, the inspector becomes a full-screen detail surface, route columns hide, and the control bar reduces to two columns.
+- **≤620px:** the control bar and channel rows collapse to their narrowest form; secondary machine facts hide, quick-action targets grow for touch, and command, terminal, file, and log layouts re-flow into one column.
 
 ### Named Rules
 **The Fused Instrument Rule.** The fleet rail and control bar never separate into two visually distinct cards — they are one header instrument with a dark reporting row on top and a lighter control row beneath.
@@ -203,13 +203,13 @@ Corners stay tight and mechanical: 2px (buttons, inputs, lamps' hairline borders
 - **Combobox (branch picker):** search input with an inline leading icon and chevron; results are pinned (default branch, then `main`, then `master`) ahead of the remaining options sorted alphabetically; selected/hovered rows highlight in `olive-soft`.
 
 ### Navigation
-- **Primary nav:** a dark pill-strip (`#191c19`) of ghost links; the active route gets a light putty background (`#ddd9cd`) with a small hard-offset shadow, everything else is transparent text that brightens to white on hover. Focus uses the universal amber outline.
+- **Primary rail:** a full-height graphite navigation rack grouped by local development, containers, Kubernetes, virtual machines, and system controls. The active route gets a light putty insert with a hard-offset edge; inactive routes remain low-contrast graphite controls that brighten on hover. At narrow widths the rail opens over a scrim from a persistent menu button.
 
 ### Status Lamp (signature component)
 A 9px circle with a 1px dark border and an inset highlight, reading as a physical panel LED. Color encodes state directly: olive (running), amber (starting), fault red (crashed/error), mid-gray (stopped/unset). It appears at fleet level (aggregate counts) and per-channel (leading the channel row) — it is always paired with a text state label, never used as the sole signal.
 
 ### Project Channel (signature component)
-The core unit of the system: a bordered, printed-flat row (`channelFace`) with a 6-column grid — lamp, identity, branch datum, route datum, state, chevron — plus a strip of always-visible quick actions. Clicking the row toggles a `serviceDrawer` open beneath it in place (never a modal or navigation), revealing dark-graphite runtime readouts (PID/port/strategy), two side-by-side panels for routing/branch controls, a dark command-strip showing the literal launch command, a maintenance bar with less-common/destructive actions, and an inline log console. Multiple branch instances of one source project are visually grouped under a shared `projectGroupHeader` inside a bordered "multi" wrapper.
+The local-development unit is a bordered, printed-flat row (`channelFace`) with a status lamp, identity, branch datum, route datum, state, and a strip of always-visible quick actions. Selecting it opens a persistent inspector beside the inventory, revealing dark-graphite runtime readouts, routing and branch controls, the literal launch command, maintenance actions, and logs. Multiple branch instances of one source project remain grouped under a shared `projectGroupHeader` inside a bordered "multi" wrapper. Docker, Kubernetes, and VM rows reuse the same selection and inspector grammar.
 
 ## Do's and Don'ts
 
@@ -218,11 +218,12 @@ The core unit of the system: a bordered, printed-flat row (`channelFace`) with a
 - **Do** reserve olive/amber/fault-red exclusively for health/progress/fault meaning; use the desaturated blue-gray for links instead of introducing a fourth signal hue.
 - **Do** use hard, unblurred "printed" offset shadows on resting surfaces; reserve soft ambient shadows for elements that open, lift, or float (header, expanded drawer, menus, tooltips).
 - **Do** render machine-reported values (branch, port, PID, state, timestamps, commands) in uppercase, letter-spaced mono; keep prose and proper names in sans.
-- **Do** expand project detail inline in a `serviceDrawer` beneath its channel row, never in a modal, side panel, or separate route.
+- **Do** keep the inventory visible while selected detail opens in the adjacent inspector; on narrow screens promote that inspector to an explicit full-screen detail surface.
 - **Do** give every icon-only control an `aria-label`, a visible tooltip, and visually-hidden text.
 
 ### Don't:
 - **Don't** turn project channels into a card grid with generous whitespace — the system is a dense, single-column, fixed-rank stack.
+- **Don't** invent a different interaction model for each runtime; every resource family uses the same inventory, selection, inspector, and status grammar.
 - **Don't** use a border radius greater than 4px anywhere; rounder corners break the painted-metal/mechanical read.
 - **Don't** add decorative or looping motion; the only animation is a ~150–220ms reveal/rotate on state changes (banner-in, drawer-reveal, chevron rotation, tooltip fade), all disabled under `prefers-reduced-motion`.
 - **Don't** hide a project's state behind an icon alone — the status lamp always pairs with a text state label.

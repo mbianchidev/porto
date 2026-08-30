@@ -761,6 +761,14 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	if req.Depth == 0 {
 		req.Depth = config.DefaultScanDepth
 	}
+	for index, root := range req.Roots {
+		expanded, err := s.expandScanRoot(root)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.Roots[index] = expanded
+	}
 	found, err := discovery.Scan(r.Context(), req.Roots, discovery.Options{Depth: req.Depth, Ignore: req.Ignore})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -780,6 +788,24 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.syncSQLNotSoLite(r.Context())
 	writeJSON(w, map[string]any{"count": len(found), "projects": found})
+}
+
+func (s *Server) expandScanRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", errors.New("scan root cannot be empty")
+	}
+	if root != "~" && !strings.HasPrefix(root, "~/") && !strings.HasPrefix(root, `~\`) {
+		return root, nil
+	}
+	home, err := s.userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand scan root %q: %w", root, err)
+	}
+	if root == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, root[2:]), nil
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {

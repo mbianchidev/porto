@@ -149,6 +149,23 @@ func TestRuntimeFeaturesDefaultOffAndKubernetesEnable(t *testing.T) {
 	}
 }
 
+func TestExpandScanRoot(t *testing.T) {
+	server := &Server{userHomeDir: func() (string, error) { return "/home/test", nil }}
+	for input, want := range map[string]string{
+		"~":             "/home/test",
+		"~/code/porto":  filepath.Join("/home/test", "code/porto"),
+		"/srv/projects": "/srv/projects",
+	} {
+		got, err := server.expandScanRoot(input)
+		if err != nil {
+			t.Fatalf("expand %q: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("expand %q = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func (r *recordingSetupRunner) Run(_ context.Context, _ app.Project, _ func(stream, line string) error) (projectsetup.Result, error) {
 	r.called = true
 	return projectsetup.Result{}, nil

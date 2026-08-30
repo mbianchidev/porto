@@ -28,6 +28,9 @@ Download the archive for your platform from the [releases page](https://github.c
 
 See the [installation guide](docs/installation.md) for checksum verification, source builds, and custom dashboard paths.
 
+Desktop release archives bundle Porto Desktop, the daemon, and dashboard
+assets. CLI/web archives remain available for headless machines and servers.
+
 ### 2. Discover projects
 
 ```sh

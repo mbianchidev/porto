@@ -1,31 +1,38 @@
-main {
-  width: min(1480px, calc(100% - 28px));
-  margin: 0 auto;
-  padding: 14px 0 40px;
+.appShell {
+  display: grid;
+  grid-template-columns: 232px minmax(0, 1fr);
+  min-height: 100vh;
 }
 
-.appHeader {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-  min-height: 58px;
-  margin-bottom: 10px;
-  border: 1px solid #111310;
-  border-radius: 4px;
-  padding: 9px 10px 9px 14px;
-  background: var(--panel-dark);
-  box-shadow: 3px 4px 12px rgba(45, 43, 36, 0.24);
-  color: var(--white);
+.appMain {
+  position: relative;
+  min-width: 0;
+  padding: 14px 20px 40px;
 }
 
-.brand {
-  display: inline-flex;
-  align-items: center;
-  gap: 11px;
-  color: inherit;
-  text-decoration: none;
+.railToggle {
+  position: fixed;
+  z-index: 70;
+  top: 10px;
+  left: 10px;
+  display: none;
 }
+
+.railScrim {
+  position: fixed;
+  z-index: 55;
+  inset: 0;
+  border: 0;
+  background: rgba(20, 22, 18, 0.45);
+}
+
+.workArea {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  align-items: start;
+  gap: 12px;
+}
+
 
 .brandMark {
   display: grid;
@@ -57,19 +64,19 @@ main {
   background: var(--red);
 }
 
-.brand strong,
-.brand small {
+.railBrandText strong,
+.railBrandText small {
   display: block;
 }
 
-.brand strong {
+.railBrandText strong {
   font-size: 15px;
   letter-spacing: 0.13em;
   line-height: 1;
   text-transform: uppercase;
 }
 
-.brand small {
+.railBrandText small {
   margin-top: 4px;
   color: #b9bbae;
   font: 9px/1 var(--mono);
@@ -77,9 +84,6 @@ main {
   text-transform: uppercase;
 }
 
-.headerControls,
-.primaryNav,
-.projectTools,
 .consoleActions,
 .streamTabs,
 .integrationActions,
@@ -89,57 +93,7 @@ main {
   align-items: center;
 }
 
-.headerControls {
-  gap: 16px;
-}
-
-.liveSignal {
-  display: inline-flex;
-  align-items: center;
-  gap: 7px;
-  color: #c7c9bd;
-  font: 10px/1 var(--mono);
-  letter-spacing: 0.04em;
-  text-transform: uppercase;
-}
-
-.liveSignal > span {
-  width: 7px;
-  height: 7px;
-  border: 1px solid #1f2a18;
-  border-radius: 50%;
-  background: #83a45a;
-  box-shadow: inset 0 1px 1px rgba(255, 255, 255, 0.45);
-}
-
-.primaryNav {
-  gap: 2px;
-  border: 1px solid #111310;
-  border-radius: 3px;
-  padding: 2px;
-  background: #191c19;
-}
-
-.primaryNav a {
-  border-radius: 2px;
-  padding: 7px 10px;
-  color: #adafa5;
-  font-size: 12px;
-  text-decoration: none;
-}
-
-.primaryNav a:hover {
-  color: var(--white);
-}
-
-.primaryNav a.active {
-  background: #ddd9cd;
-  color: var(--ink);
-  box-shadow: 1px 2px 0 #0d0f0d;
-}
-
-.primaryNav a:focus-visible,
-.brand:focus-visible,
+.railGroup a:focus-visible,
 .buttonLink:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: 3px;
@@ -219,6 +173,14 @@ main {
   white-space: nowrap;
 }
 
+.sectionSubhead {
+  margin: 13px 0 8px;
+  color: var(--ink-soft);
+  font: 700 12px/1 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
 .fleetRail {
   display: flex;
   align-items: center;
@@ -294,6 +256,10 @@ main {
 
 .statusLamp.stopped {
   background: #85867f;
+}
+
+.statusLamp.neutral {
+  background: #9a9c92;
 }
 
 .controlBar {
@@ -419,6 +385,12 @@ main {
   white-space: nowrap;
 }
 
+.toolbarActions {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
 .channelBoard {
   display: grid;
   gap: 8px;
@@ -480,7 +452,7 @@ main {
   box-shadow: 2px 3px 0 rgba(52, 56, 50, 0.26);
 }
 
-.projectChannel.expanded {
+.projectChannel.selected {
   box-shadow: 3px 5px 12px rgba(52, 48, 38, 0.24);
 }
 
@@ -492,7 +464,7 @@ main {
 
 .channelToggle {
   display: grid;
-  grid-template-columns: 12px minmax(180px, 1.15fr) minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(88px, 0.5fr) 18px;
+  grid-template-columns: 12px minmax(180px, 1.15fr) minmax(150px, 0.8fr) minmax(180px, 1fr) minmax(88px, 0.5fr);
   gap: 13px;
   align-items: center;
   min-width: 0;
@@ -575,19 +547,12 @@ main {
   color: #812e26;
 }
 
-.channelChevron {
-  width: 17px;
-  height: 17px;
-  fill: none;
-  stroke: var(--ink-soft);
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.8;
-  transition: transform 150ms ease-out;
-}
-
-.projectChannel.expanded .channelChevron {
-  transform: rotate(180deg);
+.channelUpdated {
+  overflow: hidden;
+  color: var(--ink-faint);
+  font: 9px/1.2 var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .quickActions {
@@ -596,44 +561,6 @@ main {
   border-left: 1px solid var(--line);
   padding: 8px;
   background: #dcd7ca;
-}
-
-.serviceDrawer {
-  border-top: 1px solid var(--line-strong);
-  padding: 13px;
-  background:
-    linear-gradient(90deg, rgba(34, 37, 33, 0.055) 1px, transparent 1px) 0 0 / 24px 100%,
-    #d6d1c4;
-  animation: drawerReveal 220ms cubic-bezier(0.16, 1, 0.3, 1);
-}
-
-@keyframes drawerReveal {
-  from {
-    opacity: 0.72;
-    clip-path: inset(0 0 55% 0);
-  }
-}
-
-.drawerHeader {
-  display: flex;
-  align-items: start;
-  justify-content: space-between;
-  gap: 24px;
-  margin-bottom: 11px;
-}
-
-.drawerHeader h2 {
-  margin-bottom: 3px;
-  font-size: 18px;
-  letter-spacing: -0.02em;
-}
-
-.drawerHeader p {
-  max-width: 74ch;
-  margin-bottom: 0;
-  color: var(--ink-soft);
-  font: 10px/1.4 var(--mono);
-  overflow-wrap: anywhere;
 }
 
 .drawerReadouts {
@@ -1309,31 +1236,471 @@ button:disabled {
   white-space: nowrap;
 }
 
+.mono {
+  font: 11px/1.3 var(--mono);
+}
+
+.errorLine {
+  color: var(--red);
+}
+
+.hintLine {
+  color: var(--ink-soft);
+  font: 10px/1.3 var(--mono);
+}
+
+/* --- Rail navigation ------------------------------------------------------ */
+
+.rail {
+  position: sticky;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  height: 100vh;
+  overflow-y: auto;
+  border-right: 1px solid #111310;
+  padding: 14px 10px 20px;
+  background: var(--panel-dark);
+  color: var(--white);
+}
+
+.railBrand {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 2px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.railGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.railGroup {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.railGroupTitle {
+  padding: 0 8px 5px;
+  color: #9a9d92;
+  font: 700 9px/1.2 var(--mono);
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.railGroup a {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  border-radius: 2px;
+  padding: 7px 8px;
+  color: #c7c9bd;
+  font-size: 12px;
+  text-decoration: none;
+}
+
+.railGroup a svg {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  fill: none;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 1.7;
+}
+
+.railGroup a:hover {
+  background: #2c302a;
+  color: var(--white);
+}
+
+.railGroup a.active {
+  background: #ddd9cd;
+  color: var(--ink);
+  box-shadow: 1px 2px 0 #0d0f0d;
+}
+
+.railBrand:focus-visible,
+.inventoryRowToggle:focus-visible {
+  position: relative;
+  z-index: 4;
+  outline: 3px solid var(--amber);
+  outline-offset: -3px;
+}
+
+
+/* --- Section rail + inventory --------------------------------------------- */
+
+.namespaceField {
+  display: grid;
+  gap: 2px;
+  color: var(--ink-soft);
+  font: 9px/1.1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.namespaceField input {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 6px 8px;
+  background: var(--panel-raised);
+  color: var(--ink);
+  font: 11px/1.3 var(--mono);
+}
+
+.pullForm {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+
+.pullForm input {
+  min-width: 160px;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 7px 9px;
+  background: var(--panel-raised);
+  color: var(--ink);
+  font: 11px/1.3 var(--mono);
+}
+
+.inventoryList {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.inventoryHead {
+  display: grid;
+  gap: 13px;
+  padding: 0 13px;
+  color: var(--ink-faint);
+  font: 9px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.inventoryRow {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-raised);
+  box-shadow: 2px 3px 0 rgba(52, 56, 50, 0.22);
+}
+
+.inventoryRow.selected {
+  box-shadow: 3px 5px 12px rgba(52, 48, 38, 0.24);
+}
+
+.inventoryRowToggle {
+  display: grid;
+  gap: 13px;
+  align-items: center;
+  min-width: 0;
+  border: 0;
+  padding: 9px 10px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+  text-align: left;
+}
+
+.inventoryRowToggle:hover {
+  background: #eeeadf;
+}
+
+.inventoryRowToggle > span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.inventoryLampCell {
+  display: flex;
+  align-items: center;
+}
+
+.inventoryRowActions {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  border-left: 1px solid var(--line);
+  padding: 6px;
+  background: #dcd7ca;
+}
+
+.unavailableNotice {
+  padding: 24px;
+}
+
+/* --- Inspector ------------------------------------------------------------- */
+
+.inspector {
+  position: sticky;
+  top: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 13px;
+  background: #d6d1c4;
+  box-shadow: 3px 5px 12px rgba(52, 48, 38, 0.24);
+  animation: inspectorReveal 220ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes inspectorReveal {
+  from {
+    opacity: 0.72;
+    transform: translateX(10px);
+  }
+}
+
+.inspectorHeader {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.inspectorHeader h2 {
+  margin-bottom: 3px;
+  font-size: 18px;
+  letter-spacing: -0.02em;
+}
+
+.inspectorHeader h2:focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: 3px;
+}
+
+.inspectorHeader p {
+  max-width: 60ch;
+  margin-bottom: 0;
+  color: var(--ink-soft);
+  font: 10px/1.4 var(--mono);
+  overflow-wrap: anywhere;
+}
+
+.inspectorBody {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  min-width: 0;
+}
+
+.inspectorTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 6px;
+}
+
+.inspectorTabs button {
+  border-color: transparent;
+  padding: 5px 9px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.inspectorTabs button.active {
+  border-color: var(--line-strong);
+  background: var(--panel-raised);
+  box-shadow: 1px 1px 0 rgba(52, 56, 50, 0.25);
+  color: var(--ink);
+}
+
+.inspectorForm {
+  display: grid;
+  gap: 11px;
+}
+
+.inspectorForm.inline {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 11px;
+}
+
+.inspectorForm label {
+  display: grid;
+  gap: 4px;
+  color: var(--ink-soft);
+  font: 9px/1.1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.inspectorForm input[type="text"],
+.inspectorForm input[type="number"],
+.inspectorForm select {
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 7px 9px;
+  background: var(--panel-raised);
+  color: var(--ink);
+  font: 12px/1.3 var(--sans);
+}
+
+.inspectorForm.inline form {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+}
+
+/* --- Files / terminal / activity ------------------------------------------- */
+
+.fileList {
+  display: grid;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.fileList button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 8px;
+  border-color: transparent;
+  padding: 6px 8px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--ink);
+  text-align: left;
+}
+
+.fileKind {
+  flex: 0 0 auto;
+  min-width: 31px;
+  color: var(--ink-faint);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.06em;
+}
+
+.fileList button:hover {
+  background: var(--panel-raised);
+}
+
+.fileList small {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font: 9px/1 var(--mono);
+}
+
+.fileEditor {
+  display: grid;
+  gap: 8px;
+}
+
+.fileEditor textarea {
+  border: 1px solid var(--line-strong);
+  border-radius: 2px;
+  padding: 9px;
+  background: var(--panel-dark);
+  color: var(--white);
+  font: 11px/1.4 var(--mono);
+  resize: vertical;
+}
+
+.logRaw {
+  overflow-x: auto;
+  margin: 0;
+  padding: 9px 11px;
+  color: #dedfd7;
+  font: 11px/1.5 var(--mono);
+  white-space: pre-wrap;
+}
+
+.terminalViewport {
+  min-height: 160px;
+}
+
+.terminalPrompt {
+  color: #9fc26a;
+}
+
+.terminalInput {
+  display: flex;
+  gap: 6px;
+  border-top: 1px solid var(--line-strong);
+  padding: 8px;
+}
+
+.terminalInput input {
+  min-width: 0;
+  flex: 1 1 auto;
+  border: 1px solid var(--line);
+  border-radius: 2px;
+  padding: 7px 9px;
+  background: var(--panel-raised);
+  color: var(--ink);
+  font: 12px/1.3 var(--mono);
+}
+
+.activityViewport {
+  max-height: none;
+}
+
 @media (max-width: 1080px) {
   .channelToggle {
-    grid-template-columns: 12px minmax(170px, 1.1fr) minmax(130px, 0.8fr) minmax(150px, 1fr) minmax(80px, 0.5fr) 18px;
+    grid-template-columns: 12px minmax(170px, 1.1fr) minmax(130px, 0.8fr) minmax(150px, 1fr) minmax(80px, 0.5fr);
     gap: 10px;
   }
 
   .drawerGrid {
     grid-template-columns: 1fr;
   }
+
+  .inspector {
+    width: min(420px, 42vw);
+  }
 }
 
 @media (max-width: 860px) {
-  main {
-    width: min(calc(100% - 18px), 1480px);
-    padding-top: 9px;
+  .appShell {
+    grid-template-columns: minmax(0, 1fr);
   }
 
-  .appHeader,
-  .pageIntro,
-  .drawerHeader {
+  .railToggle {
+    display: inline-grid;
+  }
+
+  .rail {
+    position: fixed;
+    z-index: 65;
+    inset: 0 auto 0 0;
+    width: 250px;
+    transform: translateX(-100%);
+    transition: transform 200ms ease-out;
+  }
+
+  .rail.open {
+    transform: translateX(0);
+  }
+
+  .appMain {
+    padding: 9px 9px 40px;
+  }
+
+  .pageIntro {
     align-items: flex-start;
-  }
-
-  .pageIntro,
-  .drawerHeader {
     flex-direction: column;
   }
 
@@ -1350,7 +1717,7 @@ button:disabled {
   }
 
   .channelToggle {
-    grid-template-columns: 12px minmax(170px, 1.1fr) minmax(125px, 0.8fr) minmax(85px, 0.5fr) 18px;
+    grid-template-columns: 12px minmax(170px, 1.1fr) minmax(125px, 0.8fr) minmax(85px, 0.5fr);
   }
 
   .channelRoute {
@@ -1370,39 +1737,24 @@ button:disabled {
     grid-template-columns: 1fr;
     gap: 16px;
   }
+
+  .workArea {
+    grid-template-columns: 1fr;
+  }
+
+  .inspector {
+    position: fixed;
+    z-index: 60;
+    inset: 0;
+    width: auto;
+    max-height: none;
+    border-radius: 0;
+  }
 }
 
 @media (max-width: 620px) {
-  main {
-    width: 100%;
+  .appMain {
     padding: 9px 9px 32px;
-  }
-
-  .appHeader {
-    align-items: stretch;
-    flex-direction: column;
-    gap: 9px;
-  }
-
-  .headerControls {
-    width: 100%;
-    align-items: stretch;
-    gap: 0;
-  }
-
-  .liveSignal {
-    display: none;
-  }
-
-  .brand small {
-    display: none;
-  }
-
-  .primaryNav a {
-    flex: 1 1 0;
-    padding: 6px 8px;
-    font-size: 11px;
-    text-align: center;
   }
 
   .fleetRail {
@@ -1437,7 +1789,7 @@ button:disabled {
   }
 
   .channelToggle {
-    grid-template-columns: 12px minmax(0, 1fr) minmax(78px, 0.5fr) 18px;
+    grid-template-columns: 12px minmax(0, 1fr) minmax(78px, 0.5fr);
     min-height: 55px;
   }
 
@@ -1511,11 +1863,10 @@ button:disabled {
 
 @media (prefers-reduced-motion: reduce) {
   .banner,
-  .serviceDrawer {
+  .inspector {
     animation: none;
   }
 
-  .channelChevron,
   .iconButton::after {
     transition: none;
   }

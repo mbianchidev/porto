@@ -121,3 +121,10 @@ jobs:
 
       - name: Build
         run: npm run build
+
+      - name: Validate desktop shell
+        run: |
+          npm --prefix electron ci
+          npm --prefix electron audit
+          node --check electron/main.js
+          node --check electron/preload.js

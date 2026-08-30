@@ -34,6 +34,8 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 			return []byte(`{"clientVersion":{"gitVersion":"v1.33.0"},"serverVersion":{"gitVersion":"v1.33.1"}}`), nil
 		case strings.Contains(joined, "config current-context"):
 			return []byte("porto-dev\n"), nil
+		case strings.Contains(joined, "config view -o json"):
+			return []byte(`{"current-context":"porto-dev","contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev","namespace":"default"}}]}`), nil
 		case strings.Contains(joined, "get pods"):
 			return []byte(`{"items":[{"metadata":{"name":"api-1","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"spec":{"nodeName":"worker-1","containers":[{"name":"api","image":"porto/api:latest"}]},"status":{"phase":"Running","podIP":"10.42.0.2","containerStatuses":[{"name":"api","ready":true,"restartCount":1,"state":{"running":{}}}]}}]}`), nil
 		case strings.Contains(joined, "get services"):
@@ -95,6 +97,13 @@ func TestStatusAndPodDecoding(t *testing.T) {
 	}
 	if len(pods) != 1 || pods[0].Ready != "1/1" || pods[0].Restarts != 1 || pods[0].Containers[0].State != "running" {
 		t.Fatalf("unexpected pods: %+v", pods)
+	}
+	contexts, err := manager.Contexts(context.Background())
+	if err != nil {
+		t.Fatalf("list contexts: %v", err)
+	}
+	if len(contexts) != 1 || contexts[0].Cluster != "porto-dev" || !contexts[0].Current {
+		t.Fatalf("unexpected contexts: %+v", contexts)
 	}
 }
 

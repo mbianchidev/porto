@@ -174,24 +174,35 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 }
 
 func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
-	output, err := m.run(ctx, "", 10*time.Second, nil, "config", "get-contexts", "-o", "name")
+	output, err := m.run(ctx, "", 10*time.Second, nil, "config", "view", "-o", "json")
 	if err != nil {
 		return nil, err
 	}
-	currentOutput, currentErr := m.run(ctx, "", 10*time.Second, nil, "config", "current-context")
-	current := strings.TrimSpace(string(currentOutput))
-	if currentErr != nil {
-		current = ""
+	var config struct {
+		CurrentContext string `json:"current-context"`
+		Contexts       []struct {
+			Name    string `json:"name"`
+			Context struct {
+				Cluster   string `json:"cluster"`
+				AuthInfo  string `json:"user"`
+				Namespace string `json:"namespace"`
+			} `json:"context"`
+		} `json:"contexts"`
 	}
-	contexts := make([]ContextInfo, 0)
-	scanner := bufio.NewScanner(strings.NewReader(string(output)))
-	for scanner.Scan() {
-		name := strings.TrimSpace(scanner.Text())
-		if name != "" {
-			contexts = append(contexts, ContextInfo{Name: name, Current: name == current})
-		}
+	if err := json.Unmarshal(output, &config); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes contexts: %w", err)
 	}
-	return contexts, scanner.Err()
+	contexts := make([]ContextInfo, 0, len(config.Contexts))
+	for _, item := range config.Contexts {
+		contexts = append(contexts, ContextInfo{
+			Name:      item.Name,
+			Cluster:   item.Context.Cluster,
+			AuthInfo:  item.Context.AuthInfo,
+			Namespace: item.Context.Namespace,
+			Current:   item.Name == config.CurrentContext,
+		})
+	}
+	return contexts, nil
 }
 
 func (m *Manager) Pods(ctx context.Context, contextName, namespace string) ([]Pod, error) {
