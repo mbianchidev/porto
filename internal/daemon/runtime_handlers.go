@@ -24,6 +24,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
 	mux.HandleFunc("GET /api/runtime/features", s.runtimeFeatures)
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
+	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
+	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
@@ -109,6 +111,19 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 		"kubernetes": kubernetesStatus,
 		"vms":        vmStatus,
 	})
+}
+
+func (s *Server) runtimeProviders(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, s.providers.Status(r.Context()))
+}
+
+func (s *Server) installRuntimeProvider(w http.ResponseWriter, r *http.Request) {
+	status, err := s.providers.Install(r.Context(), r.PathValue("provider"))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, status)
 }
 
 func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
@@ -318,6 +333,9 @@ func (s *Server) kubernetesPods(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) kubernetesServices(w http.ResponseWriter, r *http.Request) {
 	value, err := s.kubernetes.Services(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	if err == nil {
+		err = s.attachServiceForwards(runtimeContext(r), value)
+	}
 	writeRuntimeResult(w, value, err)
 }
 
@@ -504,7 +522,9 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
-	if err := s.clusters.SetRunning(r.Context(), r.PathValue("name"), false); err != nil {
+	name := r.PathValue("name")
+	forwardErr := s.stopKubernetesForwards("porto-" + name)
+	if err := errors.Join(forwardErr, s.clusters.SetRunning(r.Context(), name, false)); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -555,7 +575,9 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		http.Error(w, "confirm=true is required to delete a Kubernetes cluster", http.StatusBadRequest)
 		return
 	}
-	if err := s.clusters.Delete(r.Context(), r.PathValue("name")); err != nil {
+	name := r.PathValue("name")
+	forwardErr := s.stopKubernetesForwards("porto-" + name)
+	if err := errors.Join(forwardErr, s.clusters.Delete(r.Context(), name)); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}

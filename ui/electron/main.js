@@ -12,6 +12,7 @@ const path = require('node:path')
 
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const HEALTH_CHECK_TIMEOUT_MS = 800
+const windows = new Set()
 
 async function isDaemonHealthy() {
   const controller = new AbortController()
@@ -78,6 +79,7 @@ function createWindow() {
     minHeight: 600,
     backgroundColor: '#252925',
     title: 'Porto',
+    show: false,
     webPreferences: {
       contextIsolation: true,
       nodeIntegration: false,
@@ -85,6 +87,14 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
   })
+  const presentWindow = () => {
+    if (process.platform === 'darwin') app.dock?.show()
+    app.focus({ steal: true })
+    if (window.isMinimized()) window.restore()
+    window.show()
+    window.focus()
+    window.moveTop()
+  }
   let retries = 0
   const openExternalURL = (targetURL) => {
     try {
@@ -111,7 +121,15 @@ function createWindow() {
     retries += 1
     setTimeout(() => window.loadURL(DAEMON_URL), 500)
   })
-  window.loadURL(DAEMON_URL)
+  windows.add(window)
+  window.on('closed', () => windows.delete(window))
+  presentWindow()
+  window.once('ready-to-show', presentWindow)
+  window.loadURL(DAEMON_URL).then(() => {
+    presentWindow()
+  }).catch((error) => {
+    console.error('Unable to load Porto dashboard', error)
+  })
 }
 
 const hasLock = app.requestSingleInstanceLock()
@@ -121,7 +139,10 @@ if (!hasLock) {
 
 app.on('second-instance', () => {
   const window = BrowserWindow.getAllWindows()[0]
-  if (!window) return
+  if (!window) {
+    createWindow()
+    return
+  }
   if (window.isMinimized()) window.restore()
   window.focus()
 })

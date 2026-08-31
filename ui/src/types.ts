@@ -52,6 +52,14 @@ export type RuntimeFeatures = {
 
 export type RuntimeFeatureName = keyof RuntimeFeatures
 
+export type RuntimeProviderStatus = {
+  name: 'lima' | 'kind' | 'k0s'
+  command: string
+  installed: boolean
+  version?: string
+  message?: string
+}
+
 
 export type IntegrationStatus = {
   state: 'disabled' | 'idle' | 'running' | 'ready' | 'error'
@@ -224,6 +232,7 @@ export type KubernetesServicePort = {
   port: number
   targetPort: string
   nodePort?: number
+  localPort?: number
 }
 
 export type KubernetesService = {
@@ -298,6 +307,7 @@ export type KubernetesNodeGroupSpec = {
 
 export type KubernetesClusterRequest = {
   name: string
+  provider: 'kind' | 'k0s' | 'k3s'
   version: string
   controlPlane: KubernetesMachineSpec
   nodeGroups: KubernetesNodeGroupSpec[]
@@ -315,6 +325,7 @@ export type KubernetesScaleNodeGroupRequest = {
 // `nodes` is a flat list of Lima VM instance names, not grouped by node group.
 export type KubernetesCluster = {
   name: string
+  provider: 'kind' | 'k0s' | 'k3s'
   context: string
   kubeconfigPath: string
   server: string
@@ -337,6 +348,8 @@ export type VMImage = {
   version: string
   template: string
   description: string
+  available: boolean
+  message?: string
 }
 
 export type VMInstance = {

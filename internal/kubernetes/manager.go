@@ -77,6 +77,7 @@ type ServicePort struct {
 	Port       int32  `json:"port"`
 	TargetPort string `json:"targetPort"`
 	NodePort   int32  `json:"nodePort,omitempty"`
+	LocalPort  int    `json:"localPort,omitempty"`
 }
 
 type Service struct {
@@ -149,12 +150,16 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
 	status := Status{Context: contextName}
 	if status.Context == "" {
-		output, err := m.run(ctx, "", 10*time.Second, nil, "config", "current-context")
+		contexts, err := m.Contexts(ctx)
 		if err != nil {
 			status.Message = err.Error()
 			return status
 		}
-		status.Context = strings.TrimSpace(string(output))
+		if len(contexts) == 0 {
+			status.Message = "No Porto-managed Kubernetes cluster exists. Create one with kind, k0s, or k3s."
+			return status
+		}
+		status.Context = contexts[0].Name
 	}
 	output, err := m.run(ctx, status.Context, 15*time.Second, nil, "version", "-o", "json")
 	if err != nil {
@@ -183,15 +188,7 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 }
 
 func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
-	output, err := m.run(ctx, "", 10*time.Second, nil, "config", "view", "-o", "json")
-	var config kubeconfigView
-	if err == nil {
-		if decodeErr := json.Unmarshal(output, &config); decodeErr != nil {
-			return nil, fmt.Errorf("decode Kubernetes contexts: %w", decodeErr)
-		}
-	}
 	contextsByName := make(map[string]ContextInfo)
-	addContextConfig(contextsByName, config)
 	if m.kubeconfigRoot != "" {
 		entries, readErr := os.ReadDir(m.kubeconfigRoot)
 		if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
@@ -221,9 +218,6 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 	contexts := make([]ContextInfo, 0, len(contextsByName))
 	for _, item := range contextsByName {
 		contexts = append(contexts, item)
-	}
-	if len(contexts) == 0 && err != nil {
-		return nil, err
 	}
 	sort.Slice(contexts, func(left, right int) bool { return contexts[left].Name < contexts[right].Name })
 	return contexts, nil
@@ -545,6 +539,9 @@ func (m *Manager) run(
 	stdin []byte,
 	args ...string,
 ) ([]byte, error) {
+	if contextName == "" && (len(args) == 0 || args[0] != "config") {
+		return nil, errors.New("no Porto-managed Kubernetes context is selected")
+	}
 	args = m.CommandArgs(contextName, args...)
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()

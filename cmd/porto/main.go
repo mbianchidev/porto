@@ -593,5 +593,6 @@ Commands:
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
   porto kubernetes cluster create|start|stop|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
+  porto runtime providers|install <lima|kind|k0s>
   porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

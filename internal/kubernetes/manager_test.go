@@ -35,6 +35,8 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 			return []byte(`{"clientVersion":{"gitVersion":"v1.33.0"},"serverVersion":{"gitVersion":"v1.33.1"}}`), nil
 		case strings.Contains(joined, "config current-context"):
 			return []byte("porto-dev\n"), nil
+		case strings.Contains(joined, "config view --raw -o json"):
+			return []byte(`{"apiVersion":"v1","kind":"Config","current-context":"default","clusters":[{"name":"default","cluster":{"server":"https://127.0.0.1:54321"}}],"contexts":[{"name":"default","context":{"cluster":"default","user":"default"}}],"users":[{"name":"default","user":{"token":"test"}}]}`), nil
 		case strings.Contains(joined, "config view -o json"):
 			return []byte(`{"current-context":"porto-dev","contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev","namespace":"default"}}]}`), nil
 		case strings.Contains(joined, "get pods"):
@@ -75,7 +77,11 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 					return []byte("192.168.105.2\n"), nil
 				case strings.Contains(joined, "server/node-token"):
 					return []byte("test-token\n"), nil
+				case strings.Contains(joined, "k0s token create"):
+					return []byte("test-k0s-token\n"), nil
 				case strings.Contains(joined, "k3s.yaml"):
+					return []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\ncontexts:\n- context:\n    cluster: default\n    user: default\n  name: default\ncurrent-context: default\n"), nil
+				case strings.Contains(joined, "k0s kubeconfig admin"):
 					return []byte("apiVersion: v1\nclusters:\n- cluster:\n    server: https://127.0.0.1:6443\n  name: default\ncontexts:\n- context:\n    cluster: default\n    user: default\n  name: default\ncurrent-context: default\n"), nil
 				default:
 					return nil, nil
@@ -87,8 +93,12 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 }
 
 func TestStatusAndPodDecoding(t *testing.T) {
-	manager := New(newFakeRunner())
-	status := manager.Status(context.Background(), "")
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, config.KubernetesClusterFileToken("dev")+".yaml"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := NewWithKubeconfigRoot(newFakeRunner(), dir)
+	status := manager.Status(context.Background(), "porto-dev")
 	if !status.Available || status.Context != "porto-dev" || status.ServerVersion != "v1.33.1" {
 		t.Fatalf("unexpected status: %+v", status)
 	}
@@ -128,6 +138,19 @@ func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	}
 }
 
+func TestStatusDoesNotUseUnmanagedCurrentContext(t *testing.T) {
+	runner := newFakeRunner()
+	status := NewWithKubeconfigRoot(runner, t.TempDir()).Status(context.Background(), "")
+	if status.Available || status.Context != "" || !strings.Contains(status.Message, "No Porto-managed") {
+		t.Fatalf("unexpected unmanaged-context status: %+v", status)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 0 {
+		t.Fatalf("status consulted global kubectl context: %+v", runner.commands)
+	}
+}
+
 func TestFileOperationsKeepPathAsArgument(t *testing.T) {
 	runner := newFakeRunner()
 	manager := New(runner)
@@ -163,6 +186,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	provisioner := NewClusterProvisioner(vmManager, runner, dir)
 	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
 		Name:         "dev",
+		Provider:     "k3s",
 		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
 		NodeGroups: []NodeGroupSpec{{
 			Name: "workers", Count: 2, Machine: MachineSpec{CPUs: 4, MemoryMiB: 4096, DiskGiB: 30},
@@ -181,11 +205,66 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if !strings.Contains(string(data), "https://127.0.0.1:") || strings.Contains(string(data), "https://127.0.0.1:6443") {
 		t.Fatalf("kubeconfig did not use the forwarded host API port: %s", data)
 	}
-	if strings.Contains(string(data), "name: default") || !strings.Contains(string(data), "name: porto-dev") {
+	if strings.Contains(string(data), `"name": "default"`) || !strings.Contains(string(data), `"name": "porto-dev"`) {
 		t.Fatalf("kubeconfig identifiers were not made cluster-specific: %s", data)
 	}
 	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)
+	}
+}
+
+func TestProvisionKindClusterWithoutLima(t *testing.T) {
+	t.Setenv("PORTO_HOME", t.TempDir())
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name:         "kind-dev",
+		Provider:     "kind",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+		NodeGroups: []NodeGroupSpec{{
+			Name: "workers", Count: 1, Machine: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("create kind cluster: %v", err)
+	}
+	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" {
+		t.Fatalf("unexpected kind cluster: %+v", cluster)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if command.Name == "limactl" {
+			t.Fatalf("kind provider invoked Lima: %+v", command)
+		}
+	}
+}
+
+func TestProvisionK0sClusterOnLima(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name:         "k0s-dev",
+		Provider:     "k0s",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	})
+	if err != nil {
+		t.Fatalf("create k0s cluster: %v", err)
+	}
+	if cluster.Provider != "k0s" || len(cluster.Nodes) != 1 {
+		t.Fatalf("unexpected k0s cluster: %+v", cluster)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	foundInstall := false
+	for _, command := range runner.commands {
+		if command.Name == "limactl" && strings.Contains(strings.Join(command.Args, " "), "k0s install controller") {
+			foundInstall = true
+			break
+		}
+	}
+	if !foundInstall {
+		t.Fatal("k0s controller installation was not invoked")
 	}
 }
 
@@ -196,7 +275,7 @@ func TestImportImageCopiesArchiveToEveryClusterNode(t *testing.T) {
 	runner.instances["unrelated"] = true
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 	if err := provisioner.writeClusterMetadata(ClusterRequest{
-		Name: "dev",
+		Name: "dev", Provider: "k3s",
 		NodeGroups: []NodeGroupSpec{{
 			Name: "workers", Count: 1,
 		}},
@@ -224,10 +303,10 @@ func TestClusterDeletionUsesExactMetadataOwnership(t *testing.T) {
 	runner.instances["porto-app-server-1"] = true
 	runner.instances["porto-app-v2-server-1"] = true
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app"}); err != nil {
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app", Provider: "k3s"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app-v2"}); err != nil {
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "app-v2", Provider: "k3s"}); err != nil {
 		t.Fatal(err)
 	}
 	if err := provisioner.Delete(context.Background(), "app"); err != nil {

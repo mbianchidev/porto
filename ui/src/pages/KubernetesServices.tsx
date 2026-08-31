@@ -70,7 +70,7 @@ export function KubernetesServices({ context }: { context: string }) {
               { header: 'Namespace', className: 'mono', render: (service) => service.namespace },
               { header: 'Type', className: 'mono', render: (service) => service.type },
               { header: 'Cluster IP', className: 'mono', render: (service) => service.clusterIP },
-              { header: 'Ports', className: 'mono', render: (service) => service.ports.map((port) => `${port.port}/${port.protocol}`).join(', ') || '—' },
+              { header: 'Ports', className: 'mono', render: (service) => service.ports.map((port) => port.localPort ? `localhost:${port.localPort}` : `${port.port}/${port.protocol}`).join(', ') || '—' },
               { header: 'Age', className: 'mono', render: (service) => service.age },
             ]}
           />
@@ -90,7 +90,10 @@ export function KubernetesServices({ context }: { context: string }) {
                 {selected.ports.map((port) => (
                   <div key={`${port.name}-${port.port}`}>
                     <dt>{port.name || port.protocol}</dt>
-                    <dd>{port.port} → {port.targetPort}{port.nodePort ? ` (node ${port.nodePort})` : ''}</dd>
+                    <dd>
+                      {port.port} → {port.targetPort}{port.nodePort ? ` (node ${port.nodePort})` : ''}
+                      {port.localPort ? <> · <a href={`http://127.0.0.1:${port.localPort}/`} target="_blank" rel="noreferrer">localhost:{port.localPort}</a></> : ''}
+                    </dd>
                   </div>
                 ))}
               </dl>

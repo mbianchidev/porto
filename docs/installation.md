@@ -47,7 +47,11 @@ Optional runtime features use standard host tools:
 
 - Docker CLI and a Docker-compatible Engine for containers, images, builds, networks, volumes, and Compose
 - `kubectl` for Kubernetes inspection
-- `limactl` for Porto-created Kubernetes clusters and standalone Linux VMs
+- `limactl` for k3s/k0s clusters and standalone Linux VMs
+- `kind` for Kubernetes-in-Docker clusters
+
+On macOS these providers can be installed explicitly from Porto with
+`porto runtime install lima|kind|k0s`.
 
 Porto keeps native project orchestration available when optional runtime tools are missing.
 

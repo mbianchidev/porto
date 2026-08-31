@@ -35,8 +35,14 @@ func runtimeCmd(st *store.Store, args []string) error {
 			"vms":        settings.VMsEnabled,
 		})
 	}
+	if len(args) == 1 && args[0] == "providers" {
+		return runtimeGET("/api/runtime/providers")
+	}
+	if len(args) == 2 && args[0] == "install" {
+		return runtimePOST("/api/runtime/providers/"+url.PathEscape(args[1])+"/install", nil)
+	}
 	if len(args) != 2 || (args[0] != "enable" && args[0] != "disable") {
-		return errors.New("usage: porto runtime status|enable|disable <docker|kubernetes|vms>")
+		return errors.New("usage: porto runtime status|providers|install <provider>|enable|disable <runtime>")
 	}
 	feature := args[1]
 	if feature != "docker" && feature != "kubernetes" && feature != "vms" {
@@ -332,7 +338,8 @@ func kubernetesClusterCmd(args []string) error {
 	switch args[0] {
 	case "create":
 		fs := flag.NewFlagSet("kubernetes cluster create", flag.ContinueOnError)
-		version := fs.String("version", "", "pinned k3s version")
+		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, or k3s")
+		version := fs.String("version", "", "provider Kubernetes version")
 		cpus := fs.Int("cpus", 2, "control-plane CPUs")
 		memory := fs.Int("memory", 2048, "control-plane memory MiB")
 		disk := fs.Int("disk", 20, "control-plane disk GiB")
@@ -347,8 +354,9 @@ func kubernetesClusterCmd(args []string) error {
 			return errors.New("usage: porto kubernetes cluster create <name> [--version v...] [--workers 1]")
 		}
 		return runtimePOST("/api/kubernetes/clusters", kubernetes.ClusterRequest{
-			Name:    fs.Arg(0),
-			Version: *version,
+			Name:     fs.Arg(0),
+			Provider: *provider,
+			Version:  *version,
 			ControlPlane: kubernetes.MachineSpec{
 				CPUs: *cpus, MemoryMiB: *memory, DiskGiB: *disk,
 			},

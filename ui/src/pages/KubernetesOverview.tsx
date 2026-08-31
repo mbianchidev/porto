@@ -13,6 +13,7 @@ import type {
   KubernetesContext,
   KubernetesMachineSpec,
   KubernetesStatus,
+  RuntimeProviderStatus,
 } from '../types'
 
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
@@ -24,6 +25,15 @@ function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onSca
   const [machine, setMachine] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
   const [version, setVersion] = useState('')
   const [submitting, setSubmitting] = useState(false)
+
+  if (cluster.provider === 'kind') {
+    return (
+      <section className="drawerPanel">
+        <h3>kind node groups</h3>
+        <p>kind fixes its node topology at creation time. Recreate this cluster to change its node count.</p>
+      </section>
+    )
+  }
 
   async function scale(event: FormEvent) {
     event.preventDefault()
@@ -129,8 +139,11 @@ export function KubernetesOverview({
   const [creatingCluster, setCreatingCluster] = useState(false)
   const [clusterName, setClusterName] = useState('')
   const [clusterVersion, setClusterVersion] = useState('')
+  const [clusterProvider, setClusterProvider] = useState<'kind' | 'k0s' | 'k3s'>('k3s')
   const [controlPlane, setControlPlane] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
+  const [initialWorkers, setInitialWorkers] = useState(1)
   const [submittingCluster, setSubmittingCluster] = useState(false)
+  const [installingProvider, setInstallingProvider] = useState<string | null>(null)
 
   const status = usePolledResource<KubernetesStatus>(
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
@@ -139,6 +152,7 @@ export function KubernetesOverview({
   )
   const contexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 15000, [])
   const clusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
+  const providerTools = usePolledResource<RuntimeProviderStatus[]>((signal) => apiGet('/api/runtime/providers', signal), 15000, [])
   const items = contexts.data ?? []
   const clusterItems = clusters.data ?? []
   const selectedCluster = clusterItems.find((cluster) => cluster.name === selectedClusterName) ?? null
@@ -152,16 +166,21 @@ export function KubernetesOverview({
     try {
       const cluster = await apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
         name: clusterName.trim(),
+        provider: clusterProvider,
         version: clusterVersion,
         controlPlane,
-        nodeGroups: [],
+        nodeGroups: initialWorkers > 0
+          ? [{ name: 'workers', count: initialWorkers, machine: DEFAULT_MACHINE, labels: {}, taints: [] }]
+          : [],
       })
       notifyNotice('kubernetes', `Provisioning cluster ${clusterName.trim()}. Add node groups from its inspector once it is ready.`)
       onContextChange(cluster.context)
       setSelectedClusterName(cluster.name)
       setClusterName('')
       setClusterVersion('')
+      setClusterProvider('k3s')
       setControlPlane(DEFAULT_MACHINE)
+      setInitialWorkers(1)
       setCreatingCluster(false)
       clusters.reload()
     } catch (err) {
@@ -190,6 +209,20 @@ export function KubernetesOverview({
       clusters.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to delete ${cluster.name}`))
+    }
+  }
+
+  async function installProvider(name: 'lima' | 'kind' | 'k0s') {
+    setInstallingProvider(name)
+    try {
+      await apiSend(`/api/runtime/providers/${name}/install`, 'POST')
+      notifyNotice('kubernetes', `${name} provider installed.`)
+      providerTools.reload()
+      status.reload()
+    } catch (err) {
+      notifyError('kubernetes', errorMessage(err, `Unable to install ${name}`))
+    } finally {
+      setInstallingProvider(null)
     }
   }
 
@@ -238,13 +271,14 @@ export function KubernetesOverview({
             <InventoryList
               items={clusterItems}
               getKey={(cluster) => cluster.name}
-              columnsTemplate="minmax(150px,1.2fr) minmax(160px,1.2fr) minmax(160px,1.2fr) minmax(70px,0.5fr)"
+              columnsTemplate="minmax(140px,1.1fr) minmax(80px,0.6fr) minmax(150px,1fr) minmax(150px,1fr) minmax(60px,0.4fr)"
               selectedKey={selectedClusterName}
               onSelect={(cluster) => { setCreatingCluster(false); setSelectedClusterName(cluster.name); setClusterTab('overview') }}
               ariaLabel="Porto-provisioned Kubernetes clusters"
               emptyMessage={clusters.error || 'No Porto-provisioned clusters yet. Create one to get started.'}
               columns={[
                 { header: 'Name', render: (cluster) => <strong>{cluster.name}</strong> },
+                { header: 'Provider', className: 'mono', render: (cluster) => cluster.provider },
                 { header: 'Context', className: 'mono', render: (cluster) => cluster.context },
                 { header: 'Server', className: 'mono', render: (cluster) => cluster.server || '—' },
                 { header: 'Nodes', className: 'mono', render: (cluster) => cluster.nodes?.length ?? 0 },
@@ -269,6 +303,7 @@ export function KubernetesOverview({
                     <h3>Cluster detail</h3>
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
+                      <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
                       <div><dt>Server</dt><dd>{selectedCluster.server || '—'}</dd></div>
                       <div><dt>Kubeconfig</dt><dd>{selectedCluster.kubeconfigPath}</dd></div>
                       <div><dt>Nodes</dt><dd>{selectedCluster.nodes?.join(', ') || '—'}</dd></div>
@@ -289,15 +324,41 @@ export function KubernetesOverview({
             )}
 
             {creatingCluster && (
-              <Inspector title="New cluster" subtitle="k3s on Lima VMs" onClose={() => setCreatingCluster(false)}>
+              <Inspector title="New cluster" subtitle="Managed by Porto" onClose={() => setCreatingCluster(false)}>
                 <form className="inspectorForm" onSubmit={createCluster}>
+                  <section className="providerReadiness" aria-label="Kubernetes provider readiness">
+                    {(providerTools.data ?? []).map((provider) => (
+                      <div className={`integrationStatus ${provider.installed ? 'ready' : 'missing'}`} key={provider.name}>
+                        <strong>{provider.name}</strong>
+                        <span>{provider.installed ? provider.version : provider.message}</span>
+                        {!provider.installed && (
+                          <button type="button" disabled={installingProvider !== null} onClick={() => installProvider(provider.name)}>
+                            {installingProvider === provider.name ? 'Installing…' : `Install ${provider.name}`}
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </section>
                   <label>
                     <span>Name</span>
                     <input type="text" value={clusterName} placeholder="dev-cluster" onChange={(event) => setClusterName(event.target.value)} required />
                   </label>
                   <label>
-                    <span>k3s version (optional)</span>
-                    <input type="text" value={clusterVersion} placeholder="v1.30.4+k3s1" onChange={(event) => setClusterVersion(event.target.value)} />
+                    <span>Provider</span>
+                    <select value={clusterProvider} onChange={(event) => setClusterProvider(event.target.value as 'kind' | 'k0s' | 'k3s')}>
+                      <option value="kind">kind — Kubernetes in Docker</option>
+                      <option value="k3s">k3s — lightweight Kubernetes on Lima VMs</option>
+                      <option value="k0s">k0s — conformant Kubernetes on Lima VMs</option>
+                    </select>
+                  </label>
+                  <label>
+                    <span>Version (optional)</span>
+                    <input
+                      type="text"
+                      value={clusterVersion}
+                      placeholder={clusterProvider === 'kind' ? 'v1.36.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
+                      onChange={(event) => setClusterVersion(event.target.value)}
+                    />
                   </label>
                   <label>
                     <span>Control-plane CPUs</span>
@@ -311,7 +372,15 @@ export function KubernetesOverview({
                     <span>Control-plane disk (GiB)</span>
                     <input type="number" min={5} value={controlPlane.diskGiB} onChange={(event) => setControlPlane({ ...controlPlane, diskGiB: Number(event.target.value) })} />
                   </label>
-                  <p className="hintLine">Creates a single-node k3s control plane on a new Lima VM. Add worker node groups afterward from the cluster's inspector.</p>
+                  <label>
+                    <span>Initial worker nodes</span>
+                    <input type="number" min={0} max={16} value={initialWorkers} onChange={(event) => setInitialWorkers(Number(event.target.value))} />
+                  </label>
+                  <p className="hintLine">
+                    {clusterProvider === 'kind'
+                      ? 'Creates a self-contained cluster using the Porto Docker endpoint.'
+                      : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}
+                  </p>
                   <button type="submit" disabled={submittingCluster || clusterName.trim() === ''}>{submittingCluster ? 'Creating…' : 'Create cluster'}</button>
                 </form>
               </Inspector>

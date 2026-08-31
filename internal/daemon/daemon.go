@@ -34,6 +34,7 @@ import (
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/providers"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
@@ -64,6 +65,7 @@ type Server struct {
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
 	composePorts    map[int64][]int
+	kubeForwards    map[string]*kubeForward
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	compose         composeIntegration
@@ -81,6 +83,7 @@ type Server struct {
 	kubernetes      *kubernetes.Manager
 	clusters        *kubernetes.ClusterProvisioner
 	vms             *vm.Manager
+	providers       *providers.Manager
 	dockerSocket    string
 }
 
@@ -126,6 +129,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
 		composePorts:    map[int64][]int{},
+		kubeForwards:    map[string]*kubeForward{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		compose:         compose.New(nil),
@@ -145,6 +149,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
 		clusters:       kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir),
 		vms:            vmManager,
+		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,
 	}
 }

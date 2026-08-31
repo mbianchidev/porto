@@ -166,6 +166,22 @@ func TestExpandScanRoot(t *testing.T) {
 	}
 }
 
+func TestStopKubernetesForwardsScopesByContext(t *testing.T) {
+	server := &Server{kubeForwards: map[string]*kubeForward{
+		"porto-dev/default/api/80":   {port: 45000},
+		"porto-other/default/api/80": {port: 45001},
+	}}
+	if err := server.stopKubernetesForwards("porto-dev"); err != nil {
+		t.Fatalf("stop forwards: %v", err)
+	}
+	if _, ok := server.kubeForwards["porto-dev/default/api/80"]; ok {
+		t.Fatal("deleted cluster forward was retained")
+	}
+	if _, ok := server.kubeForwards["porto-other/default/api/80"]; !ok {
+		t.Fatal("unrelated cluster forward was removed")
+	}
+}
+
 func (r *recordingSetupRunner) Run(_ context.Context, _ app.Project, _ func(stream, line string) error) (projectsetup.Result, error) {
 	r.called = true
 	return projectsetup.Result{}, nil

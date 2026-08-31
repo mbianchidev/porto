@@ -9,7 +9,7 @@ import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { VMCreateRequest, VMImage, VMInstance, VMStatus } from '../types'
+import type { RuntimeProviderStatus, VMCreateRequest, VMImage, VMInstance, VMStatus } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(150px,1.2fr) minmax(110px,0.7fr) minmax(70px,0.4fr) minmax(90px,0.5fr) minmax(90px,0.5fr)'
 
@@ -127,13 +127,18 @@ export function Machines() {
     name: '', image: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true,
   })
   const [submitting, setSubmitting] = useState(false)
+  const [installing, setInstalling] = useState(false)
 
   const status = usePolledResource<VMStatus>((signal) => apiGet('/api/vms/status', signal), 10000, [])
   const images = usePolledResource<VMImage[]>((signal) => apiGet('/api/vms/images', signal), 0, [])
   const instances = usePolledResource<VMInstance[]>((signal) => apiGet('/api/vms/instances', signal), 6000, [])
+  const providers = usePolledResource<RuntimeProviderStatus[]>((signal) => apiGet('/api/runtime/providers', signal), 15000, [])
   const items = instances.data ?? []
   const selected = items.find((instance) => instance.name === selectedName) ?? null
   const available = status.data?.available ?? false
+  const lima = providers.data?.find((provider) => provider.name === 'lima')
+  const selectedImage = images.data?.find((image) => image.id === form.image)
+  const isRunning = (instance: VMInstance) => instance.status.toLocaleLowerCase() === 'running'
 
   async function createInstance(event: FormEvent) {
     event.preventDefault()
@@ -174,6 +179,20 @@ export function Machines() {
     }
   }
 
+  async function installLima() {
+    setInstalling(true)
+    try {
+      await apiSend('/api/runtime/providers/lima/install', 'POST')
+      notifyNotice('machines', 'Lima provider installed.')
+      providers.reload()
+      status.reload()
+    } catch (err) {
+      notifyError('machines', errorMessage(err, 'Unable to install Lima'))
+    } finally {
+      setInstalling(false)
+    }
+  }
+
   return (
     <>
       <section className="fleetRail" aria-label="Virtual machine status">
@@ -189,11 +208,19 @@ export function Machines() {
       </div>
       <div className="workArea">
         {!available ? (
-          <RuntimeGate
-            label="Virtual machines"
-            enabled={status.data?.enabled ?? false}
-            message={status.data?.message || status.error || (status.data?.enabled ? 'Porto could not reach Lima. Install limactl to manage Porto virtual machines.' : undefined)}
-          />
+          status.data?.enabled && lima && !lima.installed ? (
+            <article className="empty unavailableNotice" role="status">
+              <h2>Virtual machine provider is missing</h2>
+              <p>{lima.message || 'Install Lima to create and manage Linux virtual machines.'}</p>
+              <button type="button" disabled={installing} onClick={installLima}>{installing ? 'Installing Lima…' : 'Install Lima'}</button>
+            </article>
+          ) : (
+            <RuntimeGate
+              label="Virtual machines"
+              enabled={status.data?.enabled ?? false}
+              message={status.data?.message || status.error || (status.data?.enabled ? 'Porto could not reach Lima.' : undefined)}
+            />
+          )
         ) : (
           <InventoryList
             items={items}
@@ -213,10 +240,9 @@ export function Machines() {
               { header: 'Disk', className: 'mono', render: (instance) => formatBytes(instance.diskBytes) },
             ]}
             renderActions={(instance) => (
-              <>
-                <ActionButton label="Start VM" icon="play" disabled={instance.status === 'Running'} onClick={() => lifecycle(instance, 'start')} />
-                <ActionButton label="Stop VM" icon="stop" disabled={instance.status !== 'Running'} onClick={() => lifecycle(instance, 'stop')} />
-              </>
+              isRunning(instance)
+                ? <ActionButton label="Stop VM" icon="stop" onClick={() => lifecycle(instance, 'stop')} />
+                : <ActionButton label="Start VM" icon="play" onClick={() => lifecycle(instance, 'start')} />
             )}
           />
         )}
@@ -238,13 +264,14 @@ export function Machines() {
                   <div><dt>Disk</dt><dd>{formatBytes(selected.diskBytes)}</dd></div>
                   <div><dt>SSH port</dt><dd>{selected.sshLocalPort || '—'}</dd></div>
                   <div><dt>Directory</dt><dd>{selected.directory || '—'}</dd></div>
-                  <div><dt>Addresses</dt><dd>{selected.addresses.join(', ') || '—'}</dd></div>
+                  <div><dt>Addresses</dt><dd>{selected.addresses?.join(', ') || '—'}</dd></div>
                 </dl>
                 <div className="maintenanceBar">
                   <span>Maintenance controls</span>
                   <div className="actions">
-                    <ActionButton label="Start VM" icon="play" disabled={selected.status === 'Running'} onClick={() => lifecycle(selected, 'start')} />
-                    <ActionButton label="Stop VM" icon="stop" disabled={selected.status !== 'Running'} onClick={() => lifecycle(selected, 'stop')} />
+                    {isRunning(selected)
+                      ? <ActionButton label="Stop VM" icon="stop" onClick={() => lifecycle(selected, 'stop')} />
+                      : <ActionButton label="Start VM" icon="play" onClick={() => lifecycle(selected, 'start')} />}
                     <ActionButton className="removeButton" label="Delete VM" icon="remove" onClick={() => deleteInstance(selected)} />
                   </div>
                 </div>
@@ -267,10 +294,13 @@ export function Machines() {
                 <select value={form.image} onChange={(event) => setForm({ ...form, image: event.target.value })} required>
                   <option value="" disabled>Choose an image</option>
                   {(images.data ?? []).map((image) => (
-                    <option key={image.id} value={image.id}>{image.distribution} · {image.version}</option>
+                    <option key={image.id} value={image.id} disabled={!image.available}>
+                      {image.distribution} · {image.version}{image.available ? '' : ' · unavailable'}
+                    </option>
                   ))}
                 </select>
               </label>
+              {selectedImage?.message && <p className="errorLine">{selectedImage.message}</p>}
               <label>
                 <span>Architecture</span>
                 <select value={form.architecture} onChange={(event) => setForm({ ...form, architecture: event.target.value })}>

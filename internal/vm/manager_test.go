@@ -63,7 +63,7 @@ func TestCreateUsesConfiguredResources(t *testing.T) {
 		t.Fatalf("expected create and list commands, got %+v", runner.commands)
 	}
 	createCommand := strings.Join(runner.commands[0].Args, " ")
-	for _, expected := range []string{"--cpus 4", "--memory 4096MiB", "--disk 30GiB", "template://ubuntu-24.04"} {
+	for _, expected := range []string{"--cpus 4", "--memory 4", "--disk 30", "template:ubuntu-24.04"} {
 		if !strings.Contains(createCommand, expected) {
 			t.Errorf("create command %q missing %q", createCommand, expected)
 		}

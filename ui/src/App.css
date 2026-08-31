@@ -1538,6 +1538,18 @@ button:disabled {
   gap: 11px;
 }
 
+.providerReadiness {
+  display: grid;
+  gap: 6px;
+}
+
+.providerReadiness .integrationStatus {
+  display: grid;
+  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+}
+
 .inspectorForm.inline {
   display: flex;
   flex-wrap: wrap;

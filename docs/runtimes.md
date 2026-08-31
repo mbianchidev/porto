@@ -39,10 +39,25 @@ Additional runtime features require:
 | --- | --- |
 | Containers, images, builds, networks, volumes, Compose | Docker CLI and a reachable Docker-compatible Engine |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
-| Porto-created Kubernetes clusters | `limactl`, `kubectl`, guest internet access, and host virtualization support |
+| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind`, `limactl`, and `k0sctl` on macOS |
 | Standalone virtual machines | `limactl` and host virtualization support |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
+
+Inspect or install provider tools:
+
+```sh
+porto runtime providers
+porto runtime install lima
+porto runtime install kind
+porto runtime install k0s
+```
+
+The k0s and k3s providers both use Lima on the host and install their
+distribution inside Porto-managed guests. Porto uses Homebrew for explicit
+provider installation on macOS. Other
+platforms receive an actionable manual-install error instead of a silent
+fallback.
 
 ## Docker-compatible endpoint
 
@@ -131,7 +146,9 @@ Docker so the dashboard can group related containers.
 
 ## Kubernetes
 
-Porto can inspect any context already available to `kubectl`:
+Porto operates only contexts it created and stores under `PORTO_HOME`.
+It does not implicitly inherit the current global `kubectl` context. External
+contexts remain untouched.
 
 ```sh
 porto kubernetes status
@@ -145,10 +162,22 @@ Pass `--context` when a command should not use the current context.
 
 ### Create a local cluster
 
-Porto provisions one Lima VM for the k3s server and one VM for each requested worker. CPU, RAM, and disk values are per VM. Nodes share Lima's `user-v2` network, and the Kubernetes API is forwarded to an allocated loopback port used by the generated kubeconfig.
+Porto supports three explicit providers:
+
+- **k3s** (default): lightweight Kubernetes on Porto-managed Lima VMs
+- **k0s**: conformant Kubernetes on Porto-managed Lima VMs
+- **kind**: Kubernetes nodes in containers through the Porto Docker endpoint
+
+For k3s and k0s, Porto provisions one Lima VM for the controller and one VM
+for each requested worker. CPU, RAM, and disk values are per VM. Nodes share
+Lima's `user-v2` network, the Kubernetes API is forwarded to an allocated
+loopback port, and Porto maintains localhost `kubectl port-forward` listeners
+for LoadBalancer and NodePort services. The Services screen shows the assigned
+localhost port and links directly to it.
 
 ```sh
 porto kubernetes cluster create dev \
+  --provider k3s \
   --cpus 2 \
   --memory 2048 \
   --disk 20 \
@@ -163,6 +192,16 @@ Pin a k3s version when reproducibility is required:
 ```sh
 porto kubernetes cluster create dev --version v1.33.4+k3s1
 ```
+
+Create with another provider:
+
+```sh
+porto kubernetes cluster create kind-dev --provider kind --workers 2
+porto kubernetes cluster create k0s-dev --provider k0s --workers 2
+```
+
+kind node topology is fixed at creation time. Recreate a kind cluster to
+change its node count; k3s and k0s node groups can be scaled in place.
 
 Porto stores each generated kubeconfig under an opaque, fixed-length filename
 inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`
@@ -237,7 +276,7 @@ Porto exposes a versioned VM image catalog:
 - NixOS unstable
 - Arch Linux
 - Alpine Linux
-- Kali Linux rolling
+- Kali Linux rolling when an official Lima-compatible image exists for the host architecture
 
 List images and instances:
 

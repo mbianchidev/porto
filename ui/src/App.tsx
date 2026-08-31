@@ -19,7 +19,7 @@ import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
 import { Activity } from './pages/Activity'
 import { SettingsPage } from './pages/SettingsPage'
-import type { IntegrationStatus, KillSwitchStatus, RouteID, Settings } from './types'
+import type { IntegrationStatus, KillSwitchStatus, KubernetesContext, RouteID, Settings } from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
@@ -53,6 +53,8 @@ function AppShell() {
   const sqlNotSoLite = usePolledResource<IntegrationStatus>((signal) => apiGet('/api/integrations/sql-not-so-lite', signal), 5000, [])
   const sendbox = usePolledResource<IntegrationStatus>((signal) => apiGet('/api/integrations/sendbox', signal), 5000, [])
   const killSwitch = usePolledResource<KillSwitchStatus>((signal) => apiGet('/api/integrations/kill-switch', signal), 5000, [])
+  const kubernetesContexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 10000, [])
+  const activeKubeContext = kubeContext || kubernetesContexts.data?.[0]?.name || ''
 
   function reloadIntegrations() {
     sqlNotSoLite.reload()
@@ -88,16 +90,16 @@ function AppShell() {
         {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
         {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
-        {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={kubeContext} />}
+        {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={activeKubeContext} />}
         {route === 'containers' && <Containers />}
         {route === 'images' && <Images />}
         {route === 'builds' && <Builds />}
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
-        {route === 'kubernetes' && <KubernetesOverview context={kubeContext} onContextChange={setKubeContext} />}
-        {route === 'pods' && <Pods context={kubeContext} />}
-        {route === 'services' && <KubernetesServices context={kubeContext} />}
-        {route === 'nodes' && <Nodes context={kubeContext} />}
+        {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} onContextChange={setKubeContext} />}
+        {route === 'pods' && <Pods context={activeKubeContext} />}
+        {route === 'services' && <KubernetesServices context={activeKubeContext} />}
+        {route === 'nodes' && <Nodes context={activeKubeContext} />}
         {route === 'machines' && <Machines />}
         {route === 'activity' && <Activity />}
         {route === 'settings' && (

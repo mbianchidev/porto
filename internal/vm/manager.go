@@ -43,6 +43,8 @@ type Image struct {
 	Version      string `json:"version"`
 	Template     string `json:"template"`
 	Description  string `json:"description"`
+	Available    bool   `json:"available"`
+	Message      string `json:"message,omitempty"`
 }
 
 type Instance struct {
@@ -107,13 +109,13 @@ func (m *Manager) Status(ctx context.Context) Status {
 
 func (m *Manager) Images() []Image {
 	return []Image{
-		{ID: "ubuntu-24.04", Distribution: "Ubuntu", Version: "24.04 LTS", Template: "template://ubuntu-24.04", Description: "General-purpose Ubuntu LTS development machine"},
-		{ID: "centos-stream-10", Distribution: "CentOS Stream", Version: "10", Template: "template://centos-stream-10", Description: "CentOS Stream server-compatible environment"},
-		{ID: "opensuse-tumbleweed", Distribution: "openSUSE", Version: "Tumbleweed", Template: "template://opensuse-tumbleweed", Description: "Rolling openSUSE development environment"},
-		{ID: "nixos-unstable", Distribution: "NixOS", Version: "Unstable", Template: "template://experimental/nixos", Description: "Declarative NixOS test environment"},
-		{ID: "archlinux", Distribution: "Arch Linux", Version: "Rolling", Template: "template://archlinux", Description: "Minimal rolling Arch Linux environment"},
-		{ID: "alpine", Distribution: "Alpine Linux", Version: "Latest", Template: "template://alpine", Description: "Small musl-based Linux environment"},
-		{ID: "kali", Distribution: "Kali Linux", Version: "Rolling", Template: "template://kali", Description: "Security testing environment"},
+		{ID: "ubuntu-24.04", Distribution: "Ubuntu", Version: "24.04 LTS", Template: "template:ubuntu-24.04", Description: "General-purpose Ubuntu LTS development machine", Available: true},
+		{ID: "centos-stream-10", Distribution: "CentOS Stream", Version: "10", Template: "template:centos-stream-10", Description: "CentOS Stream server-compatible environment", Available: true},
+		{ID: "opensuse-tumbleweed", Distribution: "openSUSE", Version: "Tumbleweed", Template: "template:experimental/opensuse-tumbleweed", Description: "Rolling openSUSE development environment", Available: true},
+		{ID: "nixos-unstable", Distribution: "NixOS", Version: "Unstable", Template: "github:nixos-lima", Description: "Declarative NixOS test environment", Available: true},
+		{ID: "archlinux", Distribution: "Arch Linux", Version: "Rolling", Template: "template:archlinux", Description: "Minimal rolling Arch Linux environment", Available: true},
+		{ID: "alpine", Distribution: "Alpine Linux", Version: "Latest", Template: "template:alpine", Description: "Small musl-based Linux environment", Available: true},
+		{ID: "kali", Distribution: "Kali Linux", Version: "Rolling", Description: "Security testing environment", Message: "Kali does not publish a Lima-compatible ARM64 cloud image; automated creation is unavailable on this architecture."},
 	}
 }
 
@@ -183,6 +185,9 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	if !ok {
 		return Instance{}, fmt.Errorf("unsupported VM image %q", request.Image)
 	}
+	if !image.Available {
+		return Instance{}, errors.New(image.Message)
+	}
 	if request.CPUs <= 0 {
 		request.CPUs = 2
 	}
@@ -211,8 +216,8 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		args = append(
 			args,
 			"--cpus", strconv.Itoa(request.CPUs),
-			"--memory", strconv.Itoa(request.MemoryMiB)+"MiB",
-			"--disk", strconv.Itoa(request.DiskGiB)+"GiB",
+			"--memory", formatGiB(request.MemoryMiB),
+			"--disk", strconv.Itoa(request.DiskGiB),
 		)
 		if request.Architecture != "" {
 			args = append(args, "--arch", request.Architecture)
@@ -237,6 +242,10 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		}
 	}
 	return m.Get(ctx, request.Name)
+}
+
+func formatGiB(memoryMiB int) string {
+	return strconv.FormatFloat(float64(memoryMiB)/1024, 'f', -1, 64)
 }
 
 func (m *Manager) Get(ctx context.Context, name string) (Instance, error) {
@@ -276,7 +285,10 @@ func (m *Manager) EnsureStandalone(name string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {
-	return m.action(ctx, "start", name)
+	if err := m.action(ctx, "start", name); err != nil {
+		return err
+	}
+	return m.waitForSSH(ctx, name, 2*time.Minute)
 }
 
 func (m *Manager) Stop(ctx context.Context, name string) error {
@@ -396,6 +408,29 @@ func (m *Manager) action(ctx context.Context, action, name string) error {
 	return err
 }
 
+func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Duration) error {
+	waitContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	var lastErr error
+	for {
+		output, err := m.runner.Run(waitContext, runtimes.Command{
+			Name: "limactl",
+			Args: []string{"shell", name, "--", "true"},
+		})
+		if err == nil {
+			return nil
+		}
+		lastErr = runtimes.CommandError("wait for VM SSH", output, err)
+		select {
+		case <-waitContext.Done():
+			return fmt.Errorf("VM %s did not become SSH-ready: %w", name, errors.Join(lastErr, waitContext.Err()))
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) run(ctx context.Context, timeout time.Duration, action string, args ...string) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -487,7 +522,7 @@ func stringSliceValue(values map[string]any, keys ...string) []string {
 		}
 		return result
 	}
-	return nil
+	return []string{}
 }
 
 func validateName(name string) error {
