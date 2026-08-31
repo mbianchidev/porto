@@ -632,6 +632,9 @@ func TestAPIServerRefusesToReplaceActiveSocket(t *testing.T) {
 }
 
 func TestDockerAPIBridgesBuildKitControlUpgrade(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket upgrade test")
+	}
 	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
 	manager.dialBuildKit = func(context.Context) (net.Conn, error) {
 		client, backend := net.Pipe()
@@ -697,6 +700,9 @@ func TestBuildKitSessionAdapterForwardsMetadata(t *testing.T) {
 }
 
 func TestDockerAPIBridgesBuildKitSessionUpgrade(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket upgrade test")
+	}
 	listener := bufconn.Listen(1024 * 1024)
 	server := grpc.NewServer()
 	control := &echoBuildKitControl{
