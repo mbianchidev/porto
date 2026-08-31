@@ -16,6 +16,7 @@ import (
 	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/store"
 	"github.com/mbianchidev/porto/internal/vm"
 )
@@ -237,7 +238,7 @@ func dockerBuildCmd(args []string) error {
 
 func kubernetesCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto kubernetes status|contexts|pods|services|nodes|logs|exec|files|cluster")
+		return errors.New("usage: porto kubernetes status|contexts|pods|services|nodes|logs|exec|files|terminal|cluster")
 	}
 	switch args[0] {
 	case "status", "contexts", "nodes", "clusters":
@@ -274,11 +275,79 @@ func kubernetesCmd(args []string) error {
 		return kubernetesExecCmd(args[1:])
 	case "files":
 		return kubernetesFilesCmd(args[1:])
+	case "terminal", "k9s":
+		return kubernetesTerminalCmd(args[1:])
 	case "cluster":
 		return kubernetesClusterCmd(args[1:])
 	default:
 		return fmt.Errorf("unsupported Kubernetes command %q", args[0])
 	}
+}
+
+type k9sTerminalOptions struct {
+	Namespace string
+	Command   string
+	ReadOnly  bool
+}
+
+func kubernetesTerminalCmd(args []string) error {
+	fs := flag.NewFlagSet("kubernetes terminal", flag.ContinueOnError)
+	namespace := fs.String("namespace", "", "initial namespace; defaults to all namespaces")
+	resource := fs.String("command", "", "initial k9s resource view, for example pods or deployments")
+	readOnly := fs.Bool("readonly", false, "disable mutating k9s actions")
+	if err := parseInterspersed(fs, args, map[string]bool{"readonly": true}); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: porto kubernetes terminal <cluster> [--namespace name] [--command resource] [--readonly]")
+	}
+	cluster := strings.TrimSpace(fs.Arg(0))
+	if cluster == "" || strings.ContainsAny(cluster, "\x00\r\n") {
+		return errors.New("invalid Kubernetes cluster name")
+	}
+	kubeconfigPath, err := clusterKubeconfigPath(cluster)
+	if err != nil {
+		return err
+	}
+	if info, err := os.Stat(kubeconfigPath); err != nil {
+		return fmt.Errorf("inspect cluster kubeconfig: %w", err)
+	} else if !info.Mode().IsRegular() {
+		return errors.New("cluster kubeconfig is not a regular file")
+	}
+	k9sPath, err := exec.LookPath("k9s")
+	if err != nil {
+		return errors.New("k9s is not installed; install it with 'porto runtime install k9s'")
+	}
+	options := k9sTerminalOptions{Namespace: *namespace, Command: *resource, ReadOnly: *readOnly}
+	command := exec.Command(k9sPath, k9sTerminalArgs(cluster, kubeconfigPath, options)...)
+	command.Env = process.WithEnvironment(os.Environ(), "KUBECONFIG="+kubeconfigPath)
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	fmt.Fprintf(os.Stderr, "Opening %s with k9s. Press ? for help, :ctx for contexts, :ns for namespaces, and Ctrl+C to quit.\n", "porto-"+cluster)
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("run k9s for cluster %s: %w", cluster, err)
+	}
+	return nil
+}
+
+func k9sTerminalArgs(cluster, kubeconfigPath string, options k9sTerminalOptions) []string {
+	args := []string{
+		"--kubeconfig", kubeconfigPath,
+		"--context", "porto-" + cluster,
+	}
+	if options.Namespace != "" {
+		args = append(args, "--namespace", options.Namespace)
+	} else {
+		args = append(args, "--all-namespaces")
+	}
+	if options.Command != "" {
+		args = append(args, "--command", options.Command)
+	}
+	if options.ReadOnly {
+		args = append(args, "--readonly")
+	}
+	return args
 }
 
 func kubernetesLogsCmd(args []string) error {

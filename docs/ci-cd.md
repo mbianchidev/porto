@@ -67,7 +67,7 @@ The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working
 
 Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
 archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
-and supported `kind` clients. The app prepends those bundled tools to
+`k9s`, and supported `kind` clients. The app prepends those bundled tools to
 the daemon's `PATH`, so they do not need separate installation.
 
 macOS releases additionally contain architecture-specific `.dmg` installers,

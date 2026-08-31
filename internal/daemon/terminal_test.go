@@ -3,7 +3,10 @@ package daemon
 import (
 	"context"
 	"reflect"
+	"slices"
 	"testing"
+
+	"github.com/mbianchidev/porto/internal/kubernetes"
 )
 
 func TestAllowedShell(t *testing.T) {
@@ -16,6 +19,25 @@ func TestAllowedShell(t *testing.T) {
 		if allowedShell(shell) {
 			t.Errorf("expected %q to be rejected", shell)
 		}
+	}
+}
+
+func TestK9sTerminalCommandScopesManagedCluster(t *testing.T) {
+	command := k9sTerminalCommand(context.Background(), kubernetes.Cluster{
+		Context:        "porto-dev",
+		KubeconfigPath: "/tmp/dev.yaml",
+	})
+	want := []string{
+		"k9s",
+		"--kubeconfig", "/tmp/dev.yaml",
+		"--context", "porto-dev",
+		"--all-namespaces",
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("command args = %q, want %q", command.Args, want)
+	}
+	if !slices.Contains(command.Env, "KUBECONFIG=/tmp/dev.yaml") {
+		t.Fatalf("command environment does not contain managed kubeconfig: %q", command.Env)
 	}
 }
 

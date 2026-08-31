@@ -12,6 +12,7 @@ destination="$3"
 
 kubectl_version="${KUBECTL_VERSION:-v1.36.1}"
 kind_version="${KIND_VERSION:-v0.33.0}"
+k9s_version="${K9S_VERSION:-v0.50.18}"
 lima_version="${LIMA_VERSION:-v2.2.0}"
 
 case "$goos/$goarch" in
@@ -78,6 +79,23 @@ if [ "$goos/$goarch" != "windows/arm64" ]; then
 fi
 
 case "$goos" in
+  darwin) k9s_os="Darwin"; k9s_extension="tar.gz" ;;
+  linux) k9s_os="Linux"; k9s_extension="tar.gz" ;;
+  windows) k9s_os="Windows"; k9s_extension="zip" ;;
+esac
+k9s_asset="k9s_${k9s_os}_${goarch}.${k9s_extension}"
+download "https://github.com/derailed/k9s/releases/download/${k9s_version}/checksums.sha256" "$temporary/k9s-checksums.txt"
+download "https://github.com/derailed/k9s/releases/download/${k9s_version}/${k9s_asset}" "$temporary/$k9s_asset"
+verify "$(manifest_checksum "$temporary/k9s-checksums.txt" "$k9s_asset")" "$temporary/$k9s_asset"
+mkdir -p "$temporary/k9s"
+if [ "$k9s_extension" = "zip" ]; then
+  unzip -q "$temporary/$k9s_asset" -d "$temporary/k9s"
+else
+  tar -xzf "$temporary/$k9s_asset" -C "$temporary/k9s"
+fi
+mv "$temporary/k9s/k9s${binary_suffix}" "$destination/bin/k9s${binary_suffix}"
+
+case "$goos" in
   darwin)
     lima_os="Darwin"
     [ "$goarch" = "amd64" ] && lima_arch="x86_64" || lima_arch="arm64"
@@ -106,16 +124,19 @@ fi
 
 download "https://raw.githubusercontent.com/kubernetes/kubernetes/${kubectl_version}/LICENSE" "$destination/licenses/kubernetes.txt"
 download "https://raw.githubusercontent.com/kubernetes-sigs/kind/${kind_version}/LICENSE" "$destination/licenses/kind.txt"
+download "https://raw.githubusercontent.com/derailed/k9s/${k9s_version}/LICENSE" "$destination/licenses/k9s.txt"
 
 if [ "$goos" != "windows" ]; then
   chmod 0755 "$destination/bin/kubectl"
   [ "$kind_bundled" = "true" ] && chmod 0755 "$destination/bin/kind"
+  chmod 0755 "$destination/bin/k9s"
   chmod 0755 "$destination/lima/bin/limactl"
 fi
 
 cat > "$destination/VERSIONS" <<EOF
 kubectl ${kubectl_version}
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
+k9s ${k9s_version}
 lima ${lima_version}
 EOF
 

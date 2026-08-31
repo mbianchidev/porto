@@ -53,7 +53,7 @@ export type RuntimeFeatures = {
 export type RuntimeFeatureName = keyof RuntimeFeatures
 
 export type RuntimeProviderStatus = {
-  name: 'lima' | 'kind' | 'k0s'
+  name: 'lima' | 'kind' | 'k9s' | 'k0s'
   command: string
   installed: boolean
   version?: string

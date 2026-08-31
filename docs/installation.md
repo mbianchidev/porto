@@ -29,7 +29,7 @@ The native-engine release advances Porto's daemon compatibility version. The
 installer stops an older Porto daemon before launching the new app so commands
 cannot accidentally continue through the removed upstream Docker proxy.
 
-Desktop archives contain Porto, its dashboard, `kubectl`, Lima, and the
+Desktop archives contain Porto, its dashboard, `kubectl`, `k9s`, Lima, and the
 supported `kind` binary for that platform. Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 `winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
@@ -95,11 +95,12 @@ Source builds use standard host tools:
 - Docker CLI with Compose for the named Porto context and Compose project orchestration
 - `nerdctl` with containerd and BuildKit, or `limactl` for Porto's managed containerd and BuildKit backend
 - `kubectl` for Kubernetes inspection
+- `k9s` for interactive cluster terminals
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
 - `kind` for Kubernetes-in-Porto clusters
 
 Release desktop apps bundle these provider clients. On macOS source builds can
-install them explicitly from Porto with `porto runtime install lima|kind|k0s`.
+install them explicitly from Porto with `porto runtime install lima|kind|k9s|k0s`.
 
 Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 

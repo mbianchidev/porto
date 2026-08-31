@@ -10,12 +10,14 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"sync"
 	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
+	"github.com/mbianchidev/porto/internal/kubernetes"
 )
 
 type terminalResize struct {
@@ -25,6 +27,23 @@ type terminalResize struct {
 }
 
 func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
+	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
+		return vmTerminalCommand(ctx, name)
+	}, "Lima shell failed")
+}
+
+func bridgeK9sTerminal(w http.ResponseWriter, r *http.Request, cluster kubernetes.Cluster) {
+	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
+		return k9sTerminalCommand(ctx, cluster)
+	}, "k9s failed")
+}
+
+func bridgePTYTerminal(
+	w http.ResponseWriter,
+	r *http.Request,
+	commandFactory func(context.Context) *exec.Cmd,
+	startFailure string,
+) {
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -35,10 +54,10 @@ func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
 
 	sessionContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	command := vmTerminalCommand(sessionContext, name)
+	command := commandFactory(sessionContext)
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 120, Rows: 32})
 	if err != nil {
-		_ = connection.Close(websocket.StatusInternalError, "Lima shell failed")
+		_ = connection.Close(websocket.StatusInternalError, startFailure)
 		return
 	}
 	defer terminal.Close()

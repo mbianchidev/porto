@@ -52,6 +52,7 @@ Inspect or install provider tools:
 porto runtime providers
 porto runtime install lima
 porto runtime install kind
+porto runtime install k9s
 porto runtime install k0s
 ```
 
@@ -207,6 +208,34 @@ porto kubernetes cluster create k0s-dev --provider k0s --workers 2
 
 kind node topology is fixed at creation time. Recreate a kind cluster to
 change its node count; k3s and k0s node groups can be scaled in place.
+
+### Open a cluster terminal
+
+Desktop releases bundle k9s. Select a managed cluster in the dashboard and
+open the **k9s terminal** tab; Porto launches k9s with that cluster's private
+kubeconfig, context, and all namespaces already selected.
+
+The embedded PTY is available on macOS and Linux. On Windows, use the bundled
+CLI command below from PowerShell or Windows Terminal.
+
+The CLI opens the same scoped TUI in the current terminal:
+
+```sh
+porto kubernetes terminal dev
+porto kubernetes terminal dev --namespace platform --command deployments
+porto kubernetes terminal dev --readonly
+```
+
+Inside k9s, press `?` for help, type `:ctx` to inspect contexts, `:ns` to
+switch namespaces, `:pods` to return to pods, `l` for logs, `s` for a pod
+shell, `Esc` to leave a view, and `Ctrl+C` to exit. Porto does not merge or
+replace the user's global kubeconfig for this terminal.
+
+Source installations can install k9s on macOS with:
+
+```sh
+porto runtime install k9s
+```
 
 Porto stores each generated kubeconfig under an opaque, fixed-length filename
 inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`

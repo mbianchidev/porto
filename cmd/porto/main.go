@@ -641,8 +641,9 @@ Commands:
   porto kubernetes status|contexts|pods|services|nodes|kubeconfig|context-install
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
+  porto kubernetes terminal <cluster> [--namespace name] [--command resource] [--readonly]
   porto kubernetes cluster create|start|stop|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
-  porto runtime providers|install <lima|kind|k0s>
+  porto runtime providers|install <lima|kind|k9s|k0s>
   porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }
