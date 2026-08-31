@@ -47,7 +47,7 @@ func (ExecRunner) Run(ctx context.Context, project app.Project, emit func(stream
 		if err := emit("system", "$ "+display); err != nil {
 			return result, err
 		}
-		if err := runCommand(ctx, project.Path, command, emit); err != nil {
+		if err := runCommand(ctx, project, command, emit); err != nil {
 			return result, fmt.Errorf("%s failed: %w", display, err)
 		}
 	}
@@ -267,13 +267,16 @@ func usesStartScript(command string) bool {
 	return len(fields) > 0 && fields[len(fields)-1] == "start"
 }
 
-func runCommand(ctx context.Context, dir string, command Command, emit func(stream, line string) error) error {
+func runCommand(ctx context.Context, project app.Project, command Command, emit func(stream, line string) error) error {
 	if _, err := exec.LookPath(command.Name); err != nil && !filepath.IsAbs(command.Name) {
 		return fmt.Errorf("%s is not available in the Porto daemon PATH: %w", command.Name, err)
 	}
-	cmd, stdout, stderr, err := process.Command(ctx, dir, command.Name, command.Args...)
+	cmd, stdout, stderr, err := process.Command(ctx, project.Path, command.Name, command.Args...)
 	if err != nil {
 		return err
+	}
+	if project.Strategy == "compose" {
+		cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+compose.ProjectName(project))
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()

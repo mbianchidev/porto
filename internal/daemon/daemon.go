@@ -28,14 +28,19 @@ import (
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/discovery"
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/providers"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/vm"
 )
 
 const (
@@ -59,6 +64,8 @@ type Server struct {
 	sendboxRunning  map[int64]*exec.Cmd
 	sendboxStates   map[int64]string
 	sendboxMessages map[int64]string
+	composePorts    map[int64][]int
+	kubeForwards    map[string]*kubeForward
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	compose         composeIntegration
@@ -69,6 +76,15 @@ type Server struct {
 	killSwitch      *killswitch.Manager
 	tlsCertificates *certificates.Manager
 	userHomeDir     func() (string, error)
+	docker          *portodocker.Manager
+	dockerProxy     *portodocker.Proxy
+	runtimeMu       sync.Mutex
+	runtimeContext  context.Context
+	kubernetes      *kubernetes.Manager
+	clusters        *kubernetes.ClusterProvisioner
+	vms             *vm.Manager
+	providers       *providers.Manager
+	dockerSocket    string
 }
 
 type projectProcess struct {
@@ -89,11 +105,20 @@ type composeIntegration interface {
 	Down(ctx context.Context, project app.Project) error
 }
 
+type composePortPlanner interface {
+	PreparePorts(context.Context, app.Project, map[int]bool) (compose.PortPlan, error)
+}
+
 type projectSetupRunner interface {
 	Run(ctx context.Context, project app.Project, emit func(stream, line string) error) (projectsetup.Result, error)
 }
 
 func New(st *store.Store, ui fs.FS) *Server {
+	runner := runtimes.ExecRunner{}
+	dockerSocket, _ := config.DockerSocketPath()
+	kubeconfigDir, _ := config.KubernetesConfigDir()
+	vmStateDir, _ := config.VMStateDir()
+	vmManager := vm.NewWithStateDir(runner, vmStateDir)
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
@@ -103,6 +128,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sendboxRunning:  map[int64]*exec.Cmd{},
 		sendboxStates:   map[int64]string{},
 		sendboxMessages: map[int64]string{},
+		composePorts:    map[int64][]int{},
+		kubeForwards:    map[string]*kubeForward{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		compose:         compose.New(nil),
@@ -118,10 +145,17 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sqnsl:          sqnsl.NewManager(nil),
 		killSwitch:     killswitch.NewManager(nil, nil),
 		userHomeDir:    os.UserHomeDir,
+		docker:         portodocker.New(runner),
+		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
+		clusters:       kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir),
+		vms:            vmManager,
+		providers:      providers.New(runner),
+		dockerSocket:   dockerSocket,
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	s.runtimeContext = ctx
 	if count, err := s.discoverCopilotWorktrees(ctx); err != nil {
 		log.Printf("discover Copilot worktrees: %v", err)
 	} else if count > 0 {
@@ -136,6 +170,22 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("resolve TLS certificate authority paths: %w", err)
 	}
 	s.tlsCertificates = certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath)
+	settings, err := s.store.Settings(ctx)
+	if err != nil {
+		return fmt.Errorf("load runtime settings: %w", err)
+	}
+	if settings.DockerEnabled {
+		if err := s.startDockerProxy(ctx); err != nil {
+			return fmt.Errorf("start Docker API proxy: %w", err)
+		}
+		defer func() {
+			closeContext, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+			defer cancel()
+			if err := s.stopDockerProxy(closeContext); err != nil {
+				log.Printf("close Docker API proxy: %v", err)
+			}
+		}()
+	}
 	certificateStatus, err := s.ensureProjectCertificate(ctx)
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
@@ -143,7 +193,7 @@ func (s *Server) Run(ctx context.Context) error {
 	tlsAddress := config.RouterTLSAddress()
 	mux := http.NewServeMux()
 	s.routes(mux)
-	srv := &http.Server{Addr: config.DaemonAddr, Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	srv := &http.Server{Addr: config.DaemonAddr, Handler: s.secureHandler(mux), ReadHeaderTimeout: 5 * time.Second}
 	router := &http.Server{Addr: config.RouterAddr, Handler: http.HandlerFunc(s.proxyByHost), ReadHeaderTimeout: 5 * time.Second}
 	tlsRouter := &http.Server{
 		Addr:              tlsAddress,
@@ -214,10 +264,66 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 		}
 	}
 	cancelHTTP()
+	if s.dockerProxy != nil {
+		proxyContext, cancelProxy := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		shutdownErrors = append(shutdownErrors, s.stopDockerProxy(proxyContext))
+		cancelProxy()
+	}
 
 	appContext, cancelApps := context.WithTimeout(context.Background(), daemonShutdownTimeout)
 	defer cancelApps()
 	return errors.Join(errors.Join(shutdownErrors...), s.stopManagedApplications(appContext))
+}
+
+func (s *Server) startDockerProxy(ctx context.Context) error {
+	if s.dockerSocket == "" {
+		return errors.New("Porto Docker socket path is unavailable")
+	}
+	s.runtimeMu.Lock()
+	if s.dockerProxy != nil {
+		s.runtimeMu.Unlock()
+		return nil
+	}
+	s.runtimeMu.Unlock()
+	upstream := ""
+	if statePath, stateErr := config.DockerEndpointStatePath(); stateErr == nil {
+		if state, readErr := portodocker.ReadEndpointState(statePath); readErr == nil {
+			upstream = state.Upstream
+		}
+	}
+	if upstream == "" {
+		var err error
+		upstream, err = s.docker.Endpoint(ctx)
+		if err != nil {
+			log.Printf("Docker upstream unavailable; restart or re-enable Docker after the runtime becomes available: %v", err)
+			upstream = ""
+		}
+	}
+	proxy := portodocker.NewProxy(s.dockerSocket, upstream)
+	if err := proxy.Start(ctx); err != nil {
+		return err
+	}
+	s.runtimeMu.Lock()
+	if s.dockerProxy != nil {
+		s.runtimeMu.Unlock()
+		closeContext, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+		defer cancel()
+		return proxy.Close(closeContext)
+	}
+	s.dockerProxy = proxy
+	s.runtimeMu.Unlock()
+	return nil
+}
+
+func (s *Server) stopDockerProxy(ctx context.Context) error {
+	s.runtimeMu.Lock()
+	proxy := s.dockerProxy
+	s.dockerProxy = nil
+	s.runtimeMu.Unlock()
+	if proxy == nil {
+		return nil
+	}
+	return proxy.Close(ctx)
 }
 
 func (s *Server) stopManagedApplications(ctx context.Context) error {
@@ -325,7 +431,9 @@ func tlsRouterListenError(address string, err error) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
-	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) { writeJSON(w, map[string]string{"status": "ok"}) })
+	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, map[string]any{"status": "ok", "version": config.Version, "apiVersion": config.APIVersion})
+	})
 	mux.HandleFunc("GET /api/projects", s.list)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.setSettings)
@@ -353,6 +461,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.stopSendbox)
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
+	s.runtimeRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
 }
 
@@ -672,6 +781,14 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	if req.Depth == 0 {
 		req.Depth = config.DefaultScanDepth
 	}
+	for index, root := range req.Roots {
+		expanded, err := s.expandScanRoot(root)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		req.Roots[index] = expanded
+	}
 	found, err := discovery.Scan(r.Context(), req.Roots, discovery.Options{Depth: req.Depth, Ignore: req.Ignore})
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -691,6 +808,24 @@ func (s *Server) scan(w http.ResponseWriter, r *http.Request) {
 	}
 	s.syncSQLNotSoLite(r.Context())
 	writeJSON(w, map[string]any{"count": len(found), "projects": found})
+}
+
+func (s *Server) expandScanRoot(root string) (string, error) {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return "", errors.New("scan root cannot be empty")
+	}
+	if root != "~" && !strings.HasPrefix(root, "~/") && !strings.HasPrefix(root, `~\`) {
+		return root, nil
+	}
+	home, err := s.userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("expand scan root %q: %w", root, err)
+	}
+	if root == "~" {
+		return home, nil
+	}
+	return filepath.Join(home, root[2:]), nil
 }
 
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
@@ -801,13 +936,41 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		return p, err
 	}
 	delete(used, p.Port)
-	preferred := p.PinnedPort
-	if preferred == 0 {
-		preferred = p.Port
+	for projectID, reserved := range s.composePorts {
+		if projectID == p.ID {
+			continue
+		}
+		for _, reservedPort := range reserved {
+			used[reservedPort] = true
+		}
 	}
-	port, err := ports.Pick(preferred, config.BasePort, used)
-	if err != nil {
-		return p, err
+	port := 0
+	composePlan := compose.PortPlan{}
+	if p.Strategy == "compose" {
+		if planner, ok := s.compose.(composePortPlanner); ok {
+			composePlan, err = planner.PreparePorts(ctx, p, used)
+			if err != nil {
+				return p, err
+			}
+			if len(composePlan.Ports) > 0 {
+				port = composePlan.Ports[0].Published
+				reserved := make([]int, 0, len(composePlan.Ports))
+				for _, planned := range composePlan.Ports {
+					reserved = append(reserved, planned.Published)
+				}
+				s.composePorts[p.ID] = reserved
+			}
+		}
+	}
+	if port == 0 {
+		preferred := p.PinnedPort
+		if preferred == 0 {
+			preferred = p.Port
+		}
+		port, err = ports.Pick(preferred, config.BasePort, used)
+		if err != nil {
+			return p, err
+		}
 	}
 	if !noPull {
 		if out, err := gitutil.Pull(p.Path); err != nil {
@@ -816,11 +979,19 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		}
 	}
 	command := projectsetup.RuntimeCommand(p, port)
+	if composePlan.OverridePath != "" {
+		command = compose.UpCommandWithOverride(composePlan.ConfigFile, composePlan.OverridePath)
+	}
 	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, command, port)
 	if err != nil {
+		delete(s.composePorts, p.ID)
 		return p, err
 	}
+	if projectUsesCompose(p) {
+		cmd.Env = append(cmd.Env, "COMPOSE_PROJECT_NAME="+compose.ProjectName(p))
+	}
 	if err := cmd.Start(); err != nil {
+		delete(s.composePorts, p.ID)
 		_ = stdout.Close()
 		_ = stderr.Close()
 		return p, err
@@ -960,6 +1131,7 @@ func (s *Server) waitForProject(project app.Project, running *projectProcess) {
 	if current {
 		runtimeErr = s.store.SetRuntime(context.Background(), project.ID, status, 0, running.project.Port)
 		delete(s.running, project.ID)
+		delete(s.composePorts, project.ID)
 	}
 	s.mu.Unlock()
 
@@ -1027,6 +1199,9 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 				return p, err
 			}
 		}
+		s.mu.Lock()
+		delete(s.composePorts, p.ID)
+		s.mu.Unlock()
 		return s.store.GetProject(operationContext, name)
 	}
 
@@ -1043,6 +1218,9 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 	if err := s.store.SetRuntime(ctx, p.ID, "stopped", 0, p.Port); err != nil {
 		return p, err
 	}
+	s.mu.Lock()
+	delete(s.composePorts, p.ID)
+	s.mu.Unlock()
 	return s.store.GetProject(ctx, name)
 }
 

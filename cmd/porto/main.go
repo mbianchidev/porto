@@ -39,6 +39,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if err := configureBundledRuntimePath(); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		usage()
 		return nil
@@ -75,14 +78,73 @@ func run(args []string) error {
 		return killSwitchCmd(db, args[1:])
 	case "sendbox":
 		return sendboxAction(args[1:])
+	case "docker":
+		return dockerCmd(args[1:])
+	case "kubernetes", "k8s":
+		return kubernetesCmd(args[1:])
+	case "vm", "vms", "machine", "machines":
+		return vmCmd(args[1:])
+	case "runtime":
+		return runtimeCmd(db, args[1:])
+	case "container", "containers", "image", "images", "build", "builds", "network", "networks", "volume", "volumes":
+		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:])
+	case "version", "--version":
+		fmt.Println(config.Version)
+		return nil
 	case "help", "--help", "-h":
 		usage()
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func configureBundledRuntimePath() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	current := os.Getenv("PATH")
+	updated := bundledRuntimePath(executable, current)
+	if updated == current {
+		return nil
+	}
+	if err := os.Setenv("PATH", updated); err != nil {
+		return fmt.Errorf("configure bundled runtime PATH: %w", err)
+	}
+	return nil
+}
+
+func bundledRuntimePath(executable, current string) string {
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	base := filepath.Dir(executable)
+	existing := filepath.SplitList(current)
+	seen := make(map[string]struct{}, len(existing))
+	for _, entry := range existing {
+		seen[filepath.Clean(entry)] = struct{}{}
+	}
+	bundled := []string{
+		filepath.Join(base, "runtime", "bin"),
+		filepath.Join(base, "runtime", "lima", "bin"),
+	}
+	prepend := make([]string, 0, len(bundled))
+	for _, candidate := range bundled {
+		if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+			continue
+		}
+		if _, exists := seen[filepath.Clean(candidate)]; exists {
+			continue
+		}
+		prepend = append(prepend, candidate)
+	}
+	if len(prepend) == 0 {
+		return current
+	}
+	return strings.Join(append(prepend, existing...), string(os.PathListSeparator))
 }
 
 func httpsAction(args []string) error {
@@ -517,8 +579,18 @@ func daemonUp() bool {
 	if err != nil {
 		return false
 	}
-	_ = resp.Body.Close()
-	return resp.StatusCode == http.StatusOK
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var health struct {
+		Status     string `json:"status"`
+		APIVersion int    `json:"apiVersion"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&health); err != nil {
+		return false
+	}
+	return health.Status == "ok" && health.APIVersion == config.APIVersion
 }
 
 func api(method, path string, body any, out io.Writer) error {
@@ -551,6 +623,7 @@ func usage() {
 Commands:
   porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
   porto list
+  porto version
   porto daemon start|status
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
@@ -559,5 +632,16 @@ Commands:
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
-  porto sendbox start|stop <project>`)
+  porto sendbox start|stop <project>
+  porto docker status|containers|images|builds|networks|volumes
+  porto docker context-install|activate|deactivate
+  porto docker container <start|stop|restart|pause|unpause|remove> <id>
+  porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
+  porto kubernetes status|contexts|pods|services|nodes|kubeconfig|context-install
+  porto kubernetes logs <namespace> <pod> [--container name] [--previous]
+  porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
+  porto kubernetes cluster create|start|stop|delete
+  porto runtime status|enable|disable <docker|kubernetes|vms>
+  porto runtime providers|install <lima|kind|k0s>
+  porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

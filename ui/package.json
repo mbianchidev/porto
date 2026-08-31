@@ -1,15 +1,20 @@
 {
   "name": "ui",
   "private": true,
-  "version": "0.2.0",
+  "version": "1.0.0",
   "type": "module",
   "scripts": {
     "dev": "vite",
     "build": "tsc -b && vite build",
     "lint": "oxlint",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "desktop": "npm --prefix electron start",
+    "desktop:install": "npm --prefix electron ci",
+    "desktop:package": "npm --prefix electron run package --"
   },
   "dependencies": {
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8"
   },

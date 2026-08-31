@@ -3,7 +3,7 @@
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
 
-Porto is an open-source control plane for the projects running on your development machine, NAS, or home system. It discovers mixed-stack repositories and gives you one CLI and dashboard to set them up, start and stop them, inspect logs, manage branches, and open them at predictable local URLs.
+Porto is an open-source desktop and web control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
 
 ![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/03f957c8-33ba-4fb8-be9c-a41edd4e85cf)
 
@@ -12,6 +12,9 @@ Porto is an open-source control plane for the projects running on your developme
 
 - **One place for every project.** Scan roots once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
+- **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
+- **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
+- **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects through zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
@@ -21,9 +24,30 @@ Porto is an open-source control plane for the projects running on your developme
 
 ### 1. Install Porto
 
-Download the archive for your platform from the [releases page](https://github.com/mbianchidev/porto/releases). Keep the `porto` binary and `ui/dist` directory together, then run the binary from the extracted directory or add it to your `PATH`.
+Install and launch the latest desktop release on macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+```
+
+The installer detects the OS and architecture, verifies the published SHA-256
+checksum, installs Porto for the current user, exposes the `porto` CLI, and
+launches the desktop app. Desktop releases bundle the daemon, dashboard,
+`kubectl`, Lima, and the supported `kind` binary.
+
+For a headless installation, download the CLI/web archive from the
+[releases page](https://github.com/mbianchidev/porto/releases). Keep the
+`porto` binary and `ui/dist` directory together, then add the binary to `PATH`.
 
 See the [installation guide](docs/installation.md) for checksum verification, source builds, and custom dashboard paths.
+
+CLI/web archives remain available for headless machines and servers.
 
 ### 2. Discover projects
 
@@ -69,6 +93,7 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 - [Installation](docs/installation.md) — release archives, source builds, and dashboard assets
 - [Daily use](docs/daily-use.md) — durable installation, login or boot startup, upgrades, and home systems
 - [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
+- [Local runtimes](docs/runtimes.md) — Docker socket, containers, Compose, Kubernetes, pod inspection, and Linux VMs
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
 - [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox

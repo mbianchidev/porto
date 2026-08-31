@@ -86,6 +86,10 @@ run_validation() {
   npm --prefix ui ci
   npm --prefix ui run lint
   npm --prefix ui run build
+  npm --prefix ui/electron ci
+  npm --prefix ui/electron audit
+  node --check ui/electron/main.js
+  node --check ui/electron/preload.js
 }
 
 verify_only_package_changes() {

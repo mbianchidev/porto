@@ -1,0 +1,17 @@
+{
+  "name": "porto",
+  "productName": "Porto",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
+  "author": "Porto",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "package": "node package.cjs"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^44.0.0"
+  }
+}

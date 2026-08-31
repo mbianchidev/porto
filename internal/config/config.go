@@ -8,17 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
 
 const (
 	AppName                  = "porto"
+	Version                  = "1.0.0"
+	APIVersion               = 1
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
 	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
 	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
+	DockerUpstreamEnv        = "PORTO_DOCKER_UPSTREAM"
+	DockerCanonicalSocketEnv = "PORTO_DOCKER_CANONICAL_SOCKET"
 	PortlessHTTPSMarker      = "portless-https"
 	LocalDomain              = "porto.local"
 	LocalhostDomain          = "porto.localhost"
@@ -138,6 +143,85 @@ func DBPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "porto.db"), nil
+}
+
+func RuntimeDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	runtimeDir := filepath.Join(dir, "run")
+	if err := os.MkdirAll(runtimeDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(runtimeDir, 0o700); err != nil {
+		return "", err
+	}
+	return runtimeDir, nil
+}
+
+func DockerSocketPath() (string, error) {
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\porto_docker_engine`, nil
+	}
+	dir, err := RuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "docker.sock"), nil
+}
+
+func DockerEndpointStatePath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "docker-endpoint.json"), nil
+}
+
+func CanonicalDockerSocketPath() string {
+	if path := strings.TrimSpace(os.Getenv(DockerCanonicalSocketEnv)); path != "" {
+		return path
+	}
+	if runtime.GOOS == "windows" {
+		return `\\.\pipe\docker_engine`
+	}
+	return "/var/run/docker.sock"
+}
+
+func KubernetesConfigDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	kubeconfigDir := filepath.Join(dir, "kubernetes")
+	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(kubeconfigDir, 0o700); err != nil {
+		return "", err
+	}
+	return kubeconfigDir, nil
+}
+
+func KubernetesClusterFileToken(name string) string {
+	sum := sha256.Sum256([]byte(name))
+	return hex.EncodeToString(sum[:12])
+}
+
+func VMStateDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	vmDir := filepath.Join(dir, "vms")
+	if err := os.MkdirAll(vmDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(vmDir, 0o700); err != nil {
+		return "", err
+	}
+	return vmDir, nil
 }
 
 func CertificatePaths() (string, string, error) {

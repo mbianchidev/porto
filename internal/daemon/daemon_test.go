@@ -106,6 +106,82 @@ type recordingSetupRunner struct {
 	called bool
 }
 
+func TestRuntimeFeaturesDefaultOffAndKubernetesEnable(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	server := New(st, nil)
+	mux := http.NewServeMux()
+	server.routes(mux)
+
+	featuresResponse := httptest.NewRecorder()
+	mux.ServeHTTP(featuresResponse, httptest.NewRequest(http.MethodGet, "/api/runtime/features", nil))
+	if featuresResponse.Code != http.StatusOK {
+		t.Fatalf("features status = %d: %s", featuresResponse.Code, featuresResponse.Body.String())
+	}
+	var features map[string]bool
+	if err := json.NewDecoder(featuresResponse.Body).Decode(&features); err != nil {
+		t.Fatalf("decode features: %v", err)
+	}
+	if features["docker"] || features["kubernetes"] || features["vms"] {
+		t.Fatalf("optional runtimes must default off: %+v", features)
+	}
+
+	blockedResponse := httptest.NewRecorder()
+	mux.ServeHTTP(blockedResponse, httptest.NewRequest(http.MethodGet, "/api/docker/containers", nil))
+	if blockedResponse.Code != http.StatusConflict {
+		t.Fatalf("disabled Docker status = %d, want %d", blockedResponse.Code, http.StatusConflict)
+	}
+
+	enableResponse := httptest.NewRecorder()
+	mux.ServeHTTP(enableResponse, httptest.NewRequest(http.MethodPost, "/api/runtime/features/kubernetes/enable", nil))
+	if enableResponse.Code != http.StatusOK {
+		t.Fatalf("enable Kubernetes status = %d: %s", enableResponse.Code, enableResponse.Body.String())
+	}
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatalf("read settings: %v", err)
+	}
+	if !settings.KubernetesEnabled {
+		t.Fatal("Kubernetes feature was not persisted")
+	}
+}
+
+func TestExpandScanRoot(t *testing.T) {
+	server := &Server{userHomeDir: func() (string, error) { return "/home/test", nil }}
+	for input, want := range map[string]string{
+		"~":             "/home/test",
+		"~/code/porto":  filepath.Join("/home/test", "code/porto"),
+		"/srv/projects": "/srv/projects",
+	} {
+		got, err := server.expandScanRoot(input)
+		if err != nil {
+			t.Fatalf("expand %q: %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("expand %q = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestStopKubernetesForwardsScopesByContext(t *testing.T) {
+	server := &Server{kubeForwards: map[string]*kubeForward{
+		"porto-dev/default/api/80":   {port: 45000},
+		"porto-other/default/api/80": {port: 45001},
+	}}
+	if err := server.stopKubernetesForwards("porto-dev"); err != nil {
+		t.Fatalf("stop forwards: %v", err)
+	}
+	if _, ok := server.kubeForwards["porto-dev/default/api/80"]; ok {
+		t.Fatal("deleted cluster forward was retained")
+	}
+	if _, ok := server.kubeForwards["porto-other/default/api/80"]; !ok {
+		t.Fatal("unrelated cluster forward was removed")
+	}
+}
+
 func (r *recordingSetupRunner) Run(_ context.Context, _ app.Project, _ func(stream, line string) error) (projectsetup.Result, error) {
 	r.called = true
 	return projectsetup.Result{}, nil

@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/ports"
 )
 
 const (
 	defaultCheckTimeout = 5 * time.Second
 	defaultDownTimeout  = 2 * time.Minute
-	runtimeGuidance     = "start or repair OrbStack, Docker Desktop, Colima, or another Docker-compatible runtime, then retry"
+	runtimeGuidance     = "start or repair the configured Docker-compatible runtime, then retry"
 )
 
 var ErrDaemonUnavailable = errors.New("docker daemon is unavailable to Porto")
@@ -42,6 +44,19 @@ type Command struct {
 type PublishedPort struct {
 	Service string
 	Port    int
+}
+
+type PlannedPort struct {
+	Service   string
+	Target    int
+	Published int
+	Protocol  string
+}
+
+type PortPlan struct {
+	ConfigFile   string
+	OverridePath string
+	Ports        []PlannedPort
 }
 
 type Runner interface {
@@ -92,6 +107,10 @@ func UpCommand(file string) string {
 	return "docker compose -f " + file + " up"
 }
 
+func UpCommandWithOverride(file, override string) string {
+	return "docker compose -f " + shellQuote(file) + " -f " + shellQuote(override) + " up"
+}
+
 func (i *Integration) Check(ctx context.Context) error {
 	commandContext, cancel := context.WithTimeout(ctx, i.checkTimeout)
 	defer cancel()
@@ -121,13 +140,21 @@ func (i *Integration) PublishedPorts(ctx context.Context, project app.Project) (
 	}
 	commandContext, cancel := context.WithTimeout(ctx, i.checkTimeout)
 	defer cancel()
+	args := []string{"compose", "-f", file}
+	if override, overrideErr := OverridePath(project); overrideErr == nil {
+		if info, statErr := os.Stat(override); statErr == nil && !info.IsDir() {
+			args = append(args, "-f", override)
+		}
+	}
+	args = append(args, "ps", "--format", "json")
 	output, err := i.runner.Run(commandContext, Command{
 		Dir:  project.Path,
 		Name: "docker",
-		Args: []string{"compose", "-f", file, "ps", "--format", "json"},
+		Args: args,
 		Env: []string{
 			"PORT=" + strconv.Itoa(project.Port),
 			"PORTO_PORT=" + strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
 		},
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
@@ -146,13 +173,22 @@ func (i *Integration) Down(ctx context.Context, project app.Project) error {
 	}
 	commandContext, cancel := context.WithTimeout(ctx, i.downTimeout)
 	defer cancel()
+	args := []string{"compose", "-f", file}
+	override, overrideErr := OverridePath(project)
+	if overrideErr == nil {
+		if info, statErr := os.Stat(override); statErr == nil && !info.IsDir() {
+			args = append(args, "-f", override)
+		}
+	}
+	args = append(args, "down", "--remove-orphans")
 	output, err := i.runner.Run(commandContext, Command{
 		Dir:  project.Path,
 		Name: "docker",
-		Args: []string{"compose", "-f", file, "down", "--remove-orphans"},
+		Args: args,
 		Env: []string{
 			"PORT=" + strconv.Itoa(project.Port),
 			"PORTO_PORT=" + strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
 		},
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
@@ -161,7 +197,96 @@ func (i *Integration) Down(ctx context.Context, project app.Project) error {
 	if err != nil {
 		return commandError("docker compose cleanup for "+project.Name, output, err)
 	}
+	if overrideErr == nil {
+		if err := os.Remove(override); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("remove Docker Compose port override: %w", err)
+		}
+	}
 	return nil
+}
+
+func (i *Integration) PreparePorts(ctx context.Context, project app.Project, used map[int]bool) (PortPlan, error) {
+	file, err := configFile(project)
+	if err != nil {
+		return PortPlan{}, err
+	}
+	commandContext, cancel := context.WithTimeout(ctx, i.checkTimeout)
+	defer cancel()
+	output, err := i.runner.Run(commandContext, Command{
+		Dir:  project.Path,
+		Name: "docker",
+		Args: []string{"compose", "-f", file, "config", "--format", "json"},
+		Env:  []string{"COMPOSE_PROJECT_NAME=" + ProjectName(project)},
+	})
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return PortPlan{}, fmt.Errorf("Docker Compose port planning for %s timed out", project.Name)
+	}
+	if err != nil {
+		return PortPlan{}, commandError("inspect Docker Compose ports for "+project.Name, output, err)
+	}
+	var composeConfig struct {
+		Services map[string]struct {
+			Ports []struct {
+				Target    int    `json:"target"`
+				Published string `json:"published"`
+				Protocol  string `json:"protocol"`
+			} `json:"ports"`
+		} `json:"services"`
+	}
+	if err := json.Unmarshal(output, &composeConfig); err != nil {
+		return PortPlan{}, fmt.Errorf("decode Docker Compose configuration for %s: %w", project.Name, err)
+	}
+	serviceNames := make([]string, 0, len(composeConfig.Services))
+	for service := range composeConfig.Services {
+		serviceNames = append(serviceNames, service)
+	}
+	sort.Slice(serviceNames, func(left, right int) bool {
+		leftPriority := servicePriority(serviceNames[left])
+		rightPriority := servicePriority(serviceNames[right])
+		if leftPriority != rightPriority {
+			return leftPriority < rightPriority
+		}
+		return serviceNames[left] < serviceNames[right]
+	})
+	plan := PortPlan{ConfigFile: file}
+	for _, service := range serviceNames {
+		for _, configured := range composeConfig.Services[service].Ports {
+			protocol := strings.ToLower(configured.Protocol)
+			if protocol == "" {
+				protocol = "tcp"
+			}
+			if configured.Target <= 0 {
+				continue
+			}
+			if protocol != "tcp" && protocol != "udp" {
+				return PortPlan{}, fmt.Errorf("unsupported published protocol %q for %s/%s", protocol, project.Name, service)
+			}
+			preferred, _ := strconv.Atoi(configured.Published)
+			published, err := ports.PickProtocol(preferred, config.BasePort, used, protocol)
+			if err != nil {
+				return PortPlan{}, fmt.Errorf("allocate Docker Compose port for %s/%s: %w", project.Name, service, err)
+			}
+			used[published] = true
+			plan.Ports = append(plan.Ports, PlannedPort{
+				Service: service, Target: configured.Target, Published: published, Protocol: protocol,
+			})
+		}
+	}
+	override, err := OverridePath(project)
+	if err != nil {
+		return PortPlan{}, err
+	}
+	if len(plan.Ports) == 0 {
+		if err := os.Remove(override); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return PortPlan{}, err
+		}
+		return plan, nil
+	}
+	plan.OverridePath = override
+	if err := writePortOverride(override, plan.Ports); err != nil {
+		return PortPlan{}, err
+	}
+	return plan, nil
 }
 
 type composeProcess struct {
@@ -249,6 +374,89 @@ func servicePriority(service string) int {
 		}
 	}
 	return 3
+}
+
+func ProjectName(project app.Project) string {
+	if project.ID > 0 {
+		return "porto-" + strconv.FormatInt(project.ID, 10)
+	}
+	name := strings.ToLower(project.Name)
+	var builder strings.Builder
+	for _, char := range name {
+		if (char >= 'a' && char <= 'z') || (char >= '0' && char <= '9') || char == '-' || char == '_' {
+			builder.WriteRune(char)
+		} else {
+			builder.WriteByte('-')
+		}
+	}
+	normalized := strings.Trim(builder.String(), "-_")
+	if normalized == "" {
+		normalized = "project"
+	}
+	return "porto-" + normalized
+}
+
+func OverridePath(project app.Project) (string, error) {
+	runtimeDir, err := config.RuntimeDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(runtimeDir, "compose", ProjectName(project)+".ports.yaml"), nil
+}
+
+func writePortOverride(path string, planned []PlannedPort) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create Docker Compose runtime directory: %w", err)
+	}
+	services := make(map[string][]PlannedPort)
+	for _, port := range planned {
+		services[port.Service] = append(services[port.Service], port)
+	}
+	names := make([]string, 0, len(services))
+	for name := range services {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	var builder strings.Builder
+	builder.WriteString("services:\n")
+	for _, name := range names {
+		builder.WriteString("  ")
+		builder.WriteString(strconv.Quote(name))
+		builder.WriteString(":\n    ports: !override\n")
+		for _, port := range services[name] {
+			builder.WriteString("      - ")
+			builder.WriteString(strconv.Quote(fmt.Sprintf("127.0.0.1:%d:%d/%s", port.Published, port.Target, port.Protocol)))
+			builder.WriteByte('\n')
+		}
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".compose-ports.*")
+	if err != nil {
+		return fmt.Errorf("create Docker Compose port override: %w", err)
+	}
+	tempPath := temp.Name()
+	defer os.Remove(tempPath)
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.WriteString(builder.String()); err != nil {
+		_ = temp.Close()
+		return fmt.Errorf("write Docker Compose port override: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("install Docker Compose port override: %w", err)
+	}
+	return nil
+}
+
+func shellQuote(value string) string {
+	if !strings.ContainsAny(value, " \t'\"") {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func daemonUnavailableError(output []byte, err error) error {
