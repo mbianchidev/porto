@@ -17,7 +17,7 @@ case "$tag" in
 esac
 
 case "$(uname -s)" in
-  Darwin) goos="darwin"; extension="tar.gz" ;;
+  Darwin) goos="darwin"; extension="dmg" ;;
   Linux) goos="linux"; extension="tar.gz" ;;
   *)
     echo "This installer supports macOS and Linux. Use install-desktop.ps1 on Windows." >&2
@@ -38,7 +38,14 @@ version="${tag#v}"
 asset="porto-desktop_${version}_${goos}_${goarch}.${extension}"
 base_url="${PORTO_RELEASE_BASE_URL:-https://github.com/${repository}/releases/download/${tag}}"
 temporary="$(mktemp -d)"
-trap 'rm -rf "$temporary"' EXIT HUP INT TERM
+mounted_volume=""
+cleanup() {
+  if [ -n "$mounted_volume" ]; then
+    hdiutil detach "$mounted_volume" -quiet >/dev/null 2>&1 || true
+  fi
+  rm -rf "$temporary"
+}
+trap cleanup EXIT HUP INT TERM
 
 curl -fL --retry 4 --retry-all-errors -o "$temporary/$asset" "$base_url/$asset"
 curl -fL --retry 4 --retry-all-errors -o "$temporary/SHA256SUMS" "$base_url/SHA256SUMS"
@@ -53,11 +60,22 @@ if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   exit 1
 fi
 
-tar -xzf "$temporary/$asset" -C "$temporary"
-source_dir="$temporary/porto-desktop_${version}_${goos}_${goarch}"
-if [ ! -d "$source_dir" ]; then
-  echo "The Porto desktop archive has an unexpected layout." >&2
-  exit 1
+if [ "$goos" = "darwin" ]; then
+  mounted_volume="$temporary/Porto"
+  mkdir -p "$mounted_volume"
+  hdiutil attach -quiet -nobrowse -readonly -mountpoint "$mounted_volume" "$temporary/$asset"
+  source_app="$mounted_volume/Porto.app"
+  if [ ! -d "$source_app" ]; then
+    echo "The Porto DMG does not contain Porto.app." >&2
+    exit 1
+  fi
+else
+  tar -xzf "$temporary/$asset" -C "$temporary"
+  source_dir="$temporary/porto-desktop_${version}_${goos}_${goarch}"
+  if [ ! -d "$source_dir" ]; then
+    echo "The Porto desktop archive has an unexpected layout." >&2
+    exit 1
+  fi
 fi
 
 bin_dir="${PORTO_BIN_DIR:-$HOME/.local/bin}"
@@ -127,7 +145,9 @@ if [ "$goos" = "darwin" ]; then
   stop_daemons
   sleep 1
   rm -rf "$install_root/Porto.app"
-  ditto "$source_dir/Porto.app" "$install_root/Porto.app"
+  ditto "$source_app" "$install_root/Porto.app"
+  hdiutil detach "$mounted_volume" -quiet
+  mounted_volume=""
   ln -sf "$install_root/Porto.app/Contents/Resources/porto" "$bin_dir/porto"
   echo "Installed Porto at $install_root/Porto.app"
   echo "Until releases are signed, macOS may require: xattr -drs com.apple.quarantine \"$install_root/Porto.app\""

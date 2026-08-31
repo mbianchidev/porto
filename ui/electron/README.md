@@ -45,6 +45,14 @@ npm --prefix ui run desktop:package -- \
 ```
 
 Release automation performs this for every supported operating system and
-architecture. `scripts/bundle-desktop-runtime.sh` creates the runtime directory
-used by releases. Packaged apps resolve the bundled binary and tools from
-Porto's resources directory before falling back to `PORTO_BINARY` or `PATH`.
+architecture. Native macOS and Windows hosts can build the final DMG or NSIS
+EXE package with:
+
+```sh
+bash scripts/package-desktop-installer.sh darwin arm64 1.0.0 dist
+# Use: windows amd64 1.0.0 dist on Windows.
+```
+
+`scripts/bundle-desktop-runtime.sh` creates the runtime directory used by
+releases. Packaged apps resolve the bundled binary and tools from Porto's
+resources directory before falling back to `PORTO_BINARY` or `PATH`.

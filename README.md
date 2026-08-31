@@ -36,9 +36,10 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
-The installer detects the OS and architecture, verifies the published SHA-256
-checksum, installs Porto for the current user, exposes the `porto` CLI, and
-launches the desktop app. Desktop releases bundle the daemon, dashboard,
+The one-liners detect the OS and architecture, verify the published SHA-256
+checksum, install the native macOS DMG or Windows EXE package for the current
+user, expose the `porto` CLI, and launch the desktop app. Linux uses the
+portable desktop archive. Every desktop package bundles the daemon, dashboard,
 `kubectl`, Lima, and the supported `kind` binary.
 
 For a headless installation, download the CLI/web archive from the

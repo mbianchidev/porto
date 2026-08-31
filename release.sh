@@ -55,10 +55,15 @@ const fs = require("node:fs");
 const expected = process.env.EXPECTED_VERSION;
 const packageJson = JSON.parse(fs.readFileSync("ui/package.json", "utf8"));
 const packageLock = JSON.parse(fs.readFileSync("ui/package-lock.json", "utf8"));
+const electronPackageJson = JSON.parse(fs.readFileSync("ui/electron/package.json", "utf8"));
+const electronPackageLock = JSON.parse(fs.readFileSync("ui/electron/package-lock.json", "utf8"));
 const versions = [
   ["ui/package.json", packageJson.version],
   ["ui/package-lock.json", packageLock.version],
   ['ui/package-lock.json packages[""]', packageLock.packages?.[""]?.version],
+  ["ui/electron/package.json", electronPackageJson.version],
+  ["ui/electron/package-lock.json", electronPackageLock.version],
+  ['ui/electron/package-lock.json packages[""]', electronPackageLock.packages?.[""]?.version],
 ];
 
 for (const [source, actual] of versions) {
@@ -95,6 +100,7 @@ run_validation() {
   node --check ui/electron/package.cjs
   node --check scripts/desktop-runtime-symlinks.cjs
   bash -n scripts/bundle-desktop-runtime.sh
+  bash -n scripts/package-desktop-installer.sh
   sh -n scripts/install-desktop.sh
 }
 
@@ -105,7 +111,7 @@ verify_only_package_changes() {
   while IFS= read -r status_line; do
     changed_file="${status_line:3}"
     case "$changed_file" in
-      ui/package.json | ui/package-lock.json) ;;
+      ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
       *) fail "release validation produced an unexpected change: ${changed_file}" ;;
     esac
   done < <(git status --porcelain --untracked-files=normal)
@@ -132,7 +138,7 @@ push_release() {
       fail "the commit ahead of origin/main is not the ${tag} release commit"
     while IFS= read -r changed_file; do
       case "$changed_file" in
-        ui/package.json | ui/package-lock.json) ;;
+        ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
         *) fail "the release commit contains unexpected file: ${changed_file}" ;;
       esac
     done < <(git diff --name-only "${remote_main}..${head_sha}")
@@ -257,12 +263,16 @@ echo "Updating dashboard package metadata to ${version}"
   cd ui
   npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
 )
+(
+  cd ui/electron
+  npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
+)
 verify_package_versions
 run_validation
 verify_only_package_changes
 
-if ! git diff --quiet -- ui/package.json ui/package-lock.json; then
-  git add -- ui/package.json ui/package-lock.json
+if ! git diff --quiet -- ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json; then
+  git add -- ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json
   git commit --no-gpg-sign -m "chore(release): ${tag}"
 fi
 

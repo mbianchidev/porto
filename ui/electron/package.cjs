@@ -12,7 +12,7 @@ const args = [
   'Porto',
   '--overwrite',
   '--prune=true',
-  `--icon=${path.join(__dirname, 'assets', 'porto.icns')}`,
+  `--icon=${path.join(__dirname, 'assets', 'porto')}`,
   `--extend-info=${path.join(__dirname, 'assets', 'Info.plist')}`,
   `--extra-resource=${path.join(__dirname, 'assets', 'porto.png')}`,
   '--app-bundle-id=dev.mbianchi.porto',
