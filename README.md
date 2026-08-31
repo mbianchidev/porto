@@ -94,6 +94,7 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 - [Daily use](docs/daily-use.md) — durable installation, login or boot startup, upgrades, and home systems
 - [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
 - [Local runtimes](docs/runtimes.md) — Docker socket, containers, Compose, Kubernetes, pod inspection, and Linux VMs
+- [Porto Docker Engine](docs/docker-engine.md) — native containerd backend, Docker context compatibility, supported API, and limitations
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
 - [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox

@@ -106,7 +106,7 @@ type recordingSetupRunner struct {
 	called bool
 }
 
-func TestRuntimeFeaturesDefaultOffAndKubernetesEnable(t *testing.T) {
+func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -125,14 +125,8 @@ func TestRuntimeFeaturesDefaultOffAndKubernetesEnable(t *testing.T) {
 	if err := json.NewDecoder(featuresResponse.Body).Decode(&features); err != nil {
 		t.Fatalf("decode features: %v", err)
 	}
-	if features["docker"] || features["kubernetes"] || features["vms"] {
-		t.Fatalf("optional runtimes must default off: %+v", features)
-	}
-
-	blockedResponse := httptest.NewRecorder()
-	mux.ServeHTTP(blockedResponse, httptest.NewRequest(http.MethodGet, "/api/docker/containers", nil))
-	if blockedResponse.Code != http.StatusConflict {
-		t.Fatalf("disabled Docker status = %d, want %d", blockedResponse.Code, http.StatusConflict)
+	if !features["docker"] || features["kubernetes"] || features["vms"] {
+		t.Fatalf("Docker must default on while optional runtimes default off: %+v", features)
 	}
 
 	enableResponse := httptest.NewRecorder()

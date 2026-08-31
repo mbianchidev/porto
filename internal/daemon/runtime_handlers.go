@@ -9,7 +9,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
@@ -210,7 +209,7 @@ func (s *Server) dockerPullImage(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	if err := s.docker.PullImage(r.Context(), request.Reference); err != nil {
+	if err := s.docker.PullImage(r.Context(), request.Reference, ""); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -259,7 +258,7 @@ func (s *Server) dockerCreateNetwork(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	if err := s.docker.CreateNetwork(r.Context(), request); err != nil {
+	if _, err := s.docker.CreateNetwork(r.Context(), request); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -292,7 +291,7 @@ func (s *Server) dockerCreateVolume(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	if err := s.docker.CreateVolume(r.Context(), request.Name, request.Driver); err != nil {
+	if _, err := s.docker.CreateVolume(r.Context(), request.Name, request.Driver, nil); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -796,45 +795,49 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if feature == "docker" {
-		if enabled {
-			runContext := s.runtimeContext
-			if runContext == nil {
-				runContext = context.Background()
-			}
-			if err := s.startDockerProxy(runContext); err != nil {
-				writeRuntimeError(w, err)
-				return
-			}
-		} else {
-			statePath, pathErr := config.DockerEndpointStatePath()
-			if pathErr != nil {
-				writeRuntimeError(w, pathErr)
-				return
-			}
-			if _, statErr := os.Stat(statePath); statErr == nil {
-				http.Error(w, "deactivate the canonical Docker endpoint before disabling Docker", http.StatusConflict)
-				return
-			} else if !errors.Is(statErr, os.ErrNotExist) {
-				writeRuntimeError(w, statErr)
-				return
-			}
-			stopContext, cancel := context.WithTimeout(r.Context(), 5*time.Second)
-			defer cancel()
-			if err := s.stopDockerProxy(stopContext); err != nil {
-				writeRuntimeError(w, err)
-				return
-			}
+	if feature == "docker" && !enabled {
+		statePath, pathErr := config.DockerEndpointStatePath()
+		if pathErr != nil {
+			writeRuntimeError(w, pathErr)
+			return
+		}
+		if _, statErr := os.Stat(statePath); statErr == nil {
+			http.Error(w, "deactivate the canonical Docker endpoint before disabling Docker", http.StatusConflict)
+			return
+		} else if !errors.Is(statErr, os.ErrNotExist) {
+			writeRuntimeError(w, statErr)
+			return
 		}
 	}
 
-	if err := s.store.SetSettings(r.Context(), settings); err != nil {
-		if feature == "docker" && enabled {
-			stopContext, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			stopErr := s.stopDockerProxy(stopContext)
+	var rollback func() error
+	if feature == "docker" {
+		if enabled {
+			if err := s.startDockerAPI(s.runtimeContext); err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			rollback = func() error {
+				rollbackContext, cancel := context.WithTimeout(context.Background(), httpShutdownTimeout)
+				defer cancel()
+				return s.stopDockerAPI(rollbackContext)
+			}
+		} else {
+			stopContext, cancel := context.WithTimeout(r.Context(), httpShutdownTimeout)
+			err := s.stopDockerAPI(stopContext)
 			cancel()
-			writeRuntimeError(w, errors.Join(err, stopErr))
-			return
+			if err != nil {
+				writeRuntimeError(w, err)
+				return
+			}
+			rollback = func() error {
+				return s.startDockerAPI(s.runtimeContext)
+			}
+		}
+	}
+	if err := s.store.SetSettings(r.Context(), settings); err != nil {
+		if rollback != nil {
+			err = errors.Join(err, rollback())
 		}
 		writeRuntimeError(w, err)
 		return

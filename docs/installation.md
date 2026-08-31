@@ -78,7 +78,8 @@ Requirements:
 
 Source builds use standard host tools:
 
-- Docker CLI and a Docker-compatible Engine for containers, images, builds, networks, volumes, and Compose
+- Docker CLI for the named Porto context and existing Compose project orchestration
+- `nerdctl` with containerd, or `limactl` for Porto's managed containerd backend
 - `kubectl` for Kubernetes inspection
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
 - `kind` for Kubernetes-in-Docker clusters
@@ -87,7 +88,7 @@ Release desktop apps bundle these provider clients. On macOS source builds can
 install them explicitly from Porto with
 `porto runtime install lima|kind|k0s`.
 
-Porto keeps native project orchestration available when optional runtime tools are missing.
+Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 
 From the repository root:
 

@@ -16,7 +16,7 @@ func TestDockerReadOnlyIntegration(t *testing.T) {
 	manager := New(nil)
 	status := manager.Status(ctx, "")
 	if !status.Available {
-		t.Fatalf("Docker unavailable: %s", status.Message)
+		t.Fatalf("Porto container runtime unavailable: %s", status.Message)
 	}
 	if _, err := manager.Containers(ctx); err != nil {
 		t.Fatalf("list containers: %v", err)

@@ -22,7 +22,6 @@ const (
 	RouterTLSAddr            = "127.0.0.1:37681"
 	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
 	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
-	DockerUpstreamEnv        = "PORTO_DOCKER_UPSTREAM"
 	DockerCanonicalSocketEnv = "PORTO_DOCKER_CANONICAL_SOCKET"
 	PortlessHTTPSMarker      = "portless-https"
 	LocalDomain              = "porto.local"
@@ -177,6 +176,21 @@ func DockerEndpointStatePath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, "docker-endpoint.json"), nil
+}
+
+func DockerEngineDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	engineDir := filepath.Join(dir, "docker")
+	if err := os.MkdirAll(engineDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(engineDir, 0o700); err != nil {
+		return "", err
+	}
+	return engineDir, nil
 }
 
 func CanonicalDockerSocketPath() string {

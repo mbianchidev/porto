@@ -83,7 +83,7 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker status|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return errors.New("usage: porto docker status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
 	case "status":
@@ -97,6 +97,44 @@ func dockerCmd(args []string) error {
 		status := portodocker.New(nil).Status(context.Background(), socketPath)
 		status.Enabled = true
 		return writeOutput(portodocker.AddEndpointStatus(status, config.CanonicalDockerSocketPath(), statePath))
+	case "engine-install":
+		if len(args) != 1 {
+			return errors.New("usage: porto docker engine-install")
+		}
+		status, err := portodocker.New(nil).InstallEngine(context.Background())
+		if err != nil {
+			return err
+		}
+		return writeOutput(status)
+	case "engine-start":
+		if len(args) != 1 {
+			return errors.New("usage: porto docker engine-start")
+		}
+		if err := portodocker.New(nil).StartEngine(context.Background()); err != nil {
+			return err
+		}
+		return writeOutput(map[string]string{"status": "started"})
+	case "engine-stop":
+		if len(args) != 1 {
+			return errors.New("usage: porto docker engine-stop")
+		}
+		if err := portodocker.New(nil).StopEngine(context.Background()); err != nil {
+			return err
+		}
+		return writeOutput(map[string]string{"status": "stopped"})
+	case "engine-remove":
+		fs := flag.NewFlagSet("docker engine-remove", flag.ContinueOnError)
+		confirm := fs.Bool("confirm", false, "delete the Porto engine VM and all container resources")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if fs.NArg() != 0 || !*confirm {
+			return errors.New("usage: porto docker engine-remove --confirm")
+		}
+		if err := portodocker.New(nil).RemoveEngine(context.Background()); err != nil {
+			return err
+		}
+		return writeOutput(map[string]string{"status": "removed"})
 	case "containers", "images", "builds", "networks", "volumes":
 		return runtimeGET("/api/docker/" + args[0])
 	case "context-install":
@@ -110,7 +148,7 @@ func dockerCmd(args []string) error {
 		if err := portodocker.New(nil).InstallContext(context.Background(), socketPath); err != nil {
 			return err
 		}
-		return writeOutput(map[string]string{"context": "porto", "endpoint": "unix://" + socketPath})
+		return writeOutput(map[string]string{"context": "porto", "endpoint": dockerContextEndpoint(socketPath)})
 	case "activate":
 		if runtime.GOOS == "windows" {
 			return errors.New("canonical Docker named-pipe activation is not available in this build")
@@ -130,15 +168,7 @@ func dockerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		upstream, upstreamErr := portodocker.New(nil).Endpoint(context.Background())
-		if upstreamErr != nil {
-			if previousState, stateErr := portodocker.ReadEndpointState(statePath); stateErr == nil {
-				upstream = previousState.Upstream
-			} else {
-				return upstreamErr
-			}
-		}
-		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, upstream, statePath, *replace)
+		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, statePath, *replace)
 		if err != nil {
 			return dockerPrivilegeHint(err)
 		}
@@ -173,6 +203,13 @@ func dockerCmd(args []string) error {
 	default:
 		return fmt.Errorf("unsupported Docker command %q", args[0])
 	}
+}
+
+func dockerContextEndpoint(socketPath string) string {
+	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
+		return "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`)
+	}
+	return "unix://" + socketPath
 }
 
 func dockerBuildCmd(args []string) error {

@@ -2,7 +2,7 @@
 
 Porto can manage native development applications, Docker resources, local Kubernetes clusters, and standalone Linux virtual machines from the same daemon, CLI, and dashboard.
 
-Native project orchestration remains the default. Docker, Kubernetes, and VM providers are optional and report clear unavailable states when their required tools are not installed or running.
+Native project orchestration remains the default. The Docker API server is enabled by default. Its containerd execution backend, Kubernetes, and VM providers report clear unavailable states when required tools are not installed or running.
 
 Enable providers independently:
 
@@ -13,21 +13,21 @@ porto runtime enable vms
 porto runtime status
 ```
 
-Disable a provider with `porto runtime disable <provider>`. Disable Docker only after `porto docker deactivate` when Porto owns the canonical socket.
+Disable a provider with `porto runtime disable <provider>`. Disabling Docker closes its API socket; deactivate the canonical Docker endpoint first when Porto owns it.
 
 ## Architecture
 
 Porto separates the control plane from runtime providers:
 
-- The Porto daemon owns the HTTP API, dashboard state, project lifecycle, local routes, and Docker API proxy.
+- The Porto daemon owns the HTTP API, dashboard state, project lifecycle, local routes, and Docker Engine-compatible API server.
 - Native projects continue to run directly on the host.
-- Docker resource operations use the standard `docker` CLI and selected Docker context.
-- The Porto Docker socket proxies the selected upstream Docker Engine endpoint.
+- Docker clients connect to Porto through the named `porto` context.
+- Porto translates supported Docker API operations to nerdctl and a Porto-owned containerd backend, either local or in a persistent Lima VM.
 - Kubernetes inspection uses the selected `kubectl` context.
 - Porto-created Kubernetes clusters use Lima VMs running k3s.
 - Standalone Linux VMs use Lima and remain separate from Kubernetes node groups.
 
-This design keeps existing tools and scripts compatible while giving Porto one operational view.
+This design keeps supported Docker clients compatible without forwarding requests to another Docker daemon.
 
 ## Requirements
 
@@ -37,7 +37,9 @@ Additional runtime features require:
 
 | Capability | Requirement |
 | --- | --- |
-| Containers, images, builds, networks, volumes, Compose | Docker CLI and a reachable Docker-compatible Engine |
+| Docker client compatibility | Docker CLI or another Docker Engine API client |
+| Containers, images, networks, volumes | `nerdctl` with containerd, or `limactl` for Porto-managed containerd |
+| Existing Compose project orchestration | Docker CLI and an external Compose-compatible Engine |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | `limactl` and host virtualization support |
@@ -59,7 +61,7 @@ provider installation on macOS. Other
 platforms receive an actionable manual-install error instead of a silent
 fallback.
 
-## Docker-compatible endpoint
+## Docker Engine-compatible endpoint
 
 The daemon creates a user-owned socket:
 
@@ -73,20 +75,21 @@ On Windows, Porto exposes the equivalent named pipe:
 \\.\pipe\porto_docker_engine
 ```
 
-It proxies Docker Engine API requests to the endpoint selected when the daemon starts. Override that upstream explicitly:
-
-```sh
-PORTO_DOCKER_UPSTREAM=unix:///path/to/docker.sock porto daemon start
-```
-
-If the selected upstream becomes available after the daemon starts, disable and re-enable the Docker provider or restart the daemon so Porto can resolve it again.
-
-Install a named Docker context:
+The endpoint is served by Porto itself whenever the Docker runtime is enabled. It can answer health and system information requests even when the containerd execution backend still needs installation.
 
 ```sh
 porto docker context-install
 docker --context porto info
 ```
+
+Install the execution backend before creating containers:
+
+```sh
+porto docker engine-install
+porto docker status
+```
+
+See [Porto Docker Engine](docker-engine.md) for architecture, supported Docker API routes, persistence, cleanup, and limitations.
 
 To make standard tools use Porto with `DOCKER_HOST` unset, activate the canonical Unix socket:
 
@@ -106,7 +109,7 @@ Writing `/var/run/docker.sock` normally requires administrator privileges. When 
 porto docker deactivate
 ```
 
-The Porto-owned proxy socket uses mode `0600`. Treat access to any Docker socket as host-administrator access.
+The Porto-owned API socket uses mode `0600`. Treat access to any Docker socket as host-administrator access.
 
 Windows clients use the named `porto` Docker context. Canonical
 `\\.\pipe\docker_engine` takeover is intentionally not automatic because
@@ -116,15 +119,14 @@ Windows named pipes cannot be replaced with a reversible symbolic link.
 
 ```sh
 porto docker status
+porto docker engine-install
 porto docker containers
 porto docker images
-porto docker builds
 porto docker networks
 porto docker volumes
 
 porto docker container restart <container>
 porto docker pull alpine:latest
-porto docker build . --tag example:dev
 ```
 
 Top-level inventory aliases are also available:
@@ -137,7 +139,7 @@ porto networks
 porto volumes
 ```
 
-Compose projects continue to use their standard Compose files. Porto assigns a
+Compose projects continue to use their standard Compose files and currently require an external compatible engine. Porto assigns a
 stable Compose project name per Porto project and generates a temporary
 `!override` file that remaps published TCP ports onto free localhost ports.
 This keeps concurrent projects and branch worktrees isolated without editing
@@ -344,8 +346,9 @@ Mutation routes validate JSON input, use argument arrays rather than host-shell 
 
 ## Failure behavior
 
-- Optional runtime failures do not stop native project orchestration.
+- Containerd, Kubernetes, and VM runtime failures do not stop native project orchestration or the Docker API health endpoint.
 - Missing CLIs, unreachable daemons, unavailable Kubernetes APIs, and permission failures return actionable errors.
+- Unsupported Docker Engine API operations return HTTP 501 with a Docker-compatible JSON error.
 - Porto refuses destructive canonical Docker socket changes it cannot safely reverse.
 - Failed cluster creation removes VMs created during that attempt and reports cleanup errors.
 - Runtime command timeouts are bounded; image builds and provisioning receive longer explicit limits.
