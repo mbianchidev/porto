@@ -205,6 +205,7 @@ func TestInstallEngineRejectsUnownedLimaNameCollision(t *testing.T) {
 		errors: map[string]error{},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
+	manager.goos = "darwin"
 	manager.lookPath = func(name string) (string, error) {
 		if name == "limactl" {
 			return "/usr/local/bin/limactl", nil
