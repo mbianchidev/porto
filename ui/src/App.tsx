@@ -19,7 +19,7 @@ import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
 import { Activity } from './pages/Activity'
 import { SettingsPage } from './pages/SettingsPage'
-import type { IntegrationStatus, KillSwitchStatus, KubernetesContext, RouteID, Settings } from './types'
+import type { IntegrationStatus, KillSwitchStatus, KubernetesCluster, KubernetesContext, RouteID, Settings } from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
@@ -54,7 +54,9 @@ function AppShell() {
   const sendbox = usePolledResource<IntegrationStatus>((signal) => apiGet('/api/integrations/sendbox', signal), 5000, [])
   const killSwitch = usePolledResource<KillSwitchStatus>((signal) => apiGet('/api/integrations/kill-switch', signal), 5000, [])
   const kubernetesContexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 10000, [])
+  const kubernetesClusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
   const activeKubeContext = kubeContext || kubernetesContexts.data?.[0]?.name || ''
+  const kubernetesRunningCount = (kubernetesClusters.data ?? []).filter((cluster) => cluster.state === 'running').length
 
   function reloadIntegrations() {
     sqlNotSoLite.reload()
@@ -84,7 +86,7 @@ function AppShell() {
         aria-expanded={railOpen}
         onClick={() => setRailOpen((value) => !value)}
       />
-      <Rail route={route} open={railOpen} onNavigate={() => setRailOpen(false)} />
+      <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
       {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
       <main className="appMain">
         {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}

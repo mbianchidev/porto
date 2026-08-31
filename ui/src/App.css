@@ -1296,11 +1296,24 @@ button:disabled {
 }
 
 .railGroupTitle {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   padding: 0 8px 5px;
   color: #9a9d92;
   font: 700 9px/1.2 var(--mono);
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.railClusterSignal {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #c7c9bd;
+  font-size: 9px;
+  letter-spacing: 0.03em;
 }
 
 .railGroup a {
@@ -1650,6 +1663,22 @@ button:disabled {
 
 .terminalViewport {
   min-height: 160px;
+}
+
+.vmTerminal.terminalMaximized {
+  position: fixed;
+  z-index: 120;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  border-radius: 0;
+}
+
+.vmTerminal.terminalMaximized .terminalViewport {
+  min-height: 0;
+  max-height: none;
+  flex: 1 1 auto;
 }
 
 .terminalPrompt {

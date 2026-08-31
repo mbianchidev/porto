@@ -326,6 +326,7 @@ export type KubernetesScaleNodeGroupRequest = {
 export type KubernetesCluster = {
   name: string
   provider: 'kind' | 'k0s' | 'k3s'
+  state: string
   context: string
   kubeconfigPath: string
   server: string

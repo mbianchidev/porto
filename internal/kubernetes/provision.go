@@ -54,6 +54,7 @@ type ClusterRequest struct {
 type Cluster struct {
 	Name           string   `json:"name"`
 	Provider       string   `json:"provider"`
+	State          string   `json:"state"`
 	Context        string   `json:"context"`
 	KubeconfigPath string   `json:"kubeconfigPath"`
 	Server         string   `json:"server"`
@@ -219,6 +220,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	cluster = Cluster{
 		Name:           request.Name,
 		Provider:       request.Provider,
+		State:          "running",
 		Context:        contextName,
 		KubeconfigPath: kubeconfigPath,
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
@@ -321,6 +323,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	return Cluster{
 		Name:           request.Name,
 		Provider:       "kind",
+		State:          "running",
 		Context:        contextName,
 		KubeconfigPath: kubeconfigPath,
 		Server:         strings.TrimSpace(string(serverOutput)),
@@ -458,6 +461,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 		cluster := Cluster{
 			Name:           name,
 			Provider:       normalizeProvider(request.Provider),
+			State:          "stopped",
 			Context:        "porto-" + name,
 			KubeconfigPath: p.clusterKubeconfigPath(name),
 		}
@@ -469,6 +473,9 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			})
 			if kindErr == nil {
 				cluster.Nodes = strings.Fields(string(output))
+				if len(cluster.Nodes) > 0 {
+					cluster.State = "running"
+				}
 			}
 			serverOutput, serverErr := p.runner.Run(ctx, runtimes.Command{
 				Name: "kubectl",
@@ -486,10 +493,20 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			cluster.Server = "https://127.0.0.1:" + strconv.Itoa(request.APIPort)
 		}
 		if cluster.Provider != "kind" && instanceErr == nil {
+			runningNodes := 0
 			for _, nodeName := range clusterNodeNames(request) {
-				if _, ok := instanceByName[nodeName]; ok {
+				if instance, ok := instanceByName[nodeName]; ok {
 					cluster.Nodes = append(cluster.Nodes, nodeName)
+					if strings.EqualFold(instance.Status, "running") {
+						runningNodes++
+					}
 				}
+			}
+			switch {
+			case runningNodes == len(clusterNodeNames(request)):
+				cluster.State = "running"
+			case runningNodes > 0:
+				cluster.State = "degraded"
 			}
 			sort.Strings(cluster.Nodes)
 		}

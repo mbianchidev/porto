@@ -7,6 +7,7 @@ import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
+import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
 import type {
   KubernetesCluster,
@@ -158,6 +159,7 @@ export function KubernetesOverview({
   const selectedCluster = clusterItems.find((cluster) => cluster.name === selectedClusterName) ?? null
   const available = status.data?.available ?? false
   const enabled = status.data?.enabled ?? false
+  const runningClusters = clusterItems.filter((cluster) => cluster.state === 'running')
 
   async function createCluster(event: FormEvent) {
     event.preventDefault()
@@ -231,6 +233,11 @@ export function KubernetesOverview({
       <section className="fleetRail" aria-label="Kubernetes status">
         <span className="fleetRailTitle">Cluster signal</span>
         <span className="fleetDatum"><StatusLamp state={available ? 'running' : 'crashed'} />{available ? 'Available' : 'Unavailable'}</span>
+        <span className="fleetDatum">
+          <StatusLamp state={runningClusters.length > 0 ? 'running' : 'stopped'} />
+          <small>Managed clusters</small>
+          <strong>{runningClusters.length} running</strong>
+        </span>
         <span className="fleetDatum"><small>Context</small><strong>{status.data?.context || context || 'default'}</strong></span>
         {status.data?.serverVersion && <span className="fleetDatum"><small>Server</small><strong>{status.data.serverVersion}</strong></span>}
         <span className="fleetMessage">{items.length} configured context(s) · {clusterItems.length} Porto cluster(s)</span>
@@ -271,14 +278,17 @@ export function KubernetesOverview({
             <InventoryList
               items={clusterItems}
               getKey={(cluster) => cluster.name}
-              columnsTemplate="minmax(140px,1.1fr) minmax(80px,0.6fr) minmax(150px,1fr) minmax(150px,1fr) minmax(60px,0.4fr)"
+              columnsTemplate="12px minmax(130px,1fr) minmax(80px,0.5fr) minmax(90px,0.6fr) minmax(140px,1fr) minmax(140px,1fr) minmax(55px,0.35fr)"
               selectedKey={selectedClusterName}
               onSelect={(cluster) => { setCreatingCluster(false); setSelectedClusterName(cluster.name); setClusterTab('overview') }}
+              getLamp={(cluster) => lampStateFor(cluster.state)}
+              getLampLabel={(cluster) => cluster.state}
               ariaLabel="Porto-provisioned Kubernetes clusters"
               emptyMessage={clusters.error || 'No Porto-provisioned clusters yet. Create one to get started.'}
               columns={[
                 { header: 'Name', render: (cluster) => <strong>{cluster.name}</strong> },
                 { header: 'Provider', className: 'mono', render: (cluster) => cluster.provider },
+                { header: 'State', className: 'mono', render: (cluster) => cluster.state },
                 { header: 'Context', className: 'mono', render: (cluster) => cluster.context },
                 { header: 'Server', className: 'mono', render: (cluster) => cluster.server || '—' },
                 { header: 'Nodes', className: 'mono', render: (cluster) => cluster.nodes?.length ?? 0 },
@@ -304,6 +314,7 @@ export function KubernetesOverview({
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
+                      <div><dt>State</dt><dd>{selectedCluster.state}</dd></div>
                       <div><dt>Server</dt><dd>{selectedCluster.server || '—'}</dd></div>
                       <div><dt>Kubeconfig</dt><dd>{selectedCluster.kubeconfigPath}</dd></div>
                       <div><dt>Nodes</dt><dd>{selectedCluster.nodes?.join(', ') || '—'}</dd></div>

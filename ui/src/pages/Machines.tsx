@@ -1,5 +1,6 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
+import { createPortal } from 'react-dom'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -24,6 +25,17 @@ function TerminalTab({ instance }: { instance: VMInstance }) {
   const [command, setCommand] = useState('')
   const [running, setRunning] = useState(false)
   const [history, setHistory] = useState<Array<{ command: string; output: string }>>([])
+  const [maximized, setMaximized] = useState(false)
+  const runningInstance = instance.status.toLocaleLowerCase() === 'running'
+
+  useEffect(() => {
+    if (!maximized) return
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMaximized(false)
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [maximized])
 
   async function runCommand() {
     const trimmed = command.trim()
@@ -43,9 +55,16 @@ function TerminalTab({ instance }: { instance: VMInstance }) {
     }
   }
 
-  return (
-    <section className="logConsole">
-      <div className="consoleHeader"><div><h3>Terminal</h3><p>{instance.name}</p></div></div>
+  const terminal = (
+    <section className={`logConsole vmTerminal ${maximized ? 'terminalMaximized' : ''}`}>
+      <div className="consoleHeader">
+        <div><h3>Terminal</h3><p>{instance.name}{maximized ? ' · maximized' : ''}</p></div>
+        <div className="consoleActions">
+          <button type="button" aria-pressed={maximized} onClick={() => setMaximized((value) => !value)}>
+            {maximized ? 'Minimize terminal' : 'Maximize terminal'}
+          </button>
+        </div>
+      </div>
       <div className="logViewport terminalViewport" role="log" aria-live="polite">
         {history.length === 0 && <div className="logEmpty">No commands executed yet.</div>}
         {history.map((entry, index) => (
@@ -58,14 +77,15 @@ function TerminalTab({ instance }: { instance: VMInstance }) {
           value={command}
           placeholder="uname -a"
           aria-label="Command to execute"
-          disabled={running || instance.status !== 'Running'}
+          disabled={running || !runningInstance}
           onChange={(event) => setCommand(event.target.value)}
         />
-        <button type="submit" disabled={running || command.trim() === '' || instance.status !== 'Running'}>{running ? 'Running…' : 'Run'}</button>
+        <button type="submit" disabled={running || command.trim() === '' || !runningInstance}>{running ? 'Running…' : 'Run'}</button>
       </form>
-      {instance.status !== 'Running' && <p className="hintLine">Start the VM to run commands.</p>}
+      {!runningInstance && <p className="hintLine">Start the VM to run commands.</p>}
     </section>
   )
+  return maximized ? createPortal(terminal, document.body) : terminal
 }
 
 function SnapshotTab({ instance }: { instance: VMInstance }) {

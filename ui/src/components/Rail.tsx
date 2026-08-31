@@ -1,4 +1,5 @@
 import { Icon, type IconName } from './Icon'
+import { StatusLamp } from './StatusLamp'
 import type { RouteID } from '../types'
 
 type NavItem = { id: RouteID; label: string; icon: IconName }
@@ -38,10 +39,12 @@ const NAV_GROUPS: NavGroup[] = [
 export function Rail({
   route,
   open,
+  kubernetesRunningCount,
   onNavigate,
 }: {
   route: RouteID
   open: boolean
+  kubernetesRunningCount: number
   onNavigate: () => void
 }) {
   return (
@@ -56,7 +59,15 @@ export function Rail({
       <div className="railGroups">
         {NAV_GROUPS.map((group) => (
           <div className="railGroup" key={group.title}>
-            <span className="railGroupTitle">{group.title}</span>
+            <span className="railGroupTitle">
+              <span>{group.title}</span>
+              {group.title === 'Kubernetes' && (
+                <span className="railClusterSignal">
+                  <StatusLamp state={kubernetesRunningCount > 0 ? 'running' : 'stopped'} />
+                  {kubernetesRunningCount > 0 ? `${kubernetesRunningCount} running` : 'idle'}
+                </span>
+              )}
+            </span>
             {group.items.map((item) => (
               <a
                 key={item.id}
