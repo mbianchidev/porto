@@ -44,6 +44,7 @@ func TestPlatformImageArchiveSelectsRuntimeManifest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	defer archive.Close()
 	writer := tar.NewWriter(archive)
 	writeJSONTarEntry(t, writer, "blobs/sha256/"+nestedDigest.Encoded(), nested)
 	writeJSONTarEntry(t, writer, "index.json", root)
