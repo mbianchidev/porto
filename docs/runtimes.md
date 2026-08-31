@@ -274,9 +274,11 @@ Porto exposes a versioned VM image catalog:
 - CentOS Stream 10
 - openSUSE Tumbleweed
 - NixOS unstable
-- Arch Linux
-- Alpine Linux
-- Kali Linux rolling when an official Lima-compatible image exists for the host architecture
+- Arch Linux current cloud snapshot (x86_64; emulated on ARM hosts)
+- Alpine Linux 3.23
+- Kali Linux 2026.2 installer metadata. Creation remains blocked until a trusted
+  cloud-init disk is available; Porto does not substitute unverified community
+  security images.
 
 List images and instances:
 

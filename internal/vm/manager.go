@@ -38,13 +38,14 @@ type Status struct {
 }
 
 type Image struct {
-	ID           string `json:"id"`
-	Distribution string `json:"distribution"`
-	Version      string `json:"version"`
-	Template     string `json:"template"`
-	Description  string `json:"description"`
-	Available    bool   `json:"available"`
-	Message      string `json:"message,omitempty"`
+	ID            string   `json:"id"`
+	Distribution  string   `json:"distribution"`
+	Version       string   `json:"version"`
+	Template      string   `json:"template"`
+	Description   string   `json:"description"`
+	Architectures []string `json:"architectures,omitempty"`
+	Available     bool     `json:"available"`
+	Message       string   `json:"message,omitempty"`
 }
 
 type Instance struct {
@@ -113,9 +114,24 @@ func (m *Manager) Images() []Image {
 		{ID: "centos-stream-10", Distribution: "CentOS Stream", Version: "10", Template: "template:centos-stream-10", Description: "CentOS Stream server-compatible environment", Available: true},
 		{ID: "opensuse-tumbleweed", Distribution: "openSUSE", Version: "Tumbleweed", Template: "template:experimental/opensuse-tumbleweed", Description: "Rolling openSUSE development environment", Available: true},
 		{ID: "nixos-unstable", Distribution: "NixOS", Version: "Unstable", Template: "github:nixos-lima", Description: "Declarative NixOS test environment", Available: true},
-		{ID: "archlinux", Distribution: "Arch Linux", Version: "Rolling", Template: "template:archlinux", Description: "Minimal rolling Arch Linux environment", Available: true},
-		{ID: "alpine", Distribution: "Alpine Linux", Version: "Latest", Template: "template:alpine", Description: "Small musl-based Linux environment", Available: true},
-		{ID: "kali", Distribution: "Kali Linux", Version: "Rolling", Description: "Security testing environment", Message: "Kali does not publish a Lima-compatible ARM64 cloud image; automated creation is unavailable on this architecture."},
+		{
+			ID:            "archlinux",
+			Distribution:  "Arch Linux",
+			Version:       "Current snapshot",
+			Template:      "template:archlinux",
+			Description:   "Official x86_64 cloud snapshot; Arch updates continuously after creation.",
+			Architectures: []string{"x86_64"},
+			Available:     true,
+		},
+		{ID: "alpine", Distribution: "Alpine Linux", Version: "3.23", Template: "template:alpine-3.23", Description: "Small musl-based Linux environment", Available: true},
+		{
+			ID:            "kali",
+			Distribution:  "Kali Linux",
+			Version:       "2026.2 installer",
+			Description:   "Current Kali point release for security testing.",
+			Architectures: []string{"aarch64", "x86_64"},
+			Message:       "Kali publishes installer images, but not a trusted cloud-init disk that Lima can provision. Porto will not substitute an unverified community image.",
+		},
 	}
 }
 
@@ -203,6 +219,12 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 			return Instance{}, fmt.Errorf("unsupported VM architecture %q", request.Architecture)
 		}
 	}
+	if len(image.Architectures) == 1 && request.Architecture == "" {
+		request.Architecture = image.Architectures[0]
+	}
+	if request.Architecture != "" && !supportsArchitecture(image, request.Architecture) {
+		return Instance{}, fmt.Errorf("%s does not support %s", image.Distribution, request.Architecture)
+	}
 	configPath := ""
 	if request.Network != "" || len(request.PortForwards) > 0 {
 		var err error
@@ -242,6 +264,18 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		}
 	}
 	return m.Get(ctx, request.Name)
+}
+
+func supportsArchitecture(image Image, architecture string) bool {
+	if len(image.Architectures) == 0 {
+		return true
+	}
+	for _, supported := range image.Architectures {
+		if supported == architecture {
+			return true
+		}
+	}
+	return false
 }
 
 func formatGiB(memoryMiB int) string {

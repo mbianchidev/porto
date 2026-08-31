@@ -45,6 +45,24 @@ func TestImageCatalogContainsRequiredDistributions(t *testing.T) {
 	}
 }
 
+func TestImageCatalogExplainsRollingAndInstallerImages(t *testing.T) {
+	images := New(&recordingRunner{}).Images()
+	arch, archFound := imageByID(images, "archlinux")
+	if !archFound {
+		t.Fatal("missing Arch Linux image")
+	}
+	if arch.Version == "Rolling" || !supportsArchitecture(arch, "x86_64") || supportsArchitecture(arch, "aarch64") {
+		t.Fatalf("unexpected Arch Linux catalog entry: %+v", arch)
+	}
+	kali, kaliFound := imageByID(images, "kali")
+	if !kaliFound {
+		t.Fatal("missing Kali Linux image")
+	}
+	if kali.Available || !strings.Contains(kali.Message, "cloud-init") || !strings.Contains(kali.Version, "2026.2") {
+		t.Fatalf("unexpected Kali Linux catalog entry: %+v", kali)
+	}
+}
+
 func TestCreateUsesConfiguredResources(t *testing.T) {
 	runner := &recordingRunner{}
 	manager := New(runner)
@@ -67,6 +85,22 @@ func TestCreateUsesConfiguredResources(t *testing.T) {
 		if !strings.Contains(createCommand, expected) {
 			t.Errorf("create command %q missing %q", createCommand, expected)
 		}
+	}
+}
+
+func TestCreateUsesOnlySupportedImageArchitecture(t *testing.T) {
+	runner := &recordingRunner{}
+	manager := New(runner)
+	if _, err := manager.Create(context.Background(), CreateRequest{
+		Name: "test-vm", Image: "archlinux", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
+	}); err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	createCommand := strings.Join(runner.commands[0].Args, " ")
+	if !strings.Contains(createCommand, "--arch x86_64") {
+		t.Fatalf("create command %q did not select x86_64", createCommand)
 	}
 }
 
@@ -136,4 +170,13 @@ func TestSnapshotUsesCurrentLimaSyntax(t *testing.T) {
 	if restore != "snapshot apply test-vm --tag before" {
 		t.Fatalf("restore command = %q", restore)
 	}
+}
+
+func imageByID(images []Image, id string) (Image, bool) {
+	for _, image := range images {
+		if image.ID == id {
+			return image, true
+		}
+	}
+	return Image{}, false
 }

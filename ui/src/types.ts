@@ -349,6 +349,7 @@ export type VMImage = {
   version: string
   template: string
   description: string
+  architectures?: string[]
   available: boolean
   message?: string
 }

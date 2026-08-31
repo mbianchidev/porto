@@ -91,6 +91,16 @@ export function Machines() {
   const lima = providers.data?.find((provider) => provider.name === 'lima')
   const selectedImage = images.data?.find((image) => image.id === form.image)
   const isRunning = (instance: VMInstance) => instance.status.toLocaleLowerCase() === 'running'
+  const imageSupports = (architecture: string) => !selectedImage?.architectures?.length || selectedImage.architectures.includes(architecture)
+
+  function selectImage(imageID: string) {
+    const image = images.data?.find((item) => item.id === imageID)
+    setForm({
+      ...form,
+      image: imageID,
+      architecture: image?.architectures?.length === 1 ? image.architectures[0] : '',
+    })
+  }
 
   async function createInstance(event: FormEvent) {
     event.preventDefault()
@@ -247,22 +257,23 @@ export function Machines() {
               </label>
               <label>
                 <span>Distribution</span>
-                <select value={form.image} onChange={(event) => setForm({ ...form, image: event.target.value })} required>
+                <select value={form.image} onChange={(event) => selectImage(event.target.value)} required>
                   <option value="" disabled>Choose an image</option>
                   {(images.data ?? []).map((image) => (
-                    <option key={image.id} value={image.id} disabled={!image.available}>
-                      {image.distribution} · {image.version}{image.available ? '' : ' · unavailable'}
+                    <option key={image.id} value={image.id}>
+                      {image.distribution} · {image.version}{image.available ? '' : ' · image build required'}
                     </option>
                   ))}
                 </select>
               </label>
+              {selectedImage?.description && <p className="hintLine">{selectedImage.description}</p>}
               {selectedImage?.message && <p className="errorLine">{selectedImage.message}</p>}
               <label>
                 <span>Architecture</span>
                 <select value={form.architecture} onChange={(event) => setForm({ ...form, architecture: event.target.value })}>
-                  <option value="">Host default</option>
-                  <option value="aarch64">aarch64</option>
-                  <option value="x86_64">x86_64</option>
+                  <option value="" disabled={Boolean(selectedImage?.architectures?.length)}>Host default</option>
+                  <option value="aarch64" disabled={!imageSupports('aarch64')}>aarch64</option>
+                  <option value="x86_64" disabled={!imageSupports('x86_64')}>x86_64</option>
                 </select>
               </label>
               <label>
@@ -281,7 +292,7 @@ export function Machines() {
                 <span><strong>Start after creation</strong></span>
                 <input type="checkbox" checked={form.start} onChange={(event) => setForm({ ...form, start: event.target.checked })} />
               </label>
-              <button type="submit" disabled={submitting || form.name.trim() === '' || form.image === ''}>{submitting ? 'Creating…' : 'Create machine'}</button>
+              <button type="submit" disabled={submitting || form.name.trim() === '' || form.image === '' || selectedImage?.available === false}>{submitting ? 'Creating…' : 'Create machine'}</button>
             </form>
           </Inspector>
         )}
