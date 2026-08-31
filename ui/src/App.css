@@ -351,6 +351,35 @@
   text-align: center;
 }
 
+.activityFilters button {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 28px;
+  min-width: 98px;
+  min-height: 44px;
+  justify-content: space-between;
+}
+
+.activityFilters button > span {
+  line-height: 1;
+}
+
+.activityFilters button strong {
+  display: inline-grid;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  place-items: center;
+  line-height: 1;
+}
+
+.activityFilters button.active.activityFilter-notice {
+  box-shadow: inset 0 -2px 0 var(--olive);
+}
+
+.activityFilters button.active.activityFilter-error {
+  box-shadow: inset 0 -2px 0 var(--red);
+}
+
 .statusFilters button.active {
   border-color: var(--line-strong);
   background: var(--panel-raised);
@@ -1756,6 +1785,10 @@ button:disabled {
 
 .activityViewport {
   max-height: none;
+}
+
+.activityWorkArea {
+  grid-template-columns: minmax(0, 1fr);
 }
 
 @media (max-width: 1080px) {
