@@ -10,6 +10,7 @@ const args = [
   '--prune=true',
   `--icon=${path.join(__dirname, 'assets', 'porto.icns')}`,
   `--extend-info=${path.join(__dirname, 'assets', 'Info.plist')}`,
+  `--extra-resource=${path.join(__dirname, 'assets', 'porto.png')}`,
   '--app-bundle-id=dev.mbianchi.porto',
   '--app-category-type=public.app-category.developer-tools',
   '--win32metadata.CompanyName=Porto',

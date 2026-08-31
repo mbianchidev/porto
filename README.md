@@ -24,12 +24,30 @@ Porto is an open-source desktop and web control plane for development workloads 
 
 ### 1. Install Porto
 
-Download the archive for your platform from the [releases page](https://github.com/mbianchidev/porto/releases). Keep the `porto` binary and `ui/dist` directory together, then run the binary from the extracted directory or add it to your `PATH`.
+Install and launch the latest desktop release on macOS or Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+```
+
+On Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+```
+
+The installer detects the OS and architecture, verifies the published SHA-256
+checksum, installs Porto for the current user, exposes the `porto` CLI, and
+launches the desktop app. Desktop releases bundle the daemon, dashboard,
+`kubectl`, Lima, and the supported `kind` binary.
+
+For a headless installation, download the CLI/web archive from the
+[releases page](https://github.com/mbianchidev/porto/releases). Keep the
+`porto` binary and `ui/dist` directory together, then add the binary to `PATH`.
 
 See the [installation guide](docs/installation.md) for checksum verification, source builds, and custom dashboard paths.
 
-Desktop release archives bundle Porto Desktop, the daemon, and dashboard
-assets. CLI/web archives remain available for headless machines and servers.
+CLI/web archives remain available for headless machines and servers.
 
 ### 2. Discover projects
 

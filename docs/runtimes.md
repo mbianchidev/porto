@@ -39,7 +39,7 @@ Additional runtime features require:
 | --- | --- |
 | Containers, images, builds, networks, volumes, Compose | Docker CLI and a reachable Docker-compatible Engine |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
-| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind`, `limactl`, and `k0sctl` on macOS |
+| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | `limactl` and host virtualization support |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.

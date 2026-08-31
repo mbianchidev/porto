@@ -4,6 +4,39 @@ Porto needs both the `porto` binary and the compiled dashboard assets. Release a
 
 ## Install a release
 
+### Desktop one-liner
+
+macOS and Linux:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+```
+
+Windows PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+```
+
+Both installers resolve the latest GitHub release, select the matching
+OS/architecture archive, verify it against `SHA256SUMS`, install it for the
+current user, add a `porto` CLI entry, and launch the app. Set
+`PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
+install without opening it.
+
+Desktop archives contain Porto, its dashboard, `kubectl`, Lima, and the
+supported `kind` binary for that platform. Linux installation installs QEMU
+through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
+`winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
+
+macOS releases still need Developer ID signing/notarization for warning-free
+launches, and Windows may show SmartScreen until releases are signed. Docker
+and Compose currently require a reachable Docker-compatible engine; the
+desktop app, native project orchestration, VM management, and k3s/k0s cluster
+management do not require a separate Porto installation.
+
+### Manual archive installation
+
 Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/mbianchidev/porto/releases). Verify the download, then unpack it:
 
 ```sh
@@ -33,8 +66,8 @@ Keep `ui/dist` beside the binary when moving the installation, or set `PORTO_UI_
 
 Desktop archives use the `porto-desktop_<version>_<os>_<arch>` prefix and
 contain the Porto desktop application with the matching Porto binary and compiled
-dashboard assets bundled in its resources directory. CLI/web archives keep the
-`porto_<version>_<os>_<arch>` prefix.
+dashboard assets plus portable runtime tools bundled in its resources
+directory. CLI/web archives keep the `porto_<version>_<os>_<arch>` prefix.
 
 ## Build from source
 
@@ -43,14 +76,15 @@ Requirements:
 - Go 1.25 or newer
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
-Optional runtime features use standard host tools:
+Source builds use standard host tools:
 
 - Docker CLI and a Docker-compatible Engine for containers, images, builds, networks, volumes, and Compose
 - `kubectl` for Kubernetes inspection
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
 - `kind` for Kubernetes-in-Docker clusters
 
-On macOS these providers can be installed explicitly from Porto with
+Release desktop apps bundle these provider clients. On macOS source builds can
+install them explicitly from Porto with
 `porto runtime install lima|kind|k0s`.
 
 Porto keeps native project orchestration available when optional runtime tools are missing.

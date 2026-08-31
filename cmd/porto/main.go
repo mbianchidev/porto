@@ -39,6 +39,9 @@ func main() {
 }
 
 func run(args []string) error {
+	if err := configureBundledRuntimePath(); err != nil {
+		return err
+	}
 	if len(args) == 0 {
 		usage()
 		return nil
@@ -96,6 +99,52 @@ func run(args []string) error {
 	default:
 		return fmt.Errorf("unknown command %q", args[0])
 	}
+}
+
+func configureBundledRuntimePath() error {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil
+	}
+	current := os.Getenv("PATH")
+	updated := bundledRuntimePath(executable, current)
+	if updated == current {
+		return nil
+	}
+	if err := os.Setenv("PATH", updated); err != nil {
+		return fmt.Errorf("configure bundled runtime PATH: %w", err)
+	}
+	return nil
+}
+
+func bundledRuntimePath(executable, current string) string {
+	if resolved, err := filepath.EvalSymlinks(executable); err == nil {
+		executable = resolved
+	}
+	base := filepath.Dir(executable)
+	existing := filepath.SplitList(current)
+	seen := make(map[string]struct{}, len(existing))
+	for _, entry := range existing {
+		seen[filepath.Clean(entry)] = struct{}{}
+	}
+	bundled := []string{
+		filepath.Join(base, "runtime", "bin"),
+		filepath.Join(base, "runtime", "lima", "bin"),
+	}
+	prepend := make([]string, 0, len(bundled))
+	for _, candidate := range bundled {
+		if info, err := os.Stat(candidate); err != nil || !info.IsDir() {
+			continue
+		}
+		if _, exists := seen[filepath.Clean(candidate)]; exists {
+			continue
+		}
+		prepend = append(prepend, candidate)
+	}
+	if len(prepend) == 0 {
+		return current
+	}
+	return strings.Join(append(prepend, existing...), string(os.PathListSeparator))
 }
 
 func httpsAction(args []string) error {

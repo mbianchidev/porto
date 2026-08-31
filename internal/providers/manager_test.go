@@ -12,3 +12,13 @@ func TestInstallRejectsUnknownProvider(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+func TestK0sProviderUsesLima(t *testing.T) {
+	provider, ok := findTool("k0s")
+	if !ok {
+		t.Fatal("k0s provider is missing")
+	}
+	if provider.command != "limactl" || provider.formula != "lima" {
+		t.Fatalf("unexpected k0s provider: %+v", provider)
+	}
+}

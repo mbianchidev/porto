@@ -91,6 +91,9 @@ jobs:
           npm --prefix ui/electron audit
           node --check ui/electron/main.js
           node --check ui/electron/preload.js
+          node --check ui/electron/package.cjs
+          bash -n scripts/bundle-desktop-runtime.sh
+          sh -n scripts/install-desktop.sh
 
       - name: Package release archives
         env:
@@ -134,6 +137,10 @@ jobs:
               electron_platform="win32"
             fi
             desktop_name="porto-desktop_${VERSION}_${goos}_${goarch}"
+            desktop_version="${VERSION%%[-+]*}"
+            runtime_dir="$GITHUB_WORKSPACE/stage/runtime"
+            bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime_dir"
+            test -f "$runtime_dir/VERSIONS"
             rm -rf ui/electron/release
             (
               cd ui/electron
@@ -143,6 +150,8 @@ jobs:
                 --out=release \
                 --overwrite \
                 --prune=true \
+                --app-version="$desktop_version" \
+                --build-version="$GITHUB_RUN_NUMBER" \
                 --icon="$PWD/assets/porto.icns" \
                 --extend-info="$PWD/assets/Info.plist" \
                 --app-bundle-id=dev.mbianchi.porto \
@@ -152,11 +161,14 @@ jobs:
                 --win32metadata.ProductName=Porto \
                 --win32metadata.InternalName=Porto \
                 --win32metadata.OriginalFilename=Porto.exe \
+                --extra-resource="$PWD/assets/porto.png" \
                 --extra-resource="../../${root}/${binary}" \
-                --extra-resource="../dist"
+                --extra-resource="../dist" \
+                --extra-resource="$runtime_dir"
             )
             packaged_app="$(find ui/electron/release -mindepth 1 -maxdepth 1 -type d -print -quit)"
             test -n "$packaged_app"
+            test -n "$(find "$packaged_app" -path '*/runtime/VERSIONS' -print -quit)"
             mv "$packaged_app" "stage/${desktop_name}"
             if [ "$goos" = "windows" ]; then
               (cd stage && zip -qr "../dist/${desktop_name}.zip" "${desktop_name}")

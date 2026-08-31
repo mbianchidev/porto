@@ -22,8 +22,9 @@ npm install   # installs the desktop runtime; only needed once
 npm start
 ```
 
-The daemon binary (`porto`) must be on `PATH` for the app to be able to
-start it automatically when it is not already running.
+Development runs require the daemon binary (`porto`) on `PATH`. Release
+packages bundle the daemon and portable runtime clients, so users do not need a
+separate Porto, Lima, `kubectl`, or `kind` installation.
 
 ## Package
 
@@ -33,13 +34,16 @@ then package the branded Porto application:
 ```sh
 npm --prefix ui run build
 go build -o ui/electron/porto ./cmd/porto
+bash scripts/bundle-desktop-runtime.sh darwin arm64 runtime
 npm --prefix ui run desktop:package -- \
   --platform=darwin \
   --arch=arm64 \
   --extra-resource=porto \
-  --extra-resource=../dist
+  --extra-resource=../dist \
+  --extra-resource=../../runtime
 ```
 
 Release automation performs this for every supported operating system and
-architecture. Packaged apps resolve the bundled binary from Porto's resources
-directory before falling back to `PORTO_BINARY` or `PATH`.
+architecture. `scripts/bundle-desktop-runtime.sh` creates the runtime directory
+used by releases. Packaged apps resolve the bundled binary and tools from
+Porto's resources directory before falling back to `PORTO_BINARY` or `PATH`.

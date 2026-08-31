@@ -45,6 +45,19 @@ function portoBinary() {
   return candidates.find((candidate) => candidate === binary || fs.existsSync(candidate)) || binary
 }
 
+function portoEnvironment() {
+  const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
+  const bundledPaths = [
+    path.join(process.resourcesPath, 'runtime', 'bin'),
+    path.join(process.resourcesPath, 'runtime', 'lima', 'bin'),
+  ].filter((candidate) => fs.existsSync(candidate))
+  if (bundledPaths.length === 0) return process.env
+  return {
+    ...process.env,
+    [pathKey]: [...bundledPaths, process.env[pathKey]].filter(Boolean).join(path.delimiter),
+  }
+}
+
 // Starts `porto daemon start` detached from this process. The daemon manages
 // its own lifecycle independently of the window: closing the Porto window
 // must never stop it, so the child is fully detached and unref'd rather than
@@ -53,6 +66,7 @@ function startDaemon() {
   return new Promise((resolve, reject) => {
     const child = spawn(portoBinary(), ['daemon', 'start'], {
       detached: true,
+      env: portoEnvironment(),
       stdio: 'ignore',
     })
     child.once('error', reject)

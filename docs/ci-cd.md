@@ -46,13 +46,14 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
 
    Pass `--push` on the initial invocation to prepare and publish in one step. The script fetches first and atomically pushes `main` and the tag, so the release workflow cannot start from a tag without its release commit.
 
-5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages every target, and publishes a GitHub release with generated notes.
+5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, and publishes a GitHub release with generated notes.
 
 Tags must contain a strict SemVer prefixed with `v`. A suffix such as `v1.2.3-rc.1` is published as a pre-release. Re-running a release job is safe: if the GitHub release already exists, the workflow preserves its notes, refreshes its metadata, and replaces the same-named assets. A manual run from the Actions tab still requires the tag to exist.
 
 ## Release artifacts
 
-Each target produces one archive named `porto_<version>_<os>_<arch>` (`.tar.gz`, or `.zip` for Windows) with this layout:
+Each target produces a CLI/web archive named `porto_<version>_<os>_<arch>`
+(`.tar.gz`, or `.zip` for Windows) with this layout:
 
 ```text
 porto_1.2.3_darwin_arm64/
@@ -63,6 +64,11 @@ porto_1.2.3_darwin_arm64/
 ```
 
 The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working directory, then `ui/dist` or `dist` next to the executable, so keep `ui/dist` beside the binary when installing. Binaries are built with `CGO_ENABLED=0 -trimpath -ldflags '-s -w'`.
+
+Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
+archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
+and supported `kind` clients. The app prepends those bundled tools to
+the daemon's `PATH`, so they do not need separate installation.
 
 A `SHA256SUMS` file covers every archive, and each archive gets a signed build provenance attestation. The archives themselves are not signed. Verify a download with:
 
