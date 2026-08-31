@@ -53,7 +53,11 @@ func (s *Server) vmTerminal(w http.ResponseWriter, r *http.Request) {
 }
 
 func vmTerminalCommand(ctx context.Context, name string) *exec.Cmd {
-	return exec.CommandContext(ctx, "limactl", "shell", "--tty=true", name)
+	return exec.CommandContext(
+		ctx,
+		"limactl", "shell", "--tty=true", name, "--",
+		"sh", "-lc", `cd "$HOME" && exec env PS1="$1 $ " sh -i`, "porto-shell", name,
+	)
 }
 
 func bridgeTerminal(

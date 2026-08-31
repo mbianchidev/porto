@@ -21,7 +21,10 @@ func TestAllowedShell(t *testing.T) {
 
 func TestVMTerminalCommandUsesInteractiveLimaShell(t *testing.T) {
 	command := vmTerminalCommand(context.Background(), "test-vm")
-	want := []string{"limactl", "shell", "--tty=true", "test-vm"}
+	want := []string{
+		"limactl", "shell", "--tty=true", "test-vm", "--",
+		"sh", "-lc", `cd "$HOME" && exec env PS1="$1 $ " sh -i`, "porto-shell", "test-vm",
+	}
 	if !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("command args = %q, want %q", command.Args, want)
 	}
