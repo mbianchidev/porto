@@ -5,8 +5,7 @@
 
 Porto is an open-source desktop and web control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
 
-![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/03f957c8-33ba-4fb8-be9c-a41edd4e85cf)
-
+![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/d7554461-5ae0-40b2-9bab-2e780007c886)
 
 ## Why Porto
 
