@@ -106,6 +106,40 @@ type recordingSetupRunner struct {
 	called bool
 }
 
+func TestHealthReportsDashboardReadiness(t *testing.T) {
+	assertDashboardReady := func(t *testing.T, server *Server, want bool) {
+		t.Helper()
+		mux := http.NewServeMux()
+		server.routes(mux)
+		response := httptest.NewRecorder()
+		mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/health", nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("health status = %d: %s", response.Code, response.Body.String())
+		}
+		var health struct {
+			DashboardReady bool `json:"dashboardReady"`
+		}
+		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
+			t.Fatalf("decode health: %v", err)
+		}
+		if health.DashboardReady != want {
+			t.Fatalf("dashboardReady = %t, want %t", health.DashboardReady, want)
+		}
+	}
+
+	t.Run("missing dashboard", func(t *testing.T) {
+		assertDashboardReady(t, New(nil, nil), false)
+	})
+
+	t.Run("packaged dashboard", func(t *testing.T) {
+		directory := t.TempDir()
+		if err := os.WriteFile(filepath.Join(directory, "index.html"), []byte("<div id=\"root\"></div>"), 0o600); err != nil {
+			t.Fatalf("write dashboard: %v", err)
+		}
+		assertDashboardReady(t, New(nil, os.DirFS(directory)), true)
+	})
+}
+
 func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {

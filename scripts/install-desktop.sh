@@ -73,16 +73,38 @@ run_as_root() {
   fi
 }
 
-stop_daemon() {
-  daemon_executable="$1"
-  ps -ax -o pid=,command= | awk -v executable="$daemon_executable" '
-    {
-      pid = $1
-      sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
-      if ($0 == executable " daemon start") print pid
-    }
-  ' | while IFS= read -r pid; do
-    [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+daemon_pids() {
+  if [ "$goos" = "darwin" ]; then
+    processes="$(ps -ax -o pid=,command=)" || return 1
+    printf '%s\n' "$processes" | awk '
+      {
+        pid = $1
+        sub(/^[[:space:]]*[0-9]+[[:space:]]+/, "", $0)
+        if ($0 ~ /(^|\/)porto daemon start$/) print pid
+      }
+    '
+    return
+  fi
+
+  for process_cmdline in /proc/[0-9]*/cmdline; do
+    [ -r "$process_cmdline" ] || continue
+    command="$(tr '\000' ' ' < "$process_cmdline" 2>/dev/null || true)"
+    case "$command" in
+      porto\ daemon\ start\ | */porto\ daemon\ start\ )
+        pid="${process_cmdline#/proc/}"
+        printf '%s\n' "${pid%/cmdline}"
+        ;;
+    esac
+  done
+}
+
+stop_daemons() {
+  if ! pids="$(daemon_pids)"; then
+    echo "Unable to inspect running Porto daemons." >&2
+    exit 1
+  fi
+  for pid in $pids; do
+    kill "$pid" 2>/dev/null || true
   done
 }
 
@@ -101,24 +123,22 @@ stop_linux_app() {
 if [ "$goos" = "darwin" ]; then
   install_root="${PORTO_INSTALL_DIR:-$HOME/Applications}"
   mkdir -p "$install_root"
-  if [ -d "$install_root/Porto.app" ]; then
-    osascript -e 'tell application "Porto" to quit' >/dev/null 2>&1 || true
-    stop_daemon "$install_root/Porto.app/Contents/Resources/porto"
-    sleep 1
-  fi
+  osascript -e 'tell application "Porto" to quit' >/dev/null 2>&1 || true
+  stop_daemons
+  sleep 1
   rm -rf "$install_root/Porto.app"
   ditto "$source_dir/Porto.app" "$install_root/Porto.app"
   ln -sf "$install_root/Porto.app/Contents/Resources/porto" "$bin_dir/porto"
   echo "Installed Porto at $install_root/Porto.app"
-  echo "Until releases are signed, macOS may require: xattr -dr com.apple.quarantine \"$install_root/Porto.app\""
+  echo "Until releases are signed, macOS may require: xattr -drs com.apple.quarantine \"$install_root/Porto.app\""
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
     open "$install_root/Porto.app"
   fi
 else
   install_root="${PORTO_INSTALL_DIR:-$HOME/.local/opt/porto}"
+  stop_daemons
   if [ -d "$install_root" ]; then
     stop_linux_app "$install_root/Porto"
-    stop_daemon "$install_root/resources/porto"
     sleep 1
   fi
   rm -rf "$install_root"

@@ -3,7 +3,8 @@
 A native Porto host around the daemon's web UI. It does not implement any
 Porto functionality itself — it opens a window pointed at
 `http://127.0.0.1:37623` (the Porto daemon's default address) and starts
-`porto daemon start` when that address is unreachable.
+`porto daemon start` unless the address exposes a compatible API and confirms
+that its dashboard assets are ready.
 
 ## Security
 

@@ -35,6 +35,13 @@ and Compose currently require a reachable Docker-compatible engine; the
 desktop app, native project orchestration, VM management, and k3s/k0s cluster
 management do not require a separate Porto installation.
 
+If macOS quarantine blocks an unsigned release, clear the attribute without
+following bundled symbolic links:
+
+```sh
+xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
+```
+
 ### Manual archive installation
 
 Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/mbianchidev/porto/releases). Verify the download, then unpack it:

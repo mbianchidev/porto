@@ -118,3 +118,5 @@ kubectl ${kubectl_version}
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 lima ${lima_version}
 EOF
+
+node "$(dirname "$0")/desktop-runtime-symlinks.cjs" --validate "$destination"
