@@ -1,18 +1,24 @@
-// Minimal secure Electron shell for Porto.
+// Secure Porto desktop shell.
 //
 // This process never talks to the daemon's data on its own: it only opens a
 // window pointed at the local daemon's web UI, and starts the daemon when it
 // finds it unreachable. contextIsolation stays on and nodeIntegration stays off so the
-// loaded page runs like any other web page with no access to Node or Electron
+// loaded page runs like any other web page with no access to Node or desktop runtime
 // internals; the preload script intentionally exposes nothing.
 const { app, BrowserWindow, dialog, shell } = require('electron')
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 
+const APP_NAME = 'Porto'
+const APP_ID = 'dev.mbianchi.porto'
+const APP_ICON = path.join(__dirname, 'assets', 'porto.png')
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const HEALTH_CHECK_TIMEOUT_MS = 800
 const windows = new Set()
+
+app.setName(APP_NAME)
+process.title = APP_NAME
 
 async function isDaemonHealthy() {
   const controller = new AbortController()
@@ -40,7 +46,7 @@ function portoBinary() {
 }
 
 // Starts `porto daemon start` detached from this process. The daemon manages
-// its own lifecycle independently of the window: closing the Electron window
+// its own lifecycle independently of the window: closing the Porto window
 // must never stop it, so the child is fully detached and unref'd rather than
 // tracked or killed on app quit.
 function startDaemon() {
@@ -78,7 +84,8 @@ function createWindow() {
     minWidth: 960,
     minHeight: 600,
     backgroundColor: '#252925',
-    title: 'Porto',
+    title: APP_NAME,
+    icon: APP_ICON,
     show: false,
     webPreferences: {
       contextIsolation: true,
@@ -148,6 +155,8 @@ app.on('second-instance', () => {
 })
 
 app.whenReady().then(async () => {
+  app.setAppUserModelId(APP_ID)
+  if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
   const healthy = await ensureDaemonRunning()
   if (!healthy) {
     dialog.showErrorBox(

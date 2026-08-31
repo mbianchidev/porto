@@ -143,6 +143,15 @@ jobs:
                 --out=release \
                 --overwrite \
                 --prune=true \
+                --icon="$PWD/assets/porto.icns" \
+                --extend-info="$PWD/assets/Info.plist" \
+                --app-bundle-id=dev.mbianchi.porto \
+                --app-category-type=public.app-category.developer-tools \
+                --win32metadata.CompanyName=Porto \
+                --win32metadata.FileDescription=Porto \
+                --win32metadata.ProductName=Porto \
+                --win32metadata.InternalName=Porto \
+                --win32metadata.OriginalFilename=Porto.exe \
                 --extra-resource="../../${root}/${binary}" \
                 --extra-resource="../dist"
             )

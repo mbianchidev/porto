@@ -33,11 +33,11 @@ daemon running at `127.0.0.1:37623`.
 
 Run `npm run lint` and `npm run build` before submitting changes.
 
-## Desktop shell
+## Desktop app
 
-`electron/` contains a minimal Electron wrapper that loads this UI from the
-Porto daemon (`http://127.0.0.1:37623`) and starts the daemon only when it is
-unreachable. Install and run it from the `ui` directory:
+`electron/` contains the Porto desktop app. It loads this UI from the Porto
+daemon (`http://127.0.0.1:37623`) and starts the daemon only when it is
+unreachable. Install and run Porto from the `ui` directory:
 
 ```sh
 npm run desktop:install

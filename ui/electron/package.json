@@ -1,12 +1,14 @@
 {
-  "name": "porto-desktop-shell",
+  "name": "porto",
+  "productName": "Porto",
   "private": true,
   "version": "1.0.0",
-  "description": "Minimal Electron shell that loads the Porto control surface from the local daemon.",
+  "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
+  "author": "Porto",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "package": "electron-packager . Porto --overwrite --prune=true"
+    "package": "node package.cjs"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",

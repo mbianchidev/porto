@@ -32,7 +32,7 @@ porto_<version>_<os>_<arch>/
 Keep `ui/dist` beside the binary when moving the installation, or set `PORTO_UI_DIR` to the dashboard directory.
 
 Desktop archives use the `porto-desktop_<version>_<os>_<arch>` prefix and
-contain an Electron application with the matching Porto binary and compiled
+contain the Porto desktop application with the matching Porto binary and compiled
 dashboard assets bundled in its resources directory. CLI/web archives keep the
 `porto_<version>_<os>_<arch>` prefix.
 
