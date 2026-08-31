@@ -245,6 +245,28 @@ export type KubernetesService = {
   age: string
 }
 
+export type KubernetesConfigMap = {
+  name: string
+  namespace: string
+  immutable: boolean
+  keys: string[]
+  binaryKeys: string[]
+  age: string
+}
+
+export type KubernetesConfigMapDetail = KubernetesConfigMap & {
+  data: Record<string, string>
+}
+
+export type KubernetesSecret = {
+  name: string
+  namespace: string
+  type: string
+  immutable: boolean
+  keys: string[]
+  age: string
+}
+
 export type KubernetesNode = {
   name: string
   ready: boolean
@@ -389,6 +411,8 @@ export type RouteID =
   | 'kubernetes'
   | 'pods'
   | 'services'
+  | 'configs'
+  | 'secrets'
   | 'nodes'
   | 'machines'
   | 'activity'

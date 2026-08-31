@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	defaultTimeout = 30 * time.Second
-	maxFileBytes   = 1024 * 1024
+	defaultTimeout        = 30 * time.Second
+	maxFileBytes          = 1024 * 1024
+	configMapListTemplate = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
+	secretListTemplate    = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.type}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
 )
 
 type Manager struct {
@@ -88,6 +90,29 @@ type Service struct {
 	ExternalIPs []string      `json:"externalIPs"`
 	Ports       []ServicePort `json:"ports"`
 	Age         string        `json:"age"`
+}
+
+type ConfigMap struct {
+	Name       string   `json:"name"`
+	Namespace  string   `json:"namespace"`
+	Immutable  bool     `json:"immutable"`
+	Keys       []string `json:"keys"`
+	BinaryKeys []string `json:"binaryKeys"`
+	Age        string   `json:"age"`
+}
+
+type ConfigMapDetail struct {
+	ConfigMap
+	Data map[string]string `json:"data"`
+}
+
+type Secret struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Type      string   `json:"type"`
+	Immutable bool     `json:"immutable"`
+	Keys      []string `json:"keys"`
+	Age       string   `json:"age"`
 }
 
 type Node struct {
@@ -224,13 +249,7 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 }
 
 func (m *Manager) Pods(ctx context.Context, contextName, namespace string) ([]Pod, error) {
-	args := []string{"get", "pods"}
-	if namespace == "" || namespace == "all" {
-		args = append(args, "--all-namespaces")
-	} else {
-		args = append(args, "--namespace", namespace)
-	}
-	args = append(args, "-o", "json")
+	args := namespacedListArgs("pods", namespace)
 	output, err := m.run(ctx, contextName, m.timeout, nil, args...)
 	if err != nil {
 		return nil, err
@@ -262,13 +281,7 @@ func (m *Manager) Pod(ctx context.Context, contextName, namespace, name string) 
 }
 
 func (m *Manager) Services(ctx context.Context, contextName, namespace string) ([]Service, error) {
-	args := []string{"get", "services"}
-	if namespace == "" || namespace == "all" {
-		args = append(args, "--all-namespaces")
-	} else {
-		args = append(args, "--namespace", namespace)
-	}
-	args = append(args, "-o", "json")
+	args := namespacedListArgs("services", namespace)
 	output, err := m.run(ctx, contextName, m.timeout, nil, args...)
 	if err != nil {
 		return nil, err
@@ -309,6 +322,97 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 		})
 	}
 	return services, nil
+}
+
+func (m *Manager) ConfigMaps(ctx context.Context, contextName, namespace string) ([]ConfigMap, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedOutputArgs("configmaps", namespace, "go-template="+configMapListTemplate)...)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseResourceRows(output, 6)
+	if err != nil {
+		return nil, fmt.Errorf("decode Kubernetes config maps: %w", err)
+	}
+	configMaps := make([]ConfigMap, 0, len(rows))
+	for _, row := range rows {
+		immutable, err := strconv.ParseBool(row[2])
+		if err != nil {
+			return nil, fmt.Errorf("decode Kubernetes config map immutable flag: %w", err)
+		}
+		configMaps = append(configMaps, ConfigMap{
+			Name:       row[1],
+			Namespace:  row[0],
+			Immutable:  immutable,
+			Keys:       parseResourceKeys(row[4]),
+			BinaryKeys: parseResourceKeys(row[5]),
+			Age:        age(row[3]),
+		})
+	}
+	return configMaps, nil
+}
+
+func (m *Manager) ConfigMap(ctx context.Context, contextName, namespace, name string) (ConfigMapDetail, error) {
+	if err := validateResource(namespace, name); err != nil {
+		return ConfigMapDetail{}, err
+	}
+	output, err := m.run(ctx, contextName, m.timeout, nil, "get", "configmap", name, "--namespace", namespace, "-o", "json")
+	if err != nil {
+		return ConfigMapDetail{}, err
+	}
+	var item configMapItem
+	if err := json.Unmarshal(output, &item); err != nil {
+		return ConfigMapDetail{}, fmt.Errorf("decode Kubernetes config map: %w", err)
+	}
+	data := make(map[string]string, len(item.Data))
+	keys := make([]string, 0, len(item.Data))
+	for key, value := range item.Data {
+		data[key] = value
+		keys = append(keys, key)
+	}
+	binaryKeys := make([]string, 0, len(item.BinaryData))
+	for key := range item.BinaryData {
+		binaryKeys = append(binaryKeys, key)
+	}
+	sort.Strings(keys)
+	sort.Strings(binaryKeys)
+	return ConfigMapDetail{
+		ConfigMap: ConfigMap{
+			Name:       item.Metadata.Name,
+			Namespace:  item.Metadata.Namespace,
+			Immutable:  item.Immutable,
+			Keys:       keys,
+			BinaryKeys: binaryKeys,
+			Age:        age(item.Metadata.CreationTimestamp),
+		},
+		Data: data,
+	}, nil
+}
+
+func (m *Manager) Secrets(ctx context.Context, contextName, namespace string) ([]Secret, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedOutputArgs("secrets", namespace, "go-template="+secretListTemplate)...)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseResourceRows(output, 6)
+	if err != nil {
+		return nil, fmt.Errorf("decode Kubernetes secrets: %w", err)
+	}
+	secrets := make([]Secret, 0, len(rows))
+	for _, row := range rows {
+		immutable, err := strconv.ParseBool(row[3])
+		if err != nil {
+			return nil, fmt.Errorf("decode Kubernetes secret immutable flag: %w", err)
+		}
+		secrets = append(secrets, Secret{
+			Name:      row[1],
+			Namespace: row[0],
+			Type:      row[2],
+			Immutable: immutable,
+			Keys:      parseResourceKeys(row[5]),
+			Age:       age(row[4]),
+		})
+	}
+	return secrets, nil
 }
 
 func (m *Manager) Nodes(ctx context.Context, contextName string) ([]Node, error) {
@@ -635,6 +739,47 @@ func validateResource(namespace, name string) error {
 	return nil
 }
 
+func namespacedListArgs(resource, namespace string) []string {
+	return namespacedOutputArgs(resource, namespace, "json")
+}
+
+func namespacedOutputArgs(resource, namespace, output string) []string {
+	args := []string{"get", resource}
+	if namespace == "" || namespace == "all" {
+		args = append(args, "--all-namespaces")
+	} else {
+		args = append(args, "--namespace", namespace)
+	}
+	return append(args, "-o", output)
+}
+
+func parseResourceRows(output []byte, fields int) ([][]string, error) {
+	trimmed := strings.TrimRight(string(output), "\r\n")
+	if trimmed == "" {
+		return [][]string{}, nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	rows := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		row := strings.Split(strings.TrimSuffix(line, "\r"), "\t")
+		if len(row) != fields {
+			return nil, fmt.Errorf("expected %d fields, got %d", fields, len(row))
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func parseResourceKeys(value string) []string {
+	value = strings.TrimSuffix(value, ",")
+	if value == "" {
+		return []string{}
+	}
+	keys := strings.Split(value, ",")
+	sort.Strings(keys)
+	return keys
+}
+
 func cleanRemotePath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -813,6 +958,13 @@ type serviceList struct {
 			} `json:"loadBalancer"`
 		} `json:"status"`
 	} `json:"items"`
+}
+
+type configMapItem struct {
+	Metadata   metadata          `json:"metadata"`
+	Immutable  bool              `json:"immutable"`
+	Data       map[string]string `json:"data"`
+	BinaryData map[string]string `json:"binaryData"`
 }
 
 type nodeList struct {

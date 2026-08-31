@@ -238,7 +238,7 @@ func dockerBuildCmd(args []string) error {
 
 func kubernetesCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto kubernetes status|contexts|pods|services|nodes|logs|exec|files|terminal|cluster")
+		return errors.New("usage: porto kubernetes status|contexts|pods|services|configmaps|configs|secrets|nodes|logs|exec|files|terminal|cluster")
 	}
 	switch args[0] {
 	case "status", "contexts", "nodes", "clusters":
@@ -257,7 +257,7 @@ func kubernetesCmd(args []string) error {
 			return errors.New("usage: porto kubernetes context-install <cluster>")
 		}
 		return installClusterContext(args[1])
-	case "pods", "services":
+	case "pods", "services", "configmaps", "configs", "secrets":
 		fs := flag.NewFlagSet("kubernetes "+args[0], flag.ContinueOnError)
 		contextName := fs.String("context", "", "Kubernetes context")
 		namespace := fs.String("namespace", "all", "namespace or all")
@@ -268,7 +268,11 @@ func kubernetesCmd(args []string) error {
 		if *contextName != "" {
 			query.Set("context", *contextName)
 		}
-		return runtimeGET("/api/kubernetes/" + args[0] + "?" + query.Encode())
+		resource := args[0]
+		if resource == "configs" {
+			resource = "configmaps"
+		}
+		return runtimeGET("/api/kubernetes/" + resource + "?" + query.Encode())
 	case "logs":
 		return kubernetesLogsCmd(args[1:])
 	case "exec":

@@ -725,6 +725,26 @@
   min-width: 0;
 }
 
+.resourceDataList {
+  display: grid;
+  gap: 8px;
+}
+
+.resourceDataEntry {
+  overflow: hidden;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-dark);
+}
+
+.resourceDataEntry > strong {
+  display: block;
+  border-bottom: 1px solid #4c514a;
+  padding: 7px 10px;
+  color: var(--white);
+  font-size: 10px;
+}
+
 dt {
   margin-bottom: 2px;
   color: var(--ink-faint);

@@ -161,10 +161,13 @@ porto kubernetes status
 porto kubernetes contexts
 porto kubernetes pods --namespace all
 porto kubernetes services --namespace default
+porto kubernetes configmaps --namespace default
+porto kubernetes secrets --namespace default
 porto kubernetes nodes
 ```
 
 Pass `--context` when a command should not use the current context.
+`porto kubernetes configs` is a shorter alias for `configmaps`.
 
 ### Create a local cluster
 
@@ -296,7 +299,7 @@ porto kubernetes files default api-7d9f --container api --path /app
 porto kubernetes files default api-7d9f --container api --path /app/config.json --read
 ```
 
-The dashboard adds pod overview, streaming logs, a WebSocket-backed interactive terminal, bounded text-file editing, resource statistics, events, and effective manifest views. Pod operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+The dashboard adds pod overview, streaming logs, a WebSocket-backed interactive terminal, bounded text-file editing, resource statistics, events, effective manifest views, ConfigMap inspection, and Secret inventory. ConfigMap text values are visible to authorized users. Secret values are never returned by Porto; only names, types, and data keys are exposed. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
 
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
 

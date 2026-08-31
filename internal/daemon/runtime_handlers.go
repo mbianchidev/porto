@@ -51,6 +51,9 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/contexts", s.requireRuntime("kubernetes", s.kubernetesContexts))
 	mux.HandleFunc("GET /api/kubernetes/pods", s.requireRuntime("kubernetes", s.kubernetesPods))
 	mux.HandleFunc("GET /api/kubernetes/services", s.requireRuntime("kubernetes", s.kubernetesServices))
+	mux.HandleFunc("GET /api/kubernetes/configmaps", s.requireRuntime("kubernetes", s.kubernetesConfigMaps))
+	mux.HandleFunc("GET /api/kubernetes/configmaps/{namespace}/{name}", s.requireRuntime("kubernetes", s.kubernetesConfigMap))
+	mux.HandleFunc("GET /api/kubernetes/secrets", s.requireRuntime("kubernetes", s.kubernetesSecrets))
 	mux.HandleFunc("GET /api/kubernetes/nodes", s.requireRuntime("kubernetes", s.kubernetesNodes))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
@@ -337,6 +340,26 @@ func (s *Server) kubernetesServices(w http.ResponseWriter, r *http.Request) {
 	if err == nil {
 		err = s.attachServiceForwards(runtimeContext(r), value)
 	}
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesConfigMaps(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ConfigMaps(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesConfigMap(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ConfigMap(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("name"),
+	)
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesSecrets(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Secrets(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
 	writeRuntimeResult(w, value, err)
 }
 

@@ -1,12 +1,15 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
+	"text/template"
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -43,6 +46,12 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 			return []byte(`{"items":[{"metadata":{"name":"api-1","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"spec":{"nodeName":"worker-1","containers":[{"name":"api","image":"porto/api:latest"}]},"status":{"phase":"Running","podIP":"10.42.0.2","containerStatuses":[{"name":"api","ready":true,"restartCount":1,"state":{"running":{}}}]}}]}`), nil
 		case strings.Contains(joined, "get services"):
 			return []byte(`{"items":[]}`), nil
+		case strings.Contains(joined, "get configmap api-config"):
+			return []byte(`{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"immutable":true,"data":{"LOG_LEVEL":"debug","config.yaml":"port: 8080"},"binaryData":{"logo.png":"aW1hZ2U="}}`), nil
+		case strings.Contains(joined, "get configmaps"):
+			return []byte("dev\tapi-config\ttrue\t2026-08-30T20:00:00Z\tLOG_LEVEL,config.yaml,\tlogo.png,\n"), nil
+		case strings.Contains(joined, "get secrets"):
+			return []byte("dev\tapi-credentials\tOpaque\ttrue\t2026-08-30T20:00:00Z\tpassword,username,\n"), nil
 		case strings.Contains(joined, "get nodes"):
 			return []byte(`{"items":[]}`), nil
 		case strings.Contains(joined, "config rename-context"):
@@ -124,6 +133,7 @@ func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	runner := newFakeRunner()
 	manager := NewWithKubeconfigRoot(runner, dir)
 	if _, err := manager.Pods(context.Background(), "porto-dev", "all"); err != nil {
@@ -135,6 +145,109 @@ func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--kubeconfig "+kubeconfigPath+" --context porto-dev") {
 		t.Fatalf("managed context did not use private kubeconfig: %v", args)
+	}
+}
+
+func TestConfigMapsAndSecretsDecoding(t *testing.T) {
+	manager := New(newFakeRunner())
+
+	configMaps, err := manager.ConfigMaps(context.Background(), "porto-dev", "dev")
+	if err != nil {
+		t.Fatalf("list config maps: %v", err)
+	}
+	if len(configMaps) != 1 || configMaps[0].Name != "api-config" || !configMaps[0].Immutable {
+		t.Fatalf("unexpected config maps: %+v", configMaps)
+	}
+	if strings.Join(configMaps[0].Keys, ",") != "LOG_LEVEL,config.yaml" || strings.Join(configMaps[0].BinaryKeys, ",") != "logo.png" {
+		t.Fatalf("unexpected config map keys: %+v", configMaps[0])
+	}
+	configMap, err := manager.ConfigMap(context.Background(), "porto-dev", "dev", "api-config")
+	if err != nil {
+		t.Fatalf("get config map: %v", err)
+	}
+	if configMap.Data["LOG_LEVEL"] != "debug" || strings.Join(configMap.BinaryKeys, ",") != "logo.png" {
+		t.Fatalf("unexpected config map data: %+v", configMap)
+	}
+
+	secrets, err := manager.Secrets(context.Background(), "porto-dev", "dev")
+	if err != nil {
+		t.Fatalf("list secrets: %v", err)
+	}
+	if len(secrets) != 1 || secrets[0].Name != "api-credentials" || secrets[0].Type != "Opaque" || !secrets[0].Immutable {
+		t.Fatalf("unexpected secrets: %+v", secrets)
+	}
+	if strings.Join(secrets[0].Keys, ",") != "password,username" {
+		t.Fatalf("unexpected secret keys: %+v", secrets[0].Keys)
+	}
+	encoded, err := json.Marshal(secrets)
+	if err != nil {
+		t.Fatalf("encode secrets: %v", err)
+	}
+	if strings.Contains(string(encoded), "c3VwZXItc2VjcmV0") || strings.Contains(string(encoded), "super-secret") {
+		t.Fatalf("secret values leaked into response: %s", encoded)
+	}
+
+	runner := manager.runner.(*fakeRunner)
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var configMapListSafe, secretListSafe bool
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, " ")
+		if strings.Contains(joined, "get configmaps") {
+			configMapListSafe = strings.Contains(joined, "go-template=") && !strings.Contains(joined, "-o json")
+		}
+		if strings.Contains(joined, "get secrets") {
+			secretListSafe = strings.Contains(joined, "go-template=") && !strings.Contains(joined, "-o json")
+		}
+	}
+	if !configMapListSafe || !secretListSafe {
+		t.Fatalf("resource inventories requested complete values: %+v", runner.commands)
+	}
+}
+
+func TestResourceListTemplatesExcludeValues(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		template string
+		input    string
+		want     string
+		forbid   string
+	}{
+		{
+			name:     "config maps",
+			template: configMapListTemplate,
+			input:    `{"items":[{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"data":{"config.yaml":"password: secret"},"binaryData":{"logo.png":"aW1hZ2U="}}]}`,
+			want:     "dev\tapi-config\tfalse\t2026-08-30T20:00:00Z\tconfig.yaml,\tlogo.png,\n",
+			forbid:   "password: secret",
+		},
+		{
+			name:     "secrets",
+			template: secretListTemplate,
+			input:    `{"items":[{"metadata":{"name":"api-credentials","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"type":"Opaque","data":{"password":"c3VwZXItc2VjcmV0"}}]}`,
+			want:     "dev\tapi-credentials\tOpaque\tfalse\t2026-08-30T20:00:00Z\tpassword,\n",
+			forbid:   "c3VwZXItc2VjcmV0",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var input any
+			if err := json.Unmarshal([]byte(test.input), &input); err != nil {
+				t.Fatalf("decode template input: %v", err)
+			}
+			parsed, err := template.New(test.name).Parse(test.template)
+			if err != nil {
+				t.Fatalf("parse template: %v", err)
+			}
+			var output bytes.Buffer
+			if err := parsed.Execute(&output, input); err != nil {
+				t.Fatalf("execute template: %v", err)
+			}
+			if output.String() != test.want {
+				t.Fatalf("template output = %q, want %q", output.String(), test.want)
+			}
+			if strings.Contains(output.String(), test.forbid) {
+				t.Fatalf("template leaked value %q: %s", test.forbid, output.String())
+			}
+		})
 	}
 }
 
