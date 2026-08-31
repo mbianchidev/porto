@@ -432,7 +432,12 @@ func tlsRouterListenError(address string, err error) error {
 
 func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
-		writeJSON(w, map[string]any{"status": "ok", "version": config.Version, "apiVersion": config.APIVersion})
+		writeJSON(w, map[string]any{
+			"status":         "ok",
+			"version":        config.Version,
+			"apiVersion":     config.APIVersion,
+			"dashboardReady": s.ui != nil,
+		})
 	})
 	mux.HandleFunc("GET /api/projects", s.list)
 	mux.HandleFunc("GET /api/settings", s.getSettings)

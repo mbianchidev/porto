@@ -137,9 +137,12 @@ jobs:
         run: |
           npm --prefix electron ci
           npm --prefix electron audit
+          npm --prefix electron test
           node --check electron/main.js
+          node --check electron/daemon-readiness.cjs
           node --check electron/preload.js
           node --check electron/package.cjs
+          node --check ../scripts/desktop-runtime-symlinks.cjs
 
       - name: Validate release installers
         if: matrix.node == '24'

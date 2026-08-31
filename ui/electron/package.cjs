@@ -1,7 +1,11 @@
 const { spawnSync } = require('node:child_process')
+const fs = require('node:fs')
 const path = require('node:path')
 
+const { normalizeElectronRuntimeSymlinks } = require('../../scripts/desktop-runtime-symlinks.cjs')
+
 const packagerEntry = path.join(path.dirname(require.resolve('@electron/packager')), '..', 'bin', 'electron-packager.mjs')
+const forwardedArgs = process.argv.slice(2)
 const args = [
   packagerEntry,
   __dirname,
@@ -19,7 +23,7 @@ const args = [
   '--win32metadata.ProductName=Porto',
   '--win32metadata.InternalName=Porto',
   '--win32metadata.OriginalFilename=Porto.exe',
-  ...process.argv.slice(2),
+  ...forwardedArgs,
 ]
 const result = spawnSync(process.execPath, args, {
   cwd: __dirname,
@@ -29,6 +33,32 @@ const result = spawnSync(process.execPath, args, {
 if (result.error) {
   console.error(`Unable to package Porto: ${result.error.message}`)
   process.exitCode = 1
-} else {
+} else if (result.status !== 0) {
   process.exitCode = result.status ?? 1
+} else {
+  try {
+    let output = __dirname
+    for (let index = 0; index < forwardedArgs.length; index += 1) {
+      const argument = forwardedArgs[index]
+      if (argument.startsWith('--out=')) {
+        output = argument.slice('--out='.length)
+      } else if (argument === '--out' && forwardedArgs[index + 1]) {
+        output = forwardedArgs[index + 1]
+      }
+    }
+
+    const outputDirectory = path.resolve(__dirname, output)
+    const packagedApps = fs.readdirSync(outputDirectory, { withFileTypes: true })
+      .filter((entry) => entry.isDirectory() && entry.name.startsWith('Porto-'))
+      .map((entry) => path.join(outputDirectory, entry.name))
+    if (packagedApps.length === 0) {
+      throw new Error(`Electron Packager produced no Porto application in ${outputDirectory}`)
+    }
+    for (const packagedApp of packagedApps) {
+      normalizeElectronRuntimeSymlinks(packagedApp)
+    }
+  } catch (error) {
+    console.error(`Unable to normalize packaged runtime symlinks: ${error.message}`)
+    process.exitCode = 1
+  }
 }
