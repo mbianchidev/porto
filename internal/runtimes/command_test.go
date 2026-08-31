@@ -1,26 +1,23 @@
 package runtimes
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"os"
 	"testing"
 )
 
-func TestExecRunnerReadsInputFromFile(t *testing.T) {
-	input := t.TempDir() + string(os.PathSeparator) + "context.tar"
-	if err := os.WriteFile(input, []byte("build context"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestExecRunnerReadsInputFromStream(t *testing.T) {
 	executable, err := os.Executable()
 	if err != nil {
 		t.Fatal(err)
 	}
 	output, err := (ExecRunner{}).Run(context.Background(), Command{
-		Name:      executable,
-		Args:      []string{"-test.run=TestCommandInputHelper"},
-		Env:       []string{"PORTO_COMMAND_INPUT_HELPER=1"},
-		StdinPath: input,
+		Name:        executable,
+		Args:        []string{"-test.run=TestCommandInputHelper"},
+		Env:         []string{"PORTO_COMMAND_INPUT_HELPER=1"},
+		StdinReader: bytes.NewReader([]byte("build context")),
 	})
 	if err != nil {
 		t.Fatalf("run helper: %v: %s", err, output)

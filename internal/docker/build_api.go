@@ -20,13 +20,17 @@ func (a *API) buildImage(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	archivePath, err := storeDockerBuildContext(w, r)
+	archive, err := storeDockerBuildContext(w, r)
 	if err != nil {
 		writeDockerError(w, err)
 		return
 	}
-	defer os.Remove(archivePath)
-	request.ContextArchive = archivePath
+	defer func() {
+		path := archive.Name()
+		_ = archive.Close()
+		_ = os.Remove(path)
+	}()
+	request.ContextReader = archive
 
 	wrote := false
 	encoder := json.NewEncoder(w)
@@ -100,40 +104,40 @@ func decodeBuildQueryJSON[T any](raw string, destination *T) error {
 	return json.Unmarshal([]byte(raw), destination)
 }
 
-func storeDockerBuildContext(w http.ResponseWriter, r *http.Request) (string, error) {
+func storeDockerBuildContext(w http.ResponseWriter, r *http.Request) (*os.File, error) {
 	encoding := strings.ToLower(strings.TrimSpace(r.Header.Get("Content-Encoding")))
 	if encoding != "" && encoding != "identity" && encoding != "gzip" && encoding != "x-gzip" {
-		return "", fmt.Errorf("%w: build context encoding %s", ErrUnsupported, encoding)
+		return nil, fmt.Errorf("%w: build context encoding %s", ErrUnsupported, encoding)
 	}
 	archive, err := os.CreateTemp("", "porto-build-context-*.tar")
 	if err != nil {
-		return "", fmt.Errorf("create build context: %w", err)
+		return nil, fmt.Errorf("create build context: %w", err)
 	}
 	path := archive.Name()
 	cleanup := true
 	defer func() {
-		_ = archive.Close()
 		if cleanup {
+			_ = archive.Close()
 			_ = os.Remove(path)
 		}
 	}()
 	if err := archive.Chmod(0o600); err != nil {
-		return "", fmt.Errorf("protect build context: %w", err)
+		return nil, fmt.Errorf("protect build context: %w", err)
 	}
 	count, err := io.Copy(archive, http.MaxBytesReader(w, r.Body, maxBuildContextBytes))
 	if err != nil {
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
-			return "", errors.New("build context exceeds the 2 GiB limit")
+			return nil, errors.New("build context exceeds the 2 GiB limit")
 		}
-		return "", fmt.Errorf("store build context: %w", err)
+		return nil, fmt.Errorf("store build context: %w", err)
 	}
 	if count == 0 {
-		return "", errors.New("invalid build context: empty")
+		return nil, errors.New("invalid build context: empty")
 	}
-	if err := archive.Close(); err != nil {
-		return "", fmt.Errorf("close build context: %w", err)
+	if _, err := archive.Seek(0, io.SeekStart); err != nil {
+		return nil, fmt.Errorf("rewind build context: %w", err)
 	}
 	cleanup = false
-	return path, nil
+	return archive, nil
 }

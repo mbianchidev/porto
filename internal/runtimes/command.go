@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,12 +13,12 @@ import (
 )
 
 type Command struct {
-	Dir       string
-	Name      string
-	Args      []string
-	Env       []string
-	Stdin     []byte
-	StdinPath string
+	Dir         string
+	Name        string
+	Args        []string
+	Env         []string
+	Stdin       []byte
+	StdinReader io.Reader
 }
 
 type Runner interface {
@@ -64,16 +65,12 @@ func (ExecRunner) RunStreaming(
 }
 
 func configureCommandInput(cmd *exec.Cmd, command Command) (func(), error) {
-	if command.StdinPath != "" {
+	if command.StdinReader != nil {
 		if command.Stdin != nil {
-			return nil, errors.New("command cannot use both byte and file input")
+			return nil, errors.New("command cannot use both byte and stream input")
 		}
-		input, err := os.Open(command.StdinPath)
-		if err != nil {
-			return nil, fmt.Errorf("open command input: %w", err)
-		}
-		cmd.Stdin = input
-		return func() { _ = input.Close() }, nil
+		cmd.Stdin = command.StdinReader
+		return func() {}, nil
 	}
 	if command.Stdin != nil {
 		cmd.Stdin = bytes.NewReader(command.Stdin)

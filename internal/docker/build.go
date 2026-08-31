@@ -68,18 +68,18 @@ func (m *Manager) StreamBuild(
 		args = append(args, "--cache-from", source)
 	}
 	contextArgument := request.Context
-	if request.ContextArchive != "" {
+	if request.ContextReader != nil {
 		contextArgument = "-"
 	}
 	args = append(args, contextArgument)
-	if request.ContextArchive != "" {
-		return m.runStreamingFile(ctx, buildTimeout, "build Porto image", request.ContextArchive, emit, args...)
+	if request.ContextReader != nil {
+		return m.runStreamingReader(ctx, buildTimeout, "build Porto image", request.ContextReader, emit, args...)
 	}
 	return m.runStreaming(ctx, buildTimeout, "build Porto image", nil, emit, args...)
 }
 
 func validateBuildRequest(request BuildRequest) error {
-	if strings.TrimSpace(request.Context) == "" && strings.TrimSpace(request.ContextArchive) == "" {
+	if strings.TrimSpace(request.Context) == "" && request.ContextReader == nil {
 		return errors.New("build context is required")
 	}
 	dockerfile := request.Dockerfile

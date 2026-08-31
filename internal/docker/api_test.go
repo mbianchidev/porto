@@ -109,15 +109,10 @@ func TestDockerAPIBuildsMultiPlatformImage(t *testing.T) {
 			!strings.Contains(args, "--build-arg VERSION=1") {
 			return nil, fmt.Errorf("unexpected build arguments: %s", args)
 		}
-		if command.Args[len(command.Args)-1] != "-" || command.StdinPath == "" {
+		if command.Args[len(command.Args)-1] != "-" || command.StdinReader == nil {
 			return nil, fmt.Errorf("build context was not streamed from an archive: %+v", command)
 		}
-		contextArchive, err := os.Open(command.StdinPath)
-		if err != nil {
-			return nil, fmt.Errorf("open stored build context: %w", err)
-		}
-		defer contextArchive.Close()
-		archive := tar.NewReader(contextArchive)
+		archive := tar.NewReader(command.StdinReader)
 		header, err := archive.Next()
 		if err != nil {
 			return nil, fmt.Errorf("read stored build context: %w", err)

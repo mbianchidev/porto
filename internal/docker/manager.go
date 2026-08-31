@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/exec"
@@ -720,18 +721,18 @@ func (m *Manager) runStreaming(
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
-	return m.runStreamingInput(ctx, timeout, action, stdin, "", emit, args...)
+	return m.runStreamingInput(ctx, timeout, action, stdin, nil, emit, args...)
 }
 
-func (m *Manager) runStreamingFile(
+func (m *Manager) runStreamingReader(
 	ctx context.Context,
 	timeout time.Duration,
 	action string,
-	stdinPath string,
+	stdinReader io.Reader,
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
-	return m.runStreamingInput(ctx, timeout, action, nil, stdinPath, emit, args...)
+	return m.runStreamingInput(ctx, timeout, action, nil, stdinReader, emit, args...)
 }
 
 func (m *Manager) runStreamingInput(
@@ -739,7 +740,7 @@ func (m *Manager) runStreamingInput(
 	timeout time.Duration,
 	action string,
 	stdin []byte,
-	stdinPath string,
+	stdinReader io.Reader,
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
@@ -754,10 +755,10 @@ func (m *Manager) runStreamingInput(
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := runtimes.Command{
-		Name:      backend.name,
-		Args:      append(append([]string(nil), backend.prefix...), args...),
-		Stdin:     stdin,
-		StdinPath: stdinPath,
+		Name:        backend.name,
+		Args:        append(append([]string(nil), backend.prefix...), args...),
+		Stdin:       stdin,
+		StdinReader: stdinReader,
 	}
 	output, runErr := runner.RunStreaming(commandContext, command, emit)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
