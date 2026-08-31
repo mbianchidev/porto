@@ -175,7 +175,7 @@ porto logs <project> --stream all -n 100
 porto stop <project>
 ```
 
-The dashboard at `http://127.0.0.1:37623` provides the same lifecycle controls plus dependency setup, logs, branch switching, and concurrent branch instances.
+The dashboard at `http://127.0.0.1:37623` provides the same lifecycle controls plus dependency setup, logs, branch switching, and concurrent branch instances. Select a project row to open its controls immediately underneath it, or use the log action to open its process console directly; the console can be maximized for longer troubleshooting sessions.
 
 - Run **Setup dependencies** after the initial scan and when project dependencies change.
 - Pin ports only for tools that need a fixed address; otherwise let Porto avoid collisions automatically.

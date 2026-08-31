@@ -95,7 +95,7 @@ components:
 
 **Creative North Star: "The Broadcast Patchbay"**
 
-Porto reads as a piece of painted-metal broadcast equipment, not a generic infrastructure dashboard: a fixed graphite source rail, fused fleet signal and control strips, engraved inventory labels, physical-feeling status lamps, and a service inspector docked beside the selected workload. The thesis is one dense process-control desk, not a collection of cards — local apps, containers, images, builds, storage, networks, Kubernetes, and VMs use the same ranked inventory grammar. The palette is putty, graphite, olive, amber, and fault red: warm neutral metal tones carrying three status colors that never wander from their operational meaning.
+Porto reads as a piece of painted-metal broadcast equipment, not a generic infrastructure dashboard: a fixed graphite source rail, fused fleet signal and control strips, engraved inventory labels, physical-feeling status lamps, and service details connected directly to the selected workload. The thesis is one dense process-control desk, not a collection of cards — local apps, containers, images, builds, storage, networks, Kubernetes, and VMs use the same ranked inventory grammar. The palette is putty, graphite, olive, amber, and fault red: warm neutral metal tones carrying three status colors that never wander from their operational meaning.
 
 The story order is deliberate: choose a workload family from the rail, read its fleet health, find the affected resource in the ranked inventory, act immediately through visible controls, then inspect routing, runtime details, logs, terminals, files, metrics, or maintenance without losing the list. Nothing about the layout is decorative — gaps, radii, and shadows all read as hardware fit-and-finish rather than software polish.
 
@@ -144,7 +144,7 @@ The palette is a warm, desaturated putty-and-graphite metal system with three na
 
 ### Hierarchy
 - **Display** (700, `clamp(1.75rem, 3vw, 2.6rem)`, 1.05, `-0.035em`): page-level `h1` in the page intro only.
-- **Headline** (600, 18px, 1.2, `-0.02em`): drawer title ("[Project] service channel") and settings section intros (20px variant).
+- **Headline** (600, 18px, 1.2, `-0.02em`): detail title ("[Project] service channel") and settings section intros (20px variant).
 - **Title** (700, 12px, uppercase, `0.05em`, mono): drawer panel headers, console header title — small-caps-style section labels, not prose headings.
 - **Body** (400, 15px base / 12–13px in dense contexts, 1.45): running body copy, channel identity name, drawer paragraph text.
 - **Label** (400, 9–11px, uppercase, `0.05–0.08em`, mono): the pervasive "engraved" metadata language — fleet datum labels, channel `<small>` captions, `dt` terms, log timestamps, button labels inside strips.
@@ -154,13 +154,13 @@ The palette is a warm, desaturated putty-and-graphite metal system with three na
 
 ## Layout
 
-The application shell uses a fixed 232px graphite rail and a fluid main workbench. Resource screens place a ranked inventory beside a 380px inspector; `localhost-ing` uses the same model for native and Compose project channels. Vertical rhythm between banners, fleet rail, control bar, inventory, and inspector runs 8–13px; internal component padding runs 5–13px. Nothing exceeds ~24px of gap anywhere in the system — density is the point.
+The application shell uses a fixed 232px graphite rail and a fluid main workbench. Resource screens place a ranked inventory beside a 380px inspector. On `localhost-ing`, selecting a native project or branch instance expands its service channel immediately below that row so routing, branch controls, maintenance, and logs stay attached to the workload being operated. Vertical rhythm between banners, fleet rail, control bar, inventory, and detail surfaces runs 8–13px; internal component padding runs 5–13px. Nothing exceeds ~24px of gap anywhere in the system — density is the point.
 
-The fleet signal rail and the filter/control bar are visually fused into one control unit: the rail has bottom corners squared to 0 and the control bar's top border is removed, so together they read as a single instrument panel with two rows rather than two separate cards. Project channels and resource rows stack in compact inventories; multi-branch projects remain grouped under a shared source header. Selection keeps the inventory stable and opens detail in the adjacent inspector.
+The fleet signal rail and the filter/control bar are visually fused into one control unit: the rail has bottom corners squared to 0 and the control bar's top border is removed, so together they read as a single instrument panel with two rows rather than two separate cards. Project channels and resource rows stack in compact inventories; multi-branch projects remain grouped under a shared source header. Native-project selection keeps the source order stable, inserts one detail surface below the selected branch, and collapses when that row is selected again. Its process console may occupy the full window for sustained log work.
 
 **Responsive behavior:**
 - **≤1080px:** inventory columns compress and multi-column inspector panels collapse to one column.
-- **≤860px:** the rail becomes an off-canvas navigation panel, the inspector becomes a full-screen detail surface, route columns hide, and the control bar reduces to two columns.
+- **≤860px:** the rail becomes an off-canvas navigation panel, resource inspectors become full-screen detail surfaces, route columns hide, and the control bar reduces to two columns. Native-project details remain inline.
 - **≤620px:** the control bar and channel rows collapse to their narrowest form; secondary machine facts hide, quick-action targets grow for touch, and command, terminal, file, and log layouts re-flow into one column.
 
 ### Named Rules
