@@ -89,9 +89,12 @@ jobs:
           npm --prefix ui run build
           npm --prefix ui/electron ci
           npm --prefix ui/electron audit
+          npm --prefix ui/electron test
           node --check ui/electron/main.js
+          node --check ui/electron/daemon-readiness.cjs
           node --check ui/electron/preload.js
           node --check ui/electron/package.cjs
+          node --check scripts/desktop-runtime-symlinks.cjs
           bash -n scripts/bundle-desktop-runtime.sh
           sh -n scripts/install-desktop.sh
 
@@ -144,25 +147,12 @@ jobs:
             rm -rf ui/electron/release
             (
               cd ui/electron
-              npx electron-packager . Porto \
+              node package.cjs \
                 --platform="$electron_platform" \
                 --arch="$electron_arch" \
                 --out=release \
-                --overwrite \
-                --prune=true \
                 --app-version="$desktop_version" \
                 --build-version="$GITHUB_RUN_NUMBER" \
-                --icon="$PWD/assets/porto.icns" \
-                --extend-info="$PWD/assets/Info.plist" \
-                --app-bundle-id=dev.mbianchi.porto \
-                --app-category-type=public.app-category.developer-tools \
-                --app-copyright="Copyright (c) 2026 mbianchidev" \
-                --win32metadata.CompanyName=Porto \
-                --win32metadata.FileDescription=Porto \
-                --win32metadata.ProductName=Porto \
-                --win32metadata.InternalName=Porto \
-                --win32metadata.OriginalFilename=Porto.exe \
-                --extra-resource="$PWD/assets/porto.png" \
                 --extra-resource="../../${root}/${binary}" \
                 --extra-resource="../dist" \
                 --extra-resource="$runtime_dir"
@@ -170,6 +160,7 @@ jobs:
             packaged_app="$(find ui/electron/release -mindepth 1 -maxdepth 1 -type d -print -quit)"
             test -n "$packaged_app"
             test -n "$(find "$packaged_app" -path '*/runtime/VERSIONS' -print -quit)"
+            node scripts/desktop-runtime-symlinks.cjs --validate "$packaged_app"
             mv "$packaged_app" "stage/${desktop_name}"
             if [ "$goos" = "windows" ]; then
               (cd stage && zip -qr "../dist/${desktop_name}.zip" "${desktop_name}")

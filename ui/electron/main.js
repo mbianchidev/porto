@@ -10,29 +10,19 @@ const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
 
+const { isDaemonReady } = require('./daemon-readiness.cjs')
+
 const APP_NAME = 'Porto'
 const APP_ID = 'dev.mbianchi.porto'
 const APP_ICON = path.join(__dirname, 'assets', 'porto.png')
 const DAEMON_URL = 'http://127.0.0.1:37623'
-const HEALTH_CHECK_TIMEOUT_MS = 800
 const windows = new Set()
 
 app.setName(APP_NAME)
 process.title = APP_NAME
 
 async function isDaemonHealthy() {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), HEALTH_CHECK_TIMEOUT_MS)
-  try {
-    const response = await fetch(`${DAEMON_URL}/api/health`, { signal: controller.signal })
-    if (!response.ok) return false
-    const health = await response.json()
-    return health.apiVersion === 1
-  } catch {
-    return false
-  } finally {
-    clearTimeout(timer)
-  }
+  return isDaemonReady({ daemonURL: DAEMON_URL })
 }
 
 function portoBinary() {
@@ -175,7 +165,7 @@ app.whenReady().then(async () => {
   if (!healthy) {
     dialog.showErrorBox(
       'Porto daemon unavailable',
-      `Could not start ${portoBinary()} daemon start. Set PORTO_BINARY or install porto on PATH, then retry.`,
+      `Could not start ${portoBinary()} daemon start. Another Porto daemon may be incompatible or missing its dashboard; stop it and retry.`,
     )
     app.quit()
     return

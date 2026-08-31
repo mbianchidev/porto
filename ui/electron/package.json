@@ -8,7 +8,8 @@
   "main": "main.js",
   "scripts": {
     "start": "electron .",
-    "package": "node package.cjs"
+    "package": "node package.cjs",
+    "test": "node --test daemon-readiness.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
