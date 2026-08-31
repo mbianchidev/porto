@@ -25,6 +25,10 @@ Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive.
 `PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
 install without opening it.
 
+The native-engine release advances Porto's daemon compatibility version. The
+installer stops an older Porto daemon before launching the new app so commands
+cannot accidentally continue through the removed upstream Docker proxy.
+
 Desktop archives contain Porto, its dashboard, `kubectl`, Lima, and the
 supported `kind` binary for that platform. Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
