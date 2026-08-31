@@ -10,7 +10,7 @@
   padding: 14px 20px 40px;
 }
 
-.railToggle {
+.railToggle.iconButton {
   position: fixed;
   z-index: 70;
   top: 10px;
@@ -1686,7 +1686,7 @@ button:disabled {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .railToggle {
+  .railToggle.iconButton {
     display: inline-grid;
   }
 
