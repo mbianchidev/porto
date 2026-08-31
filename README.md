@@ -13,7 +13,7 @@ Porto is an open-source desktop and web control plane for development workloads 
 - **One place for every project.** Scan roots once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
-- **Local Kubernetes.** Create managed k3s or k0s clusters without inheriting an unrelated global kube context.
+- **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
 - **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
@@ -41,7 +41,7 @@ The one-liners detect the OS and architecture, verify the published SHA-256
 checksum, install the native macOS DMG or Windows EXE package for the current
 user, expose the `porto` CLI, and launch the desktop app. Linux uses the
 portable desktop archive. Every desktop package bundles the daemon, dashboard,
-`kubectl`, and Lima.
+`kubectl`, Lima, and the supported `kind` binary.
 
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the

@@ -338,6 +338,39 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	args = appendStringFlag(args, "--workdir", request.WorkingDir)
 	args = appendStringFlag(args, "--user", request.User)
 	args = appendStringFlag(args, "--hostname", request.Hostname)
+	if request.Privileged {
+		args = append(args, "--privileged")
+	}
+	for _, option := range request.SecurityOpt {
+		if strings.TrimSpace(option) == "" || strings.ContainsAny(option, "\r\n\x00") {
+			return "", errors.New("invalid container security option")
+		}
+		args = append(args, "--security-opt", option)
+	}
+	for _, target := range sortedStringKeys(request.Tmpfs) {
+		value := target
+		if request.Tmpfs[target] != "" {
+			value += ":" + request.Tmpfs[target]
+		}
+		args = append(args, "--tmpfs", value)
+	}
+	for _, key := range sortedStringKeys(request.Sysctls) {
+		args = append(args, "--sysctl", key+"="+request.Sysctls[key])
+	}
+	for _, device := range request.Devices {
+		if err := validateContainerDevice(device); err != nil {
+			return "", err
+		}
+		args = append(args, "--device", device.HostPath+":"+device.ContainerPath+":"+device.Permissions)
+	}
+	args = appendStringFlag(args, "--cgroupns", request.Cgroupns)
+	args = appendStringFlag(args, "--userns", request.Userns)
+	if request.Init {
+		args = append(args, "--init")
+	}
+	if request.ShmSize > 0 {
+		args = append(args, "--shm-size", strconv.FormatInt(request.ShmSize, 10))
+	}
 	for _, network := range request.Networks {
 		if network.Name != "default" {
 			args = appendStringFlag(args, "--network", network.Name)
@@ -378,7 +411,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if request.Remove {
 		args = append(args, "--rm")
 	}
-	args = append(args, request.Image)
+	args = append(args, normalizeNerdctlReference(request.Image))
 	args = append(args, command...)
 	output, err := m.runWithTimeout(ctx, 10*time.Minute, "create Porto container", nil, args...)
 	if err != nil {
@@ -389,6 +422,19 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", errors.New("container runtime returned an empty container identifier")
 	}
 	return strings.Fields(id)[0], nil
+}
+
+func validateContainerDevice(device ContainerDevice) error {
+	for name, value := range map[string]string{
+		"host path":      device.HostPath,
+		"container path": device.ContainerPath,
+		"permissions":    device.Permissions,
+	} {
+		if strings.TrimSpace(value) == "" || strings.ContainsAny(value, "\r\n\x00:") {
+			return fmt.Errorf("invalid container device %s", name)
+		}
+	}
+	return nil
 }
 
 func (m *Manager) Images(ctx context.Context) ([]Image, error) {
@@ -410,7 +456,7 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 }
 
 func (m *Manager) Networks(ctx context.Context) ([]Network, error) {
-	output, err := m.run(ctx, "list Porto networks", "network", "ls", "--no-trunc", "--format", "{{json .}}")
+	output, err := m.run(ctx, "list Porto networks", "network", "ls", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -567,7 +613,7 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 }
 
 func (m *Manager) InspectImage(ctx context.Context, id string) (json.RawMessage, error) {
-	return m.inspect(ctx, "image", id)
+	return m.inspect(ctx, "image", normalizeNerdctlReference(id))
 }
 
 func (m *Manager) InspectNetwork(ctx context.Context, id string) (json.RawMessage, error) {
@@ -586,7 +632,7 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 	if force {
 		args = append(args, "--force")
 	}
-	args = append(args, id)
+	args = append(args, normalizeNerdctlReference(id))
 	_, err := m.run(ctx, "remove Porto image", args...)
 	return err
 }
@@ -597,9 +643,13 @@ func (m *Manager) PullImage(ctx context.Context, reference, platform string) err
 	}
 	args := []string{"pull"}
 	args = appendStringFlag(args, "--platform", platform)
-	args = append(args, reference)
+	normalized := normalizeNerdctlReference(reference)
+	args = append(args, normalized)
 	_, err := m.runWithTimeout(ctx, 30*time.Minute, "pull Porto image", nil, args...)
-	return err
+	if err != nil {
+		return fmt.Errorf("pull image %q: %w", normalized, err)
+	}
+	return nil
 }
 
 func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {

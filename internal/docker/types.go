@@ -1,6 +1,10 @@
 package docker
 
-import "io"
+import (
+	"io"
+	"os"
+	"time"
+)
 
 type Status struct {
 	Enabled       bool   `json:"enabled"`
@@ -102,12 +106,14 @@ type ContainerStats struct {
 }
 
 type CreateNetworkRequest struct {
-	Name     string            `json:"name"`
-	Driver   string            `json:"driver"`
-	Subnet   string            `json:"subnet"`
-	Gateway  string            `json:"gateway"`
-	Internal bool              `json:"internal"`
-	Labels   map[string]string `json:"labels,omitempty"`
+	Name       string            `json:"name"`
+	Driver     string            `json:"driver"`
+	Subnets    []string          `json:"subnets,omitempty"`
+	Gateways   []string          `json:"gateways,omitempty"`
+	Internal   bool              `json:"internal"`
+	EnableIPv6 bool              `json:"enableIPv6"`
+	Options    map[string]string `json:"options,omitempty"`
+	Labels     map[string]string `json:"labels,omitempty"`
 }
 
 type CreateContainerRequest struct {
@@ -121,6 +127,15 @@ type CreateContainerRequest struct {
 	WorkingDir  string
 	User        string
 	Hostname    string
+	Privileged  bool
+	SecurityOpt []string
+	Tmpfs       map[string]string
+	Sysctls     map[string]string
+	Devices     []ContainerDevice
+	Cgroupns    string
+	Userns      string
+	Init        bool
+	ShmSize     int64
 	Networks    []ContainerNetwork
 	Volumes     []string
 	Publish     []string
@@ -133,4 +148,37 @@ type CreateContainerRequest struct {
 type ContainerNetwork struct {
 	Name    string
 	Aliases []string
+}
+
+type ContainerDevice struct {
+	HostPath      string
+	ContainerPath string
+	Permissions   string
+}
+
+type ContainerUpdate struct {
+	Memory     int64
+	MemorySwap int64
+	NanoCPUs   int64
+}
+
+type ExecRequest struct {
+	ContainerID  string
+	Command      []string
+	Environment  []string
+	WorkingDir   string
+	User         string
+	Privileged   bool
+	AttachStdin  bool
+	AttachStdout bool
+	AttachStderr bool
+	TTY          bool
+}
+
+type PathStat struct {
+	Name       string      `json:"name"`
+	Size       int64       `json:"size"`
+	Mode       os.FileMode `json:"mode"`
+	ModTime    time.Time   `json:"mtime"`
+	LinkTarget string      `json:"linkTarget"`
 }

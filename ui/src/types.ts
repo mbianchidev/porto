@@ -307,7 +307,7 @@ export type KubernetesNodeGroupSpec = {
 
 export type KubernetesClusterRequest = {
   name: string
-  provider: 'k0s' | 'k3s'
+  provider: 'kind' | 'k0s' | 'k3s'
   version: string
   controlPlane: KubernetesMachineSpec
   nodeGroups: KubernetesNodeGroupSpec[]

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -15,6 +16,7 @@ type LogOptions struct {
 	Tail       string
 	Since      string
 	Until      string
+	Follow     bool
 }
 
 func (m *Manager) ContainerLogs(ctx context.Context, id string, tail int) ([]byte, error) {
@@ -53,6 +55,9 @@ func (m *Manager) StreamDockerContainerLogs(
 		return fmt.Errorf("%w: selecting only stdout or stderr logs", ErrUnsupported)
 	}
 	args := []string{"logs"}
+	if options.Follow {
+		args = append(args, "--follow")
+	}
 	if options.Timestamps {
 		args = append(args, "--timestamps")
 	}
@@ -62,5 +67,9 @@ func (m *Manager) StreamDockerContainerLogs(
 	args = appendStringFlag(args, "--since", options.Since)
 	args = appendStringFlag(args, "--until", options.Until)
 	args = append(args, id)
-	return m.runStreaming(ctx, m.timeout, "read Porto container logs", nil, emit, args...)
+	timeout := m.timeout
+	if options.Follow {
+		timeout = 24 * time.Hour
+	}
+	return m.runStreaming(ctx, timeout, "read Porto container logs", nil, emit, args...)
 }

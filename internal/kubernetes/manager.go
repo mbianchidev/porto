@@ -156,7 +156,7 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 			return status
 		}
 		if len(contexts) == 0 {
-			status.Message = "No Porto-managed Kubernetes cluster exists. Create one with k0s or k3s."
+			status.Message = "No Porto-managed Kubernetes cluster exists. Create one with kind, k0s, or k3s."
 			return status
 		}
 		status.Context = contexts[0].Name

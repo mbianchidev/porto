@@ -23,6 +23,7 @@ type fakeRunner struct {
 	ordered  map[string][]runtimes.OutputChunk
 	handler  func(runtimes.Command) ([]byte, error)
 	streamer func(runtimes.Command, func(runtimes.OutputChunk) error) ([]byte, error)
+	starter  func(runtimes.Command) (runtimes.Process, error)
 }
 
 type engineInstallRunner struct {
@@ -103,6 +104,17 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 	return f.outputs[key], f.errors[key]
 }
 
+func (f *fakeRunner) Start(_ context.Context, command runtimes.Command) (runtimes.Process, error) {
+	f.mu.Lock()
+	f.commands = append(f.commands, command)
+	starter := f.starter
+	f.mu.Unlock()
+	if starter == nil {
+		return nil, fmt.Errorf("unexpected streaming command: %s %s", command.Name, strings.Join(command.Args, " "))
+	}
+	return starter(command)
+}
+
 func TestManagerStatusAndInventory(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
@@ -112,6 +124,7 @@ func TestManagerStatusAndInventory(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
+
 	manager := New(runner)
 
 	status := manager.Status(context.Background(), "/tmp/porto.sock")
@@ -131,6 +144,13 @@ func TestManagerStatusAndInventory(t *testing.T) {
 	}
 	if len(images) != 1 || images[0].Digest != "sha256:2" {
 		t.Fatalf("unexpected images: %+v", images)
+	}
+}
+
+func TestNormalizeNerdctlReferenceDropsTagBeforeDigest(t *testing.T) {
+	got := normalizeNerdctlReference("kindest/node:v1.37.0@sha256:abcdef")
+	if got != "kindest/node@sha256:abcdef" {
+		t.Fatalf("normalized reference = %q", got)
 	}
 }
 

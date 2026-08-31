@@ -137,3 +137,33 @@ func randomResourceName() (string, error) {
 	}
 	return "porto-" + hex.EncodeToString(random), nil
 }
+
+func normalizeNerdctlReference(reference string) string {
+	name, digest, ok := strings.Cut(reference, "@")
+	if !ok {
+		return reference
+	}
+	if slash := strings.LastIndexByte(name, '/'); slash >= 0 {
+		if colon := strings.LastIndexByte(name[slash+1:], ':'); colon >= 0 {
+			name = name[:slash+1+colon]
+		}
+	} else if colon := strings.LastIndexByte(name, ':'); colon >= 0 {
+		name = name[:colon]
+	}
+	return name + "@" + digest
+}
+
+func isImageDigest(value string) bool {
+	algorithm, encoded, ok := strings.Cut(value, ":")
+	if !ok || algorithm == "" || len(encoded) < 32 {
+		return false
+	}
+	for _, character := range encoded {
+		if (character < '0' || character > '9') &&
+			(character < 'a' || character > 'f') &&
+			(character < 'A' || character > 'F') {
+			return false
+		}
+	}
+	return true
+}

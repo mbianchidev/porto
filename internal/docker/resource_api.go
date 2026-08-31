@@ -32,6 +32,7 @@ func (a *API) createNetwork(w http.ResponseWriter, r *http.Request) {
 		Driver     string            `json:"Driver"`
 		Internal   bool              `json:"Internal"`
 		EnableIPv6 bool              `json:"EnableIPv6"`
+		Options    map[string]string `json:"Options"`
 		Labels     map[string]string `json:"Labels"`
 		IPAM       struct {
 			Config []struct {
@@ -43,18 +44,20 @@ func (a *API) createNetwork(w http.ResponseWriter, r *http.Request) {
 	if !decodeDockerJSON(w, r, &request) {
 		return
 	}
-	if request.EnableIPv6 {
-		writeDockerUnsupported(w, "IPv6 network creation")
-		return
-	}
-	subnet, gateway := "", ""
-	if len(request.IPAM.Config) > 0 {
-		subnet = request.IPAM.Config[0].Subnet
-		gateway = request.IPAM.Config[0].Gateway
+	subnets := make([]string, 0, len(request.IPAM.Config))
+	gateways := make([]string, 0, len(request.IPAM.Config))
+	for _, config := range request.IPAM.Config {
+		if config.Subnet != "" {
+			subnets = append(subnets, config.Subnet)
+		}
+		if config.Gateway != "" {
+			gateways = append(gateways, config.Gateway)
+		}
 	}
 	id, err := a.manager.CreateNetwork(r.Context(), CreateNetworkRequest{
-		Name: request.Name, Driver: request.Driver, Subnet: subnet, Gateway: gateway,
-		Internal: request.Internal, Labels: request.Labels,
+		Name: request.Name, Driver: request.Driver, Subnets: subnets, Gateways: gateways,
+		Internal: request.Internal, EnableIPv6: request.EnableIPv6,
+		Options: request.Options, Labels: request.Labels,
 	})
 	if err != nil {
 		writeDockerError(w, err)

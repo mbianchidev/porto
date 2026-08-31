@@ -66,6 +66,7 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 		},
 		errors: map[string]error{},
 	}
+
 	handler := NewAPI(New(runner), "/tmp/porto.sock")
 	body := bytes.NewBufferString(`{
 		"Image":"alpine:latest",
@@ -87,12 +88,85 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	}
 }
 
+func TestDockerAPICreatesPrivilegedKindContainer(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if len(command.Args) == 0 || command.Args[0] != "create" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		required := [][]string{
+			{"--privileged"},
+			{"--security-opt", "seccomp=unconfined"},
+			{"--security-opt", "apparmor=unconfined"},
+			{"--tmpfs", "/tmp"},
+			{"--tmpfs", "/run"},
+			{"--volume", "/var"},
+			{"--volume", "/lib/modules:/lib/modules:ro"},
+			{"--cgroupns", "private"},
+			{"--userns", "host"},
+			{"--device", "/dev/fuse:/dev/fuse:rwm"},
+			{"--sysctl", "net.ipv6.conf.all.forwarding=1"},
+		}
+		for _, sequence := range required {
+			if !containsArgumentSequence(command.Args, sequence) {
+				return nil, fmt.Errorf("missing arguments %v in %v", sequence, command.Args)
+			}
+		}
+		return []byte("kind-node-id\n"), nil
+	}
+	body := bytes.NewBufferString(`{
+		"Image":"kindest/node:v1.36.0",
+		"Hostname":"porto-kind-control-plane",
+		"Tty":true,
+		"Volumes":{"/var":{}},
+		"HostConfig":{
+			"Privileged":true,
+			"SecurityOpt":["seccomp=unconfined","apparmor=unconfined"],
+			"Tmpfs":{"/tmp":"","/run":""},
+			"Binds":["/lib/modules:/lib/modules:ro"],
+			"CgroupnsMode":"private",
+			"UsernsMode":"host",
+			"Devices":[{"PathOnHost":"/dev/fuse","PathInContainer":"/dev/fuse","CgroupPermissions":"rwm"}],
+			"Sysctls":{"net.ipv6.conf.all.forwarding":"1"},
+			"NetworkMode":"kind",
+			"RestartPolicy":{"Name":"on-failure","MaximumRetryCount":1},
+			"Init":false
+		}
+	}`)
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/containers/create?name=porto-kind-control-plane", body),
+	)
+	if response.Code != http.StatusCreated {
+		t.Fatalf("create privileged container = %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/events", nil))
 	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "does not support") {
 		t.Fatalf("unsupported = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIPullsDigestFromDockerTagParameter(t *testing.T) {
+	const digest = "sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl pull docker.io/kindest/node@" + digest: nil,
+		},
+		errors: map[string]error{},
+	}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/images/create?fromImage=docker.io%2Fkindest%2Fnode&tag="+digest, nil),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("pull digest = %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -183,6 +257,7 @@ func TestDockerCLIBuildsImageThroughPortoContext(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket compatibility test")
 	}
+
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
 	}
@@ -240,7 +315,381 @@ func TestDockerCLIBuildsImageThroughPortoContext(t *testing.T) {
 	}
 }
 
-func TestDockerAPIRejectsUnsupportedMountAndFollowSemantics(t *testing.T) {
+func TestDockerCLIExecStreamsStdinAndMultiplexedOutput(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") == "container inspect demo" {
+			return []byte(`{"Id":"demo","State":{"Running":true},"HostConfig":{"Privileged":true},"Config":{"Tty":false}}`), nil
+		}
+		if strings.Join(command.Args, " ") == "wait demo" {
+			return []byte("0\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %+v", command)
+	}
+	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
+		for _, sequence := range [][]string{
+			{"exec", "--privileged"},
+			{"--interactive"},
+			{"demo", "cat"},
+		} {
+			if !containsArgumentSequence(command.Args, sequence) {
+				return nil, fmt.Errorf("missing exec arguments %v in %v", sequence, command.Args)
+			}
+		}
+		return newFakeProcess(func(stdin []byte) ([]byte, []byte, error) {
+			return stdin, nil, nil
+		}), nil
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-exec-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewAPIServer(socketPath, NewAPI(New(runner), socketPath))
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+	command := exec.Command("docker", "--context", "porto", "exec", "--privileged", "-i", "demo", "cat")
+	command.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	command.Stdin = strings.NewReader("kind payload")
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker exec: %v: %s", err, output)
+	}
+	if string(output) != "kind payload" {
+		t.Fatalf("docker exec output = %q", output)
+	}
+}
+
+func TestDockerCLIAttachUsesHijackedStdio(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") == "container inspect demo" {
+			return []byte(`{"Id":"demo","State":{"Running":true},"Config":{"Tty":false}}`), nil
+		}
+		if strings.Join(command.Args, " ") == "wait demo" {
+			return []byte("0\n"), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %+v", command)
+	}
+	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
+		if len(command.Args) == 0 || command.Args[0] != "attach" || command.Args[len(command.Args)-1] != "demo" {
+			return nil, fmt.Errorf("unexpected attach command: %v", command.Args)
+		}
+		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
+			return []byte("attached\n"), nil, nil
+		}), nil
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-attach-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewAPIServer(socketPath, NewAPI(New(runner), socketPath))
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+	command := exec.Command("docker", "--context", "porto", "attach", "demo")
+	command.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	output, err := command.CombinedOutput()
+	if err != nil {
+		t.Fatalf("docker attach: %v: %s", err, output)
+	}
+	if string(output) != "attached\n" {
+		t.Fatalf("docker attach output = %q", output)
+	}
+}
+
+func TestDockerCLIContainerArchiveUploadAndDownload(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	var uploadedName string
+	var uploadedContent string
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := command.Args
+		if len(args) >= 7 && args[0] == "exec" && args[1] == "demo" && args[2] == "stat" {
+			target := args[len(args)-1]
+			switch target {
+			case "/tmp":
+				return []byte("0\x0041ed\x001700000000\x00"), nil
+			case "/tmp/download.txt":
+				return []byte("15\x0081a4\x001700000000\x00"), nil
+			}
+		}
+		return nil, fmt.Errorf("unexpected command: %+v", command)
+	}
+	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
+		args := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(args, "tar -xpf -") && strings.Contains(args, "-C /tmp"):
+			return newFakeProcess(func(stdin []byte) ([]byte, []byte, error) {
+				archive := tar.NewReader(bytes.NewReader(stdin))
+				header, err := archive.Next()
+				if err != nil {
+					return nil, nil, err
+				}
+				content, err := io.ReadAll(archive)
+				if err != nil {
+					return nil, nil, err
+				}
+				uploadedName = header.Name
+				uploadedContent = string(content)
+				return nil, nil, nil
+			}), nil
+		case strings.Contains(args, "tar -cpf - -C /tmp download.txt"):
+			return newFakeProcess(func([]byte) ([]byte, []byte, error) {
+				var output bytes.Buffer
+				archive := tar.NewWriter(&output)
+				content := []byte("downloaded data")
+				if err := archive.WriteHeader(&tar.Header{Name: "download.txt", Mode: 0o644, Size: int64(len(content))}); err != nil {
+					return nil, nil, err
+				}
+				if _, err := archive.Write(content); err != nil {
+					return nil, nil, err
+				}
+				if err := archive.Close(); err != nil {
+					return nil, nil, err
+				}
+				return output.Bytes(), nil, nil
+			}), nil
+		default:
+			return nil, fmt.Errorf("unexpected archive command: %v", command.Args)
+		}
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-archive-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewAPIServer(socketPath, NewAPI(New(runner), socketPath))
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+
+	source := filepath.Join(t.TempDir(), "upload.txt")
+	if err := os.WriteFile(source, []byte("uploaded data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	upload := exec.Command("docker", "--context", "porto", "cp", source, "demo:/tmp")
+	upload.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := upload.CombinedOutput(); err != nil {
+		t.Fatalf("docker cp upload: %v: %s", err, output)
+	}
+	if uploadedName != "upload.txt" || uploadedContent != "uploaded data" {
+		t.Fatalf("uploaded archive = %q %q", uploadedName, uploadedContent)
+	}
+
+	destination := filepath.Join(t.TempDir(), "download.txt")
+	download := exec.Command("docker", "--context", "porto", "cp", "demo:/tmp/download.txt", destination)
+	download.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := download.CombinedOutput(); err != nil {
+		t.Fatalf("docker cp download: %v: %s", err, output)
+	}
+	content, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(content) != "downloaded data" {
+		t.Fatalf("downloaded content = %q", content)
+	}
+}
+
+func TestDockerCLIImageSaveStreamsArchive(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	var imageArchive bytes.Buffer
+	tarWriter := tar.NewWriter(&imageArchive)
+	if err := tarWriter.WriteHeader(&tar.Header{Name: "manifest.json", Mode: 0o644, Size: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := tarWriter.Write([]byte("[]")); err != nil {
+		t.Fatal(err)
+	}
+	if err := tarWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
+		if strings.Join(command.Args, " ") != "save --platform linux/"+runtime.GOARCH+" alpine:latest" {
+			return nil, fmt.Errorf("unexpected image save command: %v", command.Args)
+		}
+		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
+			return imageArchive.Bytes(), nil, nil
+		}), nil
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-image-save-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewAPIServer(socketPath, NewAPI(New(runner), socketPath))
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+	destination := filepath.Join(t.TempDir(), "image.tar")
+	save := exec.Command("docker", "--context", "porto", "image", "save", "--output", destination, "alpine:latest")
+	save.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := save.CombinedOutput(); err != nil {
+		t.Fatalf("docker image save: %v: %s", err, output)
+	}
+	saved, err := os.ReadFile(destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(saved, imageArchive.Bytes()) {
+		t.Fatal("saved image archive did not match runtime output")
+	}
+}
+
+func TestDockerCLIUpdatesContainerResources(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !containsArgumentSequence(command.Args, []string{"update", "--cpus", "2"}) ||
+			!containsArgumentSequence(command.Args, []string{"--memory", "2147483648"}) ||
+			!containsArgumentSequence(command.Args, []string{"--memory-swap", "2147483648"}) ||
+			command.Args[len(command.Args)-1] != "demo" {
+			return nil, fmt.Errorf("unexpected update command: %v", command.Args)
+		}
+		return nil, nil
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-update-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	var updateBody []byte
+	api := NewAPI(New(runner), socketPath)
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/update") {
+			updateBody, _ = io.ReadAll(r.Body)
+			r.Body = io.NopCloser(bytes.NewReader(updateBody))
+		}
+		api.ServeHTTP(w, r)
+	})
+	server := NewAPIServer(socketPath, handler)
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+	update := exec.Command(
+		"docker", "--context", "porto", "update",
+		"--cpus", "2", "--memory", "2048m", "--memory-swap", "2048m", "demo",
+	)
+	update.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := update.CombinedOutput(); err != nil {
+		t.Fatalf("docker update: %v: %s; body=%s", err, output, updateBody)
+	}
+}
+
+func TestDockerAPIRejectsUnsupportedMountSemanticsAndFollowsLogs(t *testing.T) {
 	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
 	create := httptest.NewRecorder()
 	handler.ServeHTTP(create, httptest.NewRequest(
@@ -251,9 +700,23 @@ func TestDockerAPIRejectsUnsupportedMountAndFollowSemantics(t *testing.T) {
 	if create.Code != http.StatusNotImplemented || !strings.Contains(create.Body.String(), "Mounts") {
 		t.Fatalf("mount response = %d: %s", create.Code, create.Body.String())
 	}
+	logRunner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl container inspect demo": []byte(`{"Config":{"Tty":true}}`),
+		},
+		errors: map[string]error{},
+		ordered: map[string][]runtimes.OutputChunk{
+			"nerdctl logs --follow --tail all demo": {
+				{Stream: "stdout", Data: []byte("ready\n")},
+			},
+		},
+	}
 	logs := httptest.NewRecorder()
-	handler.ServeHTTP(logs, httptest.NewRequest(http.MethodGet, "/v1.47/containers/demo/logs?follow=1&stdout=1&stderr=1", nil))
-	if logs.Code != http.StatusNotImplemented || !strings.Contains(logs.Body.String(), "following") {
+	NewAPI(New(logRunner), "/tmp/porto.sock").ServeHTTP(
+		logs,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/demo/logs?follow=1&stdout=1&stderr=1", nil),
+	)
+	if logs.Code != http.StatusOK || logs.Body.String() != "ready\n" {
 		t.Fatalf("follow response = %d: %s", logs.Code, logs.Body.String())
 	}
 }
@@ -303,7 +766,7 @@ func TestDockerCLIContextInfoCompatibility(t *testing.T) {
 			"nerdctl version": []byte("nerdctl version 2.1.0\n"),
 			"nerdctl ps -a --no-trunc --format {{json .}}":            nil,
 			"nerdctl images --digests --no-trunc --format {{json .}}": nil,
-			"nerdctl network ls --no-trunc --format {{json .}}":       nil,
+			"nerdctl network ls --format {{json .}}":                  nil,
 			"nerdctl volume ls --format {{json .}}":                   nil,
 			"nerdctl create --name compatibility alpine:latest true":  []byte("compatibility-id\n"),
 		},
@@ -833,3 +1296,72 @@ func exerciseBuildKitUpgrade(
 	}
 	return nil
 }
+
+func containsArgumentSequence(arguments, sequence []string) bool {
+	for index := 0; index+len(sequence) <= len(arguments); index++ {
+		matches := true
+		for offset := range sequence {
+			if arguments[index+offset] != sequence[offset] {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return true
+		}
+	}
+	return false
+}
+
+type fakeProcess struct {
+	stdin  *io.PipeWriter
+	stdout *io.PipeReader
+	stderr *io.PipeReader
+	done   chan error
+	kill   func()
+}
+
+func newFakeProcess(run func([]byte) ([]byte, []byte, error)) *fakeProcess {
+	stdinReader, stdinWriter := io.Pipe()
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+	done := make(chan error, 1)
+	var finish sync.Once
+	complete := func(err error) {
+		finish.Do(func() {
+			_ = stdinReader.Close()
+			_ = stdoutWriter.Close()
+			_ = stderrWriter.Close()
+			done <- err
+		})
+	}
+	go func() {
+		input, err := io.ReadAll(stdinReader)
+		if err != nil {
+			complete(err)
+			return
+		}
+		stdout, stderr, runErr := run(input)
+		if len(stdout) > 0 {
+			_, _ = stdoutWriter.Write(stdout)
+		}
+		if len(stderr) > 0 {
+			_, _ = stderrWriter.Write(stderr)
+		}
+		complete(runErr)
+	}()
+	return &fakeProcess{
+		stdin: stdinWriter, stdout: stdoutReader, stderr: stderrReader, done: done,
+		kill: func() { complete(context.Canceled) },
+	}
+}
+
+func (p *fakeProcess) Stdin() io.WriteCloser { return p.stdin }
+func (p *fakeProcess) Stdout() io.ReadCloser { return p.stdout }
+func (p *fakeProcess) Stderr() io.ReadCloser { return p.stderr }
+func (p *fakeProcess) Wait() error           { return <-p.done }
+func (p *fakeProcess) Kill() error {
+	p.kill()
+	return nil
+}
+func (p *fakeProcess) PID() int { return 1234 }

@@ -41,7 +41,7 @@ Additional runtime features require:
 | Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` for Porto-managed containerd and BuildKit |
 | Compose project orchestration | Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
-| Porto-created Kubernetes clusters | `kubectl` and `limactl` for k3s or k0s |
+| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | `limactl` and host virtualization support |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
@@ -51,6 +51,7 @@ Inspect or install provider tools:
 ```sh
 porto runtime providers
 porto runtime install lima
+porto runtime install kind
 porto runtime install k0s
 ```
 
@@ -166,10 +167,11 @@ Pass `--context` when a command should not use the current context.
 
 ### Create a local cluster
 
-Porto supports two native-engine providers:
+Porto supports three native-engine providers:
 
 - **k3s** (default): lightweight Kubernetes on Porto-managed Lima VMs
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
+- **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
 For k3s and k0s, Porto provisions one Lima VM for the controller and one VM
 for each requested worker. CPU, RAM, and disk values are per VM. Nodes share
@@ -196,17 +198,15 @@ Pin a k3s version when reproducibility is required:
 porto kubernetes cluster create dev --version v1.33.4+k3s1
 ```
 
-Create with k0s:
+Create with another provider:
 
 ```sh
+porto kubernetes cluster create kind-dev --provider kind --workers 2
 porto kubernetes cluster create k0s-dev --provider k0s --workers 2
 ```
 
-k3s and k0s node groups can be scaled in place.
-
-The `kind` provider is not supported by the native Docker engine yet because
-kind requires privileged containers, Docker exec, archive transfer, and
-container stdio hijacking. Use k3s or k0s instead.
+kind node topology is fixed at creation time. Recreate a kind cluster to
+change its node count; k3s and k0s node groups can be scaled in place.
 
 Porto stores each generated kubeconfig under an opaque, fixed-length filename
 inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`

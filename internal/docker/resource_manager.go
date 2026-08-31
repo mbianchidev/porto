@@ -12,10 +12,20 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 	}
 	args := []string{"network", "create"}
 	args = appendStringFlag(args, "--driver", request.Driver)
-	args = appendStringFlag(args, "--subnet", request.Subnet)
-	args = appendStringFlag(args, "--gateway", request.Gateway)
+	for _, subnet := range request.Subnets {
+		args = appendStringFlag(args, "--subnet", subnet)
+	}
+	for _, gateway := range request.Gateways {
+		args = appendStringFlag(args, "--gateway", gateway)
+	}
 	if request.Internal {
 		args = append(args, "--internal")
+	}
+	if request.EnableIPv6 {
+		args = append(args, "--ipv6")
+	}
+	for _, key := range sortedStringKeys(request.Options) {
+		args = append(args, "--opt", key+"="+request.Options[key])
 	}
 	for key, value := range request.Labels {
 		args = append(args, "--label", key+"="+value)

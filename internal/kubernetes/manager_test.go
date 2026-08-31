@@ -2,7 +2,6 @@ package kubernetes
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -214,25 +213,40 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	}
 }
 
-func TestProvisionKindClusterReturnsExplicitUnsupportedError(t *testing.T) {
+func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	t.Setenv("PORTO_HOME", t.TempDir())
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-	_, err := provisioner.Create(context.Background(), ClusterRequest{
-		Name:         "kind-dev",
-		Provider:     "kind",
-		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name:     "kind-dev",
+		Provider: "kind",
 		NodeGroups: []NodeGroupSpec{{
-			Name: "workers", Count: 1, Machine: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+			Name: "workers", Count: 1,
 		}},
 	})
-	if !errors.Is(err, ErrKindUnsupported) {
-		t.Fatalf("create kind cluster error = %v, want ErrKindUnsupported", err)
+	if err != nil {
+		t.Fatalf("create kind cluster: %v", err)
+	}
+	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" {
+		t.Fatalf("unexpected kind cluster: %+v", cluster)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	if len(runner.commands) != 0 {
-		t.Fatalf("unsupported kind provider invoked commands: %+v", runner.commands)
+	foundUpdate := false
+	for _, command := range runner.commands {
+		if command.Name == "limactl" {
+			t.Fatalf("kind provider invoked Lima: %+v", command)
+		}
+		if command.Name == "docker" && len(command.Args) > 0 && command.Args[0] == "update" {
+			foundUpdate = true
+			joined := strings.Join(command.Args, " ")
+			if strings.Contains(joined, "--cpus 0") || strings.Contains(joined, "--memory 0m") {
+				t.Fatalf("kind resources were not normalized: %+v", command)
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatal("kind node resources were not applied")
 	}
 }
 

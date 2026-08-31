@@ -375,7 +375,7 @@ func kubernetesClusterCmd(args []string) error {
 	switch args[0] {
 	case "create":
 		fs := flag.NewFlagSet("kubernetes cluster create", flag.ContinueOnError)
-		provider := fs.String("provider", "k3s", "cluster provider: k0s or k3s")
+		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, or k3s")
 		version := fs.String("version", "", "provider Kubernetes version")
 		cpus := fs.Int("cpus", 2, "control-plane CPUs")
 		memory := fs.Int("memory", 2048, "control-plane memory MiB")

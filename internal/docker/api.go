@@ -10,6 +10,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -25,10 +26,15 @@ type API struct {
 	manager    *Manager
 	socketPath string
 	mux        *http.ServeMux
+	execMu     sync.Mutex
+	execs      map[string]*execInstance
 }
 
 func NewAPI(manager *Manager, socketPath string) *API {
-	api := &API{manager: manager, socketPath: socketPath, mux: http.NewServeMux()}
+	api := &API{
+		manager: manager, socketPath: socketPath, mux: http.NewServeMux(),
+		execs: make(map[string]*execInstance),
+	}
 	api.routes()
 	return api
 }
@@ -58,14 +64,23 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /containers/{id}/start", a.containerAction("start"))
 	a.mux.HandleFunc("POST /containers/{id}/stop", a.containerAction("stop"))
 	a.mux.HandleFunc("POST /containers/{id}/restart", a.containerAction("restart"))
+	a.mux.HandleFunc("POST /containers/{id}/update", a.updateContainer)
 	a.mux.HandleFunc("POST /containers/{id}/pause", a.containerAction("pause"))
 	a.mux.HandleFunc("POST /containers/{id}/unpause", a.containerAction("unpause"))
 	a.mux.HandleFunc("POST /containers/{id}/rename", a.renameContainer)
 	a.mux.HandleFunc("POST /containers/{id}/wait", a.waitContainer)
 	a.mux.HandleFunc("GET /containers/{id}/logs", a.containerLogs)
+	a.mux.HandleFunc("POST /containers/{id}/attach", a.attachContainer)
+	a.mux.HandleFunc("POST /containers/{id}/exec", a.createExec)
+	a.mux.HandleFunc("GET /containers/{id}/archive", a.containerArchive)
+	a.mux.HandleFunc("HEAD /containers/{id}/archive", a.containerArchive)
+	a.mux.HandleFunc("PUT /containers/{id}/archive", a.putContainerArchive)
 	a.mux.HandleFunc("DELETE /containers/{id}", a.deleteContainer)
+	a.mux.HandleFunc("POST /exec/{id}/start", a.startExec)
+	a.mux.HandleFunc("GET /exec/{id}/json", a.inspectExec)
 
 	a.mux.HandleFunc("GET /images/json", a.images)
+	a.mux.HandleFunc("GET /images/get", a.getImages)
 	a.mux.HandleFunc("GET /images/{id...}", a.inspectImagePath)
 	a.mux.HandleFunc("POST /images/create", a.pullImage)
 	a.mux.HandleFunc("DELETE /images/{id...}", a.deleteImage)
@@ -145,9 +160,9 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 			stopped++
 		}
 	}
-	driver := "porto-containerd"
-	if status.Backend != "" {
-		driver = status.Backend
+	securityOptions := []string{"name=seccomp,profile=builtin"}
+	if strings.Contains(strings.ToLower(status.Backend), "lima") {
+		securityOptions = append(securityOptions, "name=rootless")
 	}
 	writeDockerJSON(w, http.StatusOK, map[string]any{
 		"ID":                "porto",
@@ -156,7 +171,8 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"ContainersPaused":  paused,
 		"ContainersStopped": stopped,
 		"Images":            len(images),
-		"Driver":            driver,
+		"Driver":            "overlayfs",
+		"DriverStatus":      [][]string{{"Backing Filesystem", "extfs"}},
 		"Plugins": map[string]any{
 			"Volume":        []string{"local"},
 			"Network":       []string{"bridge", "host", "none"},
@@ -178,6 +194,8 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"SystemTime":         time.Now().UTC().Format(time.RFC3339Nano),
 		"LoggingDriver":      "json-file",
 		"CgroupDriver":       "systemd",
+		"CgroupVersion":      "2",
+		"SecurityOptions":    securityOptions,
 		"NEventsListener":    0,
 		"KernelVersion":      "",
 		"OperatingSystem":    "Porto Engine",
@@ -263,6 +281,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		WorkingDir      string            `json:"WorkingDir"`
 		Entrypoint      []string          `json:"Entrypoint"`
 		Labels          map[string]string `json:"Labels"`
+		Volumes         map[string]any    `json:"Volumes"`
 		Tty             bool              `json:"Tty"`
 		OpenStdin       bool              `json:"OpenStdin"`
 		NetworkDisabled bool              `json:"NetworkDisabled"`
@@ -284,7 +303,11 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 				Name              string `json:"Name"`
 				MaximumRetryCount int    `json:"MaximumRetryCount"`
 			} `json:"RestartPolicy"`
-			Devices            []any             `json:"Devices"`
+			Devices []struct {
+				PathOnHost        string `json:"PathOnHost"`
+				PathInContainer   string `json:"PathInContainer"`
+				CgroupPermissions string `json:"CgroupPermissions"`
+			} `json:"Devices"`
 			DeviceRequests     []any             `json:"DeviceRequests"`
 			DeviceCgroupRules  []string          `json:"DeviceCgroupRules"`
 			CapAdd             []string          `json:"CapAdd"`
@@ -349,19 +372,12 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if !decodeDockerJSON(w, r, &request) {
 		return
 	}
-	if request.HostConfig.Privileged {
-		writeDockerUnsupported(w, "privileged containers")
-		return
-	}
 	unsupported := make([]string, 0)
 	if request.NetworkDisabled {
 		unsupported = append(unsupported, "NetworkDisabled")
 	}
 	if request.HostConfig.ReadonlyRoot {
 		unsupported = append(unsupported, "ReadonlyRootfs")
-	}
-	if len(request.HostConfig.Devices) > 0 {
-		unsupported = append(unsupported, "Devices")
 	}
 	if len(request.HostConfig.DeviceRequests) > 0 {
 		unsupported = append(unsupported, "DeviceRequests")
@@ -377,9 +393,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(request.HostConfig.CapDrop) > 0 {
 		unsupported = append(unsupported, "CapDrop")
-	}
-	if len(request.HostConfig.SecurityOpt) > 0 {
-		unsupported = append(unsupported, "SecurityOpt")
 	}
 	if len(request.HostConfig.ExtraHosts) > 0 {
 		unsupported = append(unsupported, "ExtraHosts")
@@ -401,12 +414,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(request.HostConfig.ReadonlyPaths) > 0 {
 		unsupported = append(unsupported, "ReadonlyPaths")
-	}
-	if len(request.HostConfig.Sysctls) > 0 {
-		unsupported = append(unsupported, "Sysctls")
-	}
-	if len(request.HostConfig.Tmpfs) > 0 {
-		unsupported = append(unsupported, "Tmpfs")
 	}
 	if len(request.HostConfig.StorageOpt) > 0 {
 		unsupported = append(unsupported, "StorageOpt")
@@ -443,9 +450,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if request.HostConfig.IOMaximumIOps != 0 || request.HostConfig.IOMaximumBandwidth != 0 {
 		unsupported = append(unsupported, "I/O constraints")
 	}
-	if request.HostConfig.Init != nil && *request.HostConfig.Init {
-		unsupported = append(unsupported, "Init")
-	}
 	if request.HostConfig.PidsLimit != nil && *request.HostConfig.PidsLimit != 0 && *request.HostConfig.PidsLimit != -1 {
 		unsupported = append(unsupported, "PidsLimit")
 	}
@@ -458,7 +462,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if request.HostConfig.CgroupnsMode != "" && request.HostConfig.CgroupnsMode != "private" {
 		unsupported = append(unsupported, "CgroupnsMode")
 	}
-	if request.HostConfig.UsernsMode != "" {
+	if request.HostConfig.UsernsMode != "" && request.HostConfig.UsernsMode != "host" {
 		unsupported = append(unsupported, "UsernsMode")
 	}
 	if request.HostConfig.IpcMode != "" && request.HostConfig.IpcMode != "private" {
@@ -527,6 +531,30 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if len(networks) == 0 && request.HostConfig.NetworkMode != "" {
 		networks = append(networks, ContainerNetwork{Name: request.HostConfig.NetworkMode})
 	}
+	volumes := append([]string(nil), request.HostConfig.Binds...)
+	for target := range request.Volumes {
+		if strings.TrimSpace(target) == "" || strings.ContainsAny(target, "\r\n\x00") {
+			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid anonymous volume target"})
+			return
+		}
+		volumes = append(volumes, target)
+	}
+	devices := make([]ContainerDevice, 0, len(request.HostConfig.Devices))
+	for _, device := range request.HostConfig.Devices {
+		containerPath := device.PathInContainer
+		if containerPath == "" {
+			containerPath = device.PathOnHost
+		}
+		permissions := device.CgroupPermissions
+		if permissions == "" {
+			permissions = "rwm"
+		}
+		devices = append(devices, ContainerDevice{
+			HostPath:      device.PathOnHost,
+			ContainerPath: containerPath,
+			Permissions:   permissions,
+		})
+	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
 		Name:        r.URL.Query().Get("name"),
 		Image:       request.Image,
@@ -538,8 +566,17 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		WorkingDir:  request.WorkingDir,
 		User:        request.User,
 		Hostname:    request.Hostname,
+		Privileged:  request.HostConfig.Privileged,
+		SecurityOpt: request.HostConfig.SecurityOpt,
+		Tmpfs:       request.HostConfig.Tmpfs,
+		Sysctls:     request.HostConfig.Sysctls,
+		Devices:     devices,
+		Cgroupns:    request.HostConfig.CgroupnsMode,
+		Userns:      request.HostConfig.UsernsMode,
+		Init:        request.HostConfig.Init != nil && *request.HostConfig.Init,
+		ShmSize:     request.HostConfig.ShmSize,
 		Networks:    networks,
-		Volumes:     request.HostConfig.Binds,
+		Volumes:     volumes,
 		Publish:     publish,
 		Restart:     restartPolicy,
 		TTY:         request.Tty,
@@ -602,10 +639,6 @@ func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
-	if dockerBool(r, "follow") {
-		writeDockerUnsupported(w, "following container logs")
-		return
-	}
 	stdout := dockerBool(r, "stdout")
 	stderr := dockerBool(r, "stderr")
 	if !stdout && !stderr {
@@ -634,6 +667,7 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 		Tail:       tail,
 		Since:      r.URL.Query().Get("since"),
 		Until:      r.URL.Query().Get("until"),
+		Follow:     dockerBool(r, "follow"),
 	}, func(chunk runtimes.OutputChunk) error {
 		if !wrote {
 			w.Header().Set("Content-Type", "application/vnd.docker.raw-stream")
@@ -642,6 +676,9 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 		}
 		if tty {
 			_, writeErr := w.Write(chunk.Data)
+			if flusher, ok := w.(http.Flusher); ok {
+				flusher.Flush()
+			}
 			return writeErr
 		}
 		stream := byte(1)
@@ -649,6 +686,9 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 			stream = 2
 		}
 		_, writeErr := w.Write(dockerStreamFrame(stream, chunk.Data))
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
 		return writeErr
 	})
 	if err != nil {
@@ -761,7 +801,11 @@ func (a *API) inspectImagePath(w http.ResponseWriter, r *http.Request) {
 func (a *API) pullImage(w http.ResponseWriter, r *http.Request) {
 	reference := r.URL.Query().Get("fromImage")
 	if tag := r.URL.Query().Get("tag"); tag != "" && !strings.Contains(reference, "@") {
-		reference += ":" + tag
+		separator := ":"
+		if isImageDigest(tag) {
+			separator = "@"
+		}
+		reference += separator + tag
 	}
 	if err := a.manager.PullImage(r.Context(), reference, r.URL.Query().Get("platform")); err != nil {
 		writeDockerError(w, err)

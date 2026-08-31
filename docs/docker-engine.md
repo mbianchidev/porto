@@ -81,8 +81,8 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Resource | Supported operations |
 | --- | --- |
 | System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, logs, remove |
-| Images | list, inspect, pull, remove |
+| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove |
+| Images | list, inspect, pull, save, remove |
 | Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |
 | Builds | Docker build API plus BuildKit `/grpc` and `/session` upgrades |
@@ -138,23 +138,21 @@ Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupporte
 
 Not implemented:
 
-- attach and HTTP connection hijacking; use detached containers
-- following logs, selecting only one output stream, and structured `--mount` requests; these return 501 instead of changing semantics
+- selecting only one log output stream and structured `--mount` requests; these return 501 instead of changing semantics
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort
-- Docker exec API, interactive terminals, and streaming stats through Docker clients
+- TTY Docker exec, detached exec, attach with historical logs, and streaming stats through Docker clients
 - build history, commit, import, export, load, and save through the legacy Docker API
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
 - events, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint
-- privileged containers, device mappings, capability changes, custom security options, namespace overrides, and resource-limit flags
+- capability changes, namespace overrides beyond KinD's host/private modes, and resource limits beyond CPU/memory container updates
 - remote TCP/TLS exposure and Windows containers
 
 The Porto dashboard's existing container exec endpoint is separate from the Docker exec protocol and continues to invoke nerdctl directly.
 
-The `kind` Kubernetes provider is not supported by the native engine yet. Kind
-requires privileged node containers, Docker exec, archive transfer, and
-container stdio hijacking, which remain outside the supported API above. Use
-the Porto-managed k3s or k0s providers instead.
+The native API supports the privileged containers, exec stdin/stdout hijacking,
+followed logs, archive transfer, image save, IPv6 network, and resource-update
+operations used by KinD.
 
 ## Upgrading from the proxy-era daemon
 
