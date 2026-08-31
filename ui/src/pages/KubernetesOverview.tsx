@@ -19,6 +19,10 @@ import type {
 
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
 
+function isRunning(cluster: KubernetesCluster) {
+  return cluster.state.toLowerCase() === 'running'
+}
+
 function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onScaled: () => void }) {
   const { notifyError, notifyNotice } = useMessages()
   const [name, setName] = useState('workers')
@@ -294,10 +298,9 @@ export function KubernetesOverview({
                 { header: 'Nodes', className: 'mono', render: (cluster) => cluster.nodes?.length ?? 0 },
               ]}
               renderActions={(cluster) => (
-                <>
-                  <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(cluster, 'start')} />
-                  <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(cluster, 'stop')} />
-                </>
+                isRunning(cluster)
+                  ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(cluster, 'stop')} />
+                  : <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(cluster, 'start')} />
               )}
             />
 
@@ -322,8 +325,9 @@ export function KubernetesOverview({
                     <div className="maintenanceBar">
                       <span>Maintenance controls</span>
                       <div className="actions">
-                        <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(selectedCluster, 'start')} />
-                        <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(selectedCluster, 'stop')} />
+                        {isRunning(selectedCluster)
+                          ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(selectedCluster, 'stop')} />
+                          : <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(selectedCluster, 'start')} />}
                         <ActionButton className="removeButton" label="Delete cluster" icon="remove" onClick={() => deleteCluster(selectedCluster)} />
                       </div>
                     </div>
