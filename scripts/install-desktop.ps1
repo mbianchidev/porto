@@ -80,7 +80,7 @@ try {
 
     $BinDirectory = if ($env:PORTO_BIN_DIR) { $env:PORTO_BIN_DIR } else { Join-Path $env:LOCALAPPDATA "Porto\bin" }
     New-Item -ItemType Directory -Force -Path $BinDirectory | Out-Null
-    $Command = '@"{0}" %*' -f (Join-Path $InstallRoot "resources\porto.exe")
+    $Command = '"{0}" %*' -f (Join-Path $InstallRoot "resources\porto.exe")
     $Command | Set-Content -Encoding ASCII (Join-Path $BinDirectory "porto.cmd")
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if (($UserPath -split ";") -notcontains $BinDirectory) {

@@ -65,6 +65,17 @@ jobs:
         if: runner.os == 'Linux'
         run: go test ./... -race -count=1
 
+      - name: Validate Windows installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          [void][scriptblock]::Create((Get-Content -Raw scripts/install-desktop.ps1))
+          $installRoot = 'C:\Program Files\Porto'
+          $command = '"{0}" %*' -f (Join-Path $installRoot 'resources\porto.exe')
+          if ($command -ne '"C:\Program Files\Porto\resources\porto.exe" %*') {
+            throw "Invalid porto.cmd wrapper: $command"
+          }
+
   cross-build:
     name: Cross build
     runs-on: ubuntu-latest
@@ -128,3 +139,11 @@ jobs:
           npm --prefix electron audit
           node --check electron/main.js
           node --check electron/preload.js
+          node --check electron/package.cjs
+
+      - name: Validate release installers
+        if: matrix.node == '24'
+        working-directory: ${{ github.workspace }}
+        run: |
+          bash -n scripts/bundle-desktop-runtime.sh
+          sh -n scripts/install-desktop.sh
