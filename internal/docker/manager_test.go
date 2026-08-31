@@ -21,6 +21,8 @@ type fakeRunner struct {
 	outputs  map[string][]byte
 	errors   map[string]error
 	ordered  map[string][]runtimes.OutputChunk
+	handler  func(runtimes.Command) ([]byte, error)
+	streamer func(runtimes.Command, func(runtimes.OutputChunk) error) ([]byte, error)
 }
 
 type engineInstallRunner struct {
@@ -30,6 +32,12 @@ type engineInstallRunner struct {
 	commands []runtimes.Command
 }
 
+func workingBuildKitDialer(context.Context) (net.Conn, error) {
+	connection, peer := net.Pipe()
+	_ = peer.Close()
+	return connection, nil
+}
+
 func (f *fakeRunner) RunStreaming(
 	_ context.Context,
 	command runtimes.Command,
@@ -37,6 +45,10 @@ func (f *fakeRunner) RunStreaming(
 ) ([]byte, error) {
 	f.mu.Lock()
 	f.commands = append(f.commands, command)
+	if f.streamer != nil {
+		f.mu.Unlock()
+		return f.streamer(command, emit)
+	}
 	key := command.Name + " " + strings.Join(command.Args, " ")
 	chunks := append([]runtimes.OutputChunk(nil), f.ordered[key]...)
 	runErr := f.errors[key]
@@ -84,6 +96,9 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	if f.handler != nil {
+		return f.handler(command)
+	}
 	key := command.Name + " " + strings.Join(command.Args, " ")
 	return f.outputs[key], f.errors[key]
 }
@@ -142,6 +157,7 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 		errors:  map[string]error{},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
+	manager.dialBuildKit = workingBuildKitDialer
 	manager.lookPath = func(name string) (string, error) {
 		if name == "nerdctl" {
 			return "/usr/local/bin/nerdctl", nil
@@ -168,6 +184,7 @@ func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	runner := &engineInstallRunner{}
 	manager := NewWithStateDir(runner, t.TempDir())
 	manager.goos = "darwin"
+	manager.dialBuildKit = workingBuildKitDialer
 	manager.lookPath = func(name string) (string, error) {
 		switch name {
 		case "nerdctl":

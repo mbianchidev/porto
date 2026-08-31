@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -48,6 +49,8 @@ func (a *API) routes() {
 	a.mux.HandleFunc("HEAD /_ping", a.ping)
 	a.mux.HandleFunc("GET /version", a.version)
 	a.mux.HandleFunc("GET /info", a.info)
+	a.mux.HandleFunc("POST /grpc", a.buildKitControl)
+	a.mux.HandleFunc("POST /session", a.buildKitSession)
 
 	a.mux.HandleFunc("GET /containers/json", a.containers)
 	a.mux.HandleFunc("POST /containers/create", a.createContainer)
@@ -63,13 +66,16 @@ func (a *API) routes() {
 	a.mux.HandleFunc("DELETE /containers/{id}", a.deleteContainer)
 
 	a.mux.HandleFunc("GET /images/json", a.images)
-	a.mux.HandleFunc("GET /images/{id}/json", a.inspectImage)
+	a.mux.HandleFunc("GET /images/{id...}", a.inspectImagePath)
 	a.mux.HandleFunc("POST /images/create", a.pullImage)
-	a.mux.HandleFunc("DELETE /images/{id}", a.deleteImage)
+	a.mux.HandleFunc("DELETE /images/{id...}", a.deleteImage)
+	a.mux.HandleFunc("POST /build", a.buildImage)
 
 	a.mux.HandleFunc("GET /networks", a.networks)
 	a.mux.HandleFunc("POST /networks/create", a.createNetwork)
 	a.mux.HandleFunc("GET /networks/{id}", a.inspectNetwork)
+	a.mux.HandleFunc("POST /networks/{id}/connect", a.connectNetwork)
+	a.mux.HandleFunc("POST /networks/{id}/disconnect", a.disconnectNetwork)
 	a.mux.HandleFunc("DELETE /networks/{id}", a.deleteNetwork)
 
 	a.mux.HandleFunc("GET /volumes", a.volumes)
@@ -82,7 +88,7 @@ func (a *API) routes() {
 
 func (a *API) ping(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Cache-Control", "no-cache, no-store, must-revalidate")
-	w.Header().Set("Builder-Version", "")
+	w.Header().Set("Builder-Version", "2")
 	if _, err := w.Write([]byte("OK")); err != nil {
 		return
 	}
@@ -198,11 +204,16 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) containers(w http.ResponseWriter, r *http.Request) {
-	for _, parameter := range []string{"limit", "since", "before", "size", "filters"} {
+	for _, parameter := range []string{"limit", "since", "before", "size"} {
 		if r.URL.Query().Get(parameter) != "" {
 			writeDockerUnsupported(w, "container list query parameter "+parameter)
 			return
 		}
+	}
+	filters, err := parseDockerFilters(r.URL.Query().Get("filters"))
+	if err != nil {
+		writeDockerError(w, err)
+		return
 	}
 	containers, err := a.manager.DockerContainers(r.Context(), dockerBool(r, "all"))
 	if err != nil {
@@ -211,6 +222,12 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 	}
 	response := make([]map[string]any, 0, len(containers))
 	for _, container := range containers {
+		if !filters.matchesID(container.ID) ||
+			!filters.matchesName(container.Name) ||
+			!filters.matchesValue("status", container.State) ||
+			!filters.matchesLabels(container.Labels) {
+			continue
+		}
 		name := container.Name
 		if name != "" && !strings.HasPrefix(name, "/") {
 			name = "/" + name
@@ -317,6 +334,17 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 			PidsLimit          *int64            `json:"PidsLimit"`
 			OomKillDisable     *bool             `json:"OomKillDisable"`
 		} `json:"HostConfig"`
+		NetworkingConfig struct {
+			EndpointsConfig map[string]struct {
+				Aliases    []string          `json:"Aliases"`
+				DriverOpts map[string]string `json:"DriverOpts"`
+				IPAMConfig *struct {
+					IPv4Address  string   `json:"IPv4Address"`
+					IPv6Address  string   `json:"IPv6Address"`
+					LinkLocalIPs []string `json:"LinkLocalIPs"`
+				} `json:"IPAMConfig"`
+			} `json:"EndpointsConfig"`
+		} `json:"NetworkingConfig"`
 	}
 	if !decodeDockerJSON(w, r, &request) {
 		return
@@ -473,6 +501,32 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 		restartPolicy += ":" + strconv.Itoa(request.HostConfig.RestartPolicy.MaximumRetryCount)
 	}
+	networks := make([]ContainerNetwork, 0, len(request.NetworkingConfig.EndpointsConfig))
+	networkNames := make([]string, 0, len(request.NetworkingConfig.EndpointsConfig))
+	for network := range request.NetworkingConfig.EndpointsConfig {
+		if network != request.HostConfig.NetworkMode {
+			networkNames = append(networkNames, network)
+		}
+	}
+	sort.Strings(networkNames)
+	if request.HostConfig.NetworkMode != "" {
+		networkNames = append([]string{request.HostConfig.NetworkMode}, networkNames...)
+	}
+	for _, network := range networkNames {
+		endpoint := request.NetworkingConfig.EndpointsConfig[network]
+		if len(endpoint.DriverOpts) > 0 ||
+			(endpoint.IPAMConfig != nil &&
+				(endpoint.IPAMConfig.IPv4Address != "" ||
+					endpoint.IPAMConfig.IPv6Address != "" ||
+					len(endpoint.IPAMConfig.LinkLocalIPs) > 0)) {
+			writeDockerUnsupported(w, "custom container network endpoint settings")
+			return
+		}
+		networks = append(networks, ContainerNetwork{Name: network, Aliases: endpoint.Aliases})
+	}
+	if len(networks) == 0 && request.HostConfig.NetworkMode != "" {
+		networks = append(networks, ContainerNetwork{Name: request.HostConfig.NetworkMode})
+	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
 		Name:        r.URL.Query().Get("name"),
 		Image:       request.Image,
@@ -484,7 +538,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		WorkingDir:  request.WorkingDir,
 		User:        request.User,
 		Hostname:    request.Hostname,
-		Network:     request.HostConfig.NetworkMode,
+		Networks:    networks,
 		Volumes:     request.HostConfig.Binds,
 		Publish:     publish,
 		Restart:     restartPolicy,
@@ -506,11 +560,20 @@ func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) containerAction(action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if timeout := r.URL.Query().Get("t"); timeout != "" {
-			writeDockerUnsupported(w, action+" timeout")
-			return
+		timeout := 0
+		if value := r.URL.Query().Get("t"); value != "" {
+			parsed, err := strconv.Atoi(value)
+			if err != nil || parsed < 0 {
+				writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid container action timeout"})
+				return
+			}
+			if action != "stop" && action != "restart" {
+				writeDockerUnsupported(w, action+" timeout")
+				return
+			}
+			timeout = parsed
 		}
-		if err := a.manager.ContainerAction(r.Context(), r.PathValue("id"), action); err != nil {
+		if err := a.manager.ContainerActionWithTimeout(r.Context(), r.PathValue("id"), action, timeout); err != nil {
 			writeDockerError(w, err)
 			return
 		}
@@ -602,13 +665,16 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteContainer(w http.ResponseWriter, r *http.Request) {
-	if dockerBool(r, "v") || dockerBool(r, "link") {
-		writeDockerUnsupported(w, "container removal with volume or link cleanup")
+	if dockerBool(r, "link") {
+		writeDockerUnsupported(w, "container link removal")
 		return
 	}
 	action := "remove"
 	if dockerBool(r, "force") {
 		action = "remove-force"
+	}
+	if dockerBool(r, "v") {
+		action += "-volumes"
 	}
 	if err := a.manager.ContainerAction(r.Context(), r.PathValue("id"), action); err != nil {
 		writeDockerError(w, err)
@@ -618,11 +684,16 @@ func (a *API) deleteContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) images(w http.ResponseWriter, r *http.Request) {
-	for _, parameter := range []string{"filters", "shared-size"} {
+	for _, parameter := range []string{"shared-size"} {
 		if r.URL.Query().Get(parameter) != "" {
 			writeDockerUnsupported(w, "image list query parameter "+parameter)
 			return
 		}
+	}
+	filters, err := parseDockerFilters(r.URL.Query().Get("filters"))
+	if err != nil {
+		writeDockerError(w, err)
+		return
 	}
 	if dockerBool(r, "all") {
 		writeDockerUnsupported(w, "listing intermediate images")
@@ -635,6 +706,15 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 	}
 	response := make([]map[string]any, 0, len(images))
 	for _, image := range images {
+		reference := image.Repository
+		if image.Tag != "" && image.Tag != "<none>" {
+			reference += ":" + image.Tag
+		}
+		if !filters.matchesID(image.ID) ||
+			!filters.matchesValue("reference", reference) ||
+			!filters.matchesLabels(image.Labels) {
+			continue
+		}
 		tag := image.Repository
 		if image.Tag != "" && image.Tag != "<none>" {
 			tag += ":" + image.Tag
@@ -668,6 +748,16 @@ func (a *API) inspectImage(w http.ResponseWriter, r *http.Request) {
 	writeDockerRaw(w, value, err)
 }
 
+func (a *API) inspectImagePath(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSuffix(r.PathValue("id"), "/json")
+	if id == r.PathValue("id") || id == "" {
+		a.unsupported(w, r)
+		return
+	}
+	r.SetPathValue("id", id)
+	a.inspectImage(w, r)
+}
+
 func (a *API) pullImage(w http.ResponseWriter, r *http.Request) {
 	reference := r.URL.Query().Get("fromImage")
 	if tag := r.URL.Query().Get("tag"); tag != "" && !strings.Contains(reference, "@") {
@@ -692,125 +782,6 @@ func (a *API) deleteImage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeDockerJSON(w, http.StatusOK, []map[string]string{{"Deleted": id}})
-}
-
-func (a *API) networks(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("filters") != "" {
-		writeDockerUnsupported(w, "network filters")
-		return
-	}
-	networks, err := a.manager.Networks(r.Context())
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	response := make([]map[string]any, 0, len(networks))
-	for _, network := range networks {
-		response = append(response, dockerNetwork(network))
-	}
-	writeDockerJSON(w, http.StatusOK, response)
-}
-
-func (a *API) createNetwork(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Name       string            `json:"Name"`
-		Driver     string            `json:"Driver"`
-		Internal   bool              `json:"Internal"`
-		EnableIPv6 bool              `json:"EnableIPv6"`
-		Labels     map[string]string `json:"Labels"`
-		IPAM       struct {
-			Config []struct {
-				Subnet  string `json:"Subnet"`
-				Gateway string `json:"Gateway"`
-			} `json:"Config"`
-		} `json:"IPAM"`
-	}
-	if !decodeDockerJSON(w, r, &request) {
-		return
-	}
-	if request.EnableIPv6 {
-		writeDockerUnsupported(w, "IPv6 network creation")
-		return
-	}
-	subnet, gateway := "", ""
-	if len(request.IPAM.Config) > 0 {
-		subnet = request.IPAM.Config[0].Subnet
-		gateway = request.IPAM.Config[0].Gateway
-	}
-	id, err := a.manager.CreateNetwork(r.Context(), CreateNetworkRequest{
-		Name: request.Name, Driver: request.Driver, Subnet: subnet, Gateway: gateway,
-		Internal: request.Internal, Labels: request.Labels,
-	})
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warning": ""})
-}
-
-func (a *API) inspectNetwork(w http.ResponseWriter, r *http.Request) {
-	value, err := a.manager.InspectNetwork(r.Context(), r.PathValue("id"))
-	writeDockerRaw(w, value, err)
-}
-
-func (a *API) deleteNetwork(w http.ResponseWriter, r *http.Request) {
-	if err := a.manager.RemoveNetwork(r.Context(), r.PathValue("id")); err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
-}
-
-func (a *API) volumes(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("filters") != "" {
-		writeDockerUnsupported(w, "volume filters")
-		return
-	}
-	volumes, err := a.manager.Volumes(r.Context())
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	response := make([]map[string]any, 0, len(volumes))
-	for _, volume := range volumes {
-		response = append(response, dockerVolume(volume))
-	}
-	writeDockerJSON(w, http.StatusOK, map[string]any{"Volumes": response, "Warnings": []string{}})
-}
-
-func (a *API) createVolume(w http.ResponseWriter, r *http.Request) {
-	var request struct {
-		Name       string            `json:"Name"`
-		Driver     string            `json:"Driver"`
-		DriverOpts map[string]string `json:"DriverOpts"`
-		Labels     map[string]string `json:"Labels"`
-	}
-	if !decodeDockerJSON(w, r, &request) {
-		return
-	}
-	if len(request.DriverOpts) > 0 {
-		writeDockerUnsupported(w, "volume driver options")
-		return
-	}
-	volume, err := a.manager.CreateVolume(r.Context(), request.Name, request.Driver, request.Labels)
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	writeDockerJSON(w, http.StatusCreated, dockerVolume(volume))
-}
-
-func (a *API) inspectVolume(w http.ResponseWriter, r *http.Request) {
-	value, err := a.manager.InspectVolume(r.Context(), r.PathValue("name"))
-	writeDockerRaw(w, value, err)
-}
-
-func (a *API) deleteVolume(w http.ResponseWriter, r *http.Request) {
-	if err := a.manager.RemoveVolume(r.Context(), r.PathValue("name"), dockerBool(r, "force")); err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) unsupported(w http.ResponseWriter, r *http.Request) {
@@ -902,7 +873,7 @@ func dockerNetwork(network Network) map[string]any {
 	return map[string]any{
 		"Name":       network.Name,
 		"Id":         network.ID,
-		"Created":    network.Created,
+		"Created":    dockerTimestamp(network.Created),
 		"Scope":      firstNonEmpty(network.Scope, "local"),
 		"Driver":     firstNonEmpty(network.Driver, "bridge"),
 		"EnableIPv6": strings.EqualFold(network.IPv6, "true"),
@@ -920,7 +891,7 @@ func dockerNetwork(network Network) map[string]any {
 
 func dockerVolume(volume Volume) map[string]any {
 	return map[string]any{
-		"CreatedAt":  volume.CreatedAt,
+		"CreatedAt":  dockerTimestamp(volume.CreatedAt),
 		"Driver":     firstNonEmpty(volume.Driver, "local"),
 		"Labels":     volume.Labels,
 		"Mountpoint": volume.Mountpoint,
@@ -928,6 +899,13 @@ func dockerVolume(volume Volume) map[string]any {
 		"Options":    map[string]string{},
 		"Scope":      firstNonEmpty(volume.Scope, "local"),
 	}
+}
+
+func dockerTimestamp(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return time.Unix(0, 0).UTC().Format(time.RFC3339Nano)
+	}
+	return value
 }
 
 func dockerStreamFrame(stream byte, output []byte) []byte {

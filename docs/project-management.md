@@ -53,7 +53,8 @@ The setup strategy follows the detected project type:
 - Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip.
 - Go and Rust projects run `go mod download` or `cargo fetch`.
 
-Porto checks that the required host runtime is available before Compose setup and startup so failures are actionable.
+Porto checks its native Docker and BuildKit backend before Compose setup and
+startup, and points Compose at the Porto socket automatically.
 
 ## Starting and stopping projects
 

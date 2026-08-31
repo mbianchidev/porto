@@ -126,6 +126,10 @@ func dockerEndpoint(socketPath string) string {
 	return "unix://" + socketPath
 }
 
+func EndpointURL(socketPath string) string {
+	return dockerEndpoint(socketPath)
+}
+
 func randomResourceName() (string, error) {
 	random := make([]byte, 6)
 	if _, err := rand.Read(random); err != nil {

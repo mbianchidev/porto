@@ -38,8 +38,8 @@ Additional runtime features require:
 | Capability | Requirement |
 | --- | --- |
 | Docker client compatibility | Docker CLI or another Docker Engine API client |
-| Containers, images, networks, volumes | `nerdctl` with containerd, or `limactl` for Porto-managed containerd |
-| Existing Compose project orchestration | Docker CLI and an external Compose-compatible Engine |
+| Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` for Porto-managed containerd and BuildKit |
+| Compose project orchestration | Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | `limactl` and host virtualization support |
@@ -139,12 +139,15 @@ porto networks
 porto volumes
 ```
 
-Compose projects continue to use their standard Compose files and currently require an external compatible engine. Porto assigns a
-stable Compose project name per Porto project and generates a temporary
+Compose projects use their standard Compose files against Porto's native Docker
+endpoint. Porto assigns a stable Compose project name per Porto project and generates a temporary
 `!override` file that remaps published TCP ports onto free localhost ports.
 This keeps concurrent projects and branch worktrees isolated without editing
 the source Compose file. Porto exposes Compose project and service labels from
 Docker so the dashboard can group related containers.
+
+Compose builds use Porto's BuildKit bridge, including multi-platform Bake
+targets when the worker supports the requested architectures.
 
 ## Kubernetes
 

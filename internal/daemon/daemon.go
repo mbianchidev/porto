@@ -133,7 +133,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		kubeForwards:    map[string]*kubeForward{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
-		compose:         compose.New(nil),
+		compose:         compose.NewWithDockerHost(nil, portodocker.EndpointURL(dockerSocket)),
 		setupRunner:     projectsetup.ExecRunner{},
 		healthClient: &http.Client{
 			Timeout: projectReadinessTimeout,
@@ -983,7 +983,12 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		return p, err
 	}
 	if projectUsesCompose(p) {
-		cmd.Env = append(cmd.Env, "COMPOSE_PROJECT_NAME="+compose.ProjectName(p))
+		cmd.Env = process.WithEnvironment(
+			cmd.Env,
+			"DOCKER_HOST="+portodocker.EndpointURL(s.dockerSocket),
+			"DOCKER_CONTEXT=",
+			"COMPOSE_PROJECT_NAME="+compose.ProjectName(p),
+		)
 	}
 	if err := cmd.Start(); err != nil {
 		delete(s.composePorts, p.ID)

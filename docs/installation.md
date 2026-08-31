@@ -32,9 +32,8 @@ through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 
 macOS DMGs still need Developer ID signing/notarization for warning-free
 launches, and Windows installers may show SmartScreen until releases are
-signed. Porto provides its own Docker-compatible API and containerd backend;
-the existing Compose project orchestration still requires an external
-Compose-compatible engine.
+signed. Porto provides its own Docker-compatible API, containerd backend,
+BuildKit bridge, and Compose backend.
 
 If macOS quarantine blocks an unsigned release, clear the attribute without
 following bundled symbolic links:
@@ -84,13 +83,13 @@ on Windows.
 
 Requirements:
 
-- Go 1.25 or newer
+- Go 1.25.9 or newer
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
 Source builds use standard host tools:
 
-- Docker CLI for the named Porto context and existing Compose project orchestration
-- `nerdctl` with containerd, or `limactl` for Porto's managed containerd backend
+- Docker CLI with Compose for the named Porto context and Compose project orchestration
+- `nerdctl` with containerd and BuildKit, or `limactl` for Porto's managed containerd and BuildKit backend
 - `kubectl` for Kubernetes inspection
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
 - `kind` for Kubernetes-in-Docker clusters

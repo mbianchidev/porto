@@ -20,6 +20,9 @@ type APIServer struct {
 	listener net.Listener
 	lease    endpointLease
 	done     chan struct{}
+	cancel   context.CancelFunc
+	closed   chan struct{}
+	closeErr error
 }
 
 func NewAPIServer(socketPath string, handler http.Handler) *APIServer {
@@ -38,15 +41,22 @@ func (s *APIServer) Start(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	serverContext, cancel := context.WithCancel(ctx)
 	server := &http.Server{
 		Handler:           s.handler,
 		ReadHeaderTimeout: 30 * time.Second,
+		BaseContext: func(net.Listener) context.Context {
+			return context.WithValue(serverContext, dockerServerContextKey{}, serverContext)
+		},
 	}
 	s.mu.Lock()
 	s.listener = listener
 	s.lease = lease
 	s.server = server
 	s.done = make(chan struct{})
+	s.cancel = cancel
+	s.closed = make(chan struct{})
+	s.closeErr = nil
 	done := s.done
 	s.mu.Unlock()
 
@@ -74,22 +84,44 @@ func (s *APIServer) Close(ctx context.Context) error {
 	server := s.server
 	lease := s.lease
 	done := s.done
+	cancel := s.cancel
+	closed := s.closed
 	s.server = nil
 	s.listener = nil
 	s.lease = nil
 	s.done = nil
+	s.cancel = nil
 	s.mu.Unlock()
+	if server == nil {
+		if closed == nil {
+			return nil
+		}
+		select {
+		case <-closed:
+			s.mu.Lock()
+			closeErr := s.closeErr
+			s.mu.Unlock()
+			return closeErr
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+	if cancel != nil {
+		cancel()
+	}
 	if done != nil {
 		close(done)
 	}
-	if server == nil {
-		return nil
-	}
 	shutdownErr := server.Shutdown(ctx)
-	if lease == nil {
-		return shutdownErr
+	closeErr := shutdownErr
+	if lease != nil {
+		closeErr = errors.Join(shutdownErr, lease.Release(s.socketPath))
 	}
-	return errors.Join(shutdownErr, lease.Release(s.socketPath))
+	s.mu.Lock()
+	s.closeErr = closeErr
+	close(closed)
+	s.mu.Unlock()
+	return closeErr
 }
 
 func endpointListenError(path string, err error) error {
@@ -98,4 +130,13 @@ func endpointListenError(path string, err error) error {
 
 type endpointLease interface {
 	Release(string) error
+}
+
+type dockerServerContextKey struct{}
+
+func dockerServerContext(ctx context.Context) context.Context {
+	if serverContext, ok := ctx.Value(dockerServerContextKey{}).(context.Context); ok {
+		return serverContext
+	}
+	return context.Background()
 }

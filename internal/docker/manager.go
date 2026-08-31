@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,12 +31,13 @@ var (
 )
 
 type Manager struct {
-	runner    runtimes.Runner
-	timeout   time.Duration
-	stateDir  string
-	lookPath  func(string) (string, error)
-	goos      string
-	directCLI bool
+	runner       runtimes.Runner
+	timeout      time.Duration
+	stateDir     string
+	lookPath     func(string) (string, error)
+	goos         string
+	directCLI    bool
+	dialBuildKit func(context.Context) (net.Conn, error)
 }
 
 type engineState struct {
@@ -105,10 +107,14 @@ func (m *Manager) InstallEngine(ctx context.Context) (Status, error) {
 		if path, err := m.lookPath("nerdctl"); err == nil {
 			direct := commandBackend{name: path, description: "containerd via nerdctl"}
 			if output, verifyErr := m.runBackend(ctx, direct, 10*time.Second, "verify local containerd", nil, "version"); verifyErr == nil {
-				if err := m.writeEngineState(engineState{Mode: "direct", CreatedAt: time.Now().UTC()}); err != nil {
-					return Status{}, err
+				buildKit, buildKitErr := m.dialBuildKitBackend(ctx, direct)
+				if buildKitErr == nil {
+					_ = buildKit.Close()
+					if err := m.writeEngineState(engineState{Mode: "direct", CreatedAt: time.Now().UTC()}); err != nil {
+						return Status{}, err
+					}
+					return installedStatus(direct, output), nil
 				}
-				return installedStatus(direct, output), nil
 			}
 		}
 	}
@@ -184,6 +190,17 @@ func (m *Manager) InstallEngine(ctx context.Context) (Status, error) {
 		}
 		return Status{}, err
 	}
+	buildKit, err := m.dialBuildKitBackend(ctx, limaBackend)
+	if err != nil {
+		if created {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without BuildKit", nil, "limactl", "delete", "--force", engineInstanceName)
+			cancel()
+			return Status{}, errors.Join(err, cleanupErr)
+		}
+		return Status{}, err
+	}
+	_ = buildKit.Close()
 	if err := m.writeEngineState(engineState{
 		Mode: "lima", Instance: engineInstanceName, OwnerID: ownerID, CreatedAt: time.Now().UTC(),
 	}); err != nil {
@@ -320,8 +337,16 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	args = appendStringFlag(args, "--workdir", request.WorkingDir)
 	args = appendStringFlag(args, "--user", request.User)
 	args = appendStringFlag(args, "--hostname", request.Hostname)
-	if request.Network != "default" {
-		args = appendStringFlag(args, "--network", request.Network)
+	for _, network := range request.Networks {
+		if network.Name != "default" {
+			args = appendStringFlag(args, "--network", network.Name)
+		}
+		for _, alias := range network.Aliases {
+			if err := validateObjectID(alias); err != nil {
+				return "", fmt.Errorf("network alias: %w", err)
+			}
+			args = append(args, "--network-alias", alias)
+		}
 	}
 	if request.Restart != "no" {
 		args = appendStringFlag(args, "--restart", request.Restart)
@@ -424,6 +449,10 @@ func (m *Manager) Builds(context.Context) ([]Build, error) {
 }
 
 func (m *Manager) ContainerAction(ctx context.Context, id, action string) error {
+	return m.ContainerActionWithTimeout(ctx, id, action, 0)
+}
+
+func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) error {
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
@@ -432,11 +461,19 @@ func (m *Manager) ContainerAction(ctx context.Context, id, action string) error 
 	case "start", "pause", "unpause":
 		args = []string{action, id}
 	case "stop", "restart":
-		args = []string{action, id}
+		args = []string{action}
+		if timeout > 0 {
+			args = append(args, "--time", strconv.Itoa(timeout))
+		}
+		args = append(args, id)
 	case "remove":
 		args = []string{"rm", id}
 	case "remove-force":
 		args = []string{"rm", "--force", id}
+	case "remove-volumes":
+		args = []string{"rm", "--volumes", id}
+	case "remove-force-volumes":
+		args = []string{"rm", "--force", "--volumes", id}
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
@@ -561,81 +598,6 @@ func (m *Manager) PullImage(ctx context.Context, reference, platform string) err
 	args = appendStringFlag(args, "--platform", platform)
 	args = append(args, reference)
 	_, err := m.runWithTimeout(ctx, 30*time.Minute, "pull Porto image", nil, args...)
-	return err
-}
-
-func (m *Manager) Build(context.Context, BuildRequest) ([]byte, error) {
-	return nil, fmt.Errorf("%w: Docker build API", ErrUnsupported)
-}
-
-func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkRequest) (string, error) {
-	if err := validateObjectID(request.Name); err != nil {
-		return "", err
-	}
-	args := []string{"network", "create"}
-	args = appendStringFlag(args, "--driver", request.Driver)
-	args = appendStringFlag(args, "--subnet", request.Subnet)
-	args = appendStringFlag(args, "--gateway", request.Gateway)
-	if request.Internal {
-		args = append(args, "--internal")
-	}
-	for key, value := range request.Labels {
-		args = append(args, "--label", key+"="+value)
-	}
-	args = append(args, request.Name)
-	output, err := m.run(ctx, "create Porto network", args...)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(output)), nil
-}
-
-func (m *Manager) RemoveNetwork(ctx context.Context, name string) error {
-	if err := validateObjectID(name); err != nil {
-		return err
-	}
-	_, err := m.run(ctx, "remove Porto network", "network", "rm", name)
-	return err
-}
-
-func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels map[string]string) (Volume, error) {
-	if strings.TrimSpace(name) == "" {
-		generated, err := randomResourceName()
-		if err != nil {
-			return Volume{}, err
-		}
-		name = generated
-	}
-	if err := validateObjectID(name); err != nil {
-		return Volume{}, err
-	}
-	args := []string{"volume", "create"}
-	args = appendStringFlag(args, "--driver", driver)
-	for key, value := range labels {
-		args = append(args, "--label", key+"="+value)
-	}
-	args = append(args, name)
-	output, err := m.run(ctx, "create Porto volume", args...)
-	if err != nil {
-		return Volume{}, err
-	}
-	createdName := strings.TrimSpace(string(output))
-	if createdName == "" {
-		createdName = name
-	}
-	return Volume{Name: createdName, Driver: firstNonEmpty(driver, "local"), Scope: "local", Labels: labels}, nil
-}
-
-func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) error {
-	if err := validateObjectID(name); err != nil {
-		return err
-	}
-	args := []string{"volume", "rm"}
-	if force {
-		args = append(args, "--force")
-	}
-	args = append(args, name)
-	_, err := m.run(ctx, "remove Porto volume", args...)
 	return err
 }
 

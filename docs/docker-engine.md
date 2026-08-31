@@ -21,13 +21,21 @@ Porto runtime manager
         +-- local nerdctl -> local containerd
         |
         `-- limactl shell porto-engine -> nerdctl -> containerd
+
+Buildx / Compose Bake
+        |
+        v
+Docker `/grpc` and `/session` upgrades
+        |
+        v
+BuildKit socket or Lima `buildctl dial-stdio`
 ```
 
 The API server is part of the Porto daemon and starts whenever the Docker runtime is enabled. Docker is enabled by default for new Porto installations and can be toggled with `porto runtime enable docker` or `porto runtime disable docker`. The execution backend is independent:
 
-- If `nerdctl` is available in Porto's `PATH`, Porto uses the local containerd installation.
-- Otherwise, `porto docker engine-install` creates a persistent Lima VM named `porto-engine` with rootless containerd and writable default host mounts.
-- Windows exposes the Docker-compatible named pipe, but automatic containerd installation is not implemented. Install nerdctl and containerd manually.
+- If `nerdctl` and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation.
+- Otherwise, `porto docker engine-install` creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts.
+- Windows exposes the Docker-compatible named pipe, but automatic backend installation is not implemented. Install nerdctl, containerd, and BuildKit manually.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 
@@ -77,6 +85,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Images | list, inspect, pull, remove |
 | Networks | list, create, inspect, remove |
 | Volumes | list, create, inspect, remove |
+| Builds | Docker build API plus BuildKit `/grpc` and `/session` upgrades |
 
 The common detached lifecycle works through standard Docker clients:
 
@@ -90,6 +99,39 @@ docker --context porto rm --force demo
 
 Container creation supports image, command, entrypoint, environment, labels, working directory, user, hostname, `--volume` bind/volume mappings, published ports, network mode, restart policy, TTY, stdin, and automatic removal.
 
+The Porto socket is also a Compose backend. Compose uses normal project labels,
+networks, named volumes, builds, container startup, and cleanup through Porto:
+
+```sh
+docker --context porto compose up --detach --build
+docker --context porto compose down --volumes
+```
+
+Porto's own Compose project orchestration points Docker Compose at the native
+Porto endpoint automatically.
+
+BuildKit clients connect through Docker-compatible h2c upgrades. Multi-platform
+builds work with Buildx and Compose Bake:
+
+```sh
+docker --context porto buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag registry.example.com/team/app:latest \
+  --push .
+```
+
+The Porto CLI and legacy Docker build API also pass comma-separated platforms
+to nerdctl:
+
+```sh
+porto docker build . \
+  --tag example/app:latest \
+  --platform linux/amd64,linux/arm64
+```
+
+Cross-architecture builds require a BuildKit worker with the required native
+worker or binfmt/QEMU emulation.
+
 ## Explicit limitations
 
 Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupported API operations. It does not silently ignore requested isolation or security settings.
@@ -100,10 +142,10 @@ Not implemented:
 - following logs, selecting only one output stream, and structured `--mount` requests; these return 501 instead of changing semantics
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort
 - Docker exec API, interactive terminals, and streaming stats through Docker clients
-- image build, build cache/history, commit, import, export, load, and save
-- Compose against the Porto engine; existing Porto Compose project orchestration still requires an external compatible engine
+- build history, commit, import, export, load, and save through the legacy Docker API
+- links inside legacy uploaded build-context archives; Buildx sessions support normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
-- events, system prune, system disk-usage details, and registry authentication flows
+- events, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint
 - privileged containers, device mappings, capability changes, custom security options, namespace overrides, and resource-limit flags
 - remote TCP/TLS exposure and Windows containers
 

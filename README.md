@@ -19,6 +19,7 @@ Porto is an open-source desktop and web control plane for development workloads 
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects through zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
 - **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
+- **Docker and Compose native.** Use the `porto` Docker context for Compose projects and BuildKit multi-platform image builds without proxying another Docker engine.
 
 ## Quickstart
 

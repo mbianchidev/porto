@@ -170,6 +170,17 @@ func DockerSocketPath() (string, error) {
 	return filepath.Join(dir, "docker.sock"), nil
 }
 
+func DockerEndpoint() (string, error) {
+	socketPath, err := DockerSocketPath()
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
+		return "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`), nil
+	}
+	return "unix://" + socketPath, nil
+}
+
 func DockerEndpointStatePath() (string, error) {
 	dir, err := Dir()
 	if err != nil {
