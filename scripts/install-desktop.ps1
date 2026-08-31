@@ -11,36 +11,31 @@ if (-not $Tag -or -not $Tag.StartsWith("v")) {
     throw "Unable to resolve a Porto release tag."
 }
 
-$Architecture = switch ($env:PROCESSOR_ARCHITECTURE) {
+$ProcessorArchitecture = if ($env:PROCESSOR_ARCHITEW6432) { $env:PROCESSOR_ARCHITEW6432 } else { $env:PROCESSOR_ARCHITECTURE }
+$Architecture = switch ($ProcessorArchitecture) {
     "ARM64" { "arm64" }
     "AMD64" { "amd64" }
-    default { throw "Unsupported architecture: $env:PROCESSOR_ARCHITECTURE" }
+    default { throw "Unsupported architecture: $ProcessorArchitecture" }
 }
 $Version = $Tag.Substring(1)
-$Asset = "porto-desktop_${Version}_windows_${Architecture}.zip"
+$Asset = "porto-desktop_${Version}_windows_${Architecture}.exe"
 $BaseUrl = if ($env:PORTO_RELEASE_BASE_URL) { $env:PORTO_RELEASE_BASE_URL } else { "https://github.com/$Repository/releases/download/$Tag" }
 $Temporary = Join-Path ([System.IO.Path]::GetTempPath()) "porto-desktop-$([guid]::NewGuid())"
-$Archive = Join-Path $Temporary $Asset
+$Installer = Join-Path $Temporary $Asset
 $Checksums = Join-Path $Temporary "SHA256SUMS"
 
 try {
     New-Item -ItemType Directory -Path $Temporary | Out-Null
-    Invoke-WebRequest "$BaseUrl/$Asset" -OutFile $Archive
+    Invoke-WebRequest "$BaseUrl/$Asset" -OutFile $Installer
     Invoke-WebRequest "$BaseUrl/SHA256SUMS" -OutFile $Checksums
     $ChecksumLine = Get-Content $Checksums | Where-Object { $_ -match [regex]::Escape($Asset) } | Select-Object -First 1
     if (-not $ChecksumLine) {
         throw "No checksum was published for $Asset."
     }
     $Expected = ($ChecksumLine -split "\s+")[0].ToLowerInvariant()
-    $Actual = (Get-FileHash -Algorithm SHA256 $Archive).Hash.ToLowerInvariant()
+    $Actual = (Get-FileHash -Algorithm SHA256 $Installer).Hash.ToLowerInvariant()
     if ($Expected -ne $Actual) {
         throw "Checksum verification failed for $Asset."
-    }
-
-    Expand-Archive $Archive -DestinationPath $Temporary
-    $Source = Join-Path $Temporary "porto-desktop_${Version}_windows_${Architecture}"
-    if (-not (Test-Path $Source)) {
-        throw "The Porto desktop archive has an unexpected layout."
     }
 
     $InstallRoot = if ($env:PORTO_INSTALL_DIR) { $env:PORTO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\Porto" }
@@ -64,10 +59,15 @@ try {
         if ($Remaining) {
             throw "Porto is still running from $InstallRoot. Close it and retry the installation."
         }
-        Remove-Item -Recurse -Force $InstallRoot
     }
-    New-Item -ItemType Directory -Force -Path (Split-Path $InstallRoot) | Out-Null
-    Move-Item $Source $InstallRoot
+
+    $InstallProcess = Start-Process $Installer -ArgumentList "/S /D=$InstallRoot" -Wait -PassThru
+    if ($InstallProcess.ExitCode -ne 0) {
+        throw "Porto installer exited with code $($InstallProcess.ExitCode)."
+    }
+    if (-not (Test-Path (Join-Path $InstallRoot "Porto.exe"))) {
+        throw "Porto was not installed at $InstallRoot."
+    }
 
     $StartMenu = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs"
     $ShortcutPath = Join-Path $StartMenu "Porto.lnk"

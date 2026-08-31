@@ -15,6 +15,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/compose"
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/process"
 )
 
@@ -276,7 +277,10 @@ func runCommand(ctx context.Context, project app.Project, command Command, emit 
 		return err
 	}
 	if project.Strategy == "compose" {
-		cmd.Env = append(os.Environ(), "COMPOSE_PROJECT_NAME="+compose.ProjectName(project))
+		cmd.Env = process.WithEnvironment(os.Environ(), "COMPOSE_PROJECT_NAME="+compose.ProjectName(project))
+		if endpoint, err := config.DockerEndpoint(); err == nil {
+			cmd.Env = process.WithEnvironment(cmd.Env, "DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=")
+		}
 	}
 	if err := cmd.Start(); err != nil {
 		_ = stdout.Close()

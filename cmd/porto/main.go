@@ -633,15 +633,17 @@ Commands:
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
-  porto docker status|containers|images|builds|networks|volumes
+  porto docker status|engine-install|engine-start|engine-stop|engine-remove
+  porto docker containers|images|builds|networks|volumes
   porto docker context-install|activate|deactivate
   porto docker container <start|stop|restart|pause|unpause|remove> <id>
   porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
   porto kubernetes status|contexts|pods|services|nodes|kubeconfig|context-install
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
+  porto kubernetes terminal <cluster> [--namespace name] [--command resource] [--readonly]
   porto kubernetes cluster create|start|stop|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
-  porto runtime providers|install <lima|kind|k0s>
+  porto runtime providers|install <lima|kind|k9s|k0s>
   porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

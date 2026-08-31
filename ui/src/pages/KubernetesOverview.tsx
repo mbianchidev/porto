@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
@@ -18,6 +18,7 @@ import type {
 } from '../types'
 
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
+const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
 
 function isRunning(cluster: KubernetesCluster) {
   return cluster.state.toLowerCase() === 'running'
@@ -218,7 +219,7 @@ export function KubernetesOverview({
     }
   }
 
-  async function installProvider(name: 'lima' | 'kind' | 'k0s') {
+  async function installProvider(name: 'lima' | 'kind' | 'k9s' | 'k0s') {
     setInstallingProvider(name)
     try {
       await apiSend(`/api/runtime/providers/${name}/install`, 'POST')
@@ -307,7 +308,12 @@ export function KubernetesOverview({
             {selectedCluster && !creatingCluster && (
               <Inspector title={selectedCluster.name} subtitle={selectedCluster.context} onClose={() => setSelectedClusterName(null)}>
                 <InspectorTabs
-                  tabs={[{ id: 'overview', label: 'Overview' }, { id: 'nodeGroup', label: 'Node group' }, { id: 'importImage', label: 'Import image' }]}
+                  tabs={[
+                    { id: 'overview', label: 'Overview' },
+                    { id: 'terminal', label: 'k9s terminal' },
+                    { id: 'nodeGroup', label: 'Node group' },
+                    { id: 'importImage', label: 'Import image' },
+                  ]}
                   activeID={clusterTab}
                   onSelect={setClusterTab}
                 />
@@ -332,6 +338,11 @@ export function KubernetesOverview({
                       </div>
                     </div>
                   </section>
+                )}
+                {clusterTab === 'terminal' && (
+                  <Suspense fallback={<section className="logConsole vmTerminal"><div className="terminalPlaceholder">Loading k9s terminal…</div></section>}>
+                    <ClusterTerminal key={`${selectedCluster.name}:${selectedCluster.state}`} cluster={selectedCluster} />
+                  </Suspense>
                 )}
                 {clusterTab === 'nodeGroup' && <NodeGroupTab cluster={selectedCluster} onScaled={clusters.reload} />}
                 {clusterTab === 'importImage' && <ImportImageTab cluster={selectedCluster} />}
@@ -361,7 +372,7 @@ export function KubernetesOverview({
                   <label>
                     <span>Provider</span>
                     <select value={clusterProvider} onChange={(event) => setClusterProvider(event.target.value as 'kind' | 'k0s' | 'k3s')}>
-                      <option value="kind">kind — Kubernetes in Docker</option>
+                      <option value="kind">kind — Kubernetes in Porto containers</option>
                       <option value="k3s">k3s — lightweight Kubernetes on Lima VMs</option>
                       <option value="k0s">k0s — conformant Kubernetes on Lima VMs</option>
                     </select>
@@ -371,7 +382,7 @@ export function KubernetesOverview({
                     <input
                       type="text"
                       value={clusterVersion}
-                      placeholder={clusterProvider === 'kind' ? 'v1.36.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
+                      placeholder={clusterProvider === 'kind' ? 'v1.37.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
                       onChange={(event) => setClusterVersion(event.target.value)}
                     />
                   </label>
@@ -393,7 +404,7 @@ export function KubernetesOverview({
                   </label>
                   <p className="hintLine">
                     {clusterProvider === 'kind'
-                      ? 'Creates a self-contained cluster using the Porto Docker endpoint.'
+                      ? 'Creates Kubernetes nodes as privileged containers through the Porto Docker endpoint.'
                       : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}
                   </p>
                   <button type="submit" disabled={submittingCluster || clusterName.trim() === ''}>{submittingCluster ? 'Creating…' : 'Create cluster'}</button>

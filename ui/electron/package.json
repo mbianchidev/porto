@@ -5,14 +5,46 @@
   "version": "1.0.0",
   "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
   "author": "Porto",
+  "repository": "https://github.com/mbianchidev/porto",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "package": "node package.cjs",
     "test": "node --test daemon-readiness.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
   },
+  "build": {
+    "appId": "dev.mbianchi.porto",
+    "productName": "Porto",
+    "publish": {
+      "provider": "github",
+      "owner": "mbianchidev",
+      "repo": "porto"
+    },
+    "directories": {
+      "buildResources": "assets"
+    },
+    "mac": {
+      "category": "public.app-category.developer-tools",
+      "icon": "assets/porto.icns",
+      "target": "dmg"
+    },
+    "win": {
+      "icon": "assets/porto.ico",
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "runAfterFinish": true
+    }
+  },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
-    "electron": "^44.0.0"
+    "electron": "^44.0.0",
+    "electron-builder": "^26.15.3"
   }
 }

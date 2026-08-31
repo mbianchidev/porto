@@ -22,3 +22,13 @@ func TestK0sProviderUsesLima(t *testing.T) {
 		t.Fatalf("unexpected k0s provider: %+v", provider)
 	}
 }
+
+func TestK9sProviderUsesNativeBinary(t *testing.T) {
+	provider, ok := findTool("k9s")
+	if !ok {
+		t.Fatal("k9s provider is missing")
+	}
+	if provider.command != "k9s" || provider.formula != "k9s" {
+		t.Fatalf("unexpected k9s provider: %+v", provider)
+	}
+}

@@ -15,10 +15,25 @@ function terminalSocketURL(instanceName: string): string {
   return `${protocol}//${window.location.host}/api/vms/instances/${encodeURIComponent(instanceName)}/terminal`
 }
 
-export default function VMTerminal({ instance }: { instance: VMInstance }) {
+type InteractiveTerminalProps = {
+  endpoint: string
+  title: string
+  detail: string
+  running: boolean
+  ariaLabel: string
+  stoppedMessage: string
+}
+
+export function InteractiveTerminal({
+  endpoint,
+  title,
+  detail,
+  running,
+  ariaLabel,
+  stoppedMessage,
+}: InteractiveTerminalProps) {
   const [maximized, setMaximized] = useState(false)
   const [sessionToken, setSessionToken] = useState(0)
-  const running = instance.status.toLocaleLowerCase() === 'running'
   const [state, setState] = useState<VMTerminalState>(
     running && typeof WebSocket !== 'undefined' ? 'connecting' : 'unavailable',
   )
@@ -89,7 +104,7 @@ export default function VMTerminal({ instance }: { instance: VMInstance }) {
     let opened = false
     let disposed = false
     const encoder = new TextEncoder()
-    const socket = new WebSocket(terminalSocketURL(instance.name))
+    const socket = new WebSocket(endpoint)
     socket.binaryType = 'arraybuffer'
     const sendResize = (cols = terminal.cols, rows = terminal.rows) => {
       if (socket.readyState === WebSocket.OPEN) {
@@ -139,7 +154,7 @@ export default function VMTerminal({ instance }: { instance: VMInstance }) {
       fitAddonRef.current = null
       terminalRef.current = null
     }
-  }, [instance.name, running, sessionToken])
+  }, [endpoint, running, sessionToken])
 
   const stateLabel = state === 'open'
     ? 'connected'
@@ -154,7 +169,7 @@ export default function VMTerminal({ instance }: { instance: VMInstance }) {
   const terminal = (
     <section className={`logConsole vmTerminal ${maximized ? 'terminalMaximized' : ''}`}>
       <div className="consoleHeader">
-        <div><h3>Terminal</h3><p>{instance.name} · {stateLabel}</p></div>
+        <div><h3>{title}</h3><p>{detail} · {stateLabel}</p></div>
         <div className="consoleActions">
           {(state === 'ended' || state === 'unavailable') && running && (
             <ActionButton
@@ -177,10 +192,23 @@ export default function VMTerminal({ instance }: { instance: VMInstance }) {
         </div>
       </div>
       {running
-        ? <div className="xtermHost" ref={attachTerminalHost} aria-label={`Interactive terminal for ${instance.name}`} />
-        : <div className="terminalPlaceholder">Start the VM to open its terminal.</div>}
+        ? <div className="xtermHost" ref={attachTerminalHost} aria-label={ariaLabel} />
+        : <div className="terminalPlaceholder">{stoppedMessage}</div>}
     </section>
   )
 
   return maximized ? createPortal(terminal, document.body) : terminal
+}
+
+export default function VMTerminal({ instance }: { instance: VMInstance }) {
+  return (
+    <InteractiveTerminal
+      endpoint={terminalSocketURL(instance.name)}
+      title="Terminal"
+      detail={instance.name}
+      running={instance.status.toLocaleLowerCase() === 'running'}
+      ariaLabel={`Interactive terminal for ${instance.name}`}
+      stoppedMessage="Start the VM to open its terminal."
+    />
+  )
 }

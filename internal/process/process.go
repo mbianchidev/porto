@@ -7,7 +7,19 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 )
+
+func NewCommand(ctx context.Context, dir, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.Dir = dir
+	configure(cmd)
+	cmd.Cancel = func() error {
+		return Kill(cmd)
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
+}
 
 type Running struct {
 	Cmd *exec.Cmd
@@ -27,9 +39,7 @@ func ShellCommand(ctx context.Context, dir, command string, port int) (*exec.Cmd
 }
 
 func Command(ctx context.Context, dir, name string, args ...string) (*exec.Cmd, io.ReadCloser, io.ReadCloser, error) {
-	cmd := exec.CommandContext(ctx, name, args...)
-	cmd.Dir = dir
-	configure(cmd)
+	cmd := NewCommand(ctx, dir, name, args...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return nil, nil, nil, err

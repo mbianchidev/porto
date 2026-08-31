@@ -16,13 +16,12 @@ import (
 const (
 	AppName                  = "porto"
 	Version                  = "1.0.0"
-	APIVersion               = 1
+	APIVersion               = 2
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
 	RouterTLSAddrEnv         = "PORTO_TLS_ADDR"
 	RouterTLSPublicPortEnv   = "PORTO_TLS_PUBLIC_PORT"
-	DockerUpstreamEnv        = "PORTO_DOCKER_UPSTREAM"
 	DockerCanonicalSocketEnv = "PORTO_DOCKER_CANONICAL_SOCKET"
 	PortlessHTTPSMarker      = "portless-https"
 	LocalDomain              = "porto.local"
@@ -171,12 +170,38 @@ func DockerSocketPath() (string, error) {
 	return filepath.Join(dir, "docker.sock"), nil
 }
 
+func DockerEndpoint() (string, error) {
+	socketPath, err := DockerSocketPath()
+	if err != nil {
+		return "", err
+	}
+	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
+		return "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`), nil
+	}
+	return "unix://" + socketPath, nil
+}
+
 func DockerEndpointStatePath() (string, error) {
 	dir, err := Dir()
 	if err != nil {
 		return "", err
 	}
 	return filepath.Join(dir, "docker-endpoint.json"), nil
+}
+
+func DockerEngineDir() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	engineDir := filepath.Join(dir, "docker")
+	if err := os.MkdirAll(engineDir, 0o700); err != nil {
+		return "", err
+	}
+	if err := os.Chmod(engineDir, 0o700); err != nil {
+		return "", err
+	}
+	return engineDir, nil
 }
 
 func CanonicalDockerSocketPath() string {

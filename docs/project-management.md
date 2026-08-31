@@ -53,11 +53,22 @@ The setup strategy follows the detected project type:
 - Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip.
 - Go and Rust projects run `go mod download` or `cargo fetch`.
 
-Porto checks that the required host runtime is available before Compose setup and startup so failures are actionable.
+Porto checks its native Docker and BuildKit backend before Compose setup and
+startup, and points Compose at the Porto socket automatically.
 
 ## Starting and stopping projects
 
 Before startup, Porto runs `git pull --ff-only` on the active branch by default. If a GitHub SSH key fails, it can retry over authenticated HTTPS. Pass `--no-pull` to skip the update.
+
+Porto runs Git in its own process group. If a Porto-started Git operation times
+out or fails, Porto terminates the complete process tree and removes an
+`index.lock` only when it observed that exact lock appear during its own
+operation. Locks that existed before the operation, were replaced afterward,
+or are reported as belonging to another Git process are preserved.
+
+If a repository already contains a lock from an older crash, close any active
+Git/editor process and remove that lock manually once. Current Porto operations
+do not leave new pending index locks behind.
 
 Automatic port assignment begins at `41000` and avoids collisions. Use `porto port <project> <port>` to pin a port. Compose projects that publish fixed host ports use the responsive published port instead, including projects that wrap Compose commands in Make targets.
 
@@ -77,9 +88,9 @@ Windows: %AppData%\porto\porto.db
 
 Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or portable setups.
 
-`porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project.
+`porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project. The dashboard console can expand to the full window and returns to its inline position when minimized or when `Escape` is pressed.
 
-Dashboard cards also show each project's process ID, readiness status, assigned port, branch, and dirty state. The process console supports filtering and one-click copying and clearing.
+Dashboard project rows also show each project's process ID, readiness status, assigned port, branch, and dirty state. Select a row to expand its service channel directly underneath it; select the row again to collapse it. The log quick action opens the same inline channel with the process console active.
 
 For Git branch workflows, see [branch management](branch-management.md). For project URLs and TLS, see [local networking](networking.md).
 

@@ -17,6 +17,7 @@ import (
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/ports"
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 const (
@@ -68,7 +69,7 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
-	cmd.Env = append(os.Environ(), command.Env...)
+	cmd.Env = process.WithEnvironment(os.Environ(), command.Env...)
 	return cmd.CombinedOutput()
 }
 
@@ -76,10 +77,17 @@ type Integration struct {
 	runner       Runner
 	checkTimeout time.Duration
 	downTimeout  time.Duration
+	dockerHost   string
 }
 
 func New(runner Runner) *Integration {
 	return newIntegration(runner, defaultDownTimeout)
+}
+
+func NewWithDockerHost(runner Runner, dockerHost string) *Integration {
+	integration := newIntegration(runner, defaultDownTimeout)
+	integration.dockerHost = dockerHost
+	return integration
 }
 
 func newIntegration(runner Runner, timeout time.Duration) *Integration {
@@ -117,6 +125,7 @@ func (i *Integration) Check(ctx context.Context) error {
 	output, err := i.runner.Run(commandContext, Command{
 		Name: "docker",
 		Args: []string{"info", "--format", "{{.ServerVersion}}"},
+		Env:  i.dockerEnvironment(),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("%w: Docker availability check timed out; %s", ErrDaemonUnavailable, runtimeGuidance)
@@ -151,11 +160,11 @@ func (i *Integration) PublishedPorts(ctx context.Context, project app.Project) (
 		Dir:  project.Path,
 		Name: "docker",
 		Args: args,
-		Env: []string{
-			"PORT=" + strconv.Itoa(project.Port),
-			"PORTO_PORT=" + strconv.Itoa(project.Port),
-			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
-		},
+		Env: i.dockerEnvironment(
+			"PORT="+strconv.Itoa(project.Port),
+			"PORTO_PORT="+strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME="+ProjectName(project),
+		),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("docker compose port discovery for %s timed out: %w", project.Name, commandContext.Err())
@@ -185,11 +194,11 @@ func (i *Integration) Down(ctx context.Context, project app.Project) error {
 		Dir:  project.Path,
 		Name: "docker",
 		Args: args,
-		Env: []string{
-			"PORT=" + strconv.Itoa(project.Port),
-			"PORTO_PORT=" + strconv.Itoa(project.Port),
-			"COMPOSE_PROJECT_NAME=" + ProjectName(project),
-		},
+		Env: i.dockerEnvironment(
+			"PORT="+strconv.Itoa(project.Port),
+			"PORTO_PORT="+strconv.Itoa(project.Port),
+			"COMPOSE_PROJECT_NAME="+ProjectName(project),
+		),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return fmt.Errorf("docker compose cleanup for %s timed out: %w", project.Name, commandContext.Err())
@@ -216,7 +225,7 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		Dir:  project.Path,
 		Name: "docker",
 		Args: []string{"compose", "-f", file, "config", "--format", "json"},
-		Env:  []string{"COMPOSE_PROJECT_NAME=" + ProjectName(project)},
+		Env:  i.dockerEnvironment("COMPOSE_PROJECT_NAME=" + ProjectName(project)),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return PortPlan{}, fmt.Errorf("Docker Compose port planning for %s timed out", project.Name)
@@ -287,6 +296,13 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		return PortPlan{}, err
 	}
 	return plan, nil
+}
+
+func (i *Integration) dockerEnvironment(values ...string) []string {
+	if i.dockerHost == "" {
+		return values
+	}
+	return append([]string{"DOCKER_HOST=" + i.dockerHost, "DOCKER_CONTEXT="}, values...)
 }
 
 type composeProcess struct {

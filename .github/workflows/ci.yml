@@ -24,7 +24,7 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go: [stable]
         include:
-          # Guard the minimum toolchain declared in go.mod.
+          # Guard the minimum Go 1.25 patch line declared in go.mod.
           - os: ubuntu-latest
             go: '1.25.x'
     steps:
@@ -149,4 +149,96 @@ jobs:
         working-directory: ${{ github.workspace }}
         run: |
           bash -n scripts/bundle-desktop-runtime.sh
+          bash -n scripts/package-desktop-installer.sh
           sh -n scripts/install-desktop.sh
+
+  native-installers:
+    name: Native installers (${{ matrix.goos }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            goos: darwin
+          - os: windows-latest
+            goos: windows
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            ui/electron/package-lock.json
+
+      - name: Build desktop inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run build
+          npm --prefix ui/electron ci
+
+      - name: Build native installers
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            bash scripts/package-desktop-installer.sh "$GOOS" "$arch" 0.0.0-ci dist
+          done
+
+      - name: Verify DMGs
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "2"
+          for image in dist/*.dmg; do
+            hdiutil verify "$image"
+          done
+
+      - name: Install and uninstall Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem dist -Filter '*.exe')
+          if ($installers.Count -ne 2) {
+            throw "Expected two Windows installers, found $($installers.Count)."
+          }
+          $installer = Get-Item 'dist/porto-desktop_0.0.0-ci_windows_amd64.exe'
+          $installRoot = Join-Path $env:RUNNER_TEMP 'Porto installer smoke'
+          $process = Start-Process $installer.FullName -ArgumentList "/S /D=$installRoot" -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Installer exited with code $($process.ExitCode)."
+          }
+          if (-not (Test-Path (Join-Path $installRoot 'Porto.exe'))) {
+            throw 'Installer did not create Porto.exe.'
+          }
+          if (-not (Test-Path (Join-Path $installRoot 'resources/porto.exe'))) {
+            throw 'Installer did not include the Porto CLI.'
+          }
+          if (-not (Test-Path (Join-Path $installRoot 'resources/runtime/VERSIONS'))) {
+            throw 'Installer did not include the desktop runtime.'
+          }
+          $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
+          if (-not $uninstaller) {
+            throw 'Installer did not create an uninstaller.'
+          }
+          $process = Start-Process $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Uninstaller exited with code $($process.ExitCode)."
+          }

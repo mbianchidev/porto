@@ -13,11 +13,13 @@ Porto is an open-source desktop and web control plane for development workloads 
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
 - **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
+- **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster>`.
 - **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects through zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
 - **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
+- **Docker and Compose native.** Use the `porto` Docker context for Compose projects and BuildKit multi-platform image builds without proxying another Docker engine.
 
 ## Quickstart
 
@@ -35,10 +37,11 @@ On Windows PowerShell:
 irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
-The installer detects the OS and architecture, verifies the published SHA-256
-checksum, installs Porto for the current user, exposes the `porto` CLI, and
-launches the desktop app. Desktop releases bundle the daemon, dashboard,
-`kubectl`, Lima, and the supported `kind` binary.
+The one-liners detect the OS and architecture, verify the published SHA-256
+checksum, install the native macOS DMG or Windows EXE package for the current
+user, expose the `porto` CLI, and launch the desktop app. Linux uses the
+portable desktop archive. Every desktop package bundles the daemon, dashboard,
+`kubectl`, `k9s`, Lima, and the supported `kind` binary.
 
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the
@@ -93,6 +96,7 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 - [Daily use](docs/daily-use.md) — durable installation, login or boot startup, upgrades, and home systems
 - [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
 - [Local runtimes](docs/runtimes.md) — Docker socket, containers, Compose, Kubernetes, pod inspection, and Linux VMs
+- [Porto Docker Engine](docs/docker-engine.md) — native containerd backend, Docker context compatibility, supported API, and limitations
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
 - [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox

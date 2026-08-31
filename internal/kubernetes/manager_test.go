@@ -218,11 +218,10 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
-		Name:         "kind-dev",
-		Provider:     "kind",
-		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+		Name:     "kind-dev",
+		Provider: "kind",
 		NodeGroups: []NodeGroupSpec{{
-			Name: "workers", Count: 1, Machine: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+			Name: "workers", Count: 1,
 		}},
 	})
 	if err != nil {
@@ -233,10 +232,21 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
+	foundUpdate := false
 	for _, command := range runner.commands {
 		if command.Name == "limactl" {
 			t.Fatalf("kind provider invoked Lima: %+v", command)
 		}
+		if command.Name == "docker" && len(command.Args) > 0 && command.Args[0] == "update" {
+			foundUpdate = true
+			joined := strings.Join(command.Args, " ")
+			if strings.Contains(joined, "--cpus 0") || strings.Contains(joined, "--memory 0m") {
+				t.Fatalf("kind resources were not normalized: %+v", command)
+			}
+		}
+	}
+	if !foundUpdate {
+		t.Fatal("kind node resources were not applied")
 	}
 }
 

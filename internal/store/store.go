@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS settings (
  sql_not_so_lite_enabled INTEGER NOT NULL DEFAULT 0,
  kill_switch_enabled INTEGER NOT NULL DEFAULT 0,
  sendbox_enabled INTEGER NOT NULL DEFAULT 0,
- docker_enabled INTEGER NOT NULL DEFAULT 0,
+ docker_enabled INTEGER NOT NULL DEFAULT 1,
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
  vms_enabled INTEGER NOT NULL DEFAULT 0
 );
@@ -112,7 +112,7 @@ CREATE TABLE IF NOT EXISTS settings (
 	if err := s.ensureSettingsColumn("sendbox_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
-	if err := s.ensureSettingsColumn("docker_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := s.ensureSettingsColumn("docker_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("kubernetes_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -139,7 +139,7 @@ UPDATE projects SET base_hostname=hostname WHERE base_hostname=''`); err != nil 
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT OR IGNORE INTO settings(id, protected_branches) VALUES(1, ?)`, string(protected))
+	_, err = s.db.Exec(`INSERT OR IGNORE INTO settings(id, protected_branches, docker_enabled) VALUES(1, ?, 1)`, string(protected))
 	return err
 }
 

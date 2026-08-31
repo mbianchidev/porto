@@ -9,7 +9,7 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 | CI | `ci.yml` | pull requests, pushes to `main`, manual | Formatting, vet, tests, cross-compilation, dashboard lint and build |
 | CodeQL | `codeql.yml` | pull requests, pushes to `main`, weekly | Static analysis for `go` and `javascript-typescript` |
 | Security audit | `security.yml` | pushes to `main`, weekly, manual | `govulncheck` and `npm audit` |
-| Release | `release.yml` | tags matching `v*`, manual | Builds, packages, and publishes release archives |
+| Release | `release.yml` | tags matching `v*`, manual | Builds, packages, and publishes archives plus native macOS and Windows installers |
 
 ## CI details
 
@@ -36,7 +36,7 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
    ./release.sh 0.2.0
    ```
 
-   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates `ui/package.json` and `ui/package-lock.json` with `npm version`, runs the local checks below, creates a `chore(release): v0.2.0` commit when the package files changed, and creates an annotated tag. Nothing is pushed by default.
+   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates the dashboard and Electron package manifests and lockfiles with `npm version`, runs the local checks below, creates a `chore(release): v0.2.0` commit when the package files changed, and creates an annotated tag. Nothing is pushed by default.
 
 4. Inspect the local commit and tag, then publish them explicitly:
 
@@ -46,7 +46,7 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
 
    Pass `--push` on the initial invocation to prepare and publish in one step. The script fetches first and atomically pushes `main` and the tag, so the release workflow cannot start from a tag without its release commit.
 
-5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, and publishes a GitHub release with generated notes.
+5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, creates macOS DMGs and Windows NSIS EXE installers on native runners, and publishes a GitHub release with generated notes.
 
 Tags must contain a strict SemVer prefixed with `v`. A suffix such as `v1.2.3-rc.1` is published as a pre-release. Re-running a release job is safe: if the GitHub release already exists, the workflow preserves its notes, refreshes its metadata, and replaces the same-named assets. A manual run from the Actions tab still requires the tag to exist.
 
@@ -67,10 +67,17 @@ The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working
 
 Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
 archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
-and supported `kind` clients. The app prepends those bundled tools to
+`k9s`, and supported `kind` clients. The app prepends those bundled tools to
 the daemon's `PATH`, so they do not need separate installation.
 
-A `SHA256SUMS` file covers every archive, and each archive gets a signed build provenance attestation. The archives themselves are not signed. Verify a download with:
+macOS releases additionally contain architecture-specific `.dmg` installers,
+and Windows releases contain architecture-specific NSIS `.exe` installers.
+The one-line install scripts select these native packages automatically;
+portable archives remain available for manual and headless setups.
+
+A `SHA256SUMS` file covers every archive and installer, and each asset gets a
+signed build provenance attestation. The assets themselves are not
+code-signed. Verify a download with:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS  # shasum -a 256 --check on macOS

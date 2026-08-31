@@ -60,6 +60,25 @@ func TestCheckUsesDockerServerInfo(t *testing.T) {
 	}
 }
 
+func TestCheckUsesPortoDockerEndpoint(t *testing.T) {
+	runner := &fakeRunner{output: []byte("1.0.0\n")}
+	integration := NewWithDockerHost(runner, "unix:///tmp/porto.sock")
+	integration.checkTimeout = time.Second
+
+	if err := integration.Check(context.Background()); err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+
+	want := Command{
+		Name: "docker",
+		Args: []string{"info", "--format", "{{.ServerVersion}}"},
+		Env:  []string{"DOCKER_HOST=unix:///tmp/porto.sock", "DOCKER_CONTEXT="},
+	}
+	if !reflect.DeepEqual(runner.commands, []Command{want}) {
+		t.Fatalf("commands = %#v, want %#v", runner.commands, []Command{want})
+	}
+}
+
 func TestCheckReportsActionableDaemonFailure(t *testing.T) {
 	runner := &fakeRunner{
 		output: []byte("failed to connect to the docker API at unix:///missing/docker.sock"),

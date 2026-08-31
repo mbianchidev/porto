@@ -6,12 +6,15 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"os/exec"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 const terminalReadLimit = 1024 * 1024
@@ -52,12 +55,57 @@ func (s *Server) vmTerminal(w http.ResponseWriter, r *http.Request) {
 	bridgeVMTerminal(w, r, name)
 }
 
+func (s *Server) kubernetesClusterTerminal(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if name == "" || strings.ContainsAny(name, "\x00\r\n") {
+		http.Error(w, "invalid Kubernetes cluster name", http.StatusBadRequest)
+		return
+	}
+	clusters, err := s.clusters.List(r.Context())
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	var selected *kubernetes.Cluster
+	for index := range clusters {
+		if clusters[index].Name == name {
+			selected = &clusters[index]
+			break
+		}
+	}
+	if selected == nil {
+		http.Error(w, "Kubernetes cluster not found", http.StatusNotFound)
+		return
+	}
+	if !strings.EqualFold(selected.State, "running") {
+		http.Error(w, "Kubernetes cluster must be running to open k9s", http.StatusConflict)
+		return
+	}
+	if _, err := exec.LookPath("k9s"); err != nil {
+		http.Error(w, "k9s is not installed; install it with 'porto runtime install k9s'", http.StatusServiceUnavailable)
+		return
+	}
+	bridgeK9sTerminal(w, r, *selected)
+}
+
 func vmTerminalCommand(ctx context.Context, name string) *exec.Cmd {
 	return exec.CommandContext(
 		ctx,
 		"limactl", "shell", "--tty=true", name, "--",
 		"sh", "-lc", `cd "$HOME" && exec env PS1="$1 $ " sh -i`, "porto-shell", name,
 	)
+}
+
+func k9sTerminalCommand(ctx context.Context, cluster kubernetes.Cluster) *exec.Cmd {
+	command := exec.CommandContext(
+		ctx,
+		"k9s",
+		"--kubeconfig", cluster.KubeconfigPath,
+		"--context", cluster.Context,
+		"--all-namespaces",
+	)
+	command.Env = process.WithEnvironment(os.Environ(), "KUBECONFIG="+cluster.KubeconfigPath)
+	return command
 }
 
 func bridgeTerminal(

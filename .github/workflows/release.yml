@@ -24,6 +24,7 @@ jobs:
     timeout-minutes: 60
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -96,6 +97,7 @@ jobs:
           node --check ui/electron/package.cjs
           node --check scripts/desktop-runtime-symlinks.cjs
           bash -n scripts/bundle-desktop-runtime.sh
+          bash -n scripts/package-desktop-installer.sh
           sh -n scripts/install-desktop.sh
 
       - name: Package release archives
@@ -179,9 +181,110 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  macos-installers:
+    name: Package macOS installers
+    needs: build
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            ui/electron/package-lock.json
+
+      - name: Build desktop inputs
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run build
+          npm --prefix ui/electron ci
+
+      - name: Package DMGs
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            bash scripts/package-desktop-installer.sh darwin "$arch" "$VERSION" dist
+          done
+          test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "2"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: macos-installers
+          path: dist/*.dmg
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-installers:
+    name: Package Windows installers
+    needs: build
+    runs-on: windows-latest
+    timeout-minutes: 60
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            ui/electron/package-lock.json
+
+      - name: Build desktop inputs
+        run: |
+          set -euo pipefail
+          npm --prefix ui ci
+          npm --prefix ui run build
+          npm --prefix ui/electron ci
+
+      - name: Package EXE installers
+        env:
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          for arch in amd64 arm64; do
+            bash scripts/package-desktop-installer.sh windows "$arch" "$VERSION" dist
+          done
+          test "$(find dist -maxdepth 1 -name '*.exe' | wc -l | tr -d ' ')" = "2"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: windows-installers
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Publish GitHub release
-    needs: build
+    needs: [build, macos-installers, windows-installers]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -193,6 +296,29 @@ jobs:
         with:
           name: release-archives
           path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: macos-installers
+          path: dist
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: windows-installers
+          path: dist
+
+      - name: Verify release assets
+        run: |
+          set -euo pipefail
+          shopt -s nullglob
+          assets=(dist/porto*_*)
+          if [ "${#assets[@]}" -ne 16 ]; then
+            echo "::error::Expected twelve archives and four native installers"
+            printf '%s\n' "${assets[@]}"
+            exit 1
+          fi
+          (cd dist && sha256sum porto*_* > SHA256SUMS)
+          (cd dist && sha256sum --check SHA256SUMS)
 
       - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4
         with:
@@ -209,8 +335,8 @@ jobs:
 
           shopt -s nullglob
           archives=(dist/porto*_*)
-          if [ "${#archives[@]}" -ne 12 ] || [ ! -f dist/SHA256SUMS ]; then
-            echo "::error::Expected twelve CLI/desktop release archives and SHA256SUMS"
+          if [ "${#archives[@]}" -ne 16 ] || [ ! -f dist/SHA256SUMS ]; then
+            echo "::error::Expected twelve archives, four native installers, and SHA256SUMS"
             printf '%s\n' "${archives[@]}"
             exit 1
           fi

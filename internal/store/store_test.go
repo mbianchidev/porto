@@ -24,7 +24,7 @@ func TestSafeHostPreservesValidDomainLabels(t *testing.T) {
 	}
 }
 
-func TestRuntimeFeatureSettingsDefaultOffAndRoundTrip(t *testing.T) {
+func TestRuntimeFeatureSettingsDefaultDockerOnAndRoundTrip(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -34,10 +34,9 @@ func TestRuntimeFeatureSettingsDefaultOffAndRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read settings: %v", err)
 	}
-	if settings.DockerEnabled || settings.KubernetesEnabled || settings.VMsEnabled {
-		t.Fatalf("optional runtimes must default off: %+v", settings)
+	if !settings.DockerEnabled || settings.KubernetesEnabled || settings.VMsEnabled {
+		t.Fatalf("Docker must default on while optional runtimes default off: %+v", settings)
 	}
-	settings.DockerEnabled = true
 	settings.KubernetesEnabled = true
 	settings.VMsEnabled = true
 	if err := st.SetSettings(context.Background(), settings); err != nil {

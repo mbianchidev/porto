@@ -19,21 +19,25 @@ irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-des
 ```
 
 Both installers resolve the latest GitHub release, select the matching
-OS/architecture archive, verify it against `SHA256SUMS`, install it for the
-current user, add a `porto` CLI entry, and launch the app. Set
+OS/architecture package, verify it against `SHA256SUMS`, install it for the
+current user, add a `porto` CLI entry, and launch the app. macOS uses a DMG,
+Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive. Set
 `PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
 install without opening it.
 
-Desktop archives contain Porto, its dashboard, `kubectl`, Lima, and the
+The native-engine release advances Porto's daemon compatibility version. The
+installer stops an older Porto daemon before launching the new app so commands
+cannot accidentally continue through the removed upstream Docker proxy.
+
+Desktop archives contain Porto, its dashboard, `kubectl`, `k9s`, Lima, and the
 supported `kind` binary for that platform. Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 `winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
 
-macOS releases still need Developer ID signing/notarization for warning-free
-launches, and Windows may show SmartScreen until releases are signed. Docker
-and Compose currently require a reachable Docker-compatible engine; the
-desktop app, native project orchestration, VM management, and k3s/k0s cluster
-management do not require a separate Porto installation.
+macOS DMGs still need Developer ID signing/notarization for warning-free
+launches, and Windows installers may show SmartScreen until releases are
+signed. Porto provides its own Docker-compatible API, containerd backend,
+BuildKit bridge, and Compose backend.
 
 If macOS quarantine blocks an unsigned release, clear the attribute without
 following bundled symbolic links:
@@ -57,7 +61,8 @@ macOS ships `shasum` instead of GNU `sha256sum`:
 shasum -a 256 --check --ignore-missing SHA256SUMS
 ```
 
-Windows releases use `.zip` archives.
+Windows CLI/web and portable desktop releases use `.zip` archives. The
+recommended desktop download is the architecture-specific `.exe` installer.
 
 Each archive has this layout:
 
@@ -75,26 +80,29 @@ Desktop archives use the `porto-desktop_<version>_<os>_<arch>` prefix and
 contain the Porto desktop application with the matching Porto binary and compiled
 dashboard assets plus portable runtime tools bundled in its resources
 directory. CLI/web archives keep the `porto_<version>_<os>_<arch>` prefix.
+Native installers use the same desktop prefix with `.dmg` on macOS and `.exe`
+on Windows.
 
 ## Build from source
 
 Requirements:
 
-- Go 1.25 or newer
+- Go 1.25.9 or newer
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
 Source builds use standard host tools:
 
-- Docker CLI and a Docker-compatible Engine for containers, images, builds, networks, volumes, and Compose
+- Docker CLI with Compose for the named Porto context and Compose project orchestration
+- `nerdctl` with containerd and BuildKit, or `limactl` for Porto's managed containerd and BuildKit backend
 - `kubectl` for Kubernetes inspection
+- `k9s` for interactive cluster terminals
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
-- `kind` for Kubernetes-in-Docker clusters
+- `kind` for Kubernetes-in-Porto clusters
 
 Release desktop apps bundle these provider clients. On macOS source builds can
-install them explicitly from Porto with
-`porto runtime install lima|kind|k0s`.
+install them explicitly from Porto with `porto runtime install lima|kind|k9s|k0s`.
 
-Porto keeps native project orchestration available when optional runtime tools are missing.
+Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 
 From the repository root:
 

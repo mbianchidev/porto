@@ -1,6 +1,6 @@
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
-const EXPECTED_API_VERSION = 1
+const EXPECTED_API_VERSION = 2
 
 async function isDaemonReady({
   daemonURL = DEFAULT_DAEMON_URL,

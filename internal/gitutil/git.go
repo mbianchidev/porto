@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 var branchNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._/@-]*$`)
@@ -502,14 +503,61 @@ func gitFailure(action, output string, err error) error {
 }
 
 func git(path string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	return gitWithTimeout(path, 45*time.Second, args...)
+}
+
+func gitWithTimeout(path string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...)
-	cmd.Dir = path
-	cmd.Env = append(cmd.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd := process.NewCommand(ctx, path, "git", args...)
+	cmd.Env = process.WithEnvironment(
+		cmd.Environ(),
+		"GIT_TERMINAL_PROMPT=0",
+		"LC_ALL=C",
+		"LANG=C",
+	)
+	var lockTracker *indexLockTracker
+	if gitCommandWritesIndex(args) {
+		if lockPath, lockErr := gitIndexLockPath(path); lockErr == nil {
+			lockTracker = startIndexLockTracker(lockPath)
+		}
+	}
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
 	err := cmd.Run()
-	return buf.String(), err
+	output := buf.String()
+	if lockTracker != nil {
+		removed, cleanupErr := lockTracker.cleanup(output)
+		if removed {
+			output = strings.TrimSpace(output) + "\nPorto removed its stale Git index lock.\n"
+		}
+		err = errors.Join(err, cleanupErr)
+	}
+	return output, err
+}
+
+func gitCommandWritesIndex(args []string) bool {
+	for _, arg := range args {
+		if arg == "pull" || arg == "checkout" || arg == "switch" || arg == "merge" || arg == "reset" {
+			return true
+		}
+	}
+	return false
+}
+
+func gitIndexLockPath(repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	command := process.NewCommand(ctx, repoPath, "git", "rev-parse", "--path-format=absolute", "--git-path", "index.lock")
+	command.Env = process.WithEnvironment(command.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")
+	output, err := command.Output()
+	if err != nil {
+		return "", err
+	}
+	lockPath := strings.TrimSpace(string(output))
+	if lockPath == "" {
+		return "", errors.New("Git returned an empty index lock path")
+	}
+	return lockPath, nil
 }
