@@ -13,6 +13,7 @@ const args = [
   `--extra-resource=${path.join(__dirname, 'assets', 'porto.png')}`,
   '--app-bundle-id=dev.mbianchi.porto',
   '--app-category-type=public.app-category.developer-tools',
+  '--app-copyright=Copyright (c) 2026 mbianchidev',
   '--win32metadata.CompanyName=Porto',
   '--win32metadata.FileDescription=Porto',
   '--win32metadata.ProductName=Porto',
