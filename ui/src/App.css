@@ -1665,24 +1665,75 @@ button:disabled {
   min-height: 160px;
 }
 
+.vmTerminal {
+  display: flex;
+  height: min(460px, 55vh);
+  min-height: 300px;
+  flex-direction: column;
+}
+
+.terminalWindowAction.iconButton {
+  width: 44px;
+  height: 44px;
+  border-color: var(--ink-faint);
+  background: var(--panel-dark);
+  color: var(--white);
+}
+
+.terminalWindowAction.iconButton:hover {
+  border-color: var(--line);
+  background: var(--line-strong);
+}
+
+.xtermHost {
+  min-width: 0;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  border-top: 1px solid #30342f;
+  padding: 8px 0 8px 8px;
+  background: var(--panel-dark);
+}
+
+.xtermHost .xterm {
+  height: 100%;
+}
+
+.xtermHost .xterm-viewport {
+  scrollbar-color: var(--ink-faint) var(--panel-dark);
+}
+
+.terminalPlaceholder {
+  display: grid;
+  min-height: 220px;
+  flex: 1 1 auto;
+  place-items: center;
+  border-top: 1px solid #30342f;
+  padding: 20px;
+  color: var(--white);
+  font: 11px/1.5 var(--mono);
+  opacity: 0.72;
+}
+
 .vmTerminal.terminalMaximized {
   position: fixed;
   z-index: 120;
   inset: 0;
   display: flex;
+  height: 100vh;
+  min-height: 0;
   flex-direction: column;
   margin: 0;
   border-radius: 0;
 }
 
-.vmTerminal.terminalMaximized .terminalViewport {
+.vmTerminal.terminalMaximized .xtermHost {
   min-height: 0;
-  max-height: none;
   flex: 1 1 auto;
 }
 
 .terminalPrompt {
-  color: #9fc26a;
+  color: var(--olive-soft);
 }
 
 .terminalInput {

@@ -1,6 +1,5 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import type { FormEvent } from 'react'
-import { createPortal } from 'react-dom'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -13,79 +12,12 @@ import { RuntimeGate } from '../components/SectionChrome'
 import type { RuntimeProviderStatus, VMCreateRequest, VMImage, VMInstance, VMStatus } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(150px,1.2fr) minmax(110px,0.7fr) minmax(70px,0.4fr) minmax(90px,0.5fr) minmax(90px,0.5fr)'
+const VMTerminal = lazy(() => import('../components/VMTerminal'))
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '—'
   const gib = bytes / (1024 * 1024 * 1024)
   return `${gib.toFixed(gib >= 10 ? 0 : 1)} GiB`
-}
-
-function TerminalTab({ instance }: { instance: VMInstance }) {
-  const { notifyError } = useMessages()
-  const [command, setCommand] = useState('')
-  const [running, setRunning] = useState(false)
-  const [history, setHistory] = useState<Array<{ command: string; output: string }>>([])
-  const [maximized, setMaximized] = useState(false)
-  const runningInstance = instance.status.toLocaleLowerCase() === 'running'
-
-  useEffect(() => {
-    if (!maximized) return
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMaximized(false)
-    }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [maximized])
-
-  async function runCommand() {
-    const trimmed = command.trim()
-    if (trimmed === '') return
-    setRunning(true)
-    try {
-      const result = await apiSend<{ output: string }>(`/api/vms/instances/${instance.name}/exec`, 'POST', {
-        command: trimmed.split(/\s+/),
-        stdin: '',
-      })
-      setHistory((current) => [...current, { command: trimmed, output: result.output }])
-      setCommand('')
-    } catch (err) {
-      notifyError('machines', errorMessage(err, `Unable to execute "${trimmed}"`))
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  const terminal = (
-    <section className={`logConsole vmTerminal ${maximized ? 'terminalMaximized' : ''}`}>
-      <div className="consoleHeader">
-        <div><h3>Terminal</h3><p>{instance.name}{maximized ? ' · maximized' : ''}</p></div>
-        <div className="consoleActions">
-          <button type="button" aria-pressed={maximized} onClick={() => setMaximized((value) => !value)}>
-            {maximized ? 'Minimize terminal' : 'Maximize terminal'}
-          </button>
-        </div>
-      </div>
-      <div className="logViewport terminalViewport" role="log" aria-live="polite">
-        {history.length === 0 && <div className="logEmpty">No commands executed yet.</div>}
-        {history.map((entry, index) => (
-          <pre className="logRaw" key={index}><span className="terminalPrompt">$ {entry.command}</span>{'\n'}{entry.output}</pre>
-        ))}
-      </div>
-      <form className="terminalInput" onSubmit={(event) => { event.preventDefault(); runCommand() }}>
-        <input
-          type="text"
-          value={command}
-          placeholder="uname -a"
-          aria-label="Command to execute"
-          disabled={running || !runningInstance}
-          onChange={(event) => setCommand(event.target.value)}
-        />
-        <button type="submit" disabled={running || command.trim() === '' || !runningInstance}>{running ? 'Running…' : 'Run'}</button>
-      </form>
-      {!runningInstance && <p className="hintLine">Start the VM to run commands.</p>}
-    </section>
-  )
-  return maximized ? createPortal(terminal, document.body) : terminal
 }
 
 function SnapshotTab({ instance }: { instance: VMInstance }) {
@@ -297,7 +229,11 @@ export function Machines() {
                 </div>
               </section>
             )}
-            {tab === 'terminal' && <TerminalTab instance={selected} />}
+            {tab === 'terminal' && (
+              <Suspense fallback={<section className="logConsole vmTerminal"><div className="terminalPlaceholder">Loading terminal…</div></section>}>
+                <VMTerminal key={`${selected.name}:${isRunning(selected)}`} instance={selected} />
+              </Suspense>
+            )}
             {tab === 'snapshots' && <SnapshotTab instance={selected} />}
           </Inspector>
         )}

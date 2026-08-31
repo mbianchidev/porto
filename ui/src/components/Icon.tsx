@@ -39,6 +39,8 @@ export type IconName =
   | 'refresh'
   | 'search'
   | 'close'
+  | 'maximize'
+  | 'minimize'
   | 'chevronDown'
   | 'menu'
   | 'stats'
@@ -84,6 +86,8 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'refresh' && <><path d="M20 11a8 8 0 1 0-2.34 5.66" /><path d="M20 4v7h-7" /></>}
       {name === 'search' && <><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></>}
       {name === 'close' && <path d="M6 6 18 18M18 6 6 18" />}
+      {name === 'maximize' && <><path d="M9 4H4v5M15 4h5v5M9 20H4v-5M15 20h5v-5" /><path d="M4 9 9 4m6 0 5 5M4 15l5 5m6 0 5-5" /></>}
+      {name === 'minimize' && <><path d="M4 9h5V4M20 9h-5V4M4 15h5v5M20 15h-5v5" /><path d="m9 9-5-5m11 5 5-5M9 15l-5 5m11-5 5 5" /></>}
       {name === 'chevronDown' && <path d="m8 10 4 4 4-4" />}
       {name === 'menu' && <path d="M4 6h16M4 12h16M4 18h16" />}
       {name === 'stats' && <path d="M5 19V9m6 10V5m6 14v-7" />}

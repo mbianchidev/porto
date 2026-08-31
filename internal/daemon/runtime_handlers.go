@@ -79,6 +79,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/vms/instances/{name}/start", s.requireRuntime("vms", s.startVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/stop", s.requireRuntime("vms", s.stopVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/exec", s.requireRuntime("vms", s.execVM))
+	mux.HandleFunc("GET /api/vms/instances/{name}/terminal", s.requireRuntime("vms", s.vmTerminal))
 	mux.HandleFunc("POST /api/vms/instances/{name}/snapshot", s.requireRuntime("vms", s.snapshotVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/restore", s.requireRuntime("vms", s.restoreVMSnapshot))
 	mux.HandleFunc("DELETE /api/vms/instances/{name}", s.requireRuntime("vms", s.deleteVM))

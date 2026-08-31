@@ -33,6 +33,35 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	args := []string{"exec", "--stdin", "--tty", "--namespace", namespace, pod}
+	if container != "" {
+		args = append(args, "--container", container)
+	}
+	args = append(args, "--", shell)
+	args = s.kubernetes.CommandArgs(runtimeContext(r), args...)
+	bridgeTerminal(w, r, func(ctx context.Context) *exec.Cmd {
+		return exec.CommandContext(ctx, "kubectl", args...)
+	}, "kubectl exec failed")
+}
+
+func (s *Server) vmTerminal(w http.ResponseWriter, r *http.Request) {
+	name := strings.TrimSpace(r.PathValue("name"))
+	if !s.requireStandaloneVM(w, name) {
+		return
+	}
+	bridgeVMTerminal(w, r, name)
+}
+
+func vmTerminalCommand(ctx context.Context, name string) *exec.Cmd {
+	return exec.CommandContext(ctx, "limactl", "shell", "--tty=true", name)
+}
+
+func bridgeTerminal(
+	w http.ResponseWriter,
+	r *http.Request,
+	commandFactory func(context.Context) *exec.Cmd,
+	startFailure string,
+) {
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -43,13 +72,7 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 
 	sessionContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	args := []string{"exec", "--stdin", "--tty", "--namespace", namespace, pod}
-	if container != "" {
-		args = append(args, "--container", container)
-	}
-	args = append(args, "--", shell)
-	args = s.kubernetes.CommandArgs(runtimeContext(r), args...)
-	command := exec.CommandContext(sessionContext, "kubectl", args...)
+	command := commandFactory(sessionContext)
 	stdin, err := command.StdinPipe()
 	if err != nil {
 		_ = connection.Close(websocket.StatusInternalError, "terminal unavailable")
@@ -72,7 +95,7 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 		_ = stdin.Close()
 		_ = stdout.Close()
 		_ = stderr.Close()
-		_ = connection.Close(websocket.StatusInternalError, "kubectl exec failed")
+		_ = connection.Close(websocket.StatusInternalError, startFailure)
 		return
 	}
 
