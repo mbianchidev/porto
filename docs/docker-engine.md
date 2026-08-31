@@ -83,7 +83,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | System | `/_ping`, `/version`, `/info` |
 | Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, logs, remove |
 | Images | list, inspect, pull, remove |
-| Networks | list, create, inspect, remove |
+| Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |
 | Builds | Docker build API plus BuildKit `/grpc` and `/session` upgrades |
 
@@ -150,6 +150,19 @@ Not implemented:
 - remote TCP/TLS exposure and Windows containers
 
 The Porto dashboard's existing container exec endpoint is separate from the Docker exec protocol and continues to invoke nerdctl directly.
+
+The `kind` Kubernetes provider is not supported by the native engine yet. Kind
+requires privileged node containers, Docker exec, archive transfer, and
+container stdio hijacking, which remain outside the supported API above. Use
+the Porto-managed k3s or k0s providers instead.
+
+## Upgrading from the proxy-era daemon
+
+The native engine advances Porto's internal daemon API version. If output still
+mentions a Docker upstream request, an older installed daemon is running. Run
+the current one-line installer again, or stop the older desktop daemon before
+starting the new build. Current clients refuse to send commands to the older
+daemon.
 
 ## Socket ownership and cleanup
 

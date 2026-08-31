@@ -28,6 +28,8 @@ type ClusterProvisioner struct {
 	kubeconfigRoot string
 }
 
+var ErrKindUnsupported = errors.New("kind clusters are not supported by Porto's native Docker engine; use k3s or k0s")
+
 type MachineSpec struct {
 	CPUs      int `json:"cpus"`
 	MemoryMiB int `json:"memoryMiB"`
@@ -77,7 +79,10 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	}
 	request.Provider = normalizeProvider(request.Provider)
 	if request.Provider == "" {
-		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
+		return Cluster{}, errors.New("Kubernetes provider must be k0s or k3s")
+	}
+	if request.Provider == "kind" {
+		return Cluster{}, ErrKindUnsupported
 	}
 	if request.Version != "" && !versionPattern.MatchString(request.Version) {
 		return Cluster{}, fmt.Errorf("invalid Kubernetes version %q", request.Version)
@@ -103,9 +108,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		if err := validateNodeMetadata(group.Labels, group.Taints); err != nil {
 			return Cluster{}, fmt.Errorf("node group %s: %w", group.Name, err)
 		}
-	}
-	if request.Provider == "kind" {
-		return p.createKind(ctx, request)
 	}
 	if request.APIPort == 0 {
 		request.APIPort, err = availableLocalPort()
@@ -232,136 +234,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	return cluster, nil
 }
 
-func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
-	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
-	kindName := "porto-" + request.Name
-	configFile, err := writeKindConfig(request)
-	if err != nil {
-		return Cluster{}, err
-	}
-	defer os.Remove(configFile)
-	defer func() {
-		if err == nil {
-			return
-		}
-		cleanupContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-		defer cancel()
-		output, cleanupErr := p.runner.Run(cleanupContext, runtimes.Command{
-			Name: "kind",
-			Args: []string{"delete", "cluster", "--name", kindName},
-			Env:  portoDockerEnv(),
-		})
-		if cleanupErr != nil {
-			err = errors.Join(err, runtimes.CommandError("clean up kind cluster", output, cleanupErr))
-		}
-		for _, cleanupPath := range []string{kubeconfigPath, p.clusterMetadataPath(request.Name)} {
-			if removeErr := os.Remove(cleanupPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
-				err = errors.Join(err, removeErr)
-			}
-		}
-	}()
-	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
-		return Cluster{}, fmt.Errorf("create kubeconfig directory: %w", err)
-	}
-	args := []string{
-		"create", "cluster",
-		"--name", kindName,
-		"--config", configFile,
-		"--kubeconfig", kubeconfigPath,
-		"--wait", "5m",
-	}
-	if request.Version != "" {
-		args = append(args, "--image", "kindest/node:"+request.Version)
-	}
-	commandContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
-	defer cancel()
-	output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kind", Args: args, Env: portoDockerEnv()})
-	if err != nil {
-		return Cluster{}, runtimes.CommandError("create kind cluster", output, err)
-	}
-	contextName := "porto-" + request.Name
-	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
-		return Cluster{}, err
-	}
-	nodes := kindNodeNames(request)
-	for index, node := range nodes {
-		machine := request.ControlPlane
-		if index > 0 {
-			machine = kindWorkerMachine(request, index-1)
-		}
-		output, err = p.runner.Run(ctx, runtimes.Command{
-			Name: "docker",
-			Args: []string{
-				"update",
-				"--cpus", strconv.Itoa(machine.CPUs),
-				"--memory", strconv.Itoa(machine.MemoryMiB) + "m",
-				"--memory-swap", strconv.Itoa(machine.MemoryMiB) + "m",
-				node,
-			},
-			Env: portoDockerEnv(),
-		})
-		if err != nil {
-			return Cluster{}, runtimes.CommandError("apply kind node resources", output, err)
-		}
-	}
-	request.APIPort = 0
-	if err := p.writeClusterMetadata(request); err != nil {
-		return Cluster{}, err
-	}
-	serverOutput, err := p.runner.Run(ctx, runtimes.Command{
-		Name: "kubectl",
-		Args: []string{
-			"--kubeconfig", kubeconfigPath,
-			"--context", contextName,
-			"config", "view", "--minify",
-			"-o", "jsonpath={.clusters[0].cluster.server}",
-		},
-	})
-	if err != nil {
-		return Cluster{}, runtimes.CommandError("read kind API endpoint", serverOutput, err)
-	}
-	return Cluster{
-		Name:           request.Name,
-		Provider:       "kind",
-		State:          "running",
-		Context:        contextName,
-		KubeconfigPath: kubeconfigPath,
-		Server:         strings.TrimSpace(string(serverOutput)),
-		Nodes:          nodes,
-	}, nil
-}
-
-func writeKindConfig(request ClusterRequest) (string, error) {
-	var builder strings.Builder
-	builder.WriteString("kind: Cluster\napiVersion: kind.x-k8s.io/v1alpha4\nnodes:\n")
-	builder.WriteString("  - role: control-plane\n")
-	for _, group := range request.NodeGroups {
-		for range group.Count {
-			builder.WriteString("  - role: worker\n")
-		}
-	}
-	file, err := os.CreateTemp("", "porto-kind-*.yaml")
-	if err != nil {
-		return "", fmt.Errorf("create kind configuration: %w", err)
-	}
-	path := file.Name()
-	if err := file.Chmod(0o600); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", err
-	}
-	if _, err := file.WriteString(builder.String()); err != nil {
-		_ = file.Close()
-		_ = os.Remove(path)
-		return "", fmt.Errorf("write kind configuration: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		_ = os.Remove(path)
-		return "", err
-	}
-	return path, nil
-}
-
 func kindNodeNames(request ClusterRequest) []string {
 	kindName := "porto-" + request.Name
 	names := []string{kindName + "-control-plane"}
@@ -377,17 +249,6 @@ func kindNodeNames(request ClusterRequest) []string {
 		names = append(names, name)
 	}
 	return names
-}
-
-func kindWorkerMachine(request ClusterRequest, workerIndex int) MachineSpec {
-	offset := 0
-	for _, group := range request.NodeGroups {
-		if workerIndex < offset+group.Count {
-			return group.Machine
-		}
-		offset += group.Count
-	}
-	return MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20}
 }
 
 func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) error {

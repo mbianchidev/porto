@@ -2,6 +2,7 @@ package kubernetes
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -213,11 +214,11 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	}
 }
 
-func TestProvisionKindClusterWithoutLima(t *testing.T) {
+func TestProvisionKindClusterReturnsExplicitUnsupportedError(t *testing.T) {
 	t.Setenv("PORTO_HOME", t.TempDir())
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+	_, err := provisioner.Create(context.Background(), ClusterRequest{
 		Name:         "kind-dev",
 		Provider:     "kind",
 		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
@@ -225,18 +226,13 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 			Name: "workers", Count: 1, Machine: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
 		}},
 	})
-	if err != nil {
-		t.Fatalf("create kind cluster: %v", err)
-	}
-	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" {
-		t.Fatalf("unexpected kind cluster: %+v", cluster)
+	if !errors.Is(err, ErrKindUnsupported) {
+		t.Fatalf("create kind cluster error = %v, want ErrKindUnsupported", err)
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	for _, command := range runner.commands {
-		if command.Name == "limactl" {
-			t.Fatalf("kind provider invoked Lima: %+v", command)
-		}
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported kind provider invoked commands: %+v", runner.commands)
 	}
 }
 

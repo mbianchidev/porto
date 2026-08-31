@@ -144,7 +144,7 @@ export function KubernetesOverview({
   const [creatingCluster, setCreatingCluster] = useState(false)
   const [clusterName, setClusterName] = useState('')
   const [clusterVersion, setClusterVersion] = useState('')
-  const [clusterProvider, setClusterProvider] = useState<'kind' | 'k0s' | 'k3s'>('k3s')
+  const [clusterProvider, setClusterProvider] = useState<'k0s' | 'k3s'>('k3s')
   const [controlPlane, setControlPlane] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
   const [initialWorkers, setInitialWorkers] = useState(1)
   const [submittingCluster, setSubmittingCluster] = useState(false)
@@ -342,7 +342,7 @@ export function KubernetesOverview({
               <Inspector title="New cluster" subtitle="Managed by Porto" onClose={() => setCreatingCluster(false)}>
                 <form className="inspectorForm" onSubmit={createCluster}>
                   <section className="providerReadiness" aria-label="Kubernetes provider readiness">
-                    {(providerTools.data ?? []).map((provider) => (
+                    {(providerTools.data ?? []).filter((provider) => provider.name !== 'kind').map((provider) => (
                       <div className={`integrationStatus ${provider.installed ? 'ready' : 'missing'}`} key={provider.name}>
                         <strong>{provider.name}</strong>
                         <span>{provider.installed ? provider.version : provider.message}</span>
@@ -360,8 +360,7 @@ export function KubernetesOverview({
                   </label>
                   <label>
                     <span>Provider</span>
-                    <select value={clusterProvider} onChange={(event) => setClusterProvider(event.target.value as 'kind' | 'k0s' | 'k3s')}>
-                      <option value="kind">kind — Kubernetes in Docker</option>
+                    <select value={clusterProvider} onChange={(event) => setClusterProvider(event.target.value as 'k0s' | 'k3s')}>
                       <option value="k3s">k3s — lightweight Kubernetes on Lima VMs</option>
                       <option value="k0s">k0s — conformant Kubernetes on Lima VMs</option>
                     </select>
@@ -371,7 +370,7 @@ export function KubernetesOverview({
                     <input
                       type="text"
                       value={clusterVersion}
-                      placeholder={clusterProvider === 'kind' ? 'v1.36.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
+                      placeholder={clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
                       onChange={(event) => setClusterVersion(event.target.value)}
                     />
                   </label>
@@ -392,9 +391,7 @@ export function KubernetesOverview({
                     <input type="number" min={0} max={16} value={initialWorkers} onChange={(event) => setInitialWorkers(Number(event.target.value))} />
                   </label>
                   <p className="hintLine">
-                    {clusterProvider === 'kind'
-                      ? 'Creates a self-contained cluster using the Porto Docker endpoint.'
-                      : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}
+                    Creates a {clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.
                   </p>
                   <button type="submit" disabled={submittingCluster || clusterName.trim() === ''}>{submittingCluster ? 'Creating…' : 'Create cluster'}</button>
                 </form>
