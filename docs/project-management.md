@@ -60,6 +60,16 @@ startup, and points Compose at the Porto socket automatically.
 
 Before startup, Porto runs `git pull --ff-only` on the active branch by default. If a GitHub SSH key fails, it can retry over authenticated HTTPS. Pass `--no-pull` to skip the update.
 
+Porto runs Git in its own process group. If a Porto-started Git operation times
+out or fails, Porto terminates the complete process tree and removes an
+`index.lock` only when it observed that exact lock appear during its own
+operation. Locks that existed before the operation, were replaced afterward,
+or are reported as belonging to another Git process are preserved.
+
+If a repository already contains a lock from an older crash, close any active
+Git/editor process and remove that lock manually once. Current Porto operations
+do not leave new pending index locks behind.
+
 Automatic port assignment begins at `41000` and avoids collisions. Use `porto port <project> <port>` to pin a port. Compose projects that publish fixed host ports use the responsive published port instead, including projects that wrap Compose commands in Make targets.
 
 After launch, a project remains `starting` until `http://127.0.0.1:<assigned-port>/` returns HTTP 200. A live process stays in that state while its frontend is unavailable and becomes `crashed` if it exits before readiness succeeds.
