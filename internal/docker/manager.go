@@ -720,6 +720,29 @@ func (m *Manager) runStreaming(
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
+	return m.runStreamingInput(ctx, timeout, action, stdin, "", emit, args...)
+}
+
+func (m *Manager) runStreamingFile(
+	ctx context.Context,
+	timeout time.Duration,
+	action string,
+	stdinPath string,
+	emit func(runtimes.OutputChunk) error,
+	args ...string,
+) error {
+	return m.runStreamingInput(ctx, timeout, action, nil, stdinPath, emit, args...)
+}
+
+func (m *Manager) runStreamingInput(
+	ctx context.Context,
+	timeout time.Duration,
+	action string,
+	stdin []byte,
+	stdinPath string,
+	emit func(runtimes.OutputChunk) error,
+	args ...string,
+) error {
 	backend, err := m.backend(ctx)
 	if err != nil {
 		return err
@@ -731,9 +754,10 @@ func (m *Manager) runStreaming(
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	command := runtimes.Command{
-		Name:  backend.name,
-		Args:  append(append([]string(nil), backend.prefix...), args...),
-		Stdin: stdin,
+		Name:      backend.name,
+		Args:      append(append([]string(nil), backend.prefix...), args...),
+		Stdin:     stdin,
+		StdinPath: stdinPath,
 	}
 	output, runErr := runner.RunStreaming(commandContext, command, emit)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {

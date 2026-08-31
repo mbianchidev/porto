@@ -73,18 +73,19 @@ type Build struct {
 }
 
 type BuildRequest struct {
-	Context    string             `json:"context"`
-	Dockerfile string             `json:"dockerfile"`
-	Tag        string             `json:"tag"`
-	Tags       []string           `json:"tags,omitempty"`
-	Target     string             `json:"target"`
-	Platform   string             `json:"platform"`
-	Network    string             `json:"network,omitempty"`
-	NoCache    bool               `json:"noCache"`
-	Pull       bool               `json:"pull,omitempty"`
-	BuildArgs  map[string]*string `json:"buildArgs,omitempty"`
-	Labels     map[string]string  `json:"labels,omitempty"`
-	CacheFrom  []string           `json:"cacheFrom,omitempty"`
+	Context        string             `json:"context"`
+	ContextArchive string             `json:"-"`
+	Dockerfile     string             `json:"dockerfile"`
+	Tag            string             `json:"tag"`
+	Tags           []string           `json:"tags,omitempty"`
+	Target         string             `json:"target"`
+	Platform       string             `json:"platform"`
+	Network        string             `json:"network,omitempty"`
+	NoCache        bool               `json:"noCache"`
+	Pull           bool               `json:"pull,omitempty"`
+	BuildArgs      map[string]*string `json:"buildArgs,omitempty"`
+	Labels         map[string]string  `json:"labels,omitempty"`
+	CacheFrom      []string           `json:"cacheFrom,omitempty"`
 }
 
 type ContainerStats struct {

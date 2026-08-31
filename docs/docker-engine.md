@@ -143,7 +143,7 @@ Not implemented:
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort
 - Docker exec API, interactive terminals, and streaming stats through Docker clients
 - build history, commit, import, export, load, and save through the legacy Docker API
-- links inside legacy uploaded build-context archives; Buildx sessions support normal BuildKit file synchronization
+- legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
 - events, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint
 - privileged containers, device mappings, capability changes, custom security options, namespace overrides, and resource-limit flags

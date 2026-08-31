@@ -3,6 +3,7 @@ package runtimes
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,11 +12,12 @@ import (
 )
 
 type Command struct {
-	Dir   string
-	Name  string
-	Args  []string
-	Env   []string
-	Stdin []byte
+	Dir       string
+	Name      string
+	Args      []string
+	Env       []string
+	Stdin     []byte
+	StdinPath string
 }
 
 type Runner interface {
@@ -33,9 +35,11 @@ func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
 	cmd.Env = append(os.Environ(), command.Env...)
-	if command.Stdin != nil {
-		cmd.Stdin = bytes.NewReader(command.Stdin)
+	closeInput, err := configureCommandInput(cmd, command)
+	if err != nil {
+		return nil, err
 	}
+	defer closeInput()
 	return cmd.CombinedOutput()
 }
 
@@ -47,14 +51,34 @@ func (ExecRunner) RunStreaming(
 	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
 	cmd.Dir = command.Dir
 	cmd.Env = append(os.Environ(), command.Env...)
-	if command.Stdin != nil {
-		cmd.Stdin = bytes.NewReader(command.Stdin)
+	closeInput, err := configureCommandInput(cmd, command)
+	if err != nil {
+		return nil, err
 	}
+	defer closeInput()
 	output := &streamOutput{emit: emit}
 	cmd.Stdout = chunkWriter{stream: "stdout", output: output}
 	cmd.Stderr = chunkWriter{stream: "stderr", output: output}
-	err := cmd.Run()
+	err = cmd.Run()
 	return output.diagnostic, err
+}
+
+func configureCommandInput(cmd *exec.Cmd, command Command) (func(), error) {
+	if command.StdinPath != "" {
+		if command.Stdin != nil {
+			return nil, errors.New("command cannot use both byte and file input")
+		}
+		input, err := os.Open(command.StdinPath)
+		if err != nil {
+			return nil, fmt.Errorf("open command input: %w", err)
+		}
+		cmd.Stdin = input
+		return func() { _ = input.Close() }, nil
+	}
+	if command.Stdin != nil {
+		cmd.Stdin = bytes.NewReader(command.Stdin)
+	}
+	return func() {}, nil
 }
 
 func CommandError(action string, output []byte, err error) error {

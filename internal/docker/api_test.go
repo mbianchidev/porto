@@ -109,10 +109,25 @@ func TestDockerAPIBuildsMultiPlatformImage(t *testing.T) {
 			!strings.Contains(args, "--build-arg VERSION=1") {
 			return nil, fmt.Errorf("unexpected build arguments: %s", args)
 		}
-		contextPath := command.Args[len(command.Args)-1]
-		content, err := os.ReadFile(filepath.Join(contextPath, "Dockerfile"))
+		if command.Args[len(command.Args)-1] != "-" || command.StdinPath == "" {
+			return nil, fmt.Errorf("build context was not streamed from an archive: %+v", command)
+		}
+		contextArchive, err := os.Open(command.StdinPath)
 		if err != nil {
-			return nil, fmt.Errorf("read extracted Dockerfile: %w", err)
+			return nil, fmt.Errorf("open stored build context: %w", err)
+		}
+		defer contextArchive.Close()
+		archive := tar.NewReader(contextArchive)
+		header, err := archive.Next()
+		if err != nil {
+			return nil, fmt.Errorf("read stored build context: %w", err)
+		}
+		content, err := io.ReadAll(archive)
+		if err != nil {
+			return nil, fmt.Errorf("read stored Dockerfile: %w", err)
+		}
+		if header.Name != "Dockerfile" {
+			return nil, fmt.Errorf("unexpected build context entry: %q", header.Name)
 		}
 		if string(content) != "FROM scratch\n" {
 			return nil, fmt.Errorf("unexpected Dockerfile: %q", content)
@@ -158,23 +173,14 @@ func TestDockerAPIBuildsMultiPlatformImage(t *testing.T) {
 	}
 }
 
-func TestDockerAPIBuildRejectsUnsafeContextArchive(t *testing.T) {
-	var contextArchive bytes.Buffer
-	archive := tar.NewWriter(&contextArchive)
-	if err := archive.WriteHeader(&tar.Header{Name: "../Dockerfile", Mode: 0o600, Size: 0}); err != nil {
-		t.Fatal(err)
-	}
-
-	if err := archive.Close(); err != nil {
-		t.Fatal(err)
-	}
-	request := httptest.NewRequest(http.MethodPost, "/v1.47/build", &contextArchive)
+func TestDockerAPIBuildRejectsEmptyContextArchive(t *testing.T) {
+	request := httptest.NewRequest(http.MethodPost, "/v1.47/build", http.NoBody)
 	request.Header.Set("Content-Type", "application/x-tar")
 	response := httptest.NewRecorder()
 	NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock").
 		ServeHTTP(response, request)
-	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "unsafe") {
-		t.Fatalf("unsafe build context = %d: %s", response.Code, response.Body.String())
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "empty") {
+		t.Fatalf("empty build context = %d: %s", response.Code, response.Body.String())
 	}
 }
 

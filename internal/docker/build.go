@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -68,20 +67,20 @@ func (m *Manager) StreamBuild(
 	for _, source := range request.CacheFrom {
 		args = append(args, "--cache-from", source)
 	}
-	args = append(args, request.Context)
+	contextArgument := request.Context
+	if request.ContextArchive != "" {
+		contextArgument = "-"
+	}
+	args = append(args, contextArgument)
+	if request.ContextArchive != "" {
+		return m.runStreamingFile(ctx, buildTimeout, "build Porto image", request.ContextArchive, emit, args...)
+	}
 	return m.runStreaming(ctx, buildTimeout, "build Porto image", nil, emit, args...)
 }
 
 func validateBuildRequest(request BuildRequest) error {
-	if strings.TrimSpace(request.Context) == "" {
+	if strings.TrimSpace(request.Context) == "" && strings.TrimSpace(request.ContextArchive) == "" {
 		return errors.New("build context is required")
-	}
-	info, err := os.Stat(request.Context)
-	if err != nil {
-		return fmt.Errorf("inspect build context: %w", err)
-	}
-	if !info.IsDir() {
-		return errors.New("build context must be a directory")
 	}
 	dockerfile := request.Dockerfile
 	if dockerfile == "" {
@@ -93,13 +92,6 @@ func validateBuildRequest(request BuildRequest) error {
 	cleanDockerfile := filepath.Clean(dockerfile)
 	if cleanDockerfile == "." || cleanDockerfile == ".." || strings.HasPrefix(cleanDockerfile, ".."+string(filepath.Separator)) {
 		return errors.New("Dockerfile path must stay within the build context")
-	}
-	info, err = os.Stat(filepath.Join(request.Context, cleanDockerfile))
-	if err != nil {
-		return fmt.Errorf("inspect Dockerfile: %w", err)
-	}
-	if !info.Mode().IsRegular() {
-		return errors.New("Dockerfile must be a regular file")
 	}
 	if err := validateBuildPlatforms(request.Platform); err != nil {
 		return err
