@@ -12,12 +12,12 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 
 const {
-  daemonProcessIDs,
+  daemonProcesses,
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
   installDockerEngine,
-  windowsDaemonProcessIDs,
+  windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
 
 const APP_NAME = 'Porto'
@@ -62,6 +62,16 @@ function portoEnvironment() {
   return environment
 }
 
+function normalizedExecutablePath(value) {
+  let resolved
+  try {
+    resolved = fs.realpathSync(value)
+  } catch {
+    resolved = path.resolve(value)
+  }
+  return process.platform === 'win32' ? resolved.toLocaleLowerCase() : resolved
+}
+
 // Starts `porto daemon start` detached from this process. The daemon manages
 // its own lifecycle independently of the window: closing the Porto window
 // must never stop it, so the child is fully detached and unref'd rather than
@@ -81,7 +91,7 @@ function startDaemon() {
   })
 }
 
-async function runningDaemonPIDs() {
+async function runningDaemonProcesses() {
   if (process.platform === 'win32') {
     const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
@@ -89,13 +99,13 @@ async function runningDaemonPIDs() {
       maxBuffer: 4 * 1024 * 1024,
     })
     if (stdout.trim() === '') return []
-    return windowsDaemonProcessIDs(JSON.parse(stdout))
+    return windowsDaemonProcesses(JSON.parse(stdout))
   }
   const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
     timeout: 5000,
     maxBuffer: 1024 * 1024,
   })
-  return daemonProcessIDs(stdout)
+  return daemonProcesses(stdout)
 }
 
 async function stopDaemonPIDs(pids) {
@@ -130,24 +140,35 @@ async function stopDaemonPIDs(pids) {
 
 async function ensureDaemonRunning() {
   let existing = await inspectDaemon({ daemonURL: DAEMON_URL })
-  if (existing.ready) return true
-  let pids
+  if (existing.ready && !app.isPackaged) return true
+  let processes
   try {
-    pids = await runningDaemonPIDs()
+    processes = await runningDaemonProcesses()
   } catch (error) {
     console.error('Unable to inspect existing Porto daemons', error)
     return false
   }
-  if (pids.length > 0) {
+  if (existing.ready) {
+    const bundledExecutable = normalizedExecutablePath(portoBinary())
+    if (processes.length === 0 || processes.some((process) => normalizedExecutablePath(process.executable) === bundledExecutable)) {
+      return true
+    }
+  }
+  if (processes.length > 0) {
     if (!existing.reachable) {
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await delay(300)
         existing = await inspectDaemon({ daemonURL: DAEMON_URL })
-        if (existing.ready) return true
+        if (existing.ready) {
+          const bundledExecutable = normalizedExecutablePath(portoBinary())
+          if (processes.some((process) => normalizedExecutablePath(process.executable) === bundledExecutable)) {
+            return true
+          }
+        }
         if (existing.reachable) break
       }
     }
-    if (!(await stopDaemonPIDs(pids))) return false
+    if (!(await stopDaemonPIDs(processes.map((process) => process.pid)))) return false
   } else if (existing.reachable) {
     return false
   }

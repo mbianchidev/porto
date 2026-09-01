@@ -1,6 +1,6 @@
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
-const EXPECTED_API_VERSION = 2
+const EXPECTED_API_VERSION = 3
 
 async function inspectDaemon({
   daemonURL = DEFAULT_DAEMON_URL,
@@ -70,27 +70,42 @@ async function installDockerEngine({
   }
 }
 
-function isDaemonCommand(command) {
-  return /(?:^|[\\/])porto(?:\.exe)?"?\s+daemon\s+start\s*$/.test(command)
+function daemonExecutable(command) {
+  const match = command.match(/\s+daemon\s+start\s*$/)
+  if (!match) return null
+  const executable = command.slice(0, match.index).trim().replace(/^"(.*)"$/, '$1')
+  return /(?:^|[\\/])porto(?:\.exe)?$/i.test(executable) ? executable : null
 }
 
-function daemonProcessIDs(processList) {
+function daemonProcesses(processList) {
   const result = []
   for (const line of processList.split(/\r?\n/)) {
     const match = line.match(/^\s*(\d+)\s+(.+?)\s*$/)
-    if (match && isDaemonCommand(match[2])) {
-      result.push(Number.parseInt(match[1], 10))
+    const executable = match ? daemonExecutable(match[2]) : null
+    if (match && executable !== null) {
+      result.push({ pid: Number.parseInt(match[1], 10), executable })
     }
   }
   return result
 }
 
-function windowsDaemonProcessIDs(processes) {
+function daemonProcessIDs(processList) {
+  return daemonProcesses(processList).map((process) => process.pid)
+}
+
+function windowsDaemonProcesses(processes) {
   const items = Array.isArray(processes) ? processes : [processes]
   return items
-    .filter((process) => process && isDaemonCommand(process.CommandLine || ''))
-    .map((process) => Number.parseInt(process.ProcessId, 10))
-    .filter(Number.isInteger)
+    .map((process) => {
+      const executable = process ? daemonExecutable(process.CommandLine || '') : null
+      const pid = Number.parseInt(process?.ProcessId, 10)
+      return executable !== null && Number.isInteger(pid) ? { pid, executable } : null
+    })
+    .filter(Boolean)
+}
+
+function windowsDaemonProcessIDs(processes) {
+  return windowsDaemonProcesses(processes).map((process) => process.pid)
 }
 
 function dockerBootstrapCommand(status, {
@@ -105,10 +120,12 @@ function dockerBootstrapCommand(status, {
 
 module.exports = {
   daemonProcessIDs,
+  daemonProcesses,
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
   installDockerEngine,
   isDaemonReady,
   windowsDaemonProcessIDs,
+  windowsDaemonProcesses,
 }

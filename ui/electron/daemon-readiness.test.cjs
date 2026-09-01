@@ -3,11 +3,13 @@ const test = require('node:test')
 
 const {
   daemonProcessIDs,
+  daemonProcesses,
   dockerBootstrapCommand,
   inspectDaemon,
   installDockerEngine,
   isDaemonReady,
   windowsDaemonProcessIDs,
+  windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
 
 function response(body, ok = true) {
@@ -21,7 +23,7 @@ function response(body, ok = true) {
 
 test('accepts a compatible daemon with a dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 2, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 3, dashboardReady: true }),
   })
 
   assert.equal(ready, true)
@@ -37,7 +39,7 @@ test('rejects an older daemon without dashboard readiness metadata', async () =>
 
 test('rejects a daemon that cannot serve the dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 2, dashboardReady: false }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 3, dashboardReady: false }),
   })
 
   assert.equal(ready, false)
@@ -45,7 +47,7 @@ test('rejects a daemon that cannot serve the dashboard', async () => {
 
 test('rejects an incompatible API', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 1, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 2, dashboardReady: true }),
   })
 
   assert.equal(ready, false)
@@ -70,6 +72,10 @@ test('finds only exact Porto daemon processes', () => {
 `
 
   assert.deepEqual(daemonProcessIDs(processList), [120, 124])
+  assert.deepEqual(daemonProcesses(processList), [
+    { pid: 120, executable: '/Users/test/Applications/Porto.app/Contents/Resources/porto' },
+    { pid: 124, executable: '/Applications/My Tools/porto' },
+  ])
 })
 
 test('finds Windows Porto daemon processes', () => {
@@ -80,6 +86,9 @@ test('finds Windows Porto daemon processes', () => {
   ]
 
   assert.deepEqual(windowsDaemonProcessIDs(processes), [220])
+  assert.deepEqual(windowsDaemonProcesses(processes), [
+    { pid: 220, executable: 'C:\\Program Files\\Porto\\porto.exe' },
+  ])
 })
 
 test('bootstraps the bundled engine only for packaged supported desktops', () => {
