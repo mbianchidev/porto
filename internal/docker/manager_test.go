@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -31,6 +32,12 @@ type engineInstallRunner struct {
 	created  bool
 	ownerID  string
 	commands []runtimes.Command
+}
+
+type concurrentInstallRunner struct {
+	mu        sync.Mutex
+	active    int
+	maxActive int
 }
 
 func workingBuildKitDialer(context.Context) (net.Conn, error) {
@@ -91,6 +98,21 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 		}
 	}
 	return nil, fmt.Errorf("unexpected command: %s %s", command.Name, strings.Join(command.Args, " "))
+}
+
+func (r *concurrentInstallRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
+	if command.Name != "/usr/local/bin/nerdctl" || strings.Join(command.Args, " ") != "version" {
+		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, strings.Join(command.Args, " "))
+	}
+	r.mu.Lock()
+	r.active++
+	r.maxActive = max(r.maxActive, r.active)
+	r.mu.Unlock()
+	time.Sleep(25 * time.Millisecond)
+	r.mu.Lock()
+	r.active--
+	r.mu.Unlock()
+	return []byte("nerdctl version 2.1.0\n"), nil
 }
 
 func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
@@ -197,6 +219,45 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 	}
 	if state.Mode != "direct" {
 		t.Fatalf("engine mode = %q, want direct", state.Mode)
+	}
+}
+
+func TestInstallEngineSerializesConcurrentRequests(t *testing.T) {
+	runner := &concurrentInstallRunner{}
+	stateDir := t.TempDir()
+	managers := []*Manager{
+		NewWithStateDir(runner, stateDir),
+		NewWithStateDir(runner, stateDir),
+	}
+	for _, manager := range managers {
+		manager.dialBuildKit = workingBuildKitDialer
+		manager.lookPath = func(name string) (string, error) {
+			if name == "nerdctl" {
+				return "/usr/local/bin/nerdctl", nil
+			}
+			return "", errors.New("not found")
+		}
+	}
+
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for _, manager := range managers {
+		go func() {
+			<-start
+			_, err := manager.InstallEngine(context.Background())
+			errs <- err
+		}()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatalf("install engine: %v", err)
+		}
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.maxActive != 1 {
+		t.Fatalf("concurrent engine installations = %d, want 1", runner.maxActive)
 	}
 }
 

@@ -102,6 +102,9 @@ func dockerCmd(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto docker engine-install")
 		}
+		if daemonUp() {
+			return api("POST", "/api/docker/engine/install", nil, os.Stdout)
+		}
 		status, err := portodocker.New(nil).InstallEngine(context.Background())
 		if err != nil {
 			return err

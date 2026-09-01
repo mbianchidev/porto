@@ -20,6 +20,7 @@ type fakeRunner struct {
 	mu        sync.Mutex
 	commands  []runtimes.Command
 	instances map[string]bool
+	handler   func(runtimes.Command) ([]byte, error)
 }
 
 func newFakeRunner() *fakeRunner {
@@ -30,6 +31,9 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.commands = append(f.commands, command)
+	if f.handler != nil {
+		return f.handler(command)
+	}
 	joined := strings.Join(command.Args, " ")
 	switch command.Name {
 	case "kubectl":
@@ -347,6 +351,12 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	defer runner.mu.Unlock()
 	foundUpdate := false
 	for _, command := range runner.commands {
+		if command.Name == "kind" || command.Name == "docker" {
+			environment := strings.Join(command.Env, "\n")
+			if !strings.Contains(environment, "DOCKER_HOST=") || !strings.Contains(environment, "DOCKER_CONTEXT=") {
+				t.Fatalf("%s did not receive the isolated Porto Docker environment: %+v", command.Name, command.Env)
+			}
+		}
 		if command.Name == "limactl" {
 			t.Fatalf("kind provider invoked Lima: %+v", command)
 		}
@@ -360,6 +370,57 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	}
 	if !foundUpdate {
 		t.Fatal("kind node resources were not applied")
+	}
+}
+
+func TestKindListDoesNotTreatMissingNodeMessageAsRunning(t *testing.T) {
+	runner := newFakeRunner()
+	runnerHandler := func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "kind" && strings.Join(command.Args, " ") == "get nodes --name porto-kind-smoke" {
+			return []byte("No kind nodes found for cluster \"porto-kind-smoke\".\n"), nil
+		}
+		return runner.Run(context.Background(), command)
+	}
+	recordingRunner := &fakeRunner{handler: runnerHandler}
+	provisioner := NewClusterProvisioner(vm.New(recordingRunner), recordingRunner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "kind-smoke", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].State != "stopped" || len(clusters[0].Nodes) != 0 {
+		t.Fatalf("missing KinD nodes were reported as running: %+v", clusters)
+	}
+}
+
+func TestKindListInspectsNodeContainerState(t *testing.T) {
+	runner := newFakeRunner()
+	runnerHandler := func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kind" && joined == "get nodes --name porto-kind-smoke":
+			return []byte("porto-kind-smoke-control-plane\n"), nil
+		case command.Name == "docker" && strings.Contains(joined, "inspect"):
+			return []byte("false\n"), nil
+		default:
+			return runner.Run(context.Background(), command)
+		}
+	}
+	recordingRunner := &fakeRunner{handler: runnerHandler}
+	provisioner := NewClusterProvisioner(vm.New(recordingRunner), recordingRunner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "kind-smoke", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].State != "stopped" || len(clusters[0].Nodes) != 1 {
+		t.Fatalf("stopped KinD node was reported incorrectly: %+v", clusters)
 	}
 }
 

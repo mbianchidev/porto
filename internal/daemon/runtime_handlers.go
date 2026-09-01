@@ -26,6 +26,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
 	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
+	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
@@ -144,6 +145,11 @@ func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
 	status.Enabled = true
 	status = s.dockerEndpointStatus(status)
 	writeJSON(w, status)
+}
+
+func (s *Server) installDockerEngine(w http.ResponseWriter, r *http.Request) {
+	status, err := s.docker.InstallEngine(r.Context())
+	writeRuntimeResult(w, status, err)
 }
 
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {

@@ -1,7 +1,14 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
 
-const { isDaemonReady } = require('./daemon-readiness.cjs')
+const {
+  daemonProcessIDs,
+  dockerBootstrapCommand,
+  inspectDaemon,
+  installDockerEngine,
+  isDaemonReady,
+  windowsDaemonProcessIDs,
+} = require('./daemon-readiness.cjs')
 
 function response(body, ok = true) {
   return {
@@ -42,4 +49,62 @@ test('rejects an incompatible API', async () => {
   })
 
   assert.equal(ready, false)
+})
+
+test('reports an incompatible daemon as reachable but not ready', async () => {
+  const result = await inspectDaemon({
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 1 }),
+  })
+
+  assert.equal(result.reachable, true)
+  assert.equal(result.ready, false)
+})
+
+test('finds only exact Porto daemon processes', () => {
+  const processList = `
+  120 /Users/test/Applications/Porto.app/Contents/Resources/porto daemon start
+  121 /Applications/Porto.app/Contents/MacOS/Porto
+  122 /usr/local/bin/porto daemon status
+  123 /tmp/porto daemon start --debug
+  124 /Applications/My Tools/porto daemon start
+`
+
+  assert.deepEqual(daemonProcessIDs(processList), [120, 124])
+})
+
+test('finds Windows Porto daemon processes', () => {
+  const processes = [
+    { ProcessId: 220, CommandLine: '"C:\\Program Files\\Porto\\porto.exe" daemon start' },
+    { ProcessId: 221, CommandLine: '"C:\\Program Files\\Porto\\porto.exe" daemon status' },
+    { ProcessId: 222, CommandLine: null },
+  ]
+
+  assert.deepEqual(windowsDaemonProcessIDs(processes), [220])
+})
+
+test('bootstraps the bundled engine only for packaged supported desktops', () => {
+  const unavailable = { enabled: true, available: false }
+
+  assert.deepEqual(
+    dockerBootstrapCommand(unavailable, { isPackaged: true, platform: 'darwin' }),
+    ['docker', 'engine-install'],
+  )
+  assert.equal(dockerBootstrapCommand({ enabled: true, available: true }, { isPackaged: true, platform: 'darwin' }), null)
+  assert.equal(dockerBootstrapCommand({ enabled: false, available: false }, { isPackaged: true, platform: 'darwin' }), null)
+  assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: false, platform: 'darwin' }), null)
+  assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: true, platform: 'win32' }), null)
+})
+
+test('installs the engine through the active daemon', async () => {
+  let request = null
+  const status = await installDockerEngine({
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return response({ available: true })
+    },
+  })
+
+  assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
+  assert.equal(request.options.method, 'POST')
+  assert.equal(status.available, true)
 })

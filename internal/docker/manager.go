@@ -14,6 +14,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -24,6 +25,7 @@ const (
 	defaultTimeout     = 20 * time.Second
 	engineInstanceName = "porto-engine"
 	engineStateFile    = "engine.json"
+	engineLockFile     = "engine-install.lock"
 )
 
 var (
@@ -39,6 +41,7 @@ type Manager struct {
 	goos         string
 	directCLI    bool
 	dialBuildKit func(context.Context) (net.Conn, error)
+	installMu    sync.Mutex
 }
 
 type engineState struct {
@@ -101,7 +104,17 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 	return status
 }
 
-func (m *Manager) InstallEngine(ctx context.Context) (Status, error) {
+func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) {
+	m.installMu.Lock()
+	defer m.installMu.Unlock()
+	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	if err != nil {
+		return Status{}, fmt.Errorf("lock Porto container runtime installation: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, lock.Close())
+	}()
+
 	existingState, stateErr := m.readEngineState()
 	ownedLima := stateErr == nil && existingState.Mode == "lima" && existingState.Instance == engineInstanceName && existingState.OwnerID != ""
 	if !ownedLima {

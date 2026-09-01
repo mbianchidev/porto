@@ -379,6 +379,20 @@ func kindNodeNames(request ClusterRequest) []string {
 	return names
 }
 
+func runningKindNodeNames(request ClusterRequest, output []byte) []string {
+	expected := make(map[string]struct{})
+	for _, name := range kindNodeNames(request) {
+		expected[name] = struct{}{}
+	}
+	names := make([]string, 0, len(expected))
+	for _, name := range strings.Fields(string(output)) {
+		if _, ok := expected[name]; ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
 func kindWorkerMachine(request ClusterRequest, workerIndex int) MachineSpec {
 	offset := 0
 	for _, group := range request.NodeGroups {
@@ -472,9 +486,23 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 				Env:  portoDockerEnv(),
 			})
 			if kindErr == nil {
-				cluster.Nodes = strings.Fields(string(output))
-				if len(cluster.Nodes) > 0 {
+				cluster.Nodes = runningKindNodeNames(request, output)
+				runningNodes := 0
+				for _, node := range cluster.Nodes {
+					stateOutput, stateErr := p.runner.Run(ctx, runtimes.Command{
+						Name: "docker",
+						Args: []string{"inspect", "--format", "{{.State.Running}}", node},
+						Env:  portoDockerEnv(),
+					})
+					if stateErr == nil && strings.EqualFold(strings.TrimSpace(string(stateOutput)), "true") {
+						runningNodes++
+					}
+				}
+				switch {
+				case len(cluster.Nodes) == len(kindNodeNames(request)) && runningNodes == len(cluster.Nodes):
 					cluster.State = "running"
+				case runningNodes > 0:
+					cluster.State = "degraded"
 				}
 			}
 			serverOutput, serverErr := p.runner.Run(ctx, runtimes.Command{
@@ -1068,7 +1096,7 @@ func portoDockerEnv() []string {
 	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
 		endpoint = "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`)
 	}
-	return []string{"DOCKER_HOST=" + endpoint}
+	return []string{"DOCKER_HOST=" + endpoint, "DOCKER_CONTEXT="}
 }
 
 func (p *ClusterProvisioner) normalizeKubeconfig(ctx context.Context, kubeconfigPath, name string) error {
