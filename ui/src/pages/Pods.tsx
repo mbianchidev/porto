@@ -59,10 +59,13 @@ function isTerminalShell(value: string): value is TerminalShell {
 function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
   const [previous, setPrevious] = useState(false)
+  const selectedContainer = pod.containers.find((item) => item.name === container)
+  const previousAvailable = (selectedContainer?.restartCount ?? 0) > 0
+  const showPrevious = previous && previousAvailable
   const logs = usePolledResource<string>(
-    (signal) => apiGet(podPath(pod, '/logs', context, `container=${encodeURIComponent(container)}&previous=${previous}&tail=500`), signal),
+    (signal) => apiGet(podPath(pod, '/logs', context, `container=${encodeURIComponent(container)}&previous=${showPrevious}&tail=500`), signal),
     4000,
-    [pod.namespace, pod.name, container, previous],
+    [pod.namespace, pod.name, container, showPrevious],
   )
   return (
     <section className="logConsole">
@@ -78,13 +81,27 @@ function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
       <div className="inspectorForm inline">
         <label>
           <span>Container</span>
-          <select value={container} onChange={(event) => setContainer(event.target.value)}>
+          <select
+            value={container}
+            onChange={(event) => {
+              setContainer(event.target.value)
+              setPrevious(false)
+            }}
+          >
             {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
           </select>
         </label>
         <label className="toggleRow compact">
-          <span><strong>Previous instance</strong></span>
-          <input type="checkbox" checked={previous} onChange={(event) => setPrevious(event.target.checked)} />
+          <span>
+            <strong>Previous instance</strong>
+            {!previousAvailable && <small>No terminated instance available.</small>}
+          </span>
+          <input
+            type="checkbox"
+            checked={showPrevious}
+            disabled={!previousAvailable}
+            onChange={(event) => setPrevious(event.target.checked)}
+          />
         </label>
       </div>
       <div className="logViewport" role="log" aria-live="polite" aria-busy={logs.loading}>
