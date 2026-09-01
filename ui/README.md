@@ -11,7 +11,8 @@ selected item (an accessible full-screen overlay on narrow widths):
   `#/networks` inventory and operate the local Docker engine.
 - **Kubernetes** — `#/kubernetes` (overview + context picker), `#/pods`
   (Overview/Logs/Terminal/Files/Stats/Events/Manifest inspector tabs),
-  `#/services`, `#/nodes`.
+  `#/services`, `#/configs`, `#/secrets`, and `#/nodes`; every resource view
+  can switch context directly.
 - **Virtual machines** — `#/machines` lists the Lima-backed VM image catalog
   and instances, with a create form and terminal/snapshot inspector tabs.
 - **System** — `#/activity` shows recent client-side actions and errors for
@@ -20,6 +21,9 @@ selected item (an accessible full-screen overlay on narrow widths):
 Every runtime section (Docker, Kubernetes, VMs) reports a clear "unavailable"
 state instead of inventing data when the underlying engine, cluster, or
 hypervisor cannot be reached.
+Polled inventories retain their last successful data across route changes and
+refresh in the background without replacing the current view with a loading
+state.
 
 ## Development
 
