@@ -30,8 +30,10 @@ installer and desktop app replace an older Porto daemon before launching the
 new version, so commands cannot accidentally continue through the removed
 upstream Docker proxy.
 
-Desktop archives contain Porto, its dashboard, `kubectl`, `k9s`, Lima, and the
-supported `kind` binary for that platform. Linux installation installs QEMU
+Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
+Lima, and the supported `kind` binary for that platform. Windows ARM64 excludes
+the Docker CLI and KinD because upstream standalone binaries are unavailable.
+Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 `winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
 

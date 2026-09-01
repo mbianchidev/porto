@@ -25,7 +25,9 @@ npm start
 
 Development runs require the daemon binary (`porto`) on `PATH`. Release
 packages bundle the daemon and portable runtime clients, so users do not need a
-separate Porto, Lima, `kubectl`, or `kind` installation.
+separate Porto, Docker CLI, Lima, `kubectl`, or `kind` installation.
+Windows ARM64 excludes Docker CLI and KinD because upstream binaries are not
+published for that target.
 
 ## Package
 
