@@ -149,6 +149,8 @@ Docker so the dashboard can group related containers.
 
 Compose builds use Porto's BuildKit bridge, including multi-platform Bake
 targets when the worker supports the requested architectures.
+The Builds screen reads BuildKit history directly and reports active, successful,
+and failed records with their creation time, duration, image name, and platform.
 
 ## Kubernetes
 

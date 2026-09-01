@@ -96,7 +96,12 @@ func k9sTerminalCommand(ctx context.Context, cluster kubernetes.Cluster) *exec.C
 		"--context", cluster.Context,
 		"--all-namespaces",
 	)
-	command.Env = process.WithEnvironment(os.Environ(), "KUBECONFIG="+cluster.KubeconfigPath)
+	command.Env = process.WithEnvironment(
+		os.Environ(),
+		"KUBECONFIG="+cluster.KubeconfigPath,
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	)
 	return command
 }
 

@@ -504,10 +504,6 @@ func (m *Manager) Volumes(ctx context.Context) ([]Volume, error) {
 	})
 }
 
-func (m *Manager) Builds(context.Context) ([]Build, error) {
-	return nil, fmt.Errorf("%w: build history", ErrUnsupported)
-}
-
 func (m *Manager) ContainerAction(ctx context.Context, id, action string) error {
 	return m.ContainerActionWithTimeout(ctx, id, action, 0)
 }

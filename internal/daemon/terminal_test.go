@@ -39,6 +39,9 @@ func TestK9sTerminalCommandScopesManagedCluster(t *testing.T) {
 	if !slices.Contains(command.Env, "KUBECONFIG=/tmp/dev.yaml") {
 		t.Fatalf("command environment does not contain managed kubeconfig: %q", command.Env)
 	}
+	if !slices.Contains(command.Env, "TERM=xterm-256color") || !slices.Contains(command.Env, "COLORTERM=truecolor") {
+		t.Fatalf("command environment does not contain terminal capabilities: %q", command.Env)
+	}
 }
 
 func TestVMTerminalCommandUsesInteractiveLimaShell(t *testing.T) {
