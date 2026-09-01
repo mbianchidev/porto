@@ -179,6 +179,10 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
+Porto-managed kind clusters include metrics-server v0.9.0 for pod and container
+CPU/memory stats. Porto installs it during cluster creation or startup and
+repairs it when the Stats view encounters a missing Metrics API.
+
 For k3s and k0s, Porto provisions one Lima VM for the controller and one VM
 for each requested worker. CPU, RAM, and disk values are per VM. Nodes share
 Lima's `user-v2` network, the Kubernetes API is forwarded to an allocated

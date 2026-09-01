@@ -156,6 +156,8 @@ type PodStats struct {
 	Memory    string `json:"memory"`
 }
 
+var ErrMetricsUnavailable = errors.New("Kubernetes Metrics API is unavailable")
+
 type FileEntry struct {
 	Name string `json:"name"`
 	Type string `json:"type"`
@@ -738,6 +740,14 @@ func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string)
 	}
 	output, err := m.run(ctx, contextName, m.timeout, nil, "top", "pod", pod, "--namespace", namespace, "--containers", "--no-headers")
 	if err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "metrics api not available") ||
+			strings.Contains(message, "the server could not find the requested resource") ||
+			(strings.Contains(message, "metrics.k8s.io") &&
+				(strings.Contains(message, "serviceunavailable") ||
+					strings.Contains(message, "unable to handle the request"))) {
+			return nil, fmt.Errorf("%w: %v", ErrMetricsUnavailable, err)
+		}
 		return nil, err
 	}
 	stats := make([]PodStats, 0)

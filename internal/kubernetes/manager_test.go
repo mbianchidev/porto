@@ -267,6 +267,26 @@ func TestServicesReturnEmptyExternalIPArray(t *testing.T) {
 	}
 }
 
+func TestStatsIdentifiesUnavailableMetricsAPI(t *testing.T) {
+	for _, message := range []string{
+		"error: Metrics API not available",
+		"Error from server (ServiceUnavailable): the server is currently unable to handle the request (get pods.metrics.k8s.io)",
+	} {
+		runner := newFakeRunner()
+		runner.handler = func(command runtimes.Command) ([]byte, error) {
+			if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "top pod") {
+				return []byte(message), errors.New("exit status 1")
+			}
+			return nil, errors.New("unexpected command")
+		}
+
+		_, err := New(runner).Stats(context.Background(), "porto-dev", "default", "api")
+		if !errors.Is(err, ErrMetricsUnavailable) {
+			t.Fatalf("message %q: error = %v, want ErrMetricsUnavailable", message, err)
+		}
+	}
+}
+
 func TestResourceListTemplatesExcludeValues(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -575,6 +595,8 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
 	foundUpdate := false
+	foundMetricsApply := false
+	foundMetricsWait := false
 	for _, command := range runner.commands {
 		if command.Name == "kind" || command.Name == "docker" {
 			environment := strings.Join(command.Env, "\n")
@@ -592,9 +614,43 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 				t.Fatalf("kind resources were not normalized: %+v", command)
 			}
 		}
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "apply -f -") {
+			foundMetricsApply = true
+			manifest := string(command.Stdin)
+			if !strings.Contains(manifest, "metrics-server:v0.9.0") ||
+				!strings.Contains(manifest, "--kubelet-insecure-tls") {
+				t.Fatalf("unexpected metrics-server manifest: %s", manifest)
+			}
+		}
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "apiservice/v1beta1.metrics.k8s.io") {
+			foundMetricsWait = true
+		}
 	}
 	if !foundUpdate {
 		t.Fatal("kind node resources were not applied")
+	}
+	if !foundMetricsApply || !foundMetricsWait {
+		t.Fatalf("metrics-server was not installed and awaited: apply=%t wait=%t", foundMetricsApply, foundMetricsWait)
+	}
+}
+
+func TestEnsureMetricsServerRepairsOwnedKindCluster(t *testing.T) {
+	runner := newFakeRunner()
+	root := t.TempDir()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "kind-smoke", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provisioner.clusterKubeconfigPath("kind-smoke"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	handled, err := provisioner.EnsureMetricsServer(context.Background(), "porto-kind-smoke")
+	if err != nil {
+		t.Fatalf("EnsureMetricsServer: %v", err)
+	}
+	if !handled {
+		t.Fatal("owned kind context was not handled")
 	}
 }
 

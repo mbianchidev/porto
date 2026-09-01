@@ -504,12 +504,26 @@ func (s *Server) kubernetesDeletePodFile(w http.ResponseWriter, r *http.Request)
 }
 
 func (s *Server) kubernetesPodStats(w http.ResponseWriter, r *http.Request) {
+	contextName := runtimeContext(r)
 	value, err := s.kubernetes.Stats(
 		r.Context(),
-		runtimeContext(r),
+		contextName,
 		r.PathValue("namespace"),
 		r.PathValue("pod"),
 	)
+	if errors.Is(err, kubernetes.ErrMetricsUnavailable) {
+		handled, installErr := s.clusters.EnsureMetricsServer(r.Context(), contextName)
+		if handled && installErr == nil {
+			value, err = s.kubernetes.Stats(
+				r.Context(),
+				contextName,
+				r.PathValue("namespace"),
+				r.PathValue("pod"),
+			)
+		} else if installErr != nil {
+			err = errors.Join(err, installErr)
+		}
+	}
 	writeRuntimeResult(w, value, err)
 }
 

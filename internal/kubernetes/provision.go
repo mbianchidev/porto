@@ -2,9 +2,11 @@ package kubernetes
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -22,10 +25,20 @@ import (
 var clusterNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9.+-]+$`)
 
+//go:embed metrics-server.yaml
+var metricsServerManifest []byte
+
 type ClusterProvisioner struct {
 	vms            *vm.Manager
 	runner         runtimes.Runner
 	kubeconfigRoot string
+	metricsMu      sync.Mutex
+	metricsRuns    map[string]*metricsServerRun
+}
+
+type metricsServerRun struct {
+	done chan struct{}
+	err  error
 }
 
 type MachineSpec struct {
@@ -68,7 +81,12 @@ func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRo
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &ClusterProvisioner{vms: vms, runner: runner, kubeconfigRoot: kubeconfigRoot}
+	return &ClusterProvisioner{
+		vms:            vms,
+		runner:         runner,
+		kubeconfigRoot: kubeconfigRoot,
+		metricsRuns:    make(map[string]*metricsServerRun),
+	}
 }
 
 func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
@@ -303,6 +321,9 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		if err != nil {
 			return Cluster{}, runtimes.CommandError("apply kind node resources", output, err)
 		}
+	}
+	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
+		return Cluster{}, err
 	}
 	request.APIPort = 0
 	if err := p.writeClusterMetadata(request); err != nil {
@@ -759,7 +780,13 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 				actionErrors = append(actionErrors, runtimes.CommandError(action+" kind node "+name, output, actionErr))
 			}
 		}
-		return errors.Join(actionErrors...)
+		if err := errors.Join(actionErrors...); err != nil || !running {
+			return err
+		}
+		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName); err != nil {
+			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
+		}
+		return nil
 	}
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
@@ -778,6 +805,93 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		}
 	}
 	return errors.Join(actionErrors...)
+}
+
+func (p *ClusterProvisioner) EnsureMetricsServer(ctx context.Context, contextName string) (bool, error) {
+	clusterName, ok := strings.CutPrefix(contextName, "porto-")
+	if !ok || !clusterNamePattern.MatchString(clusterName) {
+		return false, nil
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	if normalizeProvider(request.Provider) != "kind" {
+		return false, nil
+	}
+	return true, p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName)
+}
+
+func (p *ClusterProvisioner) ensureKindMetricsServer(ctx context.Context, kubeconfigPath, contextName string) error {
+	p.metricsMu.Lock()
+	if existing := p.metricsRuns[contextName]; existing != nil {
+		p.metricsMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-existing.done:
+			return existing.err
+		}
+	}
+	run := &metricsServerRun{done: make(chan struct{})}
+	p.metricsRuns[contextName] = run
+	p.metricsMu.Unlock()
+
+	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	run.err = p.installKindMetricsServer(operationContext, kubeconfigPath, contextName)
+	cancel()
+
+	p.metricsMu.Lock()
+	delete(p.metricsRuns, contextName)
+	close(run.done)
+	p.metricsMu.Unlock()
+	return run.err
+}
+
+func (p *ClusterProvisioner) installKindMetricsServer(ctx context.Context, kubeconfigPath, contextName string) error {
+	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName}
+	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
+		commandArgs := append(append([]string(nil), baseArgs...), args...)
+		output, err := p.runner.Run(ctx, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
+		if err != nil {
+			return output, runtimes.CommandError(action, output, err)
+		}
+		return output, nil
+	}
+	output, err := run(
+		"inspect Metrics API",
+		nil,
+		"get", "apiservice", "v1beta1.metrics.k8s.io",
+		"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`,
+	)
+	if err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "true") {
+		return nil
+	}
+	if _, err := run("wait for kind nodes", nil, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"); err != nil {
+		return err
+	}
+	if _, err := run("install metrics-server", metricsServerManifest, "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if _, err := run(
+		"wait for metrics-server deployment",
+		nil,
+		"--namespace", "kube-system",
+		"wait", "--for=condition=Available", "deployment/metrics-server", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	if _, err := run(
+		"wait for Metrics API",
+		nil,
+		"wait", "--for=condition=Available", "apiservice/v1beta1.metrics.k8s.io", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *ClusterProvisioner) writeClusterMetadata(request ClusterRequest) error {
