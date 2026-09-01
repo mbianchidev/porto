@@ -833,6 +833,7 @@ func TestDockerCLIContextInfoCompatibility(t *testing.T) {
 			"nerdctl network ls --format {{json .}}":                  nil,
 			"nerdctl volume ls --format {{json .}}":                   nil,
 			"nerdctl create --name compatibility alpine:latest true":  []byte("compatibility-id\n"),
+			"nerdctl container inspect compatibility-id":              []byte(`[{"Id":"compatibility-id"}]`),
 		},
 		errors: map[string]error{},
 	}

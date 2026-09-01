@@ -231,6 +231,43 @@ func TestContainerActionRejectsUnsupportedAction(t *testing.T) {
 	}
 }
 
+func TestForceRemoveCompletesStoppedContainerCleanup(t *testing.T) {
+	cleanupAttempts := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			return []byte(`[{"Id":"original-id","Name":"/demo"}]`), nil
+		case "rm --force original-id":
+			return []byte("original-id\n"), nil
+		case "rm original-id":
+			cleanupAttempts++
+			if cleanupAttempts == 1 {
+				return []byte("container original-id is in running status"), errors.New("exit status 1")
+			}
+			return []byte("original-id\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+
+	if err := New(runner).ContainerAction(context.Background(), "demo", "remove-force"); err != nil {
+		t.Fatalf("ContainerAction: %v", err)
+	}
+	if cleanupAttempts != 2 {
+		t.Fatalf("cleanup attempts = %d, want 2", cleanupAttempts)
+	}
+}
+
+func TestContainerRemovalCompleteRequiresContainerSpecificError(t *testing.T) {
+	if !containerRemovalComplete(errors.New("no such container: demo")) {
+		t.Fatal("container-specific not-found error was not accepted")
+	}
+	if containerRemovalComplete(errors.New("exec: nerdctl: executable file not found")) {
+		t.Fatal("unrelated executable error was treated as successful removal")
+	}
+}
+
 func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
 	inspects := 0
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}

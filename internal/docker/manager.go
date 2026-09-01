@@ -642,16 +642,84 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	case "remove":
 		args = []string{"rm", id}
 	case "remove-force":
-		args = []string{"rm", "--force", id}
+		return m.forceRemoveContainer(ctx, id, false)
 	case "remove-volumes":
 		args = []string{"rm", "--volumes", id}
 	case "remove-force-volumes":
-		args = []string{"rm", "--force", "--volumes", id}
+		return m.forceRemoveContainer(ctx, id, true)
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	_, err := m.run(ctx, action+" Porto container", args...)
 	return err
+}
+
+func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes bool) error {
+	containerID, err := m.resolveContainerID(ctx, id)
+	if err != nil {
+		return err
+	}
+	args := []string{"rm", "--force"}
+	if volumes {
+		args = append(args, "--volumes")
+	}
+	args = append(args, containerID)
+	if _, err := m.run(ctx, "force-remove Porto container", args...); err != nil {
+		return err
+	}
+
+	cleanupContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		args = []string{"rm"}
+		if volumes {
+			args = append(args, "--volumes")
+		}
+		args = append(args, containerID)
+		_, err := m.run(cleanupContext, "remove stopped Porto container", args...)
+		if err == nil || containerRemovalComplete(err) {
+			return nil
+		}
+		if !containerRemovalPending(err) {
+			return err
+		}
+		select {
+		case <-cleanupContext.Done():
+			return fmt.Errorf("finish removing Porto container: %w", cleanupContext.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) resolveContainerID(ctx context.Context, id string) (string, error) {
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil {
+		return "", err
+	}
+	var inspected struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return "", fmt.Errorf("decode container identity: %w", err)
+	}
+	if inspected.ID == "" {
+		return "", errors.New("container runtime returned an empty container identifier")
+	}
+	return inspected.ID, nil
+}
+
+func containerRemovalComplete(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such container:")
+}
+
+func containerRemovalPending(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "running status") ||
+		strings.Contains(message, "container is running") ||
+		strings.Contains(message, "task is running")
 }
 
 func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
