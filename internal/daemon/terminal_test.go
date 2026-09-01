@@ -59,18 +59,31 @@ func TestVMTerminalCommandUsesInteractiveLimaShell(t *testing.T) {
 }
 
 func TestPodTerminalCommandUsesKubectlExec(t *testing.T) {
-	command := podTerminalCommand(context.Background(), []string{
+	args := []string{
 		"--context", "porto-dev",
 		"exec", "--stdin", "--tty", "--namespace", "default", "api",
-		"--container", "app", "--", "sh",
-	})
+		"--container", "app", "--",
+	}
+	args = append(args, podTerminalShellCommand("sh")...)
+	command := podTerminalCommand(context.Background(), args)
 	want := []string{
 		"kubectl",
 		"--context", "porto-dev",
 		"exec", "--stdin", "--tty", "--namespace", "default", "api",
-		"--container", "app", "--", "sh",
+		"--container", "app", "--",
+		"env", "TERM=xterm-256color", "COLORTERM=truecolor", "sh",
 	}
 	if !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("command args = %q, want %q", command.Args, want)
+	}
+	if !slices.Contains(command.Env, "TERM=xterm-256color") || !slices.Contains(command.Env, "COLORTERM=truecolor") {
+		t.Fatalf("command environment does not contain terminal capabilities: %q", command.Env)
+	}
+}
+
+func TestPodTerminalShellSetsTerminalCapabilities(t *testing.T) {
+	want := []string{"env", "TERM=xterm-256color", "COLORTERM=truecolor", "ash"}
+	if got := podTerminalShellCommand("ash"); !reflect.DeepEqual(got, want) {
+		t.Fatalf("pod terminal shell command = %q, want %q", got, want)
 	}
 }
