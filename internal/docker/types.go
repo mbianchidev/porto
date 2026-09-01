@@ -127,6 +127,9 @@ type CreateContainerRequest struct {
 	WorkingDir  string
 	User        string
 	Hostname    string
+	StopSignal  string
+	StopTimeout *int
+	Healthcheck *ContainerHealthcheck
 	Privileged  bool
 	SecurityOpt []string
 	Tmpfs       map[string]string
@@ -143,6 +146,15 @@ type CreateContainerRequest struct {
 	TTY         bool
 	Interactive bool
 	Remove      bool
+}
+
+type ContainerHealthcheck struct {
+	Test          []string
+	Interval      time.Duration
+	Timeout       time.Duration
+	StartPeriod   time.Duration
+	StartInterval time.Duration
+	Retries       int
 }
 
 type ContainerNetwork struct {

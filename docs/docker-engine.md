@@ -97,10 +97,14 @@ docker --context porto ps -a
 docker --context porto rm --force demo
 ```
 
-Container creation supports image, command, entrypoint, environment, labels, working directory, user, hostname, `--volume` bind/volume mappings, published ports, network mode, restart policy, TTY, stdin, and automatic removal.
+Container creation supports image, command, entrypoint, environment, labels, working directory, user, hostname, stop behavior, healthchecks, `--volume` bind/volume mappings, published ports, network mode, restart policy, TTY, stdin, and automatic removal.
+The nerdctl backend exposes a shell healthcheck command, so Docker `CMD`
+healthchecks are safely quoted and executed through the container shell; the
+create response includes a warning about that compatibility behavior.
 
 The Porto socket is also a Compose backend. Compose uses normal project labels,
-networks, named volumes, builds, container startup, and cleanup through Porto:
+service-name networking, health dependencies, named volumes, builds, container
+startup, and cleanup through Porto:
 
 ```sh
 docker --context porto compose up --detach --build

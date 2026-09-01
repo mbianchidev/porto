@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -173,6 +174,52 @@ func TestNormalizeNerdctlReferenceDropsTagBeforeDigest(t *testing.T) {
 	got := normalizeNerdctlReference("kindest/node:v1.37.0@sha256:abcdef")
 	if got != "kindest/node@sha256:abcdef" {
 		t.Fatalf("normalized reference = %q", got)
+	}
+}
+
+func TestContainerHostnameRejectsUnrepresentableAliases(t *testing.T) {
+	_, err := containerHostname(CreateContainerRequest{
+		Name: "project-api-1",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api", "api.internal"},
+		}},
+	})
+	if err == nil || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+}
+
+func TestAppendHealthcheckArgsKeepsImageCommandOverrides(t *testing.T) {
+	args, err := appendHealthcheckArgs([]string{"create"}, &ContainerHealthcheck{
+		Interval: 5 * time.Second,
+		Timeout:  2 * time.Second,
+		Retries:  4,
+	})
+	if err != nil {
+		t.Fatalf("appendHealthcheckArgs: %v", err)
+	}
+	got := strings.Join(args, " ")
+	want := "create --health-interval 5s --health-timeout 2s --health-retries 4"
+	if got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+func TestHealthcheckDueUsesNewestResult(t *testing.T) {
+	document := json.RawMessage(`{
+		"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},
+		"State":{"Running":true,"Health":{"Log":[
+			{"End":"2026-09-01T12:00:50Z"},
+			{"End":"2026-09-01T12:00:00Z"}
+		]}}
+	}`)
+	due, _, err := healthcheckDue(document, time.Date(2026, 9, 1, 12, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("healthcheckDue: %v", err)
+	}
+	if due {
+		t.Fatal("healthcheck was due before the newest result interval elapsed")
 	}
 }
 

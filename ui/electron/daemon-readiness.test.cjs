@@ -8,7 +8,9 @@ const {
   inspectDaemon,
   installDockerEngine,
   isDaemonReady,
+  mergeExecutablePaths,
   resolvePortoBinary,
+  resolveLoginShellPath,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
@@ -117,6 +119,46 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('reads the executable path from the user login shell', async () => {
+  let invocation = null
+  const resolved = await resolveLoginShellPath({
+    platform: 'darwin',
+    environment: { HOME: '/Users/test', SHELL: '/bin/zsh', PATH: '/usr/bin:/bin' },
+    execFileImpl: async (command, args, options) => {
+      invocation = { command, args, options }
+      return { stdout: 'shell startup output\n__PORTO_PATH__/opt/homebrew/bin:/usr/bin:/bin\n' }
+    },
+  })
+
+  assert.equal(resolved, '/opt/homebrew/bin:/usr/bin:/bin')
+  assert.equal(invocation.command, '/bin/zsh')
+  assert.deepEqual(invocation.args, ['-ilc', 'printf "\\n__PORTO_PATH__%s\\n" "$PATH"'])
+  assert.equal(invocation.options.env.HOME, '/Users/test')
+})
+
+test('falls back when the user login shell path is unavailable', async () => {
+  const resolved = await resolveLoginShellPath({
+    platform: 'darwin',
+    environment: { SHELL: '/bin/zsh' },
+    execFileImpl: async () => {
+      throw new Error('shell failed')
+    },
+  })
+
+  assert.equal(resolved, '')
+})
+
+test('merges bundled, login-shell, and inherited executable paths once', () => {
+  assert.equal(
+    mergeExecutablePaths([
+      '/Applications/Porto.app/Contents/Resources/runtime/bin',
+      '/opt/homebrew/bin:/usr/bin:/bin',
+      '/usr/bin:/bin:/usr/sbin:/sbin',
+    ], ':'),
+    '/Applications/Porto.app/Contents/Resources/runtime/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+  )
 })
 
 test('packaged apps always use the bundled Porto binary', () => {

@@ -62,7 +62,7 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
-			"nerdctl create --name demo --network bridge --env MODE=test --label app=demo --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("container-id\n"),
+			"nerdctl create --name demo --stop-signal SIGINT --stop-timeout 12 --network bridge --health-cmd curl -f http://localhost/health --health-interval 30s --health-timeout 5s --health-start-period 10s --health-retries 3 --env MODE=test --label app=demo --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("container-id\n"),
 		},
 		errors: map[string]error{},
 	}
@@ -73,6 +73,15 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 		"Cmd":["sleep","30"],
 		"Env":["MODE=test"],
 		"Labels":{"app":"demo"},
+		"StopSignal":"SIGINT",
+		"StopTimeout":12,
+		"Healthcheck":{
+			"Test":["CMD-SHELL","curl -f http://localhost/health"],
+			"Interval":30000000000,
+			"Timeout":5000000000,
+			"StartPeriod":10000000000,
+			"Retries":3
+		},
 		"HostConfig":{
 			"NetworkMode":"bridge",
 			"PortBindings":{"80/tcp":[{"HostIp":"127.0.0.1","HostPort":"8080"}]}
@@ -85,6 +94,34 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), "container-id") {
 		t.Fatalf("unexpected create response: %s", response.Body.String())
+	}
+}
+
+func TestInspectContainerRefreshesDueHealthcheck(t *testing.T) {
+	healthChecked := false
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			health := ""
+			if healthChecked {
+				health = `,"Health":{"Status":"healthy","FailingStreak":0,"Log":[{"End":"2026-09-01T12:00:00Z","ExitCode":0,"Output":""}]}`
+			}
+			return []byte(`[{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true` + health + `}}]`), nil
+		case "healthcheck demo":
+			healthChecked = true
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+
+	document, err := New(runner).InspectContainer(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("InspectContainer: %v", err)
+	}
+	if !healthChecked || !strings.Contains(string(document), `"Status":"healthy"`) {
+		t.Fatalf("healthcheck was not refreshed: checked=%t document=%s", healthChecked, document)
 	}
 }
 
@@ -985,16 +1022,21 @@ func TestDockerComposeUpUsesPortoNativeSocket(t *testing.T) {
 		t.Fatalf("docker compose up: %v: %s\nrequests: %v\ncommands: %+v", err, output, gotRequests, gotCommands)
 	}
 	runner.mu.Lock()
-	createdWithAlias := false
+	createdWithServiceHostname := false
+	usedUnsupportedNetworkAlias := false
 	for _, command := range runner.commands {
 		arguments := strings.Join(command.Args, " ")
-		if strings.HasPrefix(arguments, "create ") && strings.Contains(arguments, "--network-alias app") {
-			createdWithAlias = true
+		if strings.HasPrefix(arguments, "create ") {
+			createdWithServiceHostname = strings.Contains(arguments, "--hostname app")
+			usedUnsupportedNetworkAlias = strings.Contains(arguments, "--network-alias")
 		}
 	}
 	runner.mu.Unlock()
-	if !createdWithAlias {
-		t.Fatalf("Compose service alias was not passed to the runtime: %+v", runner.commands)
+	if !createdWithServiceHostname {
+		t.Fatalf("Compose service name was not configured as the runtime hostname: %+v", runner.commands)
+	}
+	if usedUnsupportedNetworkAlias {
+		t.Fatalf("Compose used unsupported nerdctl network aliases: %+v", runner.commands)
 	}
 	down := exec.Command(
 		"docker", "compose",

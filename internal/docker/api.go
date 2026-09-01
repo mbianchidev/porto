@@ -273,21 +273,31 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Hostname        string            `json:"Hostname"`
-		User            string            `json:"User"`
-		Env             []string          `json:"Env"`
-		Cmd             []string          `json:"Cmd"`
-		Image           string            `json:"Image"`
-		WorkingDir      string            `json:"WorkingDir"`
-		Entrypoint      []string          `json:"Entrypoint"`
-		Labels          map[string]string `json:"Labels"`
-		Volumes         map[string]any    `json:"Volumes"`
-		Tty             bool              `json:"Tty"`
-		OpenStdin       bool              `json:"OpenStdin"`
-		NetworkDisabled bool              `json:"NetworkDisabled"`
-		AttachStdin     bool              `json:"AttachStdin"`
-		AttachStdout    bool              `json:"AttachStdout"`
-		AttachStderr    bool              `json:"AttachStderr"`
+		Hostname    string            `json:"Hostname"`
+		User        string            `json:"User"`
+		Env         []string          `json:"Env"`
+		Cmd         []string          `json:"Cmd"`
+		Image       string            `json:"Image"`
+		WorkingDir  string            `json:"WorkingDir"`
+		Entrypoint  []string          `json:"Entrypoint"`
+		Labels      map[string]string `json:"Labels"`
+		Volumes     map[string]any    `json:"Volumes"`
+		StopSignal  string            `json:"StopSignal"`
+		StopTimeout *int              `json:"StopTimeout"`
+		Healthcheck *struct {
+			Test          []string `json:"Test"`
+			Interval      int64    `json:"Interval"`
+			Timeout       int64    `json:"Timeout"`
+			StartPeriod   int64    `json:"StartPeriod"`
+			StartInterval int64    `json:"StartInterval"`
+			Retries       int      `json:"Retries"`
+		} `json:"Healthcheck"`
+		Tty             bool `json:"Tty"`
+		OpenStdin       bool `json:"OpenStdin"`
+		NetworkDisabled bool `json:"NetworkDisabled"`
+		AttachStdin     bool `json:"AttachStdin"`
+		AttachStdout    bool `json:"AttachStdout"`
+		AttachStderr    bool `json:"AttachStderr"`
 		HostConfig      struct {
 			Binds        []string `json:"Binds"`
 			Mounts       []any    `json:"Mounts"`
@@ -555,6 +565,21 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 			Permissions:   permissions,
 		})
 	}
+	var healthcheck *ContainerHealthcheck
+	warnings := make([]string, 0)
+	if request.Healthcheck != nil {
+		healthcheck = &ContainerHealthcheck{
+			Test:          request.Healthcheck.Test,
+			Interval:      time.Duration(request.Healthcheck.Interval),
+			Timeout:       time.Duration(request.Healthcheck.Timeout),
+			StartPeriod:   time.Duration(request.Healthcheck.StartPeriod),
+			StartInterval: time.Duration(request.Healthcheck.StartInterval),
+			Retries:       request.Healthcheck.Retries,
+		}
+		if len(request.Healthcheck.Test) > 0 && request.Healthcheck.Test[0] == "CMD" {
+			warnings = append(warnings, "Porto's nerdctl backend executes CMD healthchecks through the container shell")
+		}
+	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
 		Name:        r.URL.Query().Get("name"),
 		Image:       request.Image,
@@ -566,6 +591,9 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		WorkingDir:  request.WorkingDir,
 		User:        request.User,
 		Hostname:    request.Hostname,
+		StopSignal:  request.StopSignal,
+		StopTimeout: request.StopTimeout,
+		Healthcheck: healthcheck,
 		Privileged:  request.HostConfig.Privileged,
 		SecurityOpt: request.HostConfig.SecurityOpt,
 		Tmpfs:       request.HostConfig.Tmpfs,
@@ -587,7 +615,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": []string{}})
+	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": warnings})
 }
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {

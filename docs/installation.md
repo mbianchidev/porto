@@ -39,6 +39,9 @@ through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 
 On macOS and Linux, the packaged app automatically provisions and starts its
 containerd and BuildKit backend on first launch when Docker support is enabled.
+It combines the bundled runtime tools with the user's login-shell `PATH`, so
+project commands can find package managers and language toolchains installed
+outside the system paths available to graphical applications.
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
 

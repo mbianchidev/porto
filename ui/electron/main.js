@@ -17,7 +17,9 @@ const {
   inspectDaemon,
   inspectDockerStatus,
   installDockerEngine,
+  mergeExecutablePaths,
   resolvePortoBinary,
+  resolveLoginShellPath,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
 
@@ -56,7 +58,7 @@ function bundledPortoBinaryReady() {
   }
 }
 
-function portoEnvironment() {
+async function portoEnvironment() {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) {
@@ -68,9 +70,11 @@ function portoEnvironment() {
     path.join(process.resourcesPath, 'runtime', 'bin'),
     path.join(process.resourcesPath, 'runtime', 'lima', 'bin'),
   ].filter((candidate) => fs.existsSync(candidate))
-  if (bundledPaths.length > 0) {
-    environment[pathKey] = [...bundledPaths, process.env[pathKey]].filter(Boolean).join(path.delimiter)
-  }
+  const loginShellPath = await resolveLoginShellPath({ environment })
+  environment[pathKey] = mergeExecutablePaths(
+    [...bundledPaths, loginShellPath, process.env[pathKey]],
+    path.delimiter,
+  )
   return environment
 }
 
@@ -88,11 +92,12 @@ function normalizedExecutablePath(value) {
 // its own lifecycle independently of the window: closing the Porto window
 // must never stop it, so the child is fully detached and unref'd rather than
 // tracked or killed on app quit.
-function startDaemon() {
+async function startDaemon() {
+  const environment = await portoEnvironment()
   return new Promise((resolve, reject) => {
     const child = spawn(portoBinary(), ['daemon', 'start'], {
       detached: true,
-      env: portoEnvironment(),
+      env: environment,
       stdio: 'ignore',
     })
     child.once('error', reject)

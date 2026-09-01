@@ -1,8 +1,12 @@
 const path = require('node:path')
+const { execFile } = require('node:child_process')
+const { promisify } = require('node:util')
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
 const EXPECTED_API_VERSION = 9
+const PATH_MARKER = '__PORTO_PATH__'
+const execFileAsync = promisify(execFile)
 
 async function inspectDaemon({
   daemonURL = DEFAULT_DAEMON_URL,
@@ -70,6 +74,46 @@ async function installDockerEngine({
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function resolveLoginShellPath({
+  platform = process.platform,
+  environment = process.env,
+  execFileImpl = execFileAsync,
+} = {}) {
+  if (platform === 'win32') return ''
+  const shell = environment.SHELL || '/bin/sh'
+  try {
+    const { stdout } = await execFileImpl(
+      shell,
+      ['-ilc', `printf "\\n${PATH_MARKER}%s\\n" "$PATH"`],
+      {
+        env: environment,
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      },
+    )
+    const line = stdout
+      .split(/\r?\n/)
+      .findLast((candidate) => candidate.startsWith(PATH_MARKER))
+    return line ? line.slice(PATH_MARKER.length).trim() : ''
+  } catch {
+    return ''
+  }
+}
+
+function mergeExecutablePaths(paths, delimiter = path.delimiter) {
+  const seen = new Set()
+  const entries = []
+  for (const value of paths) {
+    for (const entry of (value || '').split(delimiter)) {
+      const normalized = entry.trim()
+      if (normalized === '' || seen.has(normalized)) continue
+      seen.add(normalized)
+      entries.push(normalized)
+    }
+  }
+  return entries.join(delimiter)
 }
 
 function daemonExecutable(command) {
@@ -142,7 +186,9 @@ module.exports = {
   inspectDockerStatus,
   installDockerEngine,
   isDaemonReady,
+  mergeExecutablePaths,
   resolvePortoBinary,
+  resolveLoginShellPath,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
 }
