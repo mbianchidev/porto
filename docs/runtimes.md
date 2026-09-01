@@ -343,6 +343,7 @@ Create and start a machine:
 ```sh
 porto vm create test-ubuntu \
   --image ubuntu-24.04 \
+  --vm-type qemu \
   --cpus 4 \
   --memory 4096 \
   --disk 30
@@ -361,7 +362,7 @@ porto vm stop test-ubuntu
 porto vm delete test-ubuntu
 ```
 
-Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs; Porto disables snapshot controls and returns a clear unsupported-driver error for `vz` and other drivers.
+Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs. Install QEMU with `porto runtime install qemu`, then create the VM with `--vm-type qemu` or choose the QEMU driver in the dashboard. Porto temporarily stops running VMs for snapshot creation and restoration, then restarts them even when the snapshot command fails. Existing `vz` VMs cannot be converted and must be recreated to use snapshots.
 
 Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically. Porto records ownership metadata and hides unrelated Lima instances and Kubernetes node VMs from the standalone machine inventory.
 

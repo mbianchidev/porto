@@ -68,27 +68,30 @@ function SnapshotTab({ instance }: { instance: VMInstance }) {
       {!instance.snapshotSupported ? (
         <p className="hintLine">{instance.snapshotMessage || 'Snapshots are unavailable for this VM driver.'}</p>
       ) : (
-        <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); createSnapshot() }}>
-          <label>
-            <span>Snapshot name</span>
-            <input
-              type="text"
-              value={snapshotName}
-              placeholder="pre-upgrade"
-              pattern={LIMA_NAME_PATTERN_SOURCE}
-              maxLength={63}
-              aria-invalid={showNameError}
-              aria-describedby="snapshot-name-help"
-              onChange={(event) => setSnapshotName(event.target.value)}
-              required
-            />
-          </label>
-          <p id="snapshot-name-help" className={showNameError ? 'hintLine errorLine' : 'hintLine'}>{LIMA_NAME_HELP}</p>
-          <div className="actions">
-            <button type="submit" disabled={busy || !snapshotNameValid}>Create snapshot</button>
-            <button className="destructiveAction" type="button" disabled={busy || !snapshotNameValid} onClick={restoreSnapshot}>Restore snapshot</button>
-          </div>
-        </form>
+        <>
+          <p className="hintLine">Snapshot operations briefly stop a running VM and restart it when complete.</p>
+          <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); createSnapshot() }}>
+            <label>
+              <span>Snapshot name</span>
+              <input
+                type="text"
+                value={snapshotName}
+                placeholder="pre-upgrade"
+                pattern={LIMA_NAME_PATTERN_SOURCE}
+                maxLength={63}
+                aria-invalid={showNameError}
+                aria-describedby="snapshot-name-help"
+                onChange={(event) => setSnapshotName(event.target.value)}
+                required
+              />
+            </label>
+            <p id="snapshot-name-help" className={showNameError ? 'hintLine errorLine' : 'hintLine'}>{LIMA_NAME_HELP}</p>
+            <div className="actions">
+              <button type="submit" disabled={busy || !snapshotNameValid}>Create snapshot</button>
+              <button className="destructiveAction" type="button" disabled={busy || !snapshotNameValid} onClick={restoreSnapshot}>Restore snapshot</button>
+            </div>
+          </form>
+        </>
       )}
     </section>
   )
@@ -100,10 +103,10 @@ export function Machines() {
   const [tab, setTab] = useState('overview')
   const [creating, setCreating] = useState(false)
   const [form, setForm] = useState<VMCreateRequest>({
-    name: '', image: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true,
+    name: '', image: '', vmType: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true,
   })
   const [submitting, setSubmitting] = useState(false)
-  const [installing, setInstalling] = useState(false)
+  const [installingProvider, setInstallingProvider] = useState<'lima' | 'qemu' | null>(null)
 
   const status = usePolledResource<VMStatus>((signal) => apiGet('/api/vms/status', signal), 10000, [])
   const images = usePolledResource<VMImage[]>((signal) => apiGet('/api/vms/images', signal), 0, [])
@@ -113,11 +116,13 @@ export function Machines() {
   const selected = items.find((instance) => instance.name === selectedName) ?? null
   const available = status.data?.available ?? false
   const lima = providers.data?.find((provider) => provider.name === 'lima')
+  const qemu = providers.data?.find((provider) => provider.name === 'qemu')
   const selectedImage = images.data?.find((image) => image.id === form.image)
   const isRunning = (instance: VMInstance) => instance.status.toLocaleLowerCase() === 'running'
   const imageSupports = (architecture: string) => !selectedImage?.architectures?.length || selectedImage.architectures.includes(architecture)
   const vmNameValid = validLimaName(form.name)
   const showVMNameError = form.name !== '' && !vmNameValid
+  const qemuReady = form.vmType !== 'qemu' || qemu?.installed === true
 
   function selectImage(imageID: string) {
     const image = images.data?.find((item) => item.id === imageID)
@@ -135,7 +140,7 @@ export function Machines() {
     try {
       await apiSend('/api/vms/instances', 'POST', form)
       notifyNotice('machines', `Created VM ${form.name}.`)
-      setForm({ name: '', image: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true })
+      setForm({ name: '', image: '', vmType: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true })
       setCreating(false)
       instances.reload()
     } catch (err) {
@@ -167,17 +172,17 @@ export function Machines() {
     }
   }
 
-  async function installLima() {
-    setInstalling(true)
+  async function installProvider(provider: 'lima' | 'qemu') {
+    setInstallingProvider(provider)
     try {
-      await apiSend('/api/runtime/providers/lima/install', 'POST')
-      notifyNotice('machines', 'Lima provider installed.')
+      await apiSend(`/api/runtime/providers/${provider}/install`, 'POST')
+      notifyNotice('machines', `${provider === 'qemu' ? 'QEMU' : 'Lima'} provider installed.`)
       providers.reload()
       status.reload()
     } catch (err) {
-      notifyError('machines', errorMessage(err, 'Unable to install Lima'))
+      notifyError('machines', errorMessage(err, `Unable to install ${provider === 'qemu' ? 'QEMU' : 'Lima'}`))
     } finally {
-      setInstalling(false)
+      setInstallingProvider(null)
     }
   }
 
@@ -200,7 +205,9 @@ export function Machines() {
             <article className="empty unavailableNotice" role="status">
               <h2>Virtual machine provider is missing</h2>
               <p>{lima.message || 'Install Lima to create and manage Linux virtual machines.'}</p>
-              <button type="button" disabled={installing} onClick={installLima}>{installing ? 'Installing Lima…' : 'Install Lima'}</button>
+              <button type="button" disabled={installingProvider !== null} onClick={() => installProvider('lima')}>
+                {installingProvider === 'lima' ? 'Installing Lima…' : 'Install Lima'}
+              </button>
             </article>
           ) : (
             <RuntimeGate
@@ -307,6 +314,31 @@ export function Machines() {
               {selectedImage?.description && <p className="hintLine">{selectedImage.description}</p>}
               {selectedImage?.message && <p className="errorLine">{selectedImage.message}</p>}
               <label>
+                <span>VM driver</span>
+                <select
+                  value={form.vmType}
+                  onChange={(event) => {
+                    const vmType = event.target.value
+                    if (vmType === '' || vmType === 'qemu') setForm({ ...form, vmType })
+                  }}
+                >
+                  <option value="">Host default</option>
+                  <option value="qemu">QEMU · snapshot support</option>
+                </select>
+              </label>
+              <p className="hintLine">Choose QEMU when this machine needs snapshots. Existing VZ machines cannot be converted.</p>
+              {form.vmType === 'qemu' && !qemuReady && (
+                <div className="integrationStatus missing">
+                  <strong>QEMU required</strong>
+                  <span>{qemu?.message || providers.error || 'Inspecting QEMU availability...'}</span>
+                  {qemu && !qemu.installed && (
+                    <button type="button" disabled={installingProvider !== null} onClick={() => installProvider('qemu')}>
+                      {installingProvider === 'qemu' ? 'Installing QEMU…' : 'Install QEMU'}
+                    </button>
+                  )}
+                </div>
+              )}
+              <label>
                 <span>Architecture</span>
                 <select value={form.architecture} onChange={(event) => setForm({ ...form, architecture: event.target.value })}>
                   <option value="" disabled={Boolean(selectedImage?.architectures?.length)}>Host default</option>
@@ -330,7 +362,7 @@ export function Machines() {
                 <span><strong>Start after creation</strong></span>
                 <input type="checkbox" checked={form.start} onChange={(event) => setForm({ ...form, start: event.target.checked })} />
               </label>
-              <button type="submit" disabled={submitting || !vmNameValid || form.image === '' || selectedImage?.available === false}>{submitting ? 'Creating…' : 'Create machine'}</button>
+              <button type="submit" disabled={submitting || !vmNameValid || !qemuReady || form.image === '' || selectedImage?.available === false}>{submitting ? 'Creating…' : 'Create machine'}</button>
             </form>
           </Inspector>
         )}

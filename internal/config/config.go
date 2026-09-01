@@ -16,7 +16,7 @@ import (
 const (
 	AppName                  = "porto"
 	Version                  = "1.0.0"
-	APIVersion               = 23
+	APIVersion               = 24
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"

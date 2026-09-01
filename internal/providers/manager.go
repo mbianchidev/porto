@@ -33,9 +33,17 @@ type tool struct {
 
 var tools = []tool{
 	{name: "lima", command: "limactl", args: []string{"--version"}, formula: "lima"},
+	{name: "qemu", command: qemuCommand(), args: []string{"--version"}, formula: "qemu"},
 	{name: "kind", command: "kind", args: []string{"version"}, formula: "kind"},
 	{name: "k9s", command: "k9s", args: []string{"version", "--short"}, formula: "k9s"},
 	{name: "k0s", command: "limactl", args: []string{"--version"}, formula: "lima"},
+}
+
+func qemuCommand() string {
+	if runtime.GOARCH == "arm64" {
+		return "qemu-system-aarch64"
+	}
+	return "qemu-system-x86_64"
 }
 
 func New(runner runtimes.Runner) *Manager {
