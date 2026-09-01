@@ -34,6 +34,39 @@ type killSwitchRunner struct {
 	syncArgs chan []string
 }
 
+func TestLoadProjectGitMetadataRunsConcurrently(t *testing.T) {
+	projects := []app.Project{{Path: "/one"}, {Path: "/two"}, {Path: "/three"}}
+	started := make(chan string, len(projects))
+	release := make(chan struct{})
+	result := make(chan []projectGitMetadata, 1)
+	errors := make(chan error, 1)
+	go func() {
+		metadata, err := loadProjectGitMetadata(context.Background(), projects, func(_ context.Context, project app.Project) projectGitMetadata {
+			started <- project.Path
+			<-release
+			return projectGitMetadata{branch: filepath.Base(project.Path)}
+		})
+		result <- metadata
+		errors <- err
+	}()
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("project metadata loading did not run concurrently")
+		}
+	}
+	close(release)
+	if err := <-errors; err != nil {
+		t.Fatal(err)
+	}
+	metadata := <-result
+	if len(metadata) != len(projects) || metadata[0].branch != "one" || metadata[2].branch != "three" {
+		t.Fatalf("metadata = %+v", metadata)
+	}
+}
+
 func (r *killSwitchRunner) LookPath(name string) (string, error) {
 	if name == "killswitchctl" {
 		return "/Users/test/bin/killswitchctl", nil
