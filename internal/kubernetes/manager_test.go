@@ -25,6 +25,11 @@ type fakeRunner struct {
 	handler   func(runtimes.Command) ([]byte, error)
 }
 
+type deadlineRecordingRunner struct {
+	mu        sync.Mutex
+	deadlines []time.Time
+}
+
 func newFakeRunner() *fakeRunner {
 	return &fakeRunner{instances: map[string]bool{}}
 }
@@ -105,6 +110,28 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 		}
 	}
 	return nil, nil
+}
+
+func (r *deadlineRecordingRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return nil, errors.New("capability probe has no deadline")
+	}
+	r.mu.Lock()
+	r.deadlines = append(r.deadlines, deadline)
+	r.mu.Unlock()
+	time.Sleep(2 * time.Millisecond)
+	args := strings.Join(command.Args, " ")
+	switch {
+	case strings.Contains(args, "-- sh -c exit 0"), strings.Contains(args, "command -v"):
+		return nil, nil
+	case strings.Contains(args, "-- bash -c exit 0"):
+		return []byte(`exec: "bash": executable file not found in $PATH`), errors.New("exit status 1")
+	case strings.Contains(args, "-- ash -c exit 0"):
+		return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
+	default:
+		return nil, errors.New("unexpected command")
+	}
 }
 
 func TestStatusAndPodDecoding(t *testing.T) {
@@ -467,31 +494,25 @@ func TestContainerCapabilitiesCachesProbeResult(t *testing.T) {
 }
 
 func TestContainerCapabilitiesBoundsEachSequentialProbe(t *testing.T) {
-	runner := newFakeRunner()
-	runner.handler = func(command runtimes.Command) ([]byte, error) {
-		time.Sleep(20 * time.Millisecond)
-		args := strings.Join(command.Args, " ")
-		switch {
-		case strings.Contains(args, "-- sh -c exit 0"):
-			return nil, nil
-		case strings.Contains(args, "-- bash -c exit 0"):
-			return []byte(`exec: "bash": executable file not found in $PATH`), errors.New("exit status 1")
-		case strings.Contains(args, "-- ash -c exit 0"):
-			return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
-		case strings.Contains(args, "command -v"):
-			return nil, nil
-		default:
-			return nil, errors.New("unexpected command")
-		}
-	}
+	runner := &deadlineRecordingRunner{}
 	manager := New(runner)
-	manager.capabilityProbeTimeout = 30 * time.Millisecond
+	manager.capabilityProbeTimeout = time.Second
 	capabilities, err := manager.ContainerCapabilities(context.Background(), "porto-dev", "default", "api", "api", true)
 	if err != nil {
 		t.Fatalf("inspect capabilities: %v", err)
 	}
 	if !capabilities.FileInspection {
 		t.Fatalf("file inspection unavailable: %+v", capabilities)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.deadlines) != 4 {
+		t.Fatalf("probe deadlines = %d, want 4", len(runner.deadlines))
+	}
+	for index := 1; index < len(runner.deadlines); index++ {
+		if !runner.deadlines[index].After(runner.deadlines[index-1]) {
+			t.Fatalf("probe %d reused the previous deadline: %v", index, runner.deadlines)
+		}
 	}
 }
 
