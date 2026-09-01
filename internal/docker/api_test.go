@@ -125,6 +125,33 @@ func TestInspectContainerRefreshesDueHealthcheck(t *testing.T) {
 	}
 }
 
+func TestDockerAPIFlushesWaitHeadersBeforeNextExit(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect demo" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		inspects++
+		if inspects == 1 {
+			return []byte(`[{"State":{"Status":"created","Running":false,"ExitCode":0}}]`), nil
+		}
+		return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":0,"StartedAt":"2026-09-01T16:00:00Z","FinishedAt":"2026-09-01T16:00:01Z"}}]`), nil
+	}
+
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "").ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/containers/demo/wait?condition=next-exit", nil),
+	)
+	if response.Code != http.StatusOK || !response.Flushed {
+		t.Fatalf("wait response = status %d flushed %t: %s", response.Code, response.Flushed, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"StatusCode":0`) {
+		t.Fatalf("unexpected wait response: %s", response.Body.String())
+	}
+}
+
 func TestDockerAPICreatesPrivilegedKindContainer(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {

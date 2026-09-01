@@ -655,15 +655,22 @@ func (a *API) renameContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
-	code, err := a.manager.WaitContainer(r.Context(), r.PathValue("id"), r.URL.Query().Get("condition"))
-	if err != nil {
-		writeDockerError(w, err)
+	condition := r.URL.Query().Get("condition")
+	if condition != "" && condition != "not-running" && condition != "next-exit" {
+		writeDockerUnsupported(w, "container wait condition "+condition)
 		return
 	}
-	writeDockerJSON(w, http.StatusOK, map[string]any{
-		"StatusCode": code,
-		"Error":      nil,
-	})
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	code, err := a.manager.WaitContainer(r.Context(), r.PathValue("id"), condition)
+	response := map[string]any{"StatusCode": code, "Error": nil}
+	if err != nil {
+		response["Error"] = map[string]string{"Message": err.Error()}
+	}
+	_ = json.NewEncoder(w).Encode(response)
 }
 
 func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
