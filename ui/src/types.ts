@@ -214,6 +214,12 @@ export type KubernetesContainer = {
   state: string
 }
 
+export type KubernetesContainerCapabilities = {
+  shells: string[]
+  fileInspection: boolean
+  message?: string
+}
+
 export type KubernetesPod = {
   name: string
   namespace: string

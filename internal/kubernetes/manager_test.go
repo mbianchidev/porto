@@ -311,6 +311,115 @@ func TestFilesReportsShelllessContainer(t *testing.T) {
 	}
 }
 
+func TestContainerCapabilitiesDetectShelllessImage(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := strings.Join(command.Args, " ")
+		for _, shell := range []string{"sh", "bash", "ash"} {
+			if strings.Contains(args, "-- "+shell+" -c exit 0") {
+				return []byte(`exec: "` + shell + `": executable file not found in $PATH`), errors.New("exit status 1")
+			}
+		}
+		return nil, errors.New("unexpected command")
+	}
+	capabilities, err := New(runner).ContainerCapabilities(
+		context.Background(),
+		"porto-dev",
+		"kube-system",
+		"metrics-server",
+		"metrics-server",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("inspect capabilities: %v", err)
+	}
+	if len(capabilities.Shells) != 0 || capabilities.FileInspection {
+		t.Fatalf("unexpected shellless capabilities: %+v", capabilities)
+	}
+	if !strings.Contains(capabilities.Message, "shellless") {
+		t.Fatalf("unexpected capability message: %q", capabilities.Message)
+	}
+}
+
+func TestContainerCapabilitiesChecksFileUtilities(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(args, "-- sh -c exit 0"):
+			return nil, nil
+		case strings.Contains(args, "-- bash -c exit 0"):
+			return []byte(`exec: "bash": executable file not found in $PATH`), errors.New("exit status 1")
+		case strings.Contains(args, "-- ash -c exit 0"):
+			return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
+		case strings.Contains(args, "command -v"):
+			return []byte("head\n"), nil
+		default:
+			return nil, errors.New("unexpected command")
+		}
+	}
+	capabilities, err := New(runner).ContainerCapabilities(
+		context.Background(),
+		"porto-dev",
+		"default",
+		"api",
+		"api",
+		true,
+	)
+	if err != nil {
+		t.Fatalf("inspect capabilities: %v", err)
+	}
+	if strings.Join(capabilities.Shells, ",") != "sh" || capabilities.FileInspection {
+		t.Fatalf("unexpected capabilities: %+v", capabilities)
+	}
+	if !strings.Contains(capabilities.Message, "head") {
+		t.Fatalf("missing utility was not reported: %q", capabilities.Message)
+	}
+}
+
+func TestContainerCapabilitiesDoesNotHideMissingKubectl(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(runtimes.Command) ([]byte, error) {
+		return nil, errors.New(`exec: "kubectl": executable file not found in $PATH`)
+	}
+	_, err := New(runner).ContainerCapabilities(
+		context.Background(),
+		"porto-dev",
+		"default",
+		"api",
+		"api",
+		false,
+	)
+	if err == nil || !strings.Contains(err.Error(), "kubectl") {
+		t.Fatalf("missing kubectl was hidden: %v", err)
+	}
+}
+
+func TestContainerCapabilitiesCachesProbeResult(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := strings.Join(command.Args, " ")
+		if strings.Contains(args, "-- sh -c exit 0") {
+			return nil, nil
+		}
+		if strings.Contains(args, "-- bash -c exit 0") {
+			return []byte(`exec: "bash": executable file not found in $PATH`), errors.New("exit status 1")
+		}
+		return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
+	}
+	manager := New(runner)
+	for range 2 {
+		if _, err := manager.ContainerCapabilities(context.Background(), "porto-dev", "default", "api", "api", false); err != nil {
+			t.Fatalf("inspect capabilities: %v", err)
+		}
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 3 {
+		t.Fatalf("capability probes = %d, want 3 cached probes", len(runner.commands))
+	}
+}
+
 func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	runner := newFakeRunner()
 	vmManager := vm.New(runner)

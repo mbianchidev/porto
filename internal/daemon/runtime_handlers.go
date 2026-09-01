@@ -60,6 +60,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
 	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/terminal", s.requireRuntime("kubernetes", s.kubernetesPodTerminal))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/capabilities", s.requireRuntime("kubernetes", s.kubernetesPodCapabilities))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/files", s.requireRuntime("kubernetes", s.kubernetesPodFiles))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesPodFile))
 	mux.HandleFunc("PUT /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesWritePodFile))
@@ -421,6 +422,18 @@ func (s *Server) kubernetesPodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"output": string(output)})
+}
+
+func (s *Server) kubernetesPodCapabilities(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ContainerCapabilities(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("pod"),
+		r.URL.Query().Get("container"),
+		queryBool(r, "files"),
+	)
+	writeRuntimeResult(w, value, err)
 }
 
 func (s *Server) kubernetesPodFiles(w http.ResponseWriter, r *http.Request) {

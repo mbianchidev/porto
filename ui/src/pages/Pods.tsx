@@ -2,13 +2,14 @@ import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
-import { Inspector, InspectorTabs } from '../components/Inspector'
+import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
 import type {
   KubernetesEvent,
+  KubernetesContainerCapabilities,
   KubernetesFileContent,
   KubernetesFileListing,
   KubernetesPod,
@@ -47,6 +48,10 @@ function podTerminalSocketURL(pod: KubernetesPod, context: string, container: st
   if (context) params.set('context', context)
   if (container) params.set('container', container)
   return `${protocol}//${window.location.host}${podPath(pod, '/terminal', '')}?${params.toString()}`
+}
+
+function isTerminalShell(value: string): value is TerminalShell {
+  return TERMINAL_SHELLS.includes(value as TerminalShell)
 }
 
 function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
@@ -95,8 +100,22 @@ function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
 function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
   const [shell, setShell] = useState<TerminalShell>('sh')
-  const terminalURL = podTerminalSocketURL(pod, context, container, shell)
   const running = pod.phase.toLocaleLowerCase() === 'running'
+  const capabilities = usePolledResource<KubernetesContainerCapabilities>(
+    (signal) => running
+      ? apiGet(podPath(pod, '/capabilities', context, `container=${encodeURIComponent(container)}`), signal)
+      : Promise.resolve({
+        shells: [],
+        fileInspection: false,
+        message: 'The pod must be running before Porto can inspect its terminal capabilities.',
+      }),
+    0,
+    [context, pod.namespace, pod.name, container, running],
+  )
+  const availableShells = (capabilities.data?.shells ?? []).filter(isTerminalShell)
+  const activeShell = availableShells.includes(shell) ? shell : availableShells[0] ?? 'sh'
+  const ready = !capabilities.loading && !capabilities.error && availableShells.length > 0
+  const terminalURL = podTerminalSocketURL(pod, context, container, activeShell)
   return (
     <>
       <section className="drawerPanel">
@@ -110,24 +129,35 @@ function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string 
           </label>
           <label>
             <span>Shell</span>
-            <select value={shell} onChange={(event) => setShell(event.target.value as TerminalShell)}>
-              {TERMINAL_SHELLS.map((option) => <option key={option} value={option}>{option}</option>)}
+            <select
+              value={ready ? activeShell : ''}
+              disabled={!ready}
+              onChange={(event) => setShell(event.target.value as TerminalShell)}
+            >
+              {!ready && <option value="">No supported shell</option>}
+              {availableShells.map((option) => <option key={option} value={option}>{option}</option>)}
             </select>
           </label>
         </div>
-        <p className="hintLine">The selected container must include the chosen shell.</p>
+        {capabilities.loading && <p className="hintLine">Inspecting container capabilities...</p>}
+        {capabilities.error && <p className="errorLine">{capabilities.error}</p>}
+        {!capabilities.loading && !capabilities.error && capabilities.data?.message && (
+          <p className="hintLine">{capabilities.data.message}</p>
+        )}
       </section>
-      <Suspense fallback={<div className="terminalPlaceholder">Loading terminal...</div>}>
-        <InteractiveTerminal
-          key={terminalURL}
-          endpoint={terminalURL}
-          title="Pod terminal"
-          detail={`${pod.namespace}/${pod.name} · ${container || 'default container'} · ${shell}`}
-          running={running}
-          ariaLabel={`Interactive terminal for ${pod.namespace}/${pod.name}`}
-          stoppedMessage="The pod must be running to open a terminal."
-        />
-      </Suspense>
+      {(ready || !running) && (
+        <Suspense fallback={<div className="terminalPlaceholder">Loading terminal...</div>}>
+          <InteractiveTerminal
+            key={terminalURL}
+            endpoint={terminalURL}
+            title="Pod terminal"
+            detail={`${pod.namespace}/${pod.name} · ${container || 'default container'} · ${activeShell}`}
+            running={running}
+            ariaLabel={`Interactive terminal for ${pod.namespace}/${pod.name}`}
+            stoppedMessage="The pod must be running to open a terminal."
+          />
+        </Suspense>
+      )}
     </>
   )
 }
@@ -140,11 +170,26 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const [openFile, setOpenFile] = useState<KubernetesFileContent | null>(null)
   const [draft, setDraft] = useState('')
   const [saving, setSaving] = useState(false)
+  const running = pod.phase.toLocaleLowerCase() === 'running'
 
-  const listing = usePolledResource<KubernetesFileListing>(
-    (signal) => apiGet(podPath(pod, '/files', context, `container=${encodeURIComponent(container)}&path=${encodeURIComponent(browsePath)}`), signal),
+  const capabilities = usePolledResource<KubernetesContainerCapabilities>(
+    (signal) => running
+      ? apiGet(podPath(pod, '/capabilities', context, `container=${encodeURIComponent(container)}&files=true`), signal)
+      : Promise.resolve({
+        shells: [],
+        fileInspection: false,
+        message: 'The pod must be running before Porto can inspect its files.',
+      }),
     0,
-    [pod.namespace, pod.name, container, browsePath],
+    [context, pod.namespace, pod.name, container, running],
+  )
+  const canInspect = !capabilities.loading && !capabilities.error && (capabilities.data?.fileInspection ?? false)
+  const listing = usePolledResource<KubernetesFileListing>(
+    (signal) => canInspect
+      ? apiGet(podPath(pod, '/files', context, `container=${encodeURIComponent(container)}&path=${encodeURIComponent(browsePath)}`), signal)
+      : Promise.resolve({ path: browsePath, entries: [] }),
+    0,
+    [context, pod.namespace, pod.name, container, browsePath, canInspect],
   )
 
   async function openEntry(entryName: string, entryType: string) {
@@ -196,7 +241,10 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
       <div className="inspectorForm inline">
         <label>
           <span>Container</span>
-          <select value={container} onChange={(event) => setContainer(event.target.value)}>
+          <select value={container} onChange={(event) => {
+            setContainer(event.target.value)
+            setOpenFile(null)
+          }}>
             {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
           </select>
         </label>
@@ -208,20 +256,27 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
           <button type="submit">Browse</button>
         </form>
       </div>
-      {listing.error && <p className="errorLine">{listing.error}</p>}
-      <ul className="fileList">
-        {(listing.data?.entries ?? []).map((entry) => (
-          <li key={entry.name}>
-            <button type="button" onClick={() => openEntry(entry.name, entry.type)}>
-              <span className="fileKind">{entry.type === 'directory' || entry.type === 'dir' ? 'DIR' : 'FILE'}</span>
-              {entry.name}
-              <small>{entry.type === 'file' ? `${entry.size}B` : ''}</small>
-            </button>
-          </li>
-        ))}
-        {listing.data && listing.data.entries.length === 0 && <li className="logEmpty">Empty directory.</li>}
-      </ul>
-      {openFile && (
+      {capabilities.loading && <p className="hintLine">Inspecting container capabilities...</p>}
+      {capabilities.error && <p className="errorLine">{capabilities.error}</p>}
+      {!capabilities.loading && !capabilities.error && !canInspect && (
+        <p className="hintLine">{capabilities.data?.message || 'File inspection is unavailable for this container.'}</p>
+      )}
+      {canInspect && listing.error && <p className="errorLine">{listing.error}</p>}
+      {canInspect && (
+        <ul className="fileList">
+          {(listing.data?.entries ?? []).map((entry) => (
+            <li key={entry.name}>
+              <button type="button" onClick={() => openEntry(entry.name, entry.type)}>
+                <span className="fileKind">{entry.type === 'directory' || entry.type === 'dir' ? 'DIR' : 'FILE'}</span>
+                {entry.name}
+                <small>{entry.type === 'file' ? `${entry.size}B` : ''}</small>
+              </button>
+            </li>
+          ))}
+          {listing.data && listing.data.entries.length === 0 && <li className="logEmpty">Empty directory.</li>}
+        </ul>
+      )}
+      {canInspect && openFile && (
         <div className="fileEditor">
           <div className="commandStrip"><span>Editing</span><code>{openFile.path}{openFile.truncated ? ' (truncated)' : ''}</code></div>
           {openFile.truncated && (
@@ -309,6 +364,7 @@ export function Pods({ context }: { context: string }) {
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [tab, setTab] = useState('overview')
+  const [inspectorGeneration, setInspectorGeneration] = useState(0)
 
   const status = usePolledResource<KubernetesStatus>(
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
@@ -347,7 +403,10 @@ export function Pods({ context }: { context: string }) {
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} pods</span>
-        <button className="refreshControl" type="button" onClick={pods.reload}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => {
+          setInspectorGeneration((generation) => generation + 1)
+          pods.reload()
+        }}>Refresh</button>
       </div>
       <div className="workArea">
         {!available ? (
@@ -377,34 +436,36 @@ export function Pods({ context }: { context: string }) {
         {selected && (
           <Inspector title={selected.name} subtitle={`${selected.namespace} · ${selected.phase}`} onClose={() => setSelectedKey(null)}>
             <InspectorTabs tabs={TABS} activeID={tab} onSelect={setTab} />
-            {tab === 'overview' && (
-              <section className="drawerPanel">
-                <h3>Pod overview</h3>
-                <dl className="runtimeGrid">
-                  <div><dt>Phase</dt><dd>{selected.phase}</dd></div>
-                  <div><dt>Ready</dt><dd>{selected.ready}</dd></div>
-                  <div><dt>Node</dt><dd>{selected.node || '—'}</dd></div>
-                  <div><dt>Pod IP</dt><dd>{selected.ip || '—'}</dd></div>
-                  <div><dt>Age</dt><dd>{selected.age}</dd></div>
-                  <div><dt>Restarts</dt><dd>{selected.restarts}</dd></div>
-                </dl>
-                <h3>Containers</h3>
-                <dl className="runtimeGrid">
-                  {selected.containers.map((container) => (
-                    <div key={container.name}>
-                      <dt>{container.name}</dt>
-                      <dd>{container.image} · {container.state}{container.ready ? ' · ready' : ' · not ready'} · {container.restartCount} restart(s)</dd>
-                    </div>
-                  ))}
-                </dl>
-              </section>
-            )}
-            {tab === 'logs' && <LogsTab pod={selected} context={context} />}
-            {tab === 'terminal' && <PodTerminalTab key={`${selected.namespace}/${selected.name}`} pod={selected} context={context} />}
-            {tab === 'files' && <FilesTab pod={selected} context={context} />}
-            {tab === 'stats' && <StatsTab pod={selected} context={context} />}
-            {tab === 'events' && <EventsTab pod={selected} context={context} />}
-            {tab === 'manifest' && <ManifestTab pod={selected} context={context} />}
+            <InspectorErrorBoundary key={`${context}:${selectedKey}:${tab}:${inspectorGeneration}`}>
+              {tab === 'overview' && (
+                <section className="drawerPanel">
+                  <h3>Pod overview</h3>
+                  <dl className="runtimeGrid">
+                    <div><dt>Phase</dt><dd>{selected.phase}</dd></div>
+                    <div><dt>Ready</dt><dd>{selected.ready}</dd></div>
+                    <div><dt>Node</dt><dd>{selected.node || '—'}</dd></div>
+                    <div><dt>Pod IP</dt><dd>{selected.ip || '—'}</dd></div>
+                    <div><dt>Age</dt><dd>{selected.age}</dd></div>
+                    <div><dt>Restarts</dt><dd>{selected.restarts}</dd></div>
+                  </dl>
+                  <h3>Containers</h3>
+                  <dl className="runtimeGrid">
+                    {selected.containers.map((container) => (
+                      <div key={container.name}>
+                        <dt>{container.name}</dt>
+                        <dd>{container.image} · {container.state}{container.ready ? ' · ready' : ' · not ready'} · {container.restartCount} restart(s)</dd>
+                      </div>
+                    ))}
+                  </dl>
+                </section>
+              )}
+              {tab === 'logs' && <LogsTab pod={selected} context={context} />}
+              {tab === 'terminal' && <PodTerminalTab key={`${selected.namespace}/${selected.name}`} pod={selected} context={context} />}
+              {tab === 'files' && <FilesTab pod={selected} context={context} />}
+              {tab === 'stats' && <StatsTab pod={selected} context={context} />}
+              {tab === 'events' && <EventsTab pod={selected} context={context} />}
+              {tab === 'manifest' && <ManifestTab pod={selected} context={context} />}
+            </InspectorErrorBoundary>
           </Inspector>
         )}
       </div>

@@ -10,9 +10,11 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -20,16 +22,20 @@ import (
 )
 
 const (
-	defaultTimeout        = 30 * time.Second
-	maxFileBytes          = 1024 * 1024
-	configMapListTemplate = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
-	secretListTemplate    = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.type}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
+	defaultTimeout         = 30 * time.Second
+	maxFileBytes           = 1024 * 1024
+	capabilityProbeTimeout = 5 * time.Second
+	capabilityCacheTTL     = 30 * time.Second
+	configMapListTemplate  = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
+	secretListTemplate     = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.type}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
 )
 
 type Manager struct {
-	runner         runtimes.Runner
-	timeout        time.Duration
-	kubeconfigRoot string
+	runner          runtimes.Runner
+	timeout         time.Duration
+	kubeconfigRoot  string
+	capabilityMu    sync.Mutex
+	capabilityCache map[string]cachedContainerCapabilities
 }
 
 type Status struct {
@@ -162,6 +168,17 @@ type FileContent struct {
 	Truncated bool   `json:"truncated"`
 }
 
+type ContainerCapabilities struct {
+	Shells         []string `json:"shells"`
+	FileInspection bool     `json:"fileInspection"`
+	Message        string   `json:"message,omitempty"`
+}
+
+type cachedContainerCapabilities struct {
+	value     ContainerCapabilities
+	expiresAt time.Time
+}
+
 func New(runner runtimes.Runner) *Manager {
 	return NewWithKubeconfigRoot(runner, "")
 }
@@ -170,7 +187,12 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, timeout: defaultTimeout, kubeconfigRoot: kubeconfigRoot}
+	return &Manager{
+		runner:          runner,
+		timeout:         defaultTimeout,
+		kubeconfigRoot:  kubeconfigRoot,
+		capabilityCache: make(map[string]cachedContainerCapabilities),
+	}
 }
 
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
@@ -500,6 +522,118 @@ func (m *Manager) Exec(ctx context.Context, contextName, namespace, pod, contain
 	return m.run(ctx, contextName, 30*time.Minute, stdin, args...)
 }
 
+func (m *Manager) ContainerCapabilities(
+	ctx context.Context,
+	contextName,
+	namespace,
+	pod,
+	container string,
+	checkFiles bool,
+) (ContainerCapabilities, error) {
+	if err := validateResource(namespace, pod); err != nil {
+		return ContainerCapabilities{}, err
+	}
+	cacheKey := strings.Join([]string{contextName, namespace, pod, container, strconv.FormatBool(checkFiles)}, "\x00")
+	if cached, ok := m.cachedContainerCapabilities(cacheKey); ok {
+		return cached, nil
+	}
+	probeContext, cancel := context.WithTimeout(ctx, capabilityProbeTimeout)
+	defer cancel()
+
+	capabilities := ContainerCapabilities{Shells: []string{}}
+	shells := []string{"sh", "bash", "ash"}
+	type shellProbe struct {
+		index int
+		err   error
+	}
+	probes := make(chan shellProbe, len(shells))
+	for index, shell := range shells {
+		go func() {
+			_, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{shell, "-c", "exit 0"}, nil)
+			probes <- shellProbe{index: index, err: err}
+		}()
+	}
+	available := make([]bool, len(shells))
+	var probeErr error
+	for range shells {
+		probe := <-probes
+		switch {
+		case probe.err == nil:
+			available[probe.index] = true
+		case executableUnavailable(probe.err, shells[probe.index]):
+			continue
+		default:
+			probeErr = errors.Join(probeErr, probe.err)
+		}
+	}
+	if probeContext.Err() != nil {
+		return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", probeContext.Err())
+	}
+	if probeErr != nil {
+		return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", probeErr)
+	}
+	for index, shell := range shells {
+		if available[index] {
+			capabilities.Shells = append(capabilities.Shells, shell)
+		}
+	}
+	if len(capabilities.Shells) == 0 {
+		capabilities.Message = "This container image is shellless; terminal and file inspection are unavailable."
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	if !checkFiles {
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	if !slices.Contains(capabilities.Shells, "sh") {
+		capabilities.Message = "File inspection requires sh, which is not available in this container."
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	script := `for tool in wc head cat rm; do
+  command -v "$tool" >/dev/null 2>&1 || printf '%s\n' "$tool"
+done`
+	output, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{"sh", "-c", script}, nil)
+	if err != nil {
+		if probeContext.Err() != nil {
+			return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", probeContext.Err())
+		}
+		return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", err)
+	}
+	missingUtilities := strings.Fields(string(output))
+	if len(missingUtilities) > 0 {
+		capabilities.Message = "File inspection requires missing utilities: " + strings.Join(missingUtilities, ", ")
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	capabilities.FileInspection = true
+	m.cacheContainerCapabilities(cacheKey, capabilities)
+	return capabilities, nil
+}
+
+func (m *Manager) cachedContainerCapabilities(key string) (ContainerCapabilities, bool) {
+	m.capabilityMu.Lock()
+	defer m.capabilityMu.Unlock()
+	cached, ok := m.capabilityCache[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(m.capabilityCache, key)
+		return ContainerCapabilities{}, false
+	}
+	cached.value.Shells = append([]string(nil), cached.value.Shells...)
+	return cached.value, true
+}
+
+func (m *Manager) cacheContainerCapabilities(key string, value ContainerCapabilities) {
+	value.Shells = append([]string(nil), value.Shells...)
+	m.capabilityMu.Lock()
+	defer m.capabilityMu.Unlock()
+	m.capabilityCache[key] = cachedContainerCapabilities{
+		value:     value,
+		expiresAt: time.Now().Add(capabilityCacheTTL),
+	}
+}
+
 func (m *Manager) Files(ctx context.Context, contextName, namespace, pod, container, directory string) (FileListing, error) {
 	directory, err := cleanRemotePath(directory)
 	if err != nil {
@@ -578,13 +712,21 @@ func fileOperationError(err error) error {
 	if err == nil {
 		return nil
 	}
-	message := strings.ToLower(err.Error())
-	if strings.Contains(message, `exec: "sh"`) &&
-		(strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file")) {
+	if executableUnavailable(err, "sh") {
 		log.Printf("Kubernetes file inspection requires sh: %v", err)
 		return errors.New("container does not include sh; file inspection is unavailable for shellless images")
 	}
 	return err
+}
+
+func executableUnavailable(err error, executable string) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	executable = strings.ToLower(executable)
+	return strings.Contains(message, `exec: "`+executable+`"`) &&
+		(strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file"))
 }
 
 func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string) ([]PodStats, error) {
