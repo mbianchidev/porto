@@ -21,8 +21,8 @@ export function Networks() {
   const [form, setForm] = useState<DockerCreateNetworkRequest>(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
 
-  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [])
-  const networks = usePolledResource<DockerNetwork[]>((signal) => apiGet('/api/docker/networks', signal), 8000, [])
+  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
+  const networks = usePolledResource<DockerNetwork[]>((signal) => apiGet('/api/docker/networks', signal), 8000, [], 'docker:networks')
   const items = networks.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((network) => normalizedQuery === '' || network.name.toLocaleLowerCase().includes(normalizedQuery))

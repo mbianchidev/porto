@@ -6,12 +6,14 @@ import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
+import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
 import type {
   KubernetesEvent,
   KubernetesContainerCapabilities,
+  KubernetesContext,
   KubernetesFileContent,
   KubernetesFileListing,
   KubernetesPod,
@@ -65,7 +67,8 @@ function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const logs = usePolledResource<string>(
     (signal) => apiGet(podPath(pod, '/logs', context, `container=${encodeURIComponent(container)}&previous=${showPrevious}&tail=500`), signal),
     4000,
-    [pod.namespace, pod.name, container, showPrevious],
+    [context, pod.namespace, pod.name, container, showPrevious],
+    `kubernetes:${context}:pod:${pod.uid}:logs:${container}:${showPrevious}`,
   )
   return (
     <section className="logConsole">
@@ -130,6 +133,7 @@ function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string 
       }),
     0,
     [context, pod.namespace, pod.name, container, running],
+    `kubernetes:${context}:pod:${pod.uid}:capabilities:${container}`,
   )
   const availableShells = (capabilities.data?.shells ?? []).filter(isTerminalShell)
   const activeShell = availableShells.includes(shell) ? shell : availableShells[0] ?? 'sh'
@@ -201,6 +205,7 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
       }),
     0,
     [context, pod.namespace, pod.name, container, running],
+    `kubernetes:${context}:pod:${pod.uid}:file-capabilities:${container}`,
   )
   const canInspect = !capabilities.loading && !capabilities.error && (capabilities.data?.fileInspection ?? false)
   const listing = usePolledResource<KubernetesFileListing>(
@@ -209,6 +214,7 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
       : Promise.resolve({ path: browsePath, entries: [] }),
     0,
     [context, pod.namespace, pod.name, container, browsePath, canInspect],
+    `kubernetes:${context}:pod:${pod.uid}:files:${container}:${browsePath}`,
   )
 
   async function openEntry(entryName: string, entryType: string) {
@@ -320,21 +326,30 @@ function FilesTab({ pod, context }: { pod: KubernetesPod; context: string }) {
 }
 
 function StatsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
+  const ready = pod.phase.toLocaleLowerCase() === 'running'
+    && pod.podReady
   const stats = usePolledResource<KubernetesPodStats[]>(
-    (signal) => apiGet(podPath(pod, '/stats', context), signal),
+    (signal) => ready ? apiGet(podPath(pod, '/stats', context), signal) : Promise.resolve([]),
     5000,
-    [pod.namespace, pod.name],
+    [context, pod.namespace, pod.name, ready],
+    ready ? `kubernetes:${context}:pod:${pod.uid}:stats` : undefined,
   )
   return (
     <section className="drawerPanel">
       <h3>Container stats</h3>
-      {stats.error && <p className="errorLine">{stats.error}</p>}
-      <dl className="runtimeGrid">
-        {(stats.data ?? []).map((item) => (
-          <div key={item.container}><dt>{item.container}</dt><dd>CPU {item.cpu} · Memory {item.memory}</dd></div>
-        ))}
-      </dl>
-      {stats.data && stats.data.length === 0 && <p>No metrics reported (metrics-server may be unavailable).</p>}
+      {!ready ? (
+        <p>Metrics are available only while the pod is Running and Ready.</p>
+      ) : (
+        <>
+          {stats.error && <p className="errorLine">{stats.error}</p>}
+          <dl className="runtimeGrid">
+            {(stats.data ?? []).map((item) => (
+              <div key={item.container}><dt>{item.container}</dt><dd>CPU {item.cpu} · Memory {item.memory}</dd></div>
+            ))}
+          </dl>
+          {stats.data && stats.data.length === 0 && <p>No metrics reported yet.</p>}
+        </>
+      )}
     </section>
   )
 }
@@ -343,7 +358,8 @@ function EventsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const events = usePolledResource<KubernetesEvent[]>(
     (signal) => apiGet(podPath(pod, '/events', context), signal),
     8000,
-    [pod.namespace, pod.name],
+    [context, pod.namespace, pod.name],
+    `kubernetes:${context}:pod:${pod.uid}:events`,
   )
   return (
     <section className="drawerPanel">
@@ -368,7 +384,8 @@ function ManifestTab({ pod, context }: { pod: KubernetesPod; context: string }) 
   const manifest = usePolledResource<string>(
     (signal) => apiGet(podPath(pod, '/manifest', context), signal),
     0,
-    [pod.namespace, pod.name],
+    [context, pod.namespace, pod.name],
+    `kubernetes:${context}:pod:${pod.uid}:manifest`,
   )
   async function copyManifest() {
     if (!manifest.data) return
@@ -391,7 +408,15 @@ function ManifestTab({ pod, context }: { pod: KubernetesPod; context: string }) 
   )
 }
 
-export function Pods({ context }: { context: string }) {
+export function Pods({
+  context,
+  contexts,
+  onContextChange,
+}: {
+  context: string
+  contexts: KubernetesContext[]
+  onContextChange: (context: string) => void
+}) {
   const [namespace, setNamespace] = useState('')
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -402,11 +427,13 @@ export function Pods({ context }: { context: string }) {
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
     10000,
     [context],
+    `kubernetes:${context}:status`,
   )
   const pods = usePolledResource<KubernetesPod[]>(
     (signal) => apiGet(`/api/kubernetes/pods?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal),
     5000,
     [context, namespace],
+    `kubernetes:${context}:pods:${namespace}`,
   )
   const items = pods.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -434,6 +461,7 @@ export function Pods({ context }: { context: string }) {
           <span>Namespace</span>
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
+        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} pods</span>
         <button className="refreshControl" type="button" onClick={() => {
           setInspectorGeneration((generation) => generation + 1)

@@ -20,8 +20,8 @@ export function Builds() {
   const [form, setForm] = useState<DockerBuildRequest>(EMPTY_FORM)
   const [submitting, setSubmitting] = useState(false)
 
-  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [])
-  const builds = usePolledResource<DockerBuild[]>((signal) => apiGet('/api/docker/builds', signal), 6000, [])
+  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
+  const builds = usePolledResource<DockerBuild[]>((signal) => apiGet('/api/docker/builds', signal), 6000, [], 'docker:builds')
   const items = builds.data ?? []
   const selected = items.find((build) => build.id === selectedID) ?? null
   const available = status.data?.available ?? false

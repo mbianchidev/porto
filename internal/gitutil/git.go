@@ -37,6 +37,30 @@ func Dirty(path string) bool {
 	return err == nil && strings.TrimSpace(out) != ""
 }
 
+func Status(path string) (branch string, dirty bool, ok bool) {
+	return StatusContext(context.Background(), path)
+}
+
+func StatusContext(ctx context.Context, path string) (branch string, dirty bool, ok bool) {
+	out, err := gitContext(ctx, path, "status", "--porcelain=v2", "--branch")
+	if err != nil {
+		return "main", false, false
+	}
+	branch = "main"
+	for _, line := range strings.Split(out, "\n") {
+		switch {
+		case strings.HasPrefix(line, "# branch.head "):
+			branch = strings.TrimSpace(strings.TrimPrefix(line, "# branch.head "))
+			if branch == "(detached)" {
+				branch = "HEAD"
+			}
+		case line != "" && !strings.HasPrefix(line, "# "):
+			dirty = true
+		}
+	}
+	return branch, dirty, true
+}
+
 func Checkout(path, branch string) error {
 	if err := validateBranchName(branch); err != nil {
 		return err
@@ -112,11 +136,15 @@ func ResolveBranch(repoPath, requested string) (ResolvedBranch, error) {
 }
 
 func DefaultBranch(repoPath string) (string, error) {
-	remote, err := primaryRemote(repoPath)
+	return DefaultBranchContext(context.Background(), repoPath)
+}
+
+func DefaultBranchContext(ctx context.Context, repoPath string) (string, error) {
+	remote, err := primaryRemoteContext(ctx, repoPath)
 	if err != nil {
 		return "", err
 	}
-	return defaultBranch(repoPath, remote)
+	return defaultBranchContext(ctx, repoPath, remote)
 }
 
 func CanCheckout(repoPath, branch string) error {
@@ -410,7 +438,11 @@ func isAncestorOfAny(repoPath, branch string, bases []string) (bool, error) {
 }
 
 func primaryRemote(repoPath string) (string, error) {
-	out, err := git(repoPath, "remote")
+	return primaryRemoteContext(context.Background(), repoPath)
+}
+
+func primaryRemoteContext(ctx context.Context, repoPath string) (string, error) {
+	out, err := gitContext(ctx, repoPath, "remote")
 	if err != nil {
 		return "", gitFailure("list Git remotes", out, err)
 	}
@@ -425,8 +457,12 @@ func primaryRemote(repoPath string) (string, error) {
 }
 
 func defaultBranch(repoPath, remote string) (string, error) {
+	return defaultBranchContext(context.Background(), repoPath, remote)
+}
+
+func defaultBranchContext(ctx context.Context, repoPath, remote string) (string, error) {
 	if remote != "" {
-		out, err := git(repoPath, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
+		out, err := gitContext(ctx, repoPath, "symbolic-ref", "--short", "refs/remotes/"+remote+"/HEAD")
 		if err == nil {
 			if branch, ok := strings.CutPrefix(strings.TrimSpace(out), remote+"/"); ok && branch != "" {
 				return branch, nil
@@ -434,8 +470,8 @@ func defaultBranch(repoPath, remote string) (string, error) {
 		}
 	}
 	for _, branch := range []string{"main", "master"} {
-		if refExists(repoPath, "refs/heads/"+branch) ||
-			(remote != "" && refExists(repoPath, "refs/remotes/"+remote+"/"+branch)) {
+		if refExistsContext(ctx, repoPath, "refs/heads/"+branch) ||
+			(remote != "" && refExistsContext(ctx, repoPath, "refs/remotes/"+remote+"/"+branch)) {
 			return branch, nil
 		}
 	}
@@ -451,7 +487,11 @@ func refs(repoPath, prefix string) ([]string, error) {
 }
 
 func refExists(repoPath, ref string) bool {
-	_, err := git(repoPath, "show-ref", "--verify", "--quiet", ref)
+	return refExistsContext(context.Background(), repoPath, ref)
+}
+
+func refExistsContext(ctx context.Context, repoPath, ref string) bool {
+	_, err := gitContext(ctx, repoPath, "show-ref", "--verify", "--quiet", ref)
 	return err == nil
 }
 
@@ -503,11 +543,19 @@ func gitFailure(action, output string, err error) error {
 }
 
 func git(path string, args ...string) (string, error) {
-	return gitWithTimeout(path, 45*time.Second, args...)
+	return gitContext(context.Background(), path, args...)
 }
 
 func gitWithTimeout(path string, timeout time.Duration, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	return gitContextWithTimeout(context.Background(), path, timeout, args...)
+}
+
+func gitContext(ctx context.Context, path string, args ...string) (string, error) {
+	return gitContextWithTimeout(ctx, path, 45*time.Second, args...)
+}
+
+func gitContextWithTimeout(parent context.Context, path string, timeout time.Duration, args ...string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := process.NewCommand(ctx, path, "git", args...)
 	cmd.Env = process.WithEnvironment(

@@ -22,8 +22,10 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/compose"
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/process"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/store"
@@ -32,6 +34,39 @@ import (
 type killSwitchRunner struct {
 	mu       sync.Mutex
 	syncArgs chan []string
+}
+
+func TestLoadProjectGitMetadataRunsConcurrently(t *testing.T) {
+	projects := []app.Project{{Path: "/one"}, {Path: "/two"}, {Path: "/three"}}
+	started := make(chan string, len(projects))
+	release := make(chan struct{})
+	result := make(chan []projectGitMetadata, 1)
+	errors := make(chan error, 1)
+	go func() {
+		metadata, err := loadProjectGitMetadata(context.Background(), projects, func(_ context.Context, project app.Project) projectGitMetadata {
+			started <- project.Path
+			<-release
+			return projectGitMetadata{branch: filepath.Base(project.Path)}
+		})
+		result <- metadata
+		errors <- err
+	}()
+
+	for range 2 {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("project metadata loading did not run concurrently")
+		}
+	}
+	close(release)
+	if err := <-errors; err != nil {
+		t.Fatal(err)
+	}
+	metadata := <-result
+	if len(metadata) != len(projects) || metadata[0].branch != "one" || metadata[2].branch != "three" {
+		t.Fatalf("metadata = %+v", metadata)
+	}
 }
 
 func (r *killSwitchRunner) LookPath(name string) (string, error) {
@@ -207,6 +242,35 @@ func TestStopKubernetesForwardsScopesByContext(t *testing.T) {
 	}
 	if _, ok := server.kubeForwards["porto-other/default/api/80"]; !ok {
 		t.Fatal("unrelated cluster forward was removed")
+	}
+}
+
+func TestStopKubernetesClusterForwardsIncludesLegacyK3sContext(t *testing.T) {
+	root := t.TempDir()
+	metadata, err := json.Marshal(kubernetes.ClusterRequest{Name: "local", Provider: "k3s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, config.KubernetesClusterFileToken("local")+".json"),
+		metadata,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		clusters: kubernetes.NewClusterProvisioner(nil, nil, root),
+		kubeForwards: map[string]*kubeForward{
+			"porto-local/default/api/80":     {port: 45000},
+			"porto-k3s-local/default/api/80": {port: 45001},
+			"porto-other/default/api/80":     {port: 45002},
+		},
+	}
+	if err := server.stopKubernetesClusterForwards("local"); err != nil {
+		t.Fatalf("stop cluster forwards: %v", err)
+	}
+	if len(server.kubeForwards) != 1 || server.kubeForwards["porto-other/default/api/80"] == nil {
+		t.Fatalf("unexpected remaining forwards: %+v", server.kubeForwards)
 	}
 }
 

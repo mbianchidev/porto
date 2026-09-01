@@ -50,6 +50,7 @@ const (
 	composePortCheckInterval  = time.Second
 	httpShutdownTimeout       = 5 * time.Second
 	daemonShutdownTimeout     = 15 * time.Second
+	projectMetadataWorkers    = 8
 )
 
 var errProjectSetupConflict = errors.New("project setup conflict")
@@ -1708,14 +1709,18 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 	if err != nil {
 		return nil, err
 	}
+	metadata, err := loadProjectGitMetadata(ctx, ps, resolveProjectGitMetadata)
+	if err != nil {
+		return nil, err
+	}
 	for i := range ps {
 		storedBranch := ps[i].Branch
-		ps[i].Branch = gitutil.Branch(ps[i].Path)
-		ps[i].Dirty = gitutil.Dirty(ps[i].Path)
+		ps[i].Branch = metadata[i].branch
+		ps[i].Dirty = metadata[i].dirty
 		if ps[i].SourcePath == "" {
 			ps[i].SourcePath = ps[i].Path
 		}
-		ps[i].DefaultBranch, _ = gitutil.DefaultBranch(ps[i].SourcePath)
+		ps[i].DefaultBranch = metadata[i].defaultBranch
 		if ps[i].DefaultBranch != "" && (storedBranch != ps[i].Branch ||
 			(ps[i].Branch == ps[i].DefaultBranch && ps[i].Hostname != ps[i].BaseHostname) ||
 			(ps[i].Branch != ps[i].DefaultBranch && ps[i].Hostname == ps[i].BaseHostname)) {
@@ -1740,6 +1745,72 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		s.setSendboxMetadata(&ps[i], settings.SendboxEnabled)
 	}
 	return ps, nil
+}
+
+type projectGitMetadata struct {
+	branch        string
+	dirty         bool
+	defaultBranch string
+}
+
+func resolveProjectGitMetadata(ctx context.Context, project app.Project) projectGitMetadata {
+	branch, dirty, repository := gitutil.StatusContext(ctx, project.Path)
+	metadata := projectGitMetadata{branch: branch, dirty: dirty}
+	if !repository {
+		return metadata
+	}
+	sourcePath := project.SourcePath
+	if sourcePath == "" {
+		sourcePath = project.Path
+	}
+	metadata.defaultBranch, _ = gitutil.DefaultBranchContext(ctx, sourcePath)
+	return metadata
+}
+
+func loadProjectGitMetadata(
+	ctx context.Context,
+	projects []app.Project,
+	resolve func(context.Context, app.Project) projectGitMetadata,
+) ([]projectGitMetadata, error) {
+	metadata := make([]projectGitMetadata, len(projects))
+	if len(projects) == 0 {
+		return metadata, nil
+	}
+	workerCount := min(projectMetadataWorkers, len(projects))
+	jobs := make(chan int)
+	var workers sync.WaitGroup
+	workers.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer workers.Done()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case index, open := <-jobs:
+					if !open {
+						return
+					}
+					metadata[index] = resolve(ctx, projects[index])
+				}
+			}
+		}()
+	}
+	for index := range projects {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			workers.Wait()
+			return nil, ctx.Err()
+		case jobs <- index:
+		}
+	}
+	close(jobs)
+	workers.Wait()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return metadata, nil
 }
 
 func (s *Server) setSendboxMetadata(project *app.Project, enabled bool) {

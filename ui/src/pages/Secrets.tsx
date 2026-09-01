@@ -3,13 +3,22 @@ import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
+import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { KubernetesSecret, KubernetesStatus } from '../types'
+import type { KubernetesContext, KubernetesSecret, KubernetesStatus } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(150px,1fr) minmax(80px,0.4fr) minmax(90px,0.5fr) minmax(70px,0.4fr)'
 
-export function Secrets({ context }: { context: string }) {
+export function Secrets({
+  context,
+  contexts,
+  onContextChange,
+}: {
+  context: string
+  contexts: KubernetesContext[]
+  onContextChange: (context: string) => void
+}) {
   const [namespace, setNamespace] = useState('')
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -18,11 +27,13 @@ export function Secrets({ context }: { context: string }) {
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
     10000,
     [context],
+    `kubernetes:${context}:status`,
   )
   const secrets = usePolledResource<KubernetesSecret[]>(
     (signal) => apiGet(`/api/kubernetes/secrets?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal),
     6000,
     [context, namespace],
+    `kubernetes:${context}:secrets:${namespace}`,
   )
   const items = secrets.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -55,6 +66,7 @@ export function Secrets({ context }: { context: string }) {
           <span>Namespace</span>
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
+        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} secrets</span>
         <button className="refreshControl" type="button" onClick={secrets.reload}>Refresh</button>
       </div>

@@ -55,6 +55,24 @@ func TestCanCheckoutRejectsDirtyTree(t *testing.T) {
 	}
 }
 
+func TestStatusReadsBranchAndDirtyStateTogether(t *testing.T) {
+	repo := initTestRepo(t)
+	branch, dirty, ok := Status(repo)
+	if !ok || branch != "main" || dirty {
+		t.Fatalf("clean status = branch %q dirty %t ok %t", branch, dirty, ok)
+	}
+	if err := os.WriteFile(filepath.Join(repo, "dirty.txt"), []byte("dirty"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	branch, dirty, ok = Status(repo)
+	if !ok || branch != "main" || !dirty {
+		t.Fatalf("dirty status = branch %q dirty %t ok %t", branch, dirty, ok)
+	}
+	if branch, dirty, ok = Status(t.TempDir()); ok || branch != "main" || dirty {
+		t.Fatalf("non-repository status = branch %q dirty %t ok %t", branch, dirty, ok)
+	}
+}
+
 func TestForceRemoveMissingWorktreeIsIdempotent(t *testing.T) {
 	repo := initTestRepo(t)
 	missing := filepath.Join(t.TempDir(), "missing")

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -176,11 +177,174 @@ func TestNormalizeNerdctlReferenceDropsTagBeforeDigest(t *testing.T) {
 	}
 }
 
+func TestContainerHostnameRejectsUnrepresentableAliases(t *testing.T) {
+	_, err := containerHostname(CreateContainerRequest{
+		Name: "project-api-1",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api", "api.internal"},
+		}},
+	})
+	if err == nil || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+}
+
+func TestAppendHealthcheckArgsKeepsImageCommandOverrides(t *testing.T) {
+	args, err := appendHealthcheckArgs([]string{"create"}, &ContainerHealthcheck{
+		Interval: 5 * time.Second,
+		Timeout:  2 * time.Second,
+		Retries:  4,
+	})
+	if err != nil {
+		t.Fatalf("appendHealthcheckArgs: %v", err)
+	}
+	got := strings.Join(args, " ")
+	want := "create --health-interval 5s --health-timeout 2s --health-retries 4"
+	if got != want {
+		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+func TestHealthcheckDueUsesNewestResult(t *testing.T) {
+	document := json.RawMessage(`{
+		"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},
+		"State":{"Running":true,"Health":{"Log":[
+			{"End":"2026-09-01T12:00:50Z"},
+			{"End":"2026-09-01T12:00:00Z"}
+		]}}
+	}`)
+	due, _, err := healthcheckDue(document, time.Date(2026, 9, 1, 12, 1, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatalf("healthcheckDue: %v", err)
+	}
+	if due {
+		t.Fatal("healthcheck was due before the newest result interval elapsed")
+	}
+}
+
 func TestContainerActionRejectsUnsupportedAction(t *testing.T) {
 	err := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}).
 		ContainerAction(context.Background(), "container", "explode")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("expected unsupported action error, got %v", err)
+	}
+}
+
+func TestForceRemoveCompletesStoppedContainerCleanup(t *testing.T) {
+	cleanupAttempts := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			return []byte(`[{"Id":"original-id","Name":"/demo"}]`), nil
+		case "rm --force original-id":
+			return []byte("original-id\n"), nil
+		case "rm original-id":
+			cleanupAttempts++
+			if cleanupAttempts == 1 {
+				return []byte("container original-id is in running status"), errors.New("exit status 1")
+			}
+			return []byte("original-id\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+
+	if err := New(runner).ContainerAction(context.Background(), "demo", "remove-force"); err != nil {
+		t.Fatalf("ContainerAction: %v", err)
+	}
+	if cleanupAttempts != 2 {
+		t.Fatalf("cleanup attempts = %d, want 2", cleanupAttempts)
+	}
+}
+
+func TestContainerRemovalCompleteRequiresContainerSpecificError(t *testing.T) {
+	if !containerRemovalComplete(errors.New("no such container: demo")) {
+		t.Fatal("container-specific not-found error was not accepted")
+	}
+	if containerRemovalComplete(errors.New("exec: nerdctl: executable file not found")) {
+		t.Fatal("unrelated executable error was treated as successful removal")
+	}
+}
+
+func TestForceRemoveRejectsAmbiguousContainerID(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl container inspect abc": []byte(`[{"Id":"abc-one"},{"Id":"abc-two"}]`),
+		},
+		errors: map[string]error{},
+	}
+	err := New(runner).ContainerAction(context.Background(), "abc", "remove-force")
+	if err == nil || !strings.Contains(err.Error(), "matched 2 containers") {
+		t.Fatalf("error = %v, want ambiguous ID rejection", err)
+	}
+}
+
+func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			inspects++
+			if inspects == 1 {
+				return []byte(`[{"State":{"Status":"created","Running":false,"ExitCode":0}}]`), nil
+			}
+			if inspects == 2 {
+				return []byte(`[{"State":{"Status":"running","Running":true,"ExitCode":0,"StartedAt":"2026-09-01T16:00:00Z"}}]`), nil
+			}
+			return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":0,"StartedAt":"2026-09-01T16:00:00Z","FinishedAt":"2026-09-01T16:00:01Z"}}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+	code, err := New(runner).WaitContainer(context.Background(), "demo", "next-exit")
+	if err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestWaitContainerTreatsPausedTaskAsActive(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			return []byte(`[{"State":{"Status":"paused","Running":false,"ExitCode":0}}]`), nil
+		case "wait demo":
+			return []byte("0\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+	if _, err := New(runner).WaitContainer(context.Background(), "demo", "not-running"); err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+}
+
+func TestWaitContainerCapturesFastNextExit(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect demo" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		inspects++
+		if inspects == 1 {
+			return []byte(`[{"State":{"Status":"created","Running":false,"ExitCode":0}}]`), nil
+		}
+		return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":7,"StartedAt":"2026-09-01T16:00:00Z","FinishedAt":"2026-09-01T16:00:01Z"}}]`), nil
+	}
+
+	code, err := New(runner).WaitContainer(context.Background(), "demo", "next-exit")
+	if err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+	if code != 7 {
+		t.Fatalf("exit code = %d, want 7", code)
 	}
 }
 

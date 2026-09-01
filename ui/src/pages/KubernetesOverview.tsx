@@ -134,9 +134,11 @@ function ImportImageTab({ cluster }: { cluster: KubernetesCluster }) {
 
 export function KubernetesOverview({
   context,
+  contexts,
   onContextChange,
 }: {
   context: string
+  contexts: KubernetesContext[]
   onContextChange: (context: string) => void
 }) {
   const { notifyError, notifyNotice } = useMessages()
@@ -155,11 +157,21 @@ export function KubernetesOverview({
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
     10000,
     [context],
+    `kubernetes:${context}:status`,
   )
-  const contexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 15000, [])
-  const clusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
-  const providerTools = usePolledResource<RuntimeProviderStatus[]>((signal) => apiGet('/api/runtime/providers', signal), 15000, [])
-  const items = contexts.data ?? []
+  const clusters = usePolledResource<KubernetesCluster[]>(
+    (signal) => apiGet('/api/kubernetes/clusters', signal),
+    10000,
+    [],
+    'kubernetes:clusters',
+  )
+  const providerTools = usePolledResource<RuntimeProviderStatus[]>(
+    (signal) => apiGet('/api/runtime/providers', signal),
+    15000,
+    [],
+    'runtime:providers',
+  )
+  const items = contexts
   const clusterItems = clusters.data ?? []
   const selectedCluster = clusterItems.find((cluster) => cluster.name === selectedClusterName) ?? null
   const available = status.data?.available ?? false
@@ -249,7 +261,7 @@ export function KubernetesOverview({
       </section>
       <div className="controlBar">
         <span className="filterResultCount" aria-live="polite">Active context: {context || 'cluster default'}</span>
-        <button className="refreshControl" type="button" onClick={() => { status.reload(); contexts.reload(); clusters.reload() }}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => { status.reload(); clusters.reload() }}>Refresh</button>
         <button type="button" disabled={!enabled} onClick={() => { setSelectedClusterName(null); setCreatingCluster(true) }}>New cluster</button>
       </div>
       <div className="workArea">
@@ -265,7 +277,7 @@ export function KubernetesOverview({
             selectedKey={context || null}
             onSelect={(item) => onContextChange(item.name)}
             ariaLabel="Kubernetes contexts"
-            emptyMessage={contexts.error || 'No kubeconfig contexts found.'}
+            emptyMessage="No kubeconfig contexts found."
             columns={[
               { header: 'Context', render: (item) => <strong>{item.name}</strong> },
               { header: 'Cluster', className: 'mono', render: (item) => item.cluster },

@@ -2,8 +2,10 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +38,95 @@ func TestDockerReadOnlyIntegration(t *testing.T) {
 	}
 	if _, err := manager.Volumes(ctx); err != nil {
 		t.Fatalf("list volumes: %v", err)
+	}
+}
+
+func TestDockerComposeIntegration(t *testing.T) {
+	if os.Getenv("PORTO_DOCKER_INTEGRATION") != "1" {
+		t.Skip("set PORTO_DOCKER_INTEGRATION=1 to test Docker Compose against the live Porto backend")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	if output, err := exec.Command("docker", "compose", "version").CombinedOutput(); err != nil {
+		t.Skipf("Docker Compose is not available: %v: %s", err, output)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	t.Cleanup(cancel)
+	manager := New(nil)
+	status := manager.Status(ctx, "")
+	if !status.Available {
+		t.Fatalf("Porto container runtime unavailable: %s", status.Message)
+	}
+	if err := manager.PullImage(ctx, "alpine:latest", ""); err != nil {
+		t.Fatalf("pull test image: %v", err)
+	}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-compose-integration-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	server := NewAPIServer(socketPath, NewAPI(manager, socketPath))
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("start Porto Docker API: %v", err)
+	}
+	t.Cleanup(func() {
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+
+	composeFile := filepath.Join(socketDir, "compose.yaml")
+	if err := os.WriteFile(composeFile, []byte(`services:
+  server:
+    image: alpine:latest
+    command: ["sleep", "30"]
+    healthcheck:
+      test: ["CMD", "true"]
+      interval: 1s
+      timeout: 1s
+      retries: 3
+  client:
+    image: alpine:latest
+    command: ["sh", "-c", "getent hosts server && sleep 30"]
+    depends_on:
+      server:
+        condition: service_healthy
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	projectName := fmt.Sprintf("porto-compose-integration-%d", os.Getpid())
+	dockerEnvironment := append(os.Environ(), "DOCKER_HOST="+EndpointURL(socketPath), "DOCKER_CONTEXT=")
+	compose := func(args ...string) *exec.Cmd {
+		command := exec.CommandContext(ctx, "docker", append([]string{
+			"compose", "--project-name", projectName, "--file", composeFile,
+		}, args...)...)
+		command.Env = dockerEnvironment
+		return command
+	}
+	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cleanupCancel()
+		command := exec.CommandContext(cleanupContext, "docker",
+			"compose", "--project-name", projectName, "--file", composeFile,
+			"down", "--volumes", "--remove-orphans",
+		)
+		command.Env = dockerEnvironment
+		_ = command.Run()
+	})
+
+	if output, err := compose("up", "--detach", "--no-build", "--pull", "never").CombinedOutput(); err != nil {
+		t.Fatalf("docker compose up: %v: %s", err, output)
+	}
+	output, err := compose("exec", "-T", "client", "getent", "hosts", "server").CombinedOutput()
+	if err != nil {
+		t.Fatalf("resolve Compose service hostname: %v: %s", err, output)
+	}
+	if !strings.Contains(string(output), "server") {
+		t.Fatalf("Compose service hostname was not resolved: %s", output)
 	}
 }
 

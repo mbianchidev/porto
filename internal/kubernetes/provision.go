@@ -2,9 +2,11 @@ package kubernetes
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"path/filepath"
@@ -12,6 +14,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -22,10 +25,50 @@ import (
 var clusterNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9.+-]+$`)
 
+const k3sTraefikConfig = `apiVersion: helm.cattle.io/v1
+kind: HelmChartConfig
+metadata:
+  name: traefik
+  namespace: kube-system
+spec:
+  valuesContent: |-
+    service:
+      spec:
+        type: ClusterIP
+`
+
+//go:embed metrics-server.yaml
+var metricsServerManifest []byte
+
 type ClusterProvisioner struct {
 	vms            *vm.Manager
 	runner         runtimes.Runner
 	kubeconfigRoot string
+	metricsMu      sync.Mutex
+	metricsRuns    map[string]*metricsServerRun
+}
+
+func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return "", fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	return clusterContextName(request), nil
+}
+
+func clusterContextName(request ClusterRequest) string {
+	if normalizeProvider(request.Provider) == "k3s" {
+		return "porto-k3s-" + request.Name
+	}
+	return "porto-" + request.Name
+}
+
+type metricsServerRun struct {
+	done chan struct{}
+	err  error
 }
 
 type MachineSpec struct {
@@ -68,7 +111,12 @@ func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRo
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &ClusterProvisioner{vms: vms, runner: runner, kubeconfigRoot: kubeconfigRoot}
+	return &ClusterProvisioner{
+		vms:            vms,
+		runner:         runner,
+		kubeconfigRoot: kubeconfigRoot,
+		metricsRuns:    make(map[string]*metricsServerRun),
+	}
 }
 
 func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
@@ -197,7 +245,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err != nil {
 		return Cluster{}, fmt.Errorf("read Kubernetes kubeconfig: %w", err)
 	}
-	contextName := "porto-" + request.Name
+	contextName := clusterContextName(request)
 	kubeconfig := strings.ReplaceAll(
 		string(kubeconfigOutput),
 		"https://127.0.0.1:6443",
@@ -216,6 +264,11 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	}
 	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
+	}
+	if request.Provider == "k3s" {
+		if err := p.ensureK3sTraefik(ctx, kubeconfigPath, contextName); err != nil {
+			return Cluster{}, err
+		}
 	}
 	cluster = Cluster{
 		Name:           request.Name,
@@ -279,7 +332,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	if err != nil {
 		return Cluster{}, runtimes.CommandError("create kind cluster", output, err)
 	}
-	contextName := "porto-" + request.Name
+	contextName := clusterContextName(request)
 	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
@@ -303,6 +356,9 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		if err != nil {
 			return Cluster{}, runtimes.CommandError("apply kind node resources", output, err)
 		}
+	}
+	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
+		return Cluster{}, err
 	}
 	request.APIPort = 0
 	if err := p.writeClusterMetadata(request); err != nil {
@@ -476,7 +532,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Name:           name,
 			Provider:       normalizeProvider(request.Provider),
 			State:          "stopped",
-			Context:        "porto-" + name,
+			Context:        clusterContextName(request),
 			KubeconfigPath: p.clusterKubeconfigPath(name),
 		}
 		if cluster.Provider == "kind" {
@@ -681,6 +737,57 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	return nil
 }
 
+func (p *ClusterProvisioner) ensureK3sTraefik(ctx context.Context, kubeconfigPath, contextName string) error {
+	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	defer cancel()
+	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName, "--namespace", "kube-system"}
+	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
+		commandArgs := append(append([]string(nil), baseArgs...), args...)
+		output, err := p.runner.Run(operationContext, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
+		if err != nil {
+			return output, runtimes.CommandError(action, output, err)
+		}
+		return output, nil
+	}
+	var readinessErr error
+	for {
+		_, readinessErr = run("wait for k3s API", nil, "version", "--request-timeout=10s", "-o", "json")
+		if readinessErr == nil {
+			break
+		}
+		select {
+		case <-operationContext.Done():
+			return errors.Join(readinessErr, operationContext.Err())
+		case <-time.After(time.Second):
+		}
+	}
+	output, err := run("inspect k3s Traefik service", nil, "get", "service", "traefik", "-o", "jsonpath={.spec.type}")
+	if err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "ClusterIP") {
+		return nil
+	}
+	if _, err := run("configure k3s Traefik", []byte(k3sTraefikConfig), "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if _, err := run("wait for k3s Traefik service", nil, "wait", "--for=create", "service/traefik", "--timeout=5m"); err != nil {
+		return err
+	}
+	if _, err := run(
+		"release k3s Traefik host ports",
+		nil,
+		"patch", "service", "traefik", "--type", "merge", "-p", `{"spec":{"type":"ClusterIP"}}`,
+	); err != nil {
+		return err
+	}
+	if _, err := run(
+		"wait for k3s Traefik",
+		nil,
+		"wait", "--for=condition=Available", "deployment/traefik", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image string) error {
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
@@ -705,6 +812,7 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 		}
 		return nil
 	}
+
 	saveContext, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
 	imageArchive, err := p.runner.Run(saveContext, runtimes.Command{
@@ -759,7 +867,13 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 				actionErrors = append(actionErrors, runtimes.CommandError(action+" kind node "+name, output, actionErr))
 			}
 		}
-		return errors.Join(actionErrors...)
+		if err := errors.Join(actionErrors...); err != nil || !running {
+			return err
+		}
+		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName); err != nil {
+			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
+		}
+		return nil
 	}
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
@@ -777,7 +891,105 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 			actionErrors = append(actionErrors, err)
 		}
 	}
-	return errors.Join(actionErrors...)
+	if err := errors.Join(actionErrors...); err != nil || !running {
+		return err
+	}
+	if request.Provider == "k3s" {
+		kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+		contextName := clusterContextName(request)
+		if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
+			return err
+		}
+		return p.ensureK3sTraefik(ctx, kubeconfigPath, contextName)
+	}
+	return nil
+}
+
+func (p *ClusterProvisioner) EnsureMetricsServer(ctx context.Context, contextName string) (bool, error) {
+	clusterName, ok := strings.CutPrefix(contextName, "porto-")
+	if !ok || !clusterNamePattern.MatchString(clusterName) {
+		return false, nil
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return true, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	if normalizeProvider(request.Provider) != "kind" {
+		return false, nil
+	}
+	return true, p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName)
+}
+
+func (p *ClusterProvisioner) ensureKindMetricsServer(ctx context.Context, kubeconfigPath, contextName string) error {
+	p.metricsMu.Lock()
+	if existing := p.metricsRuns[contextName]; existing != nil {
+		p.metricsMu.Unlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-existing.done:
+			return existing.err
+		}
+	}
+	run := &metricsServerRun{done: make(chan struct{})}
+	p.metricsRuns[contextName] = run
+	p.metricsMu.Unlock()
+
+	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
+	run.err = p.installKindMetricsServer(operationContext, kubeconfigPath, contextName)
+	cancel()
+
+	p.metricsMu.Lock()
+	delete(p.metricsRuns, contextName)
+	close(run.done)
+	p.metricsMu.Unlock()
+	return run.err
+}
+
+func (p *ClusterProvisioner) installKindMetricsServer(ctx context.Context, kubeconfigPath, contextName string) error {
+	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName}
+	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
+		commandArgs := append(append([]string(nil), baseArgs...), args...)
+		output, err := p.runner.Run(ctx, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
+		if err != nil {
+			return output, runtimes.CommandError(action, output, err)
+		}
+		return output, nil
+	}
+	output, err := run(
+		"inspect Metrics API",
+		nil,
+		"get", "apiservice", "v1beta1.metrics.k8s.io",
+		"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`,
+	)
+	if err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "true") {
+		return nil
+	}
+	if _, err := run("wait for kind nodes", nil, "wait", "--for=condition=Ready", "nodes", "--all", "--timeout=5m"); err != nil {
+		return err
+	}
+	if _, err := run("install metrics-server", metricsServerManifest, "apply", "-f", "-"); err != nil {
+		return err
+	}
+	if _, err := run(
+		"wait for metrics-server deployment",
+		nil,
+		"--namespace", "kube-system",
+		"wait", "--for=condition=Available", "deployment/metrics-server", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	if _, err := run(
+		"wait for Metrics API",
+		nil,
+		"wait", "--for=condition=Available", "apiservice/v1beta1.metrics.k8s.io", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *ClusterProvisioner) writeClusterMetadata(request ClusterRequest) error {
@@ -999,6 +1211,18 @@ func (p *ClusterProvisioner) installK3s(
 	labels map[string]string,
 	taints []string,
 ) error {
+	if server {
+		if _, err := p.vms.Exec(ctx, machineName, []string{
+			"sudo", "mkdir", "-p", "/var/lib/rancher/k3s/server/manifests",
+		}, nil); err != nil {
+			return fmt.Errorf("create k3s manifests directory on %s: %w", machineName, err)
+		}
+		if _, err := p.vms.Exec(ctx, machineName, []string{
+			"sudo", "tee", "/var/lib/rancher/k3s/server/manifests/porto-traefik-config.yaml",
+		}, []byte(k3sTraefikConfig)); err != nil {
+			return fmt.Errorf("configure k3s Traefik on %s: %w", machineName, err)
+		}
+	}
 	if _, err := p.vms.Exec(ctx, machineName, []string{
 		"sh", "-c", "curl -sfL https://get.k3s.io -o /tmp/porto-install-k3s.sh",
 	}, nil); err != nil {
@@ -1107,9 +1331,50 @@ func (p *ClusterProvisioner) normalizeKubeconfig(ctx context.Context, kubeconfig
 	if err != nil {
 		return runtimes.CommandError("normalize Kubernetes kubeconfig", output, err)
 	}
+	normalized, err := normalizeKubeconfigJSON(output, name)
+	if err != nil {
+		return err
+	}
+	if err := writeKubeconfigAtomic(kubeconfigPath, normalized); err != nil {
+		return fmt.Errorf("write normalized kubeconfig: %w", err)
+	}
+	return nil
+}
+
+func writeKubeconfigAtomic(path string, contents []byte) (err error) {
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+	temp, err := os.CreateTemp(filepath.Dir(path), ".porto-kubeconfig-*")
+	if err != nil {
+		return err
+	}
+	tempPath := temp.Name()
+	defer func() {
+		_ = os.Remove(tempPath)
+	}()
+	if err := temp.Chmod(0o600); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if _, err := temp.Write(contents); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Sync(); err != nil {
+		_ = temp.Close()
+		return err
+	}
+	if err := temp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(tempPath, path)
+}
+
+func normalizeKubeconfigJSON(data []byte, name string) ([]byte, error) {
 	var configDocument map[string]any
-	if err := json.Unmarshal(output, &configDocument); err != nil {
-		return fmt.Errorf("decode normalized kubeconfig: %w", err)
+	if err := json.Unmarshal(data, &configDocument); err != nil {
+		return nil, fmt.Errorf("decode normalized kubeconfig: %w", err)
 	}
 	configDocument["current-context"] = name
 	renameKubeconfigEntries(configDocument["clusters"], name, nil)
@@ -1124,12 +1389,9 @@ func (p *ClusterProvisioner) normalizeKubeconfig(ctx context.Context, kubeconfig
 	})
 	normalized, err := json.MarshalIndent(configDocument, "", "  ")
 	if err != nil {
-		return fmt.Errorf("encode normalized kubeconfig: %w", err)
+		return nil, fmt.Errorf("encode normalized kubeconfig: %w", err)
 	}
-	if err := os.WriteFile(kubeconfigPath, normalized, 0o600); err != nil {
-		return fmt.Errorf("write normalized kubeconfig: %w", err)
-	}
-	return nil
+	return normalized, nil
 }
 
 func renameKubeconfigEntries(value any, name string, update func(map[string]any)) {

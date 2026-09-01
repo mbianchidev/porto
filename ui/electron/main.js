@@ -16,8 +16,11 @@ const {
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
+  installDockerContext,
   installDockerEngine,
+  mergeExecutablePaths,
   resolvePortoBinary,
+  resolveLoginShellPath,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
 
@@ -56,7 +59,7 @@ function bundledPortoBinaryReady() {
   }
 }
 
-function portoEnvironment() {
+async function portoEnvironment() {
   const pathKey = Object.keys(process.env).find((key) => key.toLowerCase() === 'path') || 'PATH'
   const environment = { ...process.env }
   for (const key of Object.keys(environment)) {
@@ -68,9 +71,11 @@ function portoEnvironment() {
     path.join(process.resourcesPath, 'runtime', 'bin'),
     path.join(process.resourcesPath, 'runtime', 'lima', 'bin'),
   ].filter((candidate) => fs.existsSync(candidate))
-  if (bundledPaths.length > 0) {
-    environment[pathKey] = [...bundledPaths, process.env[pathKey]].filter(Boolean).join(path.delimiter)
-  }
+  const loginShellPath = await resolveLoginShellPath({ environment })
+  environment[pathKey] = mergeExecutablePaths(
+    [...bundledPaths, loginShellPath, process.env[pathKey]],
+    path.delimiter,
+  )
   return environment
 }
 
@@ -88,11 +93,12 @@ function normalizedExecutablePath(value) {
 // its own lifecycle independently of the window: closing the Porto window
 // must never stop it, so the child is fully detached and unref'd rather than
 // tracked or killed on app quit.
-function startDaemon() {
+async function startDaemon() {
+  const environment = await portoEnvironment()
   return new Promise((resolve, reject) => {
     const child = spawn(portoBinary(), ['daemon', 'start'], {
       detached: true,
-      env: portoEnvironment(),
+      env: environment,
       stdio: 'ignore',
     })
     child.once('error', reject)
@@ -104,6 +110,7 @@ function startDaemon() {
 }
 
 async function runningDaemonProcesses() {
+  let processes
   if (process.platform === 'win32') {
     const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
@@ -111,43 +118,83 @@ async function runningDaemonProcesses() {
       maxBuffer: 4 * 1024 * 1024,
     })
     if (stdout.trim() === '') return []
-    return windowsDaemonProcesses(JSON.parse(stdout))
+    processes = windowsDaemonProcesses(JSON.parse(stdout))
+  } else {
+    const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    })
+    processes = daemonProcesses(stdout)
   }
-  const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
-    timeout: 5000,
-    maxBuffer: 1024 * 1024,
-  })
-  return daemonProcesses(stdout)
+  const identified = await Promise.all(processes.map(async (process) => ({
+    ...process,
+    identity: await processIdentity(process.pid),
+  })))
+  return identified.filter((process) => process.identity !== null)
 }
 
-async function stopDaemonPIDs(pids) {
-  const runningPIDs = new Set(pids)
-  for (const pid of pids) {
+async function processIdentity(pid) {
+  try {
+    if (process.platform === 'win32') {
+      const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object CreationDate,CommandLine | ConvertTo-Json -Compress`
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      })
+      if (stdout.trim() === '') return null
+      const processInfo = JSON.parse(stdout)
+      return `${processInfo.CreationDate || ''}|${processInfo.CommandLine || ''}`
+    }
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart=,command='], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function stopDaemonProcesses(daemons) {
+  const runningProcesses = new Map(daemons.map((daemon) => [daemon.pid, daemon.identity]))
+  const refresh = async () => {
+    for (const [pid, identity] of runningProcesses) {
+      if (await processIdentity(pid) !== identity) runningProcesses.delete(pid)
+    }
+  }
+  const signal = (pid, name) => {
     try {
-      process.kill(pid, 'SIGTERM')
+      process.kill(pid, name)
+      return true
     } catch (error) {
       if (error.code === 'ESRCH') {
-        runningPIDs.delete(pid)
-        continue
+        runningProcesses.delete(pid)
+        return true
       }
-      console.error(`Unable to stop incompatible Porto daemon ${pid}`, error)
+      console.error(`Unable to send ${name} to incompatible Porto daemon ${pid}`, error)
       return false
     }
   }
-  for (let attempt = 0; attempt < 240; attempt += 1) {
-    await delay(250)
-    for (const pid of runningPIDs) {
-      try {
-        process.kill(pid, 0)
-      } catch (error) {
-        if (error.code === 'ESRCH') runningPIDs.delete(pid)
+  const waitForExit = async (attempts) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      await delay(250)
+      await refresh()
+      if (runningProcesses.size === 0 && !(await inspectDaemon({ daemonURL: DAEMON_URL })).reachable) {
+        return true
       }
     }
-    if (runningPIDs.size === 0 && !(await inspectDaemon({ daemonURL: DAEMON_URL })).reachable) {
-      return true
-    }
+    return false
   }
-  return false
+  await refresh()
+  for (const pid of runningProcesses.keys()) {
+    if (!signal(pid, 'SIGTERM')) return false
+  }
+  if (await waitForExit(40)) return true
+  await refresh()
+  for (const pid of runningProcesses.keys()) {
+    if (!signal(pid, 'SIGKILL')) return false
+  }
+  return waitForExit(20)
 }
 
 async function ensureDaemonRunning() {
@@ -180,7 +227,7 @@ async function ensureDaemonRunning() {
         if (existing.reachable) break
       }
     }
-    if (!(await stopDaemonPIDs(processes.map((process) => process.pid)))) return false
+    if (!(await stopDaemonProcesses(processes))) return false
   } else if (existing.reachable) {
     return false
   }
@@ -200,18 +247,25 @@ async function ensureDaemonRunning() {
 
 async function ensureDockerEngine() {
   let status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
+  if (!status.enabled) return
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
     platform: process.platform,
   })
-  if (command === null) return
-  await installDockerEngine({ daemonURL: DAEMON_URL })
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
-    if (status.available) return
-    await delay(500)
+  if (command !== null) {
+    await installDockerEngine({ daemonURL: DAEMON_URL })
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
+      if (status.available) break
+      await delay(500)
+    }
+    if (!status.available) {
+      throw new Error(status.message || 'Porto container runtime did not become available')
+    }
   }
-  throw new Error(status.message || 'Porto container runtime did not become available')
+  if (app.isPackaged && process.platform !== 'win32' && status.available) {
+    await installDockerContext({ daemonURL: DAEMON_URL })
+  }
 }
 
 function createBootstrapWindow() {

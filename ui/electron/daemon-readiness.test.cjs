@@ -7,8 +7,11 @@ const {
   dockerBootstrapCommand,
   inspectDaemon,
   installDockerEngine,
+  installDockerContext,
   isDaemonReady,
+  mergeExecutablePaths,
   resolvePortoBinary,
+  resolveLoginShellPath,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
@@ -24,7 +27,7 @@ function response(body, ok = true) {
 
 test('accepts a compatible daemon with a dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 9, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 22, dashboardReady: true }),
   })
 
   assert.equal(ready, true)
@@ -40,7 +43,7 @@ test('rejects an older daemon without dashboard readiness metadata', async () =>
 
 test('rejects a daemon that cannot serve the dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 9, dashboardReady: false }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 22, dashboardReady: false }),
   })
 
   assert.equal(ready, false)
@@ -48,7 +51,7 @@ test('rejects a daemon that cannot serve the dashboard', async () => {
 
 test('rejects an incompatible API', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 8, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 21, dashboardReady: true }),
   })
 
   assert.equal(ready, false)
@@ -117,6 +120,60 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('installs the Docker context through the active daemon', async () => {
+  let request = null
+  const context = await installDockerContext({
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return response({ context: 'porto' })
+    },
+  })
+
+  assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/context/install')
+  assert.equal(request.options.method, 'POST')
+  assert.equal(context.context, 'porto')
+})
+
+test('reads the executable path from the user login shell', async () => {
+  let invocation = null
+  const resolved = await resolveLoginShellPath({
+    platform: 'darwin',
+    environment: { HOME: '/Users/test', SHELL: '/bin/zsh', PATH: '/usr/bin:/bin' },
+    execFileImpl: async (command, args, options) => {
+      invocation = { command, args, options }
+      return { stdout: 'shell startup output\n__PORTO_PATH__/opt/homebrew/bin:/usr/bin:/bin\n' }
+    },
+  })
+
+  assert.equal(resolved, '/opt/homebrew/bin:/usr/bin:/bin')
+  assert.equal(invocation.command, '/bin/zsh')
+  assert.deepEqual(invocation.args, ['-ilc', 'printf "\\n__PORTO_PATH__%s\\n" "$PATH"'])
+  assert.equal(invocation.options.env.HOME, '/Users/test')
+})
+
+test('falls back when the user login shell path is unavailable', async () => {
+  const resolved = await resolveLoginShellPath({
+    platform: 'darwin',
+    environment: { SHELL: '/bin/zsh' },
+    execFileImpl: async () => {
+      throw new Error('shell failed')
+    },
+  })
+
+  assert.equal(resolved, '')
+})
+
+test('merges bundled, login-shell, and inherited executable paths once', () => {
+  assert.equal(
+    mergeExecutablePaths([
+      '/Applications/Porto.app/Contents/Resources/runtime/bin',
+      '/opt/homebrew/bin:/usr/bin:/bin',
+      '/usr/bin:/bin:/usr/sbin:/sbin',
+    ], ':'),
+    '/Applications/Porto.app/Contents/Resources/runtime/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
+  )
 })
 
 test('packaged apps always use the bundled Porto binary', () => {

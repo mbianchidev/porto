@@ -42,6 +42,7 @@ type Manager struct {
 	directCLI    bool
 	dialBuildKit func(context.Context) (net.Conn, error)
 	installMu    sync.Mutex
+	healthMu     sync.Mutex
 }
 
 type engineState struct {
@@ -340,6 +341,10 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
+	hostname, err := containerHostname(request)
+	if err != nil {
+		return "", err
+	}
 	args := []string{"create"}
 	if request.Name != "" {
 		if err := validateObjectID(request.Name); err != nil {
@@ -350,7 +355,14 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	args = appendStringFlag(args, "--platform", request.Platform)
 	args = appendStringFlag(args, "--workdir", request.WorkingDir)
 	args = appendStringFlag(args, "--user", request.User)
-	args = appendStringFlag(args, "--hostname", request.Hostname)
+	args = appendStringFlag(args, "--hostname", hostname)
+	args = appendStringFlag(args, "--stop-signal", request.StopSignal)
+	if request.StopTimeout != nil {
+		if *request.StopTimeout < 0 {
+			return "", errors.New("container stop timeout cannot be negative")
+		}
+		args = append(args, "--stop-timeout", strconv.Itoa(*request.StopTimeout))
+	}
 	if request.Privileged {
 		args = append(args, "--privileged")
 	}
@@ -392,8 +404,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			if err := validateObjectID(alias); err != nil {
 				return "", fmt.Errorf("network alias: %w", err)
 			}
-			args = append(args, "--network-alias", alias)
 		}
+	}
+	args, err = appendHealthcheckArgs(args, request.Healthcheck)
+	if err != nil {
+		return "", err
 	}
 	if request.Restart != "no" {
 		args = appendStringFlag(args, "--restart", request.Restart)
@@ -435,6 +450,108 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", errors.New("container runtime returned an empty container identifier")
 	}
 	return strings.Fields(id)[0], nil
+}
+
+func containerHostname(request CreateContainerRequest) (string, error) {
+	aliases := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, network := range request.Networks {
+		for _, alias := range network.Aliases {
+			if err := validateObjectID(alias); err != nil {
+				return "", fmt.Errorf("network alias: %w", err)
+			}
+			if alias == request.Name {
+				continue
+			}
+			if _, ok := seen[alias]; !ok {
+				seen[alias] = struct{}{}
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	if request.Hostname != "" {
+		for _, alias := range aliases {
+			if alias != request.Hostname {
+				return "", fmt.Errorf("%w: network aliases with an explicit hostname", ErrUnsupported)
+			}
+		}
+		return request.Hostname, nil
+	}
+	if len(aliases) > 1 {
+		return "", fmt.Errorf("%w: multiple network aliases", ErrUnsupported)
+	}
+	if len(aliases) == 1 {
+		return aliases[0], nil
+	}
+	return "", nil
+}
+
+func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]string, error) {
+	if healthcheck == nil {
+		return args, nil
+	}
+	if healthcheck.StartInterval != 0 {
+		return nil, fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
+	}
+	for name, value := range map[string]time.Duration{
+		"interval":     healthcheck.Interval,
+		"timeout":      healthcheck.Timeout,
+		"start period": healthcheck.StartPeriod,
+	} {
+		if value < 0 {
+			return nil, fmt.Errorf("healthcheck %s cannot be negative", name)
+		}
+	}
+	if healthcheck.Retries < 0 {
+		return nil, errors.New("healthcheck retries cannot be negative")
+	}
+	if len(healthcheck.Test) > 0 {
+		switch healthcheck.Test[0] {
+		case "NONE":
+			return append(args, "--no-healthcheck"), nil
+		case "CMD":
+			if len(healthcheck.Test) < 2 {
+				return nil, errors.New("healthcheck CMD requires a command")
+			}
+			args = append(args, "--health-cmd", shellJoin(healthcheck.Test[1:]))
+		case "CMD-SHELL":
+			if len(healthcheck.Test) < 2 {
+				return nil, errors.New("healthcheck CMD-SHELL requires a command")
+			}
+			args = append(args, "--health-cmd", strings.Join(healthcheck.Test[1:], " "))
+		default:
+			return nil, fmt.Errorf("%w: healthcheck test type %q", ErrUnsupported, healthcheck.Test[0])
+		}
+	}
+	if healthcheck.Interval > 0 {
+		args = append(args, "--health-interval", healthcheck.Interval.String())
+	}
+	if healthcheck.Timeout > 0 {
+		args = append(args, "--health-timeout", healthcheck.Timeout.String())
+	}
+	if healthcheck.StartPeriod > 0 {
+		args = append(args, "--health-start-period", healthcheck.StartPeriod.String())
+	}
+	if healthcheck.Retries > 0 {
+		args = append(args, "--health-retries", strconv.Itoa(healthcheck.Retries))
+	}
+	return args, nil
+}
+
+func shellJoin(command []string) string {
+	quoted := make([]string, 0, len(command))
+	for _, value := range command {
+		if value == "" {
+			quoted = append(quoted, "''")
+			continue
+		}
+		if !strings.ContainsAny(value, " \t\r\n'\"\\$`;&|<>(){}[]*?!~") {
+			quoted = append(quoted, value)
+			continue
+		}
+		quoted = append(quoted, "'"+strings.ReplaceAll(value, "'", "'\\''")+"'")
+	}
+	return strings.Join(quoted, " ")
 }
 
 func validateContainerDevice(device ContainerDevice) error {
@@ -525,16 +642,87 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	case "remove":
 		args = []string{"rm", id}
 	case "remove-force":
-		args = []string{"rm", "--force", id}
+		return m.forceRemoveContainer(ctx, id, false)
 	case "remove-volumes":
 		args = []string{"rm", "--volumes", id}
 	case "remove-force-volumes":
-		args = []string{"rm", "--force", "--volumes", id}
+		return m.forceRemoveContainer(ctx, id, true)
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	_, err := m.run(ctx, action+" Porto container", args...)
 	return err
+}
+
+func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes bool) error {
+	containerID, err := m.resolveContainerID(ctx, id)
+	if err != nil {
+		return err
+	}
+	args := []string{"rm", "--force"}
+	if volumes {
+		args = append(args, "--volumes")
+	}
+	args = append(args, containerID)
+	if _, err := m.run(ctx, "force-remove Porto container", args...); err != nil {
+		return err
+	}
+
+	cleanupContext, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		args = []string{"rm"}
+		if volumes {
+			args = append(args, "--volumes")
+		}
+		args = append(args, containerID)
+		_, err := m.run(cleanupContext, "remove stopped Porto container", args...)
+		if err == nil || containerRemovalComplete(err) {
+			return nil
+		}
+		if !containerRemovalPending(err) {
+			return err
+		}
+		select {
+		case <-cleanupContext.Done():
+			return fmt.Errorf("finish removing Porto container: %w", cleanupContext.Err())
+		case <-ticker.C:
+		}
+	}
+}
+
+func (m *Manager) resolveContainerID(ctx context.Context, id string) (string, error) {
+	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
+	if err != nil {
+		return "", err
+	}
+	var inspected []struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(output, &inspected); err != nil {
+		return "", fmt.Errorf("decode container identity: %w", err)
+	}
+	if len(inspected) != 1 {
+		return "", fmt.Errorf("container identifier %q matched %d containers", id, len(inspected))
+	}
+	if inspected[0].ID == "" {
+		return "", errors.New("container runtime returned an empty container identifier")
+	}
+	return inspected[0].ID, nil
+}
+
+func containerRemovalComplete(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "no such container:")
+}
+
+func containerRemovalPending(err error) bool {
+	message := strings.ToLower(err.Error())
+	return strings.Contains(message, "running status") ||
+		strings.Contains(message, "container is running") ||
+		strings.Contains(message, "task is running")
 }
 
 func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
@@ -552,10 +740,22 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	if err := validateObjectID(id); err != nil {
 		return 0, err
 	}
-	if condition != "" && condition != "not-running" {
+	if condition != "" && condition != "not-running" && condition != "next-exit" {
 		return 0, fmt.Errorf("unsupported wait condition %q", condition)
 	}
-	output, err := m.runWithTimeout(ctx, 24*time.Hour, "wait for Porto container", nil, "wait", id)
+	waitContext, cancel := context.WithTimeout(ctx, 24*time.Hour)
+	defer cancel()
+	initial, err := m.containerWaitState(waitContext, id)
+	if err != nil {
+		return 0, err
+	}
+	if condition == "next-exit" {
+		return m.waitForNextContainerExit(waitContext, id, initial)
+	}
+	if !initial.active() {
+		return initial.ExitCode, nil
+	}
+	output, err := m.runWithTimeout(waitContext, 24*time.Hour, "wait for Porto container", nil, "wait", id)
 	if err != nil {
 		return 0, err
 	}
@@ -566,8 +766,142 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	return code, nil
 }
 
+type containerWaitState struct {
+	Status     string `json:"Status"`
+	Running    bool   `json:"Running"`
+	ExitCode   int    `json:"ExitCode"`
+	StartedAt  string `json:"StartedAt"`
+	FinishedAt string `json:"FinishedAt"`
+}
+
+func (state containerWaitState) active() bool {
+	return state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "pausing"
+}
+
+func (m *Manager) waitForNextContainerExit(
+	ctx context.Context,
+	id string,
+	initial containerWaitState,
+) (int, error) {
+	sawActive := initial.active()
+	startedAt := initial.StartedAt
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-ticker.C:
+		}
+		current, err := m.containerWaitState(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		if current.active() {
+			if sawActive && startedAt != "" && current.StartedAt != "" && current.StartedAt != startedAt {
+				return current.ExitCode, nil
+			}
+			sawActive = true
+			if current.StartedAt != "" {
+				startedAt = current.StartedAt
+			}
+			continue
+		}
+		if sawActive ||
+			(current.Status == "exited" &&
+				(current.StartedAt != initial.StartedAt ||
+					current.FinishedAt != initial.FinishedAt ||
+					initial.Status != "exited")) {
+			return current.ExitCode, nil
+		}
+	}
+}
+
+func (m *Manager) containerWaitState(ctx context.Context, id string) (containerWaitState, error) {
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil {
+		return containerWaitState{}, err
+	}
+	var inspected struct {
+		State containerWaitState `json:"State"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return containerWaitState{}, fmt.Errorf("decode container wait state: %w", err)
+	}
+	return inspected.State, nil
+}
+
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil {
+		return nil, err
+	}
+	due, timeout, err := healthcheckDue(document, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	if !due {
+		return document, nil
+	}
+	m.healthMu.Lock()
+	defer m.healthMu.Unlock()
+	document, err = m.inspect(ctx, "container", id)
+	if err != nil {
+		return nil, err
+	}
+	due, timeout, err = healthcheckDue(document, time.Now())
+	if err != nil || !due {
+		return document, err
+	}
+	if _, err := m.runWithTimeout(ctx, timeout+5*time.Second, "refresh Porto container health", nil, "healthcheck", id); err != nil {
+		return nil, err
+	}
 	return m.inspect(ctx, "container", id)
+}
+
+func healthcheckDue(document json.RawMessage, now time.Time) (bool, time.Duration, error) {
+	var inspected struct {
+		Config struct {
+			Healthcheck *struct {
+				Test     []string `json:"Test"`
+				Interval int64    `json:"Interval"`
+				Timeout  int64    `json:"Timeout"`
+			} `json:"Healthcheck"`
+		} `json:"Config"`
+		State struct {
+			Running bool `json:"Running"`
+			Health  *struct {
+				Log []struct {
+					End time.Time `json:"End"`
+				} `json:"Log"`
+			} `json:"Health"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return false, 0, fmt.Errorf("decode container health settings: %w", err)
+	}
+	healthcheck := inspected.Config.Healthcheck
+	if !inspected.State.Running || healthcheck == nil || len(healthcheck.Test) == 0 || healthcheck.Test[0] == "NONE" {
+		return false, 0, nil
+	}
+	timeout := time.Duration(healthcheck.Timeout)
+	if timeout <= 0 {
+		timeout = 30 * time.Second
+	}
+	if inspected.State.Health == nil || len(inspected.State.Health.Log) == 0 {
+		return true, timeout, nil
+	}
+	interval := time.Duration(healthcheck.Interval)
+	if interval <= 0 {
+		interval = 30 * time.Second
+	}
+	var lastCheck time.Time
+	for _, result := range inspected.State.Health.Log {
+		if result.End.After(lastCheck) {
+			lastCheck = result.End
+		}
+	}
+	return lastCheck.IsZero() || !now.Before(lastCheck.Add(interval)), timeout, nil
 }
 
 func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {

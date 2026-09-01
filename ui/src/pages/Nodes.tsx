@@ -3,13 +3,22 @@ import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
+import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { KubernetesNode, KubernetesStatus } from '../types'
+import type { KubernetesContext, KubernetesNode, KubernetesStatus } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(160px,1.3fr) minmax(120px,0.8fr) minmax(110px,0.7fr) minmax(120px,0.8fr) minmax(70px,0.4fr)'
 
-export function Nodes({ context }: { context: string }) {
+export function Nodes({
+  context,
+  contexts,
+  onContextChange,
+}: {
+  context: string
+  contexts: KubernetesContext[]
+  onContextChange: (context: string) => void
+}) {
   const [query, setQuery] = useState('')
   const [selectedName, setSelectedName] = useState<string | null>(null)
 
@@ -17,11 +26,13 @@ export function Nodes({ context }: { context: string }) {
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
     10000,
     [context],
+    `kubernetes:${context}:status`,
   )
   const nodes = usePolledResource<KubernetesNode[]>(
     (signal) => apiGet(`/api/kubernetes/nodes?context=${encodeURIComponent(context)}`, signal),
     8000,
     [context],
+    `kubernetes:${context}:nodes`,
   )
   const items = nodes.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -43,6 +54,7 @@ export function Nodes({ context }: { context: string }) {
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
           <input type="search" value={query} placeholder="Filter nodes by name" onChange={(event) => setQuery(event.target.value)} />
         </label>
+        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} nodes</span>
         <button className="refreshControl" type="button" onClick={nodes.reload}>Refresh</button>
       </div>
