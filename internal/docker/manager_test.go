@@ -232,9 +232,22 @@ func TestContainerActionRejectsUnsupportedAction(t *testing.T) {
 }
 
 func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
-	runner := &fakeRunner{
-		outputs: map[string][]byte{"nerdctl wait demo": []byte("0\n")},
-		errors:  map[string]error{},
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			inspects++
+			if inspects == 1 {
+				return []byte(`[{"State":{"Status":"created","Running":false,"ExitCode":0}}]`), nil
+			}
+			if inspects == 2 {
+				return []byte(`[{"State":{"Status":"running","Running":true,"ExitCode":0,"StartedAt":"2026-09-01T16:00:00Z"}}]`), nil
+			}
+			return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":0,"StartedAt":"2026-09-01T16:00:00Z","FinishedAt":"2026-09-01T16:00:01Z"}}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
 	}
 	code, err := New(runner).WaitContainer(context.Background(), "demo", "next-exit")
 	if err != nil {
@@ -242,6 +255,46 @@ func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
 	}
 	if code != 0 {
 		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
+func TestWaitContainerTreatsPausedTaskAsActive(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "container inspect demo":
+			return []byte(`[{"State":{"Status":"paused","Running":false,"ExitCode":0}}]`), nil
+		case "wait demo":
+			return []byte("0\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+	if _, err := New(runner).WaitContainer(context.Background(), "demo", "not-running"); err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+}
+
+func TestWaitContainerCapturesFastNextExit(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect demo" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		inspects++
+		if inspects == 1 {
+			return []byte(`[{"State":{"Status":"created","Running":false,"ExitCode":0}}]`), nil
+		}
+		return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":7,"StartedAt":"2026-09-01T16:00:00Z","FinishedAt":"2026-09-01T16:00:01Z"}}]`), nil
+	}
+
+	code, err := New(runner).WaitContainer(context.Background(), "demo", "next-exit")
+	if err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+	if code != 7 {
+		t.Fatalf("exit code = %d, want 7", code)
 	}
 }
 

@@ -672,7 +672,19 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	if condition != "" && condition != "not-running" && condition != "next-exit" {
 		return 0, fmt.Errorf("unsupported wait condition %q", condition)
 	}
-	output, err := m.runWithTimeout(ctx, 24*time.Hour, "wait for Porto container", nil, "wait", id)
+	waitContext, cancel := context.WithTimeout(ctx, 24*time.Hour)
+	defer cancel()
+	initial, err := m.containerWaitState(waitContext, id)
+	if err != nil {
+		return 0, err
+	}
+	if condition == "next-exit" {
+		return m.waitForNextContainerExit(waitContext, id, initial)
+	}
+	if !initial.active() {
+		return initial.ExitCode, nil
+	}
+	output, err := m.runWithTimeout(waitContext, 24*time.Hour, "wait for Porto container", nil, "wait", id)
 	if err != nil {
 		return 0, err
 	}
@@ -681,6 +693,71 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 		return 0, fmt.Errorf("decode container exit code: %w", err)
 	}
 	return code, nil
+}
+
+type containerWaitState struct {
+	Status     string `json:"Status"`
+	Running    bool   `json:"Running"`
+	ExitCode   int    `json:"ExitCode"`
+	StartedAt  string `json:"StartedAt"`
+	FinishedAt string `json:"FinishedAt"`
+}
+
+func (state containerWaitState) active() bool {
+	return state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "pausing"
+}
+
+func (m *Manager) waitForNextContainerExit(
+	ctx context.Context,
+	id string,
+	initial containerWaitState,
+) (int, error) {
+	sawActive := initial.active()
+	startedAt := initial.StartedAt
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return 0, ctx.Err()
+		case <-ticker.C:
+		}
+		current, err := m.containerWaitState(ctx, id)
+		if err != nil {
+			return 0, err
+		}
+		if current.active() {
+			if sawActive && startedAt != "" && current.StartedAt != "" && current.StartedAt != startedAt {
+				return current.ExitCode, nil
+			}
+			sawActive = true
+			if current.StartedAt != "" {
+				startedAt = current.StartedAt
+			}
+			continue
+		}
+		if sawActive ||
+			(current.Status == "exited" &&
+				(current.StartedAt != initial.StartedAt ||
+					current.FinishedAt != initial.FinishedAt ||
+					initial.Status != "exited")) {
+			return current.ExitCode, nil
+		}
+	}
+}
+
+func (m *Manager) containerWaitState(ctx context.Context, id string) (containerWaitState, error) {
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil {
+		return containerWaitState{}, err
+	}
+	var inspected struct {
+		State containerWaitState `json:"State"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return containerWaitState{}, fmt.Errorf("decode container wait state: %w", err)
+	}
+	return inspected.State, nil
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
