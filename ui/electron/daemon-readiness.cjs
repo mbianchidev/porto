@@ -1,3 +1,5 @@
+const path = require('node:path')
+
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
 const EXPECTED_API_VERSION = 5
@@ -118,6 +120,20 @@ function dockerBootstrapCommand(status, {
   return ['docker', 'engine-install']
 }
 
+function resolvePortoBinary({
+  isPackaged = false,
+  platform = process.platform,
+  resourcesPath = '',
+  environment = process.env,
+  existsImpl = () => false,
+} = {}) {
+  const binary = platform === 'win32' ? 'porto.exe' : 'porto'
+  const bundled = path.join(resourcesPath, binary)
+  if (isPackaged) return bundled
+  const candidates = [environment.PORTO_BINARY, bundled, binary].filter(Boolean)
+  return candidates.find((candidate) => candidate === binary || existsImpl(candidate)) || binary
+}
+
 module.exports = {
   daemonProcessIDs,
   daemonProcesses,
@@ -126,6 +142,7 @@ module.exports = {
   inspectDockerStatus,
   installDockerEngine,
   isDaemonReady,
+  resolvePortoBinary,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
 }

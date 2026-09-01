@@ -17,6 +17,7 @@ const {
   inspectDaemon,
   inspectDockerStatus,
   installDockerEngine,
+  resolvePortoBinary,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
 
@@ -35,13 +36,24 @@ function delay(milliseconds) {
 }
 
 function portoBinary() {
-  const binary = process.platform === 'win32' ? 'porto.exe' : 'porto'
-  const candidates = [
-    process.env.PORTO_BINARY,
-    path.join(process.resourcesPath, binary),
-    binary,
-  ].filter(Boolean)
-  return candidates.find((candidate) => candidate === binary || fs.existsSync(candidate)) || binary
+  return resolvePortoBinary({
+    isPackaged: app.isPackaged,
+    platform: process.platform,
+    resourcesPath: process.resourcesPath,
+    environment: process.env,
+    existsImpl: fs.existsSync,
+  })
+}
+
+function bundledPortoBinaryReady() {
+  if (!app.isPackaged) return true
+  try {
+    const mode = process.platform === 'win32' ? fs.constants.F_OK : fs.constants.F_OK | fs.constants.X_OK
+    fs.accessSync(portoBinary(), mode)
+    return true
+  } catch {
+    return false
+  }
 }
 
 function portoEnvironment() {
@@ -314,6 +326,14 @@ app.on('second-instance', () => {
 app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID)
   if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
+  if (!bundledPortoBinaryReady()) {
+    dialog.showErrorBox(
+      'Porto installation incomplete',
+      `The bundled Porto daemon is missing or is not executable at ${portoBinary()}. Reinstall Porto from the DMG.`,
+    )
+    app.quit()
+    return
+  }
   const bootstrapWindow = createBootstrapWindow()
   const healthy = await ensureDaemonRunning()
   if (!healthy) {

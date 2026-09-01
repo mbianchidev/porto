@@ -8,6 +8,7 @@ const {
   inspectDaemon,
   installDockerEngine,
   isDaemonReady,
+  resolvePortoBinary,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
@@ -116,4 +117,16 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('packaged apps always use the bundled Porto binary', () => {
+  const resolved = resolvePortoBinary({
+    isPackaged: true,
+    platform: 'darwin',
+    resourcesPath: '/Applications/Porto.app/Contents/Resources',
+    environment: { PORTO_BINARY: '/tmp/old-porto' },
+    existsImpl: () => false,
+  })
+
+  assert.equal(resolved, '/Applications/Porto.app/Contents/Resources/porto')
 })
