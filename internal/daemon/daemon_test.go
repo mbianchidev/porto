@@ -22,8 +22,10 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/compose"
+	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/process"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/store"
@@ -240,6 +242,35 @@ func TestStopKubernetesForwardsScopesByContext(t *testing.T) {
 	}
 	if _, ok := server.kubeForwards["porto-other/default/api/80"]; !ok {
 		t.Fatal("unrelated cluster forward was removed")
+	}
+}
+
+func TestStopKubernetesClusterForwardsIncludesLegacyK3sContext(t *testing.T) {
+	root := t.TempDir()
+	metadata, err := json.Marshal(kubernetes.ClusterRequest{Name: "local", Provider: "k3s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(root, config.KubernetesClusterFileToken("local")+".json"),
+		metadata,
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{
+		clusters: kubernetes.NewClusterProvisioner(nil, nil, root),
+		kubeForwards: map[string]*kubeForward{
+			"porto-local/default/api/80":     {port: 45000},
+			"porto-k3s-local/default/api/80": {port: 45001},
+			"porto-other/default/api/80":     {port: 45002},
+		},
+	}
+	if err := server.stopKubernetesClusterForwards("local"); err != nil {
+		t.Fatalf("stop cluster forwards: %v", err)
+	}
+	if len(server.kubeForwards) != 1 || server.kubeForwards["porto-other/default/api/80"] == nil {
+		t.Fatalf("unexpected remaining forwards: %+v", server.kubeForwards)
 	}
 }
 

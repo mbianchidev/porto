@@ -1504,7 +1504,8 @@ button:disabled {
   text-transform: uppercase;
 }
 
-.namespaceField input {
+.namespaceField input,
+.namespaceField select {
   border: 1px solid var(--line);
   border-radius: 2px;
   padding: 6px 8px;

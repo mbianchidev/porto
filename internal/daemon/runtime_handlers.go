@@ -589,7 +589,7 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	forwardErr := s.stopKubernetesForwards("porto-" + name)
+	forwardErr := s.stopKubernetesClusterForwards(name)
 	if err := errors.Join(forwardErr, s.clusters.SetRunning(r.Context(), name, false)); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -642,12 +642,24 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
-	forwardErr := s.stopKubernetesForwards("porto-" + name)
+	forwardErr := s.stopKubernetesClusterForwards(name)
 	if err := errors.Join(forwardErr, s.clusters.Delete(r.Context(), name)); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) stopKubernetesClusterForwards(clusterName string) error {
+	legacyContext := "porto-" + clusterName
+	stopErrors := []error{s.stopKubernetesForwards(legacyContext)}
+	contextName, err := s.clusters.ContextName(clusterName)
+	if err != nil {
+		stopErrors = append(stopErrors, err)
+	} else if contextName != legacyContext {
+		stopErrors = append(stopErrors, s.stopKubernetesForwards(contextName))
+	}
+	return errors.Join(stopErrors...)
 }
 
 func (s *Server) vmStatus(w http.ResponseWriter, r *http.Request) {

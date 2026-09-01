@@ -50,8 +50,8 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 		case strings.Contains(joined, "config current-context"):
 			return []byte("porto-dev\n"), nil
 		case strings.Contains(joined, "config view --raw -o json"):
-			return []byte(`{"apiVersion":"v1","kind":"Config","current-context":"default","clusters":[{"name":"default","cluster":{"server":"https://127.0.0.1:54321"}}],"contexts":[{"name":"default","context":{"cluster":"default","user":"default"}}],"users":[{"name":"default","user":{"token":"test"}}]}`), nil
-		case strings.Contains(joined, "config view -o json"):
+			return []byte(`{"apiVersion":"v1","kind":"Config","current-context":"porto-dev","clusters":[{"name":"porto-dev","cluster":{"server":"https://127.0.0.1:54321"}}],"contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev"}}],"users":[{"name":"porto-dev","user":{"token":"test"}}]}`), nil
+		case strings.Contains(joined, "config view"):
 			return []byte(`{"current-context":"porto-dev","contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev","namespace":"default"}}]}`), nil
 		case strings.Contains(joined, "get pods"):
 			return []byte(`{"items":[{"metadata":{"name":"api-1","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"spec":{"nodeName":"worker-1","containers":[{"name":"api","image":"porto/api:latest"}]},"status":{"phase":"Running","podIP":"10.42.0.2","containerStatuses":[{"name":"api","ready":true,"restartCount":1,"state":{"running":{}}}]}}]}`), nil
@@ -178,6 +178,79 @@ func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	joined := strings.Join(args, " ")
 	if !strings.Contains(joined, "--kubeconfig "+kubeconfigPath+" --context porto-dev") {
 		t.Fatalf("managed context did not use private kubeconfig: %v", args)
+	}
+}
+
+func TestManagedK3sContextMigratesToProviderQualifiedName(t *testing.T) {
+	dir := t.TempDir()
+	token := config.KubernetesClusterFileToken("local")
+	kubeconfigPath := filepath.Join(dir, token+".yaml")
+	if err := os.WriteFile(kubeconfigPath, []byte("old kubeconfig"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := json.Marshal(ClusterRequest{Name: "local", Provider: "k3s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, token+".json"), metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "kubectl" {
+			joined := strings.Join(command.Args, " ")
+			if strings.Contains(joined, "config view --raw -o json") {
+				return []byte(`{
+				"current-context":"porto-local",
+				"clusters":[{"name":"porto-local","cluster":{"server":"https://127.0.0.1:6443","certificate-authority-data":"Q0E="}}],
+				"contexts":[{"name":"porto-local","context":{"cluster":"porto-local","user":"porto-local"}}],
+				"users":[{"name":"porto-local","user":{"client-certificate-data":"Q0VSVA==","client-key-data":"S0VZ"}}]
+			}`), nil
+			}
+			if strings.Contains(joined, "get pods") {
+				return []byte(`{"items":[]}`), nil
+			}
+		}
+		return nil, errors.New("unexpected command")
+	}
+
+	contexts, err := NewWithKubeconfigRoot(runner, dir).Contexts(context.Background())
+	if err != nil {
+		t.Fatalf("Contexts: %v", err)
+	}
+	if len(contexts) != 1 || contexts[0].Name != "porto-k3s-local" || contexts[0].Cluster != "porto-k3s-local" {
+		t.Fatalf("contexts = %+v", contexts)
+	}
+	updated, err := os.ReadFile(kubeconfigPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(updated), "porto-local") || !strings.Contains(string(updated), "porto-k3s-local") {
+		t.Fatalf("kubeconfig was not migrated: %s", updated)
+	}
+	if !strings.Contains(string(updated), `"certificate-authority-data": "Q0E="`) ||
+		!strings.Contains(string(updated), `"client-certificate-data": "Q0VSVA=="`) {
+		t.Fatalf("kubeconfig credentials were not preserved: %s", updated)
+	}
+	manager := NewWithKubeconfigRoot(runner, dir)
+	if _, err := manager.Pods(context.Background(), "porto-k3s-local", "all"); err != nil {
+		t.Fatalf("Pods: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	lastCommand := strings.Join(runner.commands[len(runner.commands)-1].Args, " ")
+	if !strings.Contains(lastCommand, "--kubeconfig "+kubeconfigPath+" --context porto-k3s-local") {
+		t.Fatalf("provider-qualified context did not use its private kubeconfig: %s", lastCommand)
+	}
+	foundRawMigration := false
+	for _, command := range runner.commands {
+		if strings.Contains(strings.Join(command.Args, " "), "config view --raw -o json") {
+			foundRawMigration = true
+			break
+		}
+	}
+	if !foundRawMigration {
+		t.Fatal("managed kubeconfig migration did not request raw credential data")
 	}
 }
 
@@ -557,7 +630,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create cluster: %v", err)
 	}
-	if len(cluster.Nodes) != 3 || cluster.Context != "porto-dev" {
+	if len(cluster.Nodes) != 3 || cluster.Context != "porto-k3s-dev" {
 		t.Fatalf("unexpected cluster: %+v", cluster)
 	}
 	data, err := os.ReadFile(provisioner.clusterKubeconfigPath("dev"))
@@ -567,8 +640,25 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if !strings.Contains(string(data), "https://127.0.0.1:") || strings.Contains(string(data), "https://127.0.0.1:6443") {
 		t.Fatalf("kubeconfig did not use the forwarded host API port: %s", data)
 	}
-	if strings.Contains(string(data), `"name": "default"`) || !strings.Contains(string(data), `"name": "porto-dev"`) {
+	if strings.Contains(string(data), `"name": "default"`) || !strings.Contains(string(data), `"name": "porto-k3s-dev"`) {
 		t.Fatalf("kubeconfig identifiers were not made cluster-specific: %s", data)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	foundTraefikManifest := false
+	foundTraefikPatch := false
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, " ")
+		if command.Name == "limactl" &&
+			strings.Contains(joined, "/var/lib/rancher/k3s/server/manifests/porto-traefik-config.yaml") {
+			foundTraefikManifest = strings.Contains(string(command.Stdin), "type: ClusterIP")
+		}
+		if command.Name == "kubectl" && strings.Contains(joined, "patch service traefik") {
+			foundTraefikPatch = true
+		}
+	}
+	if !foundTraefikManifest || !foundTraefikPatch {
+		t.Fatalf("Traefik ClusterIP defaults were not applied: manifest=%t patch=%t", foundTraefikManifest, foundTraefikPatch)
 	}
 	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)

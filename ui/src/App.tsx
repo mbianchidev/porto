@@ -57,7 +57,10 @@ function AppShell() {
   const killSwitch = usePolledResource<KillSwitchStatus>((signal) => apiGet('/api/integrations/kill-switch', signal), 5000, [])
   const kubernetesContexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 10000, [])
   const kubernetesClusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
-  const activeKubeContext = kubeContext || kubernetesContexts.data?.[0]?.name || ''
+  const kubeContexts = kubernetesContexts.data ?? []
+  const activeKubeContext = kubeContexts.some((item) => item.name === kubeContext)
+    ? kubeContext
+    : kubeContexts[0]?.name || kubeContext
   const kubernetesRunningCount = (kubernetesClusters.data ?? []).filter((cluster) => cluster.state === 'running').length
 
   function reloadIntegrations() {
@@ -100,12 +103,12 @@ function AppShell() {
         {route === 'builds' && <Builds />}
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
-        {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} onContextChange={setKubeContext} />}
-        {route === 'pods' && <Pods context={activeKubeContext} />}
-        {route === 'services' && <KubernetesServices context={activeKubeContext} />}
-        {route === 'configs' && <ConfigMaps context={activeKubeContext} />}
-        {route === 'secrets' && <Secrets context={activeKubeContext} />}
-        {route === 'nodes' && <Nodes context={activeKubeContext} />}
+        {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'pods' && <Pods key={`pods:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'services' && <KubernetesServices key={`services:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'configs' && <ConfigMaps key={`configs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'secrets' && <Secrets key={`secrets:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'nodes' && <Nodes key={`nodes:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'machines' && <Machines />}
         {route === 'activity' && <Activity />}
         {route === 'settings' && (

@@ -6,13 +6,22 @@ import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
+import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { KubernetesConfigMap, KubernetesConfigMapDetail, KubernetesStatus } from '../types'
+import type { KubernetesConfigMap, KubernetesConfigMapDetail, KubernetesContext, KubernetesStatus } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(80px,0.4fr) minmax(80px,0.4fr) minmax(90px,0.5fr) minmax(70px,0.4fr)'
 
-export function ConfigMaps({ context }: { context: string }) {
+export function ConfigMaps({
+  context,
+  contexts,
+  onContextChange,
+}: {
+  context: string
+  contexts: KubernetesContext[]
+  onContextChange: (context: string) => void
+}) {
   const { notifyError, notifyNotice } = useMessages()
   const [namespace, setNamespace] = useState('')
   const [query, setQuery] = useState('')
@@ -22,11 +31,13 @@ export function ConfigMaps({ context }: { context: string }) {
     (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
     10000,
     [context],
+    `kubernetes:${context}:status`,
   )
   const configMaps = usePolledResource<KubernetesConfigMap[]>(
     (signal) => apiGet(`/api/kubernetes/configmaps?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal),
     6000,
     [context, namespace],
+    `kubernetes:${context}:configmaps:${namespace}`,
   )
   const items = configMaps.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -106,6 +117,7 @@ export function ConfigMaps({ context }: { context: string }) {
           <span>Namespace</span>
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
+        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} configs</span>
         <button className="refreshControl" type="button" onClick={() => {
           configMaps.reload()

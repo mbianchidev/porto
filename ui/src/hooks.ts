@@ -9,6 +9,29 @@ type PolledResource<T> = {
   reload: () => void
 }
 
+type ResourceState<T> = {
+  cacheKey?: string
+  data: T | null
+}
+
+const resourceCache = new Map<string, unknown>()
+const resourceCacheLimit = 100
+
+function cachedResource<T>(cacheKey?: string): T | null {
+  if (!cacheKey || !resourceCache.has(cacheKey)) return null
+  return resourceCache.get(cacheKey) as T
+}
+
+function cacheResource<T>(cacheKey: string, value: T) {
+  resourceCache.delete(cacheKey)
+  resourceCache.set(cacheKey, value)
+  while (resourceCache.size > resourceCacheLimit) {
+    const oldest = resourceCache.keys().next().value
+    if (oldest === undefined) break
+    resourceCache.delete(oldest)
+  }
+}
+
 /**
  * Fetches a resource once, then re-fetches on an interval, aborting the in-flight
  * request on unmount or when a dependency changes so stale responses never land.
@@ -18,23 +41,36 @@ export function usePolledResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
   deps: DependencyList,
+  cacheKey?: string,
 ): PolledResource<T> {
-  const [data, setData] = useState<T | null>(null)
+  const initialData = cachedResource<T>(cacheKey)
+  const [resource, setResource] = useState<ResourceState<T>>({ cacheKey, data: initialData })
   const [error, setError] = useState('')
-  const [loading, setLoading] = useState(true)
+  const [loading, setLoading] = useState(initialData === null)
   const [reloadToken, setReloadToken] = useState(0)
   const fetcherRef = useRef(fetcher)
+  const data = resource.cacheKey === cacheKey ? resource.data : cachedResource<T>(cacheKey)
+  const currentError = resource.cacheKey === cacheKey ? error : ''
+  const currentLoading = resource.cacheKey === cacheKey ? loading : data === null
+  const dataRef = useRef(data)
   fetcherRef.current = fetcher
+  dataRef.current = data
 
   useEffect(() => {
     let active = true
+    let running = false
     const controller = new AbortController()
-    setLoading(true)
+    setError('')
+    setLoading(dataRef.current === null)
     const run = async () => {
+      if (running) return
+      running = true
       try {
         const result = await fetcherRef.current(controller.signal)
         if (active) {
-          setData(result)
+          if (cacheKey) cacheResource(cacheKey, result)
+          dataRef.current = result
+          setResource({ cacheKey, data: result })
           setError('')
         }
       } catch (err) {
@@ -43,6 +79,7 @@ export function usePolledResource<T>(
         }
       } finally {
         if (active) setLoading(false)
+        running = false
       }
     }
     run()
@@ -53,11 +90,11 @@ export function usePolledResource<T>(
       if (timer !== undefined) window.clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [intervalMs, reloadToken, ...deps])
+  }, [cacheKey, intervalMs, reloadToken, ...deps])
 
   const reload = useCallback(() => setReloadToken((value) => value + 1), [])
 
-  return { data, error, loading, reload }
+  return { data, error: currentError, loading: currentLoading, reload }
 }
 
 /** Tracks whether the viewport is at or below a breakpoint, for rail/inspector collapse. */

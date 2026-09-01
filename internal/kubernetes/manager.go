@@ -259,7 +259,7 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 				filepath.Join(m.kubeconfigRoot, entry.Name()),
 				10*time.Second,
 				nil,
-				"config", "view", "-o", "json",
+				"config", "view", "--raw", "-o", "json",
 			)
 			if managedErr != nil {
 				return nil, fmt.Errorf("read managed Kubernetes context %s: %w", entry.Name(), managedErr)
@@ -268,8 +268,28 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 			if err := json.Unmarshal(managedOutput, &managedConfig); err != nil {
 				return nil, fmt.Errorf("decode managed Kubernetes context %s: %w", entry.Name(), err)
 			}
+			expectedName, expectedErr := managedContextName(
+				filepath.Join(m.kubeconfigRoot, entry.Name()),
+			)
+			if expectedErr != nil {
+				return nil, expectedErr
+			}
+			if expectedName != "" && !kubeconfigViewUsesName(managedConfig, expectedName) {
+				normalized, normalizeErr := normalizeKubeconfigJSON(managedOutput, expectedName)
+				if normalizeErr != nil {
+					return nil, normalizeErr
+				}
+				kubeconfigPath := filepath.Join(m.kubeconfigRoot, entry.Name())
+				if writeErr := writeKubeconfigAtomic(kubeconfigPath, normalized); writeErr != nil {
+					return nil, fmt.Errorf("migrate managed Kubernetes context %s: %w", entry.Name(), writeErr)
+				}
+				if err := json.Unmarshal(normalized, &managedConfig); err != nil {
+					return nil, fmt.Errorf("decode migrated Kubernetes context %s: %w", entry.Name(), err)
+				}
+			}
 			addContextConfig(contextsByName, managedConfig)
 		}
+
 	}
 	contexts := make([]ContextInfo, 0, len(contextsByName))
 	for _, item := range contextsByName {
@@ -277,6 +297,37 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 	}
 	sort.Slice(contexts, func(left, right int) bool { return contexts[left].Name < contexts[right].Name })
 	return contexts, nil
+}
+
+func managedContextName(kubeconfigPath string) (string, error) {
+	metadataPath := strings.TrimSuffix(kubeconfigPath, filepath.Ext(kubeconfigPath)) + ".json"
+	data, err := os.ReadFile(metadataPath)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read managed Kubernetes metadata: %w", err)
+	}
+	var request ClusterRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return "", fmt.Errorf("decode managed Kubernetes metadata: %w", err)
+	}
+	if !clusterNamePattern.MatchString(request.Name) || normalizeProvider(request.Provider) == "" {
+		return "", errors.New("managed Kubernetes metadata has an invalid cluster identity")
+	}
+	return clusterContextName(request), nil
+}
+
+func kubeconfigViewUsesName(config kubeconfigView, name string) bool {
+	if config.CurrentContext != name || len(config.Contexts) == 0 {
+		return false
+	}
+	for _, item := range config.Contexts {
+		if item.Name != name || item.Context.Cluster != name || item.Context.AuthInfo != name {
+			return false
+		}
+	}
+	return true
 }
 
 func (m *Manager) Pods(ctx context.Context, contextName, namespace string) ([]Pod, error) {
@@ -870,6 +921,27 @@ func (m *Manager) kubeconfigForContext(contextName string) string {
 	kubeconfigPath := filepath.Join(m.kubeconfigRoot, config.KubernetesClusterFileToken(cluster)+".yaml")
 	if info, err := os.Stat(kubeconfigPath); err == nil && !info.IsDir() {
 		return kubeconfigPath
+	}
+	entries, err := os.ReadDir(m.kubeconfigRoot)
+	if err != nil {
+		return ""
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(m.kubeconfigRoot, entry.Name()))
+		if readErr != nil {
+			continue
+		}
+		var request ClusterRequest
+		if json.Unmarshal(data, &request) != nil || clusterContextName(request) != contextName {
+			continue
+		}
+		candidate := filepath.Join(m.kubeconfigRoot, strings.TrimSuffix(entry.Name(), ".json")+".yaml")
+		if info, statErr := os.Stat(candidate); statErr == nil && !info.IsDir() {
+			return candidate
+		}
 	}
 	return ""
 }
