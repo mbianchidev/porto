@@ -20,23 +20,121 @@ type Status struct {
 	Canonical     bool   `json:"canonical"`
 	PreviousLink  string `json:"previousLink,omitempty"`
 	Message       string `json:"message,omitempty"`
+	Namespace     string `json:"namespace,omitempty"`
+	Inventory     string `json:"inventory,omitempty"`
+	Revision      uint64 `json:"revision,omitempty"`
+	Stale         bool   `json:"stale,omitempty"`
+	UpdatedAt     string `json:"updatedAt,omitempty"`
 }
 
 type Container struct {
-	ID             string            `json:"id"`
-	Name           string            `json:"name"`
-	Image          string            `json:"image"`
-	ImageID        string            `json:"imageId,omitempty"`
-	Command        string            `json:"command,omitempty"`
-	State          string            `json:"state"`
-	Status         string            `json:"status"`
-	Ports          string            `json:"ports"`
-	Networks       string            `json:"networks"`
-	Mounts         string            `json:"mounts"`
-	CreatedAt      string            `json:"createdAt"`
-	Labels         map[string]string `json:"labels,omitempty"`
-	ComposeProject string            `json:"composeProject,omitempty"`
-	ComposeService string            `json:"composeService,omitempty"`
+	ID               string                    `json:"id"`
+	Name             string                    `json:"name"`
+	Image            string                    `json:"image"`
+	ImageID          string                    `json:"imageId,omitempty"`
+	Command          string                    `json:"command,omitempty"`
+	State            string                    `json:"state"`
+	Status           string                    `json:"status"`
+	Ports            string                    `json:"ports"`
+	Networks         string                    `json:"networks"`
+	Mounts           string                    `json:"mounts"`
+	CreatedAt        string                    `json:"createdAt"`
+	Labels           map[string]string         `json:"labels,omitempty"`
+	ComposeProject   string                    `json:"composeProject,omitempty"`
+	ComposeService   string                    `json:"composeService,omitempty"`
+	TaskPresent      bool                      `json:"taskPresent"`
+	PID              uint32                    `json:"pid,omitempty"`
+	ExitCode         *uint32                   `json:"exitCode,omitempty"`
+	ExitSignal       *uint32                   `json:"exitSignal,omitempty"`
+	ExitAt           string                    `json:"exitAt,omitempty"`
+	ExitReason       string                    `json:"exitReason,omitempty"`
+	OOMKilled        bool                      `json:"oomKilled"`
+	RestartPolicy    string                    `json:"restartPolicy,omitempty"`
+	RestartCount     int                       `json:"restartCount"`
+	Health           ContainerHealth           `json:"health"`
+	Resources        ContainerResources        `json:"resources"`
+	NetworkDetails   []ContainerNetworkState   `json:"networkDetails,omitempty"`
+	MountDetails     []ContainerMount          `json:"mountDetails,omitempty"`
+	Annotations      map[string]string         `json:"annotations,omitempty"`
+	StopSignal       string                    `json:"stopSignal,omitempty"`
+	StopTimeout      int                       `json:"stopTimeout,omitempty"`
+	UpdatedAt        string                    `json:"updatedAt,omitempty"`
+	LastTransition   string                    `json:"lastTransition,omitempty"`
+	LastTransitionAt string                    `json:"lastTransitionAt,omitempty"`
+	History          []ContainerLifecycleEvent `json:"history,omitempty"`
+	InventoryError   string                    `json:"inventoryError,omitempty"`
+}
+
+type ContainerHealth struct {
+	Status        string `json:"status"`
+	FailingStreak int    `json:"failingStreak"`
+	Output        string `json:"output,omitempty"`
+	UpdatedAt     string `json:"updatedAt,omitempty"`
+}
+
+type ContainerResources struct {
+	CPUQuota    int64  `json:"cpuQuota,omitempty"`
+	CPUPeriod   uint64 `json:"cpuPeriod,omitempty"`
+	CPUShares   uint64 `json:"cpuShares,omitempty"`
+	CPUSet      string `json:"cpuSet,omitempty"`
+	MemoryLimit int64  `json:"memoryLimit,omitempty"`
+	MemorySwap  int64  `json:"memorySwap,omitempty"`
+	PIDsLimit   int64  `json:"pidsLimit,omitempty"`
+}
+
+type ContainerNetworkState struct {
+	Name          string `json:"name"`
+	HostIP        string `json:"hostIp,omitempty"`
+	HostPort      int32  `json:"hostPort,omitempty"`
+	ContainerPort int32  `json:"containerPort,omitempty"`
+	Protocol      string `json:"protocol,omitempty"`
+}
+
+type ContainerMount struct {
+	Type        string   `json:"type,omitempty"`
+	Source      string   `json:"source,omitempty"`
+	Destination string   `json:"destination"`
+	Options     []string `json:"options,omitempty"`
+}
+
+type ContainerLifecycleEvent struct {
+	Sequence    uint64    `json:"sequence"`
+	Topic       string    `json:"topic"`
+	Type        string    `json:"type"`
+	ContainerID string    `json:"containerId,omitempty"`
+	ExecID      string    `json:"execId,omitempty"`
+	Timestamp   time.Time `json:"timestamp"`
+	ExitCode    *uint32   `json:"exitCode,omitempty"`
+	ExitSignal  *uint32   `json:"exitSignal,omitempty"`
+	OOM         bool      `json:"oom,omitempty"`
+	Reason      string    `json:"reason,omitempty"`
+}
+
+type RuntimeCapability struct {
+	Supported bool   `json:"supported"`
+	Reason    string `json:"reason,omitempty"`
+}
+
+type ContainerCapabilities struct {
+	DirectInventory   RuntimeCapability `json:"directInventory"`
+	LifecycleEvents   RuntimeCapability `json:"lifecycleEvents"`
+	CheckpointRestore RuntimeCapability `json:"checkpointRestore"`
+}
+
+type ContainerSnapshot struct {
+	InstanceID       string                    `json:"instanceId"`
+	Revision         uint64                    `json:"revision"`
+	Available        bool                      `json:"available"`
+	Stale            bool                      `json:"stale"`
+	Namespace        string                    `json:"namespace,omitempty"`
+	Backend          string                    `json:"backend,omitempty"`
+	Message          string                    `json:"message,omitempty"`
+	ConnectedAt      time.Time                 `json:"connectedAt,omitempty"`
+	LastEventAt      time.Time                 `json:"lastEventAt,omitempty"`
+	LastReconciledAt time.Time                 `json:"lastReconciledAt,omitempty"`
+	Containers       []Container               `json:"containers"`
+	Events           []ContainerLifecycleEvent `json:"events,omitempty"`
+	Capabilities     ContainerCapabilities     `json:"capabilities"`
 }
 
 type Image struct {

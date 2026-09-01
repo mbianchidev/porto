@@ -62,6 +62,9 @@ func (m *Manager) ConnectNetwork(ctx context.Context, network, container string,
 	}
 	args = append(args, network, container)
 	_, err := m.run(ctx, "connect Porto container network", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }
 
@@ -78,6 +81,9 @@ func (m *Manager) DisconnectNetwork(ctx context.Context, network, container stri
 	}
 	args = append(args, network, container)
 	_, err := m.run(ctx, "disconnect Porto container network", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }
 

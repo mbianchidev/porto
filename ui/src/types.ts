@@ -116,6 +116,11 @@ export type DockerStatus = {
   canonical: boolean
   previousLink?: string
   message?: string
+  namespace?: string
+  inventory?: string
+  revision?: number
+  stale?: boolean
+  updatedAt?: string
 }
 
 export type DockerContainer = {
@@ -130,6 +135,97 @@ export type DockerContainer = {
   createdAt: string
   composeProject?: string
   composeService?: string
+  taskPresent: boolean
+  pid?: number
+  exitCode?: number
+  exitSignal?: number
+  exitAt?: string
+  exitReason?: string
+  oomKilled: boolean
+  restartPolicy?: string
+  restartCount: number
+  health: DockerContainerHealth
+  resources: DockerContainerResources
+  networkDetails?: DockerContainerNetworkState[]
+  mountDetails?: DockerContainerMount[]
+  annotations?: Record<string, string>
+  stopSignal?: string
+  stopTimeout?: number
+  updatedAt?: string
+  lastTransition?: string
+  lastTransitionAt?: string
+  history?: DockerContainerLifecycleEvent[]
+  inventoryError?: string
+}
+
+export type DockerContainerHealth = {
+  status: string
+  failingStreak: number
+  output?: string
+  updatedAt?: string
+}
+
+export type DockerContainerResources = {
+  cpuQuota?: number
+  cpuPeriod?: number
+  cpuShares?: number
+  cpuSet?: string
+  memoryLimit?: number
+  memorySwap?: number
+  pidsLimit?: number
+}
+
+export type DockerContainerNetworkState = {
+  name: string
+  hostIp?: string
+  hostPort?: number
+  containerPort?: number
+  protocol?: string
+}
+
+export type DockerContainerMount = {
+  type?: string
+  source?: string
+  destination: string
+  options?: string[]
+}
+
+export type DockerContainerLifecycleEvent = {
+  sequence: number
+  topic: string
+  type: string
+  containerId?: string
+  execId?: string
+  timestamp: string
+  exitCode?: number
+  exitSignal?: number
+  oom?: boolean
+  reason?: string
+}
+
+export type DockerRuntimeCapability = {
+  supported: boolean
+  reason?: string
+}
+
+export type DockerContainerSnapshot = {
+  instanceId: string
+  revision: number
+  available: boolean
+  stale: boolean
+  namespace?: string
+  backend?: string
+  message?: string
+  connectedAt?: string
+  lastEventAt?: string
+  lastReconciledAt?: string
+  containers: DockerContainer[]
+  events?: DockerContainerLifecycleEvent[]
+  capabilities: {
+    directInventory: DockerRuntimeCapability
+    lifecycleEvents: DockerRuntimeCapability
+    checkpointRestore: DockerRuntimeCapability
+  }
 }
 
 export type DockerImage = {

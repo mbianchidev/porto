@@ -82,9 +82,9 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 	case "limactl":
 		joined := strings.Join(command.Args, " ")
 		switch {
-		case joined == "list --json" && !r.created:
+		case joined == "list porto-engine --json" && !r.created:
 			return nil, nil
-		case joined == "list --json" && r.created:
+		case joined == "list porto-engine --json" && r.created:
 			return []byte(`{"name":"porto-engine","status":"Running"}` + "\n"), nil
 		case strings.HasPrefix(joined, "start --tty=false"):
 			r.created = true
@@ -462,7 +462,7 @@ func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 func TestInstallEngineRejectsUnownedLimaNameCollision(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
-			"limactl list --json": []byte(`{"name":"porto-engine","status":"Running"}` + "\n"),
+			"limactl list porto-engine --json": []byte(`{"name":"porto-engine","status":"Running"}` + "\n"),
 		},
 		errors: map[string]error{},
 	}

@@ -25,5 +25,8 @@ func (m *Manager) UpdateContainer(ctx context.Context, id string, update Contain
 	}
 	args = append(args, id)
 	_, err := m.run(ctx, "update Porto container", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }

@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
+import { useContainerSnapshots } from '../containerSnapshots'
 import { formatRelativeTime } from '../format'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -165,12 +166,7 @@ export function LocalhostIng({
     [],
     'localhost:projects',
   )
-  const dockerDeployments = usePolledResource<DockerContainer[]>(
-    (signal) => settings?.dockerEnabled ? apiGet('/api/docker/containers', signal) : Promise.resolve([]),
-    5000,
-    [settings?.dockerEnabled],
-    'docker:containers',
-  )
+  const dockerDeployments = useContainerSnapshots(settings?.dockerEnabled ?? false)
   const kubernetesDeployments = usePolledResource<KubernetesPod[]>(
     (signal) => settings?.kubernetesEnabled
       ? apiGet(`/api/kubernetes/pods?namespace=all&context=${encodeURIComponent(kubeContext)}`, signal)

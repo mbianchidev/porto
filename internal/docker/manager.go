@@ -34,15 +34,20 @@ var (
 )
 
 type Manager struct {
-	runner       runtimes.Runner
-	timeout      time.Duration
-	stateDir     string
-	lookPath     func(string) (string, error)
-	goos         string
-	directCLI    bool
-	dialBuildKit func(context.Context) (net.Conn, error)
-	installMu    sync.Mutex
-	healthMu     sync.Mutex
+	runner           runtimes.Runner
+	timeout          time.Duration
+	stateDir         string
+	lookPath         func(string) (string, error)
+	goos             string
+	directCLI        bool
+	dialBuildKit     func(context.Context) (net.Conn, error)
+	installMu        sync.Mutex
+	healthMu         sync.Mutex
+	inventoryMu      sync.Mutex
+	inventory        *containerInventory
+	inventoryCancel  context.CancelFunc
+	inventoryDone    chan struct{}
+	runtimeConnector containerRuntimeConnector
 }
 
 type engineState struct {
@@ -54,13 +59,15 @@ type engineState struct {
 
 func New(runner runtimes.Runner) *Manager {
 	if runner != nil {
-		return &Manager{
+		manager := &Manager{
 			runner:    runner,
 			timeout:   defaultTimeout,
 			lookPath:  exec.LookPath,
 			goos:      runtime.GOOS,
 			directCLI: true,
 		}
+		manager.runtimeConnector = manager.connectContainerRuntime
+		return manager
 	}
 	stateDir, _ := config.DockerEngineDir()
 	return NewWithStateDir(nil, stateDir)
@@ -70,13 +77,15 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{
+	manager := &Manager{
 		runner:   runner,
 		timeout:  defaultTimeout,
 		stateDir: stateDir,
 		lookPath: exec.LookPath,
 		goos:     runtime.GOOS,
 	}
+	manager.runtimeConnector = manager.connectContainerRuntime
+	return manager
 }
 
 func (m *Manager) Status(ctx context.Context, socketPath string) Status {
@@ -86,6 +95,20 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 		ClientVersion: config.Version,
 		ServerVersion: config.Version,
 		ProxySocket:   socketPath,
+	}
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		snapshot := inventory.snapshotValue()
+		status.Available = snapshot.Available
+		status.Backend = snapshot.Backend
+		status.Namespace = snapshot.Namespace
+		status.Inventory = "containerd-events"
+		status.Revision = snapshot.Revision
+		status.Stale = snapshot.Stale
+		if !snapshot.LastReconciledAt.IsZero() {
+			status.UpdatedAt = snapshot.LastReconciledAt.Format(time.RFC3339Nano)
+		}
+		status.Message = snapshot.Message
+		return status
 	}
 	backend, err := m.backend(ctx)
 	if err != nil {
@@ -307,6 +330,23 @@ func (m *Manager) Containers(ctx context.Context) ([]Container, error) {
 }
 
 func (m *Manager) DockerContainers(ctx context.Context, all bool) ([]Container, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		snapshot := inventory.snapshotValue()
+		if !snapshot.Available {
+			return nil, fmt.Errorf("%w: %s", ErrUnavailable, firstNonEmpty(snapshot.Message, "container inventory is connecting"))
+		}
+		containers := snapshot.Containers
+		if all {
+			return containers, nil
+		}
+		running := make([]Container, 0, len(containers))
+		for _, container := range containers {
+			if containerActive(&container) {
+				running = append(running, container)
+			}
+		}
+		return running, nil
+	}
 	args := []string{"ps"}
 	if all {
 		args = append(args, "-a")
@@ -316,6 +356,10 @@ func (m *Manager) DockerContainers(ctx context.Context, all bool) ([]Container, 
 	if err != nil {
 		return nil, err
 	}
+	return decodeNerdctlContainers(output)
+}
+
+func decodeNerdctlContainers(output []byte) ([]Container, error) {
 	return decodeLines(output, func(item map[string]string) Container {
 		labels := parseLabels(item["Labels"])
 		return Container{
@@ -449,6 +493,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if id == "" {
 		return "", errors.New("container runtime returned an empty container identifier")
 	}
+	m.invalidateContainerInventory()
 	return strings.Fields(id)[0], nil
 }
 
@@ -642,15 +687,26 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	case "remove":
 		args = []string{"rm", id}
 	case "remove-force":
-		return m.forceRemoveContainer(ctx, id, false)
+		err := m.forceRemoveContainer(ctx, id, false)
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
 	case "remove-volumes":
 		args = []string{"rm", "--volumes", id}
 	case "remove-force-volumes":
-		return m.forceRemoveContainer(ctx, id, true)
+		err := m.forceRemoveContainer(ctx, id, true)
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	_, err := m.run(ctx, action+" Porto container", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }
 
@@ -733,6 +789,9 @@ func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
 		return err
 	}
 	_, err := m.run(ctx, "rename Porto container", "rename", id, name)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }
 
@@ -745,6 +804,9 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	}
 	waitContext, cancel := context.WithTimeout(ctx, 24*time.Hour)
 	defer cancel()
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		return inventory.wait(waitContext, id, condition)
+	}
 	initial, err := m.containerWaitState(waitContext, id)
 	if err != nil {
 		return 0, err
@@ -1184,7 +1246,16 @@ func (m *Manager) runCommand(
 }
 
 func (m *Manager) limaInstanceStatus(ctx context.Context) (exists bool, running bool, err error) {
-	output, err := m.runCommand(ctx, 20*time.Second, "inspect Porto container runtime", nil, "limactl", "list", "--json")
+	output, err := m.runCommand(
+		ctx,
+		20*time.Second,
+		"inspect Porto container runtime",
+		nil,
+		"limactl",
+		"list",
+		engineInstanceName,
+		"--json",
+	)
 	if err != nil {
 		return false, false, err
 	}

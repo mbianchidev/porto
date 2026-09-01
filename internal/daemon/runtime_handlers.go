@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
@@ -29,6 +31,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
+	mux.HandleFunc("GET /api/docker/containers/snapshot", s.requireRuntime("docker", s.dockerContainerSnapshot))
+	mux.HandleFunc("GET /api/docker/containers/events", s.requireRuntime("docker", s.dockerContainerEvents))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
 	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
@@ -165,6 +169,54 @@ func (s *Server) installDockerContext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 	value, err := s.docker.Containers(r.Context())
 	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) dockerContainerSnapshot(w http.ResponseWriter, _ *http.Request) {
+	writeJSON(w, s.docker.ContainerSnapshot())
+}
+
+func (s *Server) dockerContainerEvents(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeRuntimeError(w, errors.New("container event streaming is unavailable"))
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.Header().Set("X-Accel-Buffering", "no")
+	if _, err := io.WriteString(w, "retry: 1000\n\n"); err != nil {
+		return
+	}
+	flusher.Flush()
+
+	updates, unsubscribe := s.docker.SubscribeContainerSnapshots()
+	defer unsubscribe()
+	heartbeat := time.NewTicker(15 * time.Second)
+	defer heartbeat.Stop()
+	for {
+		select {
+		case <-r.Context().Done():
+			return
+		case <-heartbeat.C:
+			if _, err := io.WriteString(w, ": keepalive\n\n"); err != nil {
+				return
+			}
+			flusher.Flush()
+		case snapshot, ok := <-updates:
+			if !ok {
+				return
+			}
+			payload, err := json.Marshal(snapshot)
+			if err != nil {
+				return
+			}
+			if _, err := fmt.Fprintf(w, "id: %d\nevent: snapshot\ndata: %s\n\n", snapshot.Revision, payload); err != nil {
+				return
+			}
+			flusher.Flush()
+		}
+	}
 }
 
 func (s *Server) dockerContainer(w http.ResponseWriter, r *http.Request) {
