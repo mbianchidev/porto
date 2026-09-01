@@ -268,6 +268,19 @@ func TestContainerRemovalCompleteRequiresContainerSpecificError(t *testing.T) {
 	}
 }
 
+func TestForceRemoveRejectsAmbiguousContainerID(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl container inspect abc": []byte(`[{"Id":"abc-one"},{"Id":"abc-two"}]`),
+		},
+		errors: map[string]error{},
+	}
+	err := New(runner).ContainerAction(context.Background(), "abc", "remove-force")
+	if err == nil || !strings.Contains(err.Error(), "matched 2 containers") {
+		t.Fatalf("error = %v, want ambiguous ID rejection", err)
+	}
+}
+
 func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
 	inspects := 0
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}

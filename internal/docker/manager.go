@@ -694,20 +694,23 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 }
 
 func (m *Manager) resolveContainerID(ctx context.Context, id string) (string, error) {
-	document, err := m.inspect(ctx, "container", id)
+	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
 		return "", err
 	}
-	var inspected struct {
+	var inspected []struct {
 		ID string `json:"Id"`
 	}
-	if err := json.Unmarshal(document, &inspected); err != nil {
+	if err := json.Unmarshal(output, &inspected); err != nil {
 		return "", fmt.Errorf("decode container identity: %w", err)
 	}
-	if inspected.ID == "" {
+	if len(inspected) != 1 {
+		return "", fmt.Errorf("container identifier %q matched %d containers", id, len(inspected))
+	}
+	if inspected[0].ID == "" {
 		return "", errors.New("container runtime returned an empty container identifier")
 	}
-	return inspected.ID, nil
+	return inspected[0].ID, nil
 }
 
 func containerRemovalComplete(err error) bool {

@@ -110,6 +110,7 @@ async function startDaemon() {
 }
 
 async function runningDaemonProcesses() {
+  let processes
   if (process.platform === 'win32') {
     const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
@@ -117,43 +118,83 @@ async function runningDaemonProcesses() {
       maxBuffer: 4 * 1024 * 1024,
     })
     if (stdout.trim() === '') return []
-    return windowsDaemonProcesses(JSON.parse(stdout))
+    processes = windowsDaemonProcesses(JSON.parse(stdout))
+  } else {
+    const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    })
+    processes = daemonProcesses(stdout)
   }
-  const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
-    timeout: 5000,
-    maxBuffer: 1024 * 1024,
-  })
-  return daemonProcesses(stdout)
+  const identified = await Promise.all(processes.map(async (process) => ({
+    ...process,
+    identity: await processIdentity(process.pid),
+  })))
+  return identified.filter((process) => process.identity !== null)
 }
 
-async function stopDaemonPIDs(pids) {
-  const runningPIDs = new Set(pids)
-  for (const pid of pids) {
+async function processIdentity(pid) {
+  try {
+    if (process.platform === 'win32') {
+      const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object CreationDate,CommandLine | ConvertTo-Json -Compress`
+      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        timeout: 5000,
+        maxBuffer: 1024 * 1024,
+      })
+      if (stdout.trim() === '') return null
+      const processInfo = JSON.parse(stdout)
+      return `${processInfo.CreationDate || ''}|${processInfo.CommandLine || ''}`
+    }
+    const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart=,command='], {
+      timeout: 5000,
+      maxBuffer: 1024 * 1024,
+    })
+    return stdout.trim() || null
+  } catch {
+    return null
+  }
+}
+
+async function stopDaemonProcesses(daemons) {
+  const runningProcesses = new Map(daemons.map((daemon) => [daemon.pid, daemon.identity]))
+  const refresh = async () => {
+    for (const [pid, identity] of runningProcesses) {
+      if (await processIdentity(pid) !== identity) runningProcesses.delete(pid)
+    }
+  }
+  const signal = (pid, name) => {
     try {
-      process.kill(pid, 'SIGTERM')
+      process.kill(pid, name)
+      return true
     } catch (error) {
       if (error.code === 'ESRCH') {
-        runningPIDs.delete(pid)
-        continue
+        runningProcesses.delete(pid)
+        return true
       }
-      console.error(`Unable to stop incompatible Porto daemon ${pid}`, error)
+      console.error(`Unable to send ${name} to incompatible Porto daemon ${pid}`, error)
       return false
     }
   }
-  for (let attempt = 0; attempt < 240; attempt += 1) {
-    await delay(250)
-    for (const pid of runningPIDs) {
-      try {
-        process.kill(pid, 0)
-      } catch (error) {
-        if (error.code === 'ESRCH') runningPIDs.delete(pid)
+  const waitForExit = async (attempts) => {
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      await delay(250)
+      await refresh()
+      if (runningProcesses.size === 0 && !(await inspectDaemon({ daemonURL: DAEMON_URL })).reachable) {
+        return true
       }
     }
-    if (runningPIDs.size === 0 && !(await inspectDaemon({ daemonURL: DAEMON_URL })).reachable) {
-      return true
-    }
+    return false
   }
-  return false
+  await refresh()
+  for (const pid of runningProcesses.keys()) {
+    if (!signal(pid, 'SIGTERM')) return false
+  }
+  if (await waitForExit(40)) return true
+  await refresh()
+  for (const pid of runningProcesses.keys()) {
+    if (!signal(pid, 'SIGKILL')) return false
+  }
+  return waitForExit(20)
 }
 
 async function ensureDaemonRunning() {
@@ -186,7 +227,7 @@ async function ensureDaemonRunning() {
         if (existing.reachable) break
       }
     }
-    if (!(await stopDaemonPIDs(processes.map((process) => process.pid)))) return false
+    if (!(await stopDaemonProcesses(processes))) return false
   } else if (existing.reachable) {
     return false
   }
