@@ -54,7 +54,7 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 		case strings.Contains(joined, "config view"):
 			return []byte(`{"current-context":"porto-dev","contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev","namespace":"default"}}]}`), nil
 		case strings.Contains(joined, "get pods"):
-			return []byte(`{"items":[{"metadata":{"name":"api-1","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"spec":{"nodeName":"worker-1","containers":[{"name":"api","image":"porto/api:latest"}]},"status":{"phase":"Running","podIP":"10.42.0.2","containerStatuses":[{"name":"api","ready":true,"restartCount":1,"state":{"running":{}}}]}}]}`), nil
+			return []byte(`{"items":[{"metadata":{"name":"api-1","namespace":"dev","uid":"pod-uid","creationTimestamp":"2026-08-30T20:00:00Z"},"spec":{"nodeName":"worker-1","containers":[{"name":"api","image":"porto/api:latest"}]},"status":{"phase":"Running","podIP":"10.42.0.2","conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"name":"api","ready":true,"restartCount":1,"state":{"running":{}}}]}}]}`), nil
 		case strings.Contains(joined, "get services"):
 			return []byte(`{"items":[]}`), nil
 		case strings.Contains(joined, "get configmap api-config"):
@@ -148,7 +148,7 @@ func TestStatusAndPodDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list pods: %v", err)
 	}
-	if len(pods) != 1 || pods[0].Ready != "1/1" || pods[0].Restarts != 1 || pods[0].Containers[0].State != "running" {
+	if len(pods) != 1 || pods[0].UID != "pod-uid" || !pods[0].PodReady || pods[0].Ready != "1/1" || pods[0].Restarts != 1 || pods[0].Containers[0].State != "running" {
 		t.Fatalf("unexpected pods: %+v", pods)
 	}
 	contexts, err := manager.Contexts(context.Background())
@@ -347,8 +347,14 @@ func TestStatsIdentifiesUnavailableMetricsAPI(t *testing.T) {
 	} {
 		runner := newFakeRunner()
 		runner.handler = func(command runtimes.Command) ([]byte, error) {
-			if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "top pod") {
-				return []byte(message), errors.New("exit status 1")
+			if command.Name == "kubectl" {
+				joined := strings.Join(command.Args, " ")
+				switch {
+				case strings.Contains(joined, "get pod"):
+					return []byte(`{"status":{"phase":"Running","conditions":[{"type":"Ready","status":"True"}],"containerStatuses":[{"ready":true}]}}`), nil
+				case strings.Contains(joined, "top pod"):
+					return []byte(message), errors.New("exit status 1")
+				}
 			}
 			return nil, errors.New("unexpected command")
 		}
@@ -357,6 +363,46 @@ func TestStatsIdentifiesUnavailableMetricsAPI(t *testing.T) {
 		if !errors.Is(err, ErrMetricsUnavailable) {
 			t.Fatalf("message %q: error = %v, want ErrMetricsUnavailable", message, err)
 		}
+	}
+}
+
+func TestStatsSkipsPodsThatAreNotReadyOrNoLongerExist(t *testing.T) {
+	for name, podResult := range map[string]struct {
+		output []byte
+		err    error
+	}{
+		"succeeded": {
+			output: []byte(`{"status":{"phase":"Succeeded","conditions":[{"type":"Ready","status":"False"}],"containerStatuses":[{"ready":false}]}}`),
+		},
+		"not-found": {
+			output: []byte(`Error from server (NotFound): pods "job" not found`),
+			err:    errors.New("exit status 1"),
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			topCalled := false
+			runner := newFakeRunner()
+			runner.handler = func(command runtimes.Command) ([]byte, error) {
+				joined := strings.Join(command.Args, " ")
+				switch {
+				case command.Name == "kubectl" && strings.Contains(joined, "get pod"):
+					return podResult.output, podResult.err
+				case command.Name == "kubectl" && strings.Contains(joined, "top pod"):
+					topCalled = true
+					return nil, errors.New("top should not be called")
+				default:
+					return nil, errors.New("unexpected command")
+				}
+			}
+
+			stats, err := New(runner).Stats(context.Background(), "porto-dev", "default", "job")
+			if err != nil {
+				t.Fatalf("Stats: %v", err)
+			}
+			if topCalled || len(stats) != 0 {
+				t.Fatalf("topCalled=%t stats=%+v", topCalled, stats)
+			}
+		})
 	}
 }
 

@@ -19,8 +19,8 @@ export function Images() {
   const [pullReference, setPullReference] = useState('')
   const [pulling, setPulling] = useState(false)
 
-  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [])
-  const images = usePolledResource<DockerImage[]>((signal) => apiGet('/api/docker/images', signal), 8000, [])
+  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
+  const images = usePolledResource<DockerImage[]>((signal) => apiGet('/api/docker/images', signal), 8000, [], 'docker:images')
   const items = images.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest]

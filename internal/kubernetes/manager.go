@@ -67,8 +67,10 @@ type Container struct {
 type Pod struct {
 	Name       string      `json:"name"`
 	Namespace  string      `json:"namespace"`
+	UID        string      `json:"uid"`
 	Phase      string      `json:"phase"`
 	Ready      string      `json:"ready"`
+	PodReady   bool        `json:"podReady"`
 	Restarts   int32       `json:"restarts"`
 	Node       string      `json:"node"`
 	IP         string      `json:"ip"`
@@ -789,9 +791,19 @@ func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string)
 	if err := validateResource(namespace, pod); err != nil {
 		return nil, err
 	}
+	ready, err := m.podReadyForMetrics(ctx, contextName, namespace, pod)
+	if err != nil {
+		return nil, err
+	}
+	if !ready {
+		return []PodStats{}, nil
+	}
 	output, err := m.run(ctx, contextName, m.timeout, nil, "top", "pod", pod, "--namespace", namespace, "--containers", "--no-headers")
 	if err != nil {
 		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "(notfound)") && strings.Contains(message, "pods ") {
+			return []PodStats{}, nil
+		}
 		if strings.Contains(message, "metrics api not available") ||
 			strings.Contains(message, "the server could not find the requested resource") ||
 			(strings.Contains(message, "metrics.k8s.io") &&
@@ -811,6 +823,51 @@ func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string)
 		stats = append(stats, PodStats{Container: fields[1], CPU: fields[2], Memory: fields[3]})
 	}
 	return stats, scanner.Err()
+}
+
+func (m *Manager) podReadyForMetrics(ctx context.Context, contextName, namespace, pod string) (bool, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, "get", "pod", pod, "--namespace", namespace, "-o", "json")
+	if err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "(notfound)") && strings.Contains(message, "pods ") {
+			return false, nil
+		}
+		return false, err
+	}
+	var document struct {
+		Status struct {
+			Phase      string `json:"phase"`
+			Conditions []struct {
+				Type   string `json:"type"`
+				Status string `json:"status"`
+			} `json:"conditions"`
+			ContainerStatuses []struct {
+				Ready bool `json:"ready"`
+			} `json:"containerStatuses"`
+		} `json:"status"`
+	}
+	if err := json.Unmarshal(output, &document); err != nil {
+		return false, fmt.Errorf("decode Kubernetes pod readiness: %w", err)
+	}
+	if !strings.EqualFold(document.Status.Phase, "Running") || len(document.Status.ContainerStatuses) == 0 {
+		return false, nil
+	}
+	readyCondition := false
+	for _, condition := range document.Status.Conditions {
+		if condition.Type == "Ready" {
+			readyCondition = strings.EqualFold(condition.Status, "True")
+			break
+		}
+	}
+	if !readyCondition {
+		return false, nil
+	}
+	for _, container := range document.Status.ContainerStatuses {
+		if !container.Ready {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 func (m *Manager) Events(ctx context.Context, contextName, namespace, pod string) ([]Event, error) {
@@ -1081,11 +1138,20 @@ func decodePod(item podItem) Pod {
 			State:        containerState(status.State),
 		})
 	}
+	podReady := false
+	for _, condition := range item.Status.Conditions {
+		if condition.Type == "Ready" {
+			podReady = strings.EqualFold(condition.Status, "True")
+			break
+		}
+	}
 	return Pod{
 		Name:       item.Metadata.Name,
 		Namespace:  item.Metadata.Namespace,
+		UID:        item.Metadata.UID,
 		Phase:      item.Status.Phase,
 		Ready:      fmt.Sprintf("%d/%d", ready, len(item.Spec.Containers)),
+		PodReady:   podReady,
 		Restarts:   restarts,
 		Node:       item.Spec.NodeName,
 		IP:         item.Status.PodIP,
@@ -1143,6 +1209,7 @@ func firstNonEmpty(values ...string) string {
 type metadata struct {
 	Name              string            `json:"name"`
 	Namespace         string            `json:"namespace"`
+	UID               string            `json:"uid"`
 	CreationTimestamp string            `json:"creationTimestamp"`
 	ResourceVersion   string            `json:"resourceVersion"`
 	Labels            map[string]string `json:"labels"`
@@ -1159,8 +1226,12 @@ type podItem struct {
 		} `json:"containers"`
 	} `json:"spec"`
 	Status struct {
-		Phase             string               `json:"phase"`
-		PodIP             string               `json:"podIP"`
+		Phase      string `json:"phase"`
+		PodIP      string `json:"podIP"`
+		Conditions []struct {
+			Type   string `json:"type"`
+			Status string `json:"status"`
+		} `json:"conditions"`
 		ContainerStatuses []podContainerStatus `json:"containerStatuses"`
 	} `json:"status"`
 }

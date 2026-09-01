@@ -21,8 +21,8 @@ export function Volumes() {
   const [driver, setDriver] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [])
-  const volumes = usePolledResource<DockerVolume[]>((signal) => apiGet('/api/docker/volumes', signal), 8000, [])
+  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
+  const volumes = usePolledResource<DockerVolume[]>((signal) => apiGet('/api/docker/volumes', signal), 8000, [], 'docker:volumes')
   const items = volumes.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((volume) => normalizedQuery === '' || volume.name.toLocaleLowerCase().includes(normalizedQuery))

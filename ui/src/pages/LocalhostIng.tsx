@@ -32,6 +32,7 @@ function LogConsole({ project, onClose }: { project: Project; onClose: () => voi
     (signal) => apiGet(`/api/projects/${project.id}/logs?limit=500&stream=${stream}`, signal),
     2000,
     [project.id, stream],
+    `localhost:project:${project.id}:logs:${stream}`,
   )
   const lines = data ?? []
 
@@ -162,11 +163,13 @@ export function LocalhostIng({
     (signal) => apiGet('/api/projects', signal),
     5000,
     [],
+    'localhost:projects',
   )
   const dockerDeployments = usePolledResource<DockerContainer[]>(
     (signal) => settings?.dockerEnabled ? apiGet('/api/docker/containers', signal) : Promise.resolve([]),
     5000,
     [settings?.dockerEnabled],
+    'docker:containers',
   )
   const kubernetesDeployments = usePolledResource<KubernetesPod[]>(
     (signal) => settings?.kubernetesEnabled
@@ -174,6 +177,7 @@ export function LocalhostIng({
       : Promise.resolve([]),
     5000,
     [settings?.kubernetesEnabled, kubeContext],
+    `kubernetes:${kubeContext}:pods:all`,
   )
   const projects = data ?? []
 

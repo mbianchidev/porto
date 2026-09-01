@@ -223,8 +223,10 @@ export type KubernetesContainerCapabilities = {
 export type KubernetesPod = {
   name: string
   namespace: string
+  uid: string
   phase: string
   ready: string
+  podReady: boolean
   restarts: number
   node: string
   ip: string

@@ -17,11 +17,12 @@ export function Containers() {
   const [query, setQuery] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
 
-  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [])
+  const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const containers = usePolledResource<DockerContainer[]>(
     (signal) => apiGet('/api/docker/containers', signal),
     5000,
     [],
+    'docker:containers',
   )
   const items = containers.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
