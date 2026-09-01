@@ -1184,14 +1184,29 @@ func (m *Manager) runCommand(
 }
 
 func (m *Manager) limaInstanceStatus(ctx context.Context) (exists bool, running bool, err error) {
-	output, err := m.runCommand(ctx, 20*time.Second, "inspect Porto container runtime", nil, "limactl", "list", "--json")
-	if err != nil {
-		return false, false, err
+	commandContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	output, runErr := m.runner.Run(commandContext, runtimes.Command{
+		Name: "limactl",
+		Args: []string{"list", engineInstanceName, "--json"},
+	})
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return false, false, errors.New("inspect Porto container runtime timed out after 20s")
+	}
+	if runErr != nil {
+		message := strings.ToLower(string(output))
+		if strings.Contains(message, "unmatched instances") || strings.Contains(message, "no instance matching") {
+			return false, false, nil
+		}
+		return false, false, runtimes.CommandError("inspect Porto container runtime", output, runErr)
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
+			continue
+		}
+		if line[0] != '{' && line[0] != '[' {
 			continue
 		}
 		var item struct {
