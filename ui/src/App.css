@@ -754,12 +754,26 @@
   background: var(--panel-dark);
 }
 
-.resourceDataEntry > strong {
-  display: block;
+.resourceDataEntryHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
   border-bottom: 1px solid #4c514a;
-  padding: 7px 10px;
+  padding: 5px 6px 5px 10px;
+}
+
+.resourceDataEntryHeader > strong {
   color: var(--white);
   font-size: 10px;
+}
+
+.resourceDataEntryHeader .iconButton {
+  width: 36px;
+  height: 36px;
+  border-color: var(--ink-faint);
+  background: transparent;
+  color: var(--white);
 }
 
 dt {

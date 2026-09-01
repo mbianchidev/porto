@@ -1,5 +1,6 @@
 import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
+import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
@@ -355,8 +356,7 @@ function ManifestTab({ pod, context }: { pod: KubernetesPod; context: string }) 
   async function copyManifest() {
     if (!manifest.data) return
     try {
-      if (!navigator.clipboard) throw new Error('Clipboard access is unavailable')
-      await navigator.clipboard.writeText(manifest.data)
+      await writeClipboard(manifest.data)
       notifyNotice('pods', `Copied the ${pod.name} manifest.`)
     } catch (err) {
       notifyError('pods', errorMessage(err, 'Unable to copy the manifest'))

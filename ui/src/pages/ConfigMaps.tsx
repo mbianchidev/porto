@@ -1,6 +1,9 @@
 import { useState } from 'react'
-import { apiGet } from '../api'
+import { apiGet, errorMessage } from '../api'
+import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
+import { useMessages } from '../useMessages'
+import { ActionButton } from '../components/ActionButton'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -10,6 +13,7 @@ import type { KubernetesConfigMap, KubernetesConfigMapDetail, KubernetesStatus }
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(80px,0.4fr) minmax(80px,0.4fr) minmax(90px,0.5fr) minmax(70px,0.4fr)'
 
 export function ConfigMaps({ context }: { context: string }) {
+  const { notifyError, notifyNotice } = useMessages()
   const [namespace, setNamespace] = useState('')
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -39,7 +43,7 @@ export function ConfigMaps({ context }: { context: string }) {
       ? apiGet(`/api/kubernetes/configmaps/${encodeURIComponent(selected.namespace)}/${encodeURIComponent(selected.name)}?context=${encodeURIComponent(context)}`, signal)
       : Promise.resolve(null),
     0,
-    [context, selectedKey],
+    [context, selectedKey, selected?.resourceVersion],
   )
   const available = !status.loading && !status.error && (status.data?.available ?? false)
   const ready = available && !configMaps.loading && !configMaps.error
@@ -47,8 +51,42 @@ export function ConfigMaps({ context }: { context: string }) {
     && !detail.error
     && detail.data?.namespace === selected?.namespace
     && detail.data?.name === selected?.name
+    && detail.data?.resourceVersion === selected?.resourceVersion
     ? detail.data
     : null
+
+  async function copyConfig(value: string, message: string) {
+    try {
+      await writeClipboard(value)
+      notifyNotice('kubernetes', message)
+    } catch (err) {
+      notifyError('kubernetes', errorMessage(err, 'Unable to copy config data'))
+    }
+  }
+
+  function copyConfigMap() {
+    if (!selectedDetail) return
+    const metadata: {
+      name: string
+      namespace: string
+      labels?: Record<string, string>
+      annotations?: Record<string, string>
+    } = {
+      name: selectedDetail.name,
+      namespace: selectedDetail.namespace,
+    }
+    if (Object.keys(selectedDetail.labels ?? {}).length > 0) metadata.labels = selectedDetail.labels
+    if (Object.keys(selectedDetail.annotations ?? {}).length > 0) metadata.annotations = selectedDetail.annotations
+    const payload = JSON.stringify({
+      apiVersion: 'v1',
+      kind: 'ConfigMap',
+      metadata,
+      immutable: selectedDetail.immutable,
+      data: selectedDetail.data,
+      binaryData: selectedDetail.binaryData ?? {},
+    }, null, 2)
+    void copyConfig(payload, `Copied the ${selectedDetail.name} ConfigMap.`)
+  }
 
   return (
     <>
@@ -69,7 +107,10 @@ export function ConfigMaps({ context }: { context: string }) {
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} configs</span>
-        <button className="refreshControl" type="button" onClick={configMaps.reload}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => {
+          configMaps.reload()
+          detail.reload()
+        }}>Refresh</button>
       </div>
       <div className="workArea">
         {!ready ? (
@@ -101,7 +142,10 @@ export function ConfigMaps({ context }: { context: string }) {
         {ready && selected && (
           <Inspector title={selected.name} subtitle={`${selected.namespace} · ConfigMap`} onClose={() => setSelectedKey(null)}>
             <section className="drawerPanel">
-              <h3>Config map detail</h3>
+              <div className="drawerPanelHeading">
+                <h3>Config map detail</h3>
+                <ActionButton label="Copy complete ConfigMap" icon="copy" disabled={!selectedDetail} onClick={copyConfigMap} />
+              </div>
               <dl className="runtimeGrid">
                 <div><dt>Text keys</dt><dd>{selected.keys.length}</dd></div>
                 <div><dt>Binary keys</dt><dd>{selected.binaryKeys.length}</dd></div>
@@ -117,14 +161,41 @@ export function ConfigMaps({ context }: { context: string }) {
                 <div className="resourceDataList">
                   {selectedDetail.keys.map((dataKey) => (
                     <div className="resourceDataEntry" key={dataKey}>
-                      <strong className="mono">{dataKey}</strong>
+                      <div className="resourceDataEntryHeader">
+                        <strong className="mono">{dataKey}</strong>
+                        <ActionButton
+                          label={`Copy ${dataKey}`}
+                          icon="copy"
+                          onClick={() => void copyConfig(selectedDetail.data[dataKey], `Copied ${dataKey}.`)}
+                        />
+                      </div>
                       <pre className="logRaw">{selectedDetail.data[dataKey]}</pre>
                     </div>
                   ))}
                 </div>
               ) : null}
               <h3>Binary data</h3>
-              <p className="hintLine">{selected.binaryKeys.join(', ') || 'No binary data is defined.'}</p>
+              {selectedDetail && selectedDetail.binaryKeys.length === 0 ? (
+                <p className="hintLine">No binary data is defined.</p>
+              ) : selectedDetail ? (
+                <div className="resourceDataList">
+                  {selectedDetail.binaryKeys.map((dataKey) => (
+                    <div className="resourceDataEntry" key={dataKey}>
+                      <div className="resourceDataEntryHeader">
+                        <strong className="mono">{dataKey}</strong>
+                        <ActionButton
+                          label={`Copy ${dataKey}`}
+                          icon="copy"
+                          onClick={() => void copyConfig(selectedDetail.binaryData?.[dataKey] ?? '', `Copied ${dataKey}.`)}
+                        />
+                      </div>
+                      <pre className="logRaw">{selectedDetail.binaryData?.[dataKey] ?? ''}</pre>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="hintLine">Loading binary data...</p>
+              )}
             </section>
           </Inspector>
         )}

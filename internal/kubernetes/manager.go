@@ -26,7 +26,7 @@ const (
 	maxFileBytes           = 1024 * 1024
 	capabilityProbeTimeout = 5 * time.Second
 	capabilityCacheTTL     = 30 * time.Second
-	configMapListTemplate  = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
+	configMapListTemplate  = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{.metadata.resourceVersion}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
 	secretListTemplate     = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.type}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
 )
 
@@ -101,17 +101,21 @@ type Service struct {
 }
 
 type ConfigMap struct {
-	Name       string   `json:"name"`
-	Namespace  string   `json:"namespace"`
-	Immutable  bool     `json:"immutable"`
-	Keys       []string `json:"keys"`
-	BinaryKeys []string `json:"binaryKeys"`
-	Age        string   `json:"age"`
+	Name            string   `json:"name"`
+	Namespace       string   `json:"namespace"`
+	Immutable       bool     `json:"immutable"`
+	Keys            []string `json:"keys"`
+	BinaryKeys      []string `json:"binaryKeys"`
+	ResourceVersion string   `json:"resourceVersion"`
+	Age             string   `json:"age"`
 }
 
 type ConfigMapDetail struct {
 	ConfigMap
-	Data map[string]string `json:"data"`
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	Data        map[string]string `json:"data"`
+	BinaryData  map[string]string `json:"binaryData"`
 }
 
 type Secret struct {
@@ -354,7 +358,7 @@ func (m *Manager) ConfigMaps(ctx context.Context, contextName, namespace string)
 	if err != nil {
 		return nil, err
 	}
-	rows, err := parseResourceRows(output, 6)
+	rows, err := parseResourceRows(output, 7)
 	if err != nil {
 		return nil, fmt.Errorf("decode Kubernetes config maps: %w", err)
 	}
@@ -365,12 +369,13 @@ func (m *Manager) ConfigMaps(ctx context.Context, contextName, namespace string)
 			return nil, fmt.Errorf("decode Kubernetes config map immutable flag: %w", err)
 		}
 		configMaps = append(configMaps, ConfigMap{
-			Name:       row[1],
-			Namespace:  row[0],
-			Immutable:  immutable,
-			Keys:       parseResourceKeys(row[4]),
-			BinaryKeys: parseResourceKeys(row[5]),
-			Age:        age(row[3]),
+			Name:            row[1],
+			Namespace:       row[0],
+			Immutable:       immutable,
+			ResourceVersion: row[4],
+			Keys:            parseResourceKeys(row[5]),
+			BinaryKeys:      parseResourceKeys(row[6]),
+			Age:             age(row[3]),
 		})
 	}
 	return configMaps, nil
@@ -395,21 +400,27 @@ func (m *Manager) ConfigMap(ctx context.Context, contextName, namespace, name st
 		keys = append(keys, key)
 	}
 	binaryKeys := make([]string, 0, len(item.BinaryData))
-	for key := range item.BinaryData {
+	binaryData := make(map[string]string, len(item.BinaryData))
+	for key, value := range item.BinaryData {
 		binaryKeys = append(binaryKeys, key)
+		binaryData[key] = value
 	}
 	sort.Strings(keys)
 	sort.Strings(binaryKeys)
 	return ConfigMapDetail{
 		ConfigMap: ConfigMap{
-			Name:       item.Metadata.Name,
-			Namespace:  item.Metadata.Namespace,
-			Immutable:  item.Immutable,
-			Keys:       keys,
-			BinaryKeys: binaryKeys,
-			Age:        age(item.Metadata.CreationTimestamp),
+			Name:            item.Metadata.Name,
+			Namespace:       item.Metadata.Namespace,
+			Immutable:       item.Immutable,
+			Keys:            keys,
+			BinaryKeys:      binaryKeys,
+			ResourceVersion: item.Metadata.ResourceVersion,
+			Age:             age(item.Metadata.CreationTimestamp),
 		},
-		Data: data,
+		Labels:      cloneStringMap(item.Metadata.Labels),
+		Annotations: cloneStringMap(item.Metadata.Annotations),
+		Data:        data,
+		BinaryData:  binaryData,
 	}, nil
 }
 
@@ -928,6 +939,14 @@ func parseResourceKeys(value string) []string {
 	return keys
 }
 
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func cleanRemotePath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1043,7 +1062,9 @@ type metadata struct {
 	Name              string            `json:"name"`
 	Namespace         string            `json:"namespace"`
 	CreationTimestamp string            `json:"creationTimestamp"`
+	ResourceVersion   string            `json:"resourceVersion"`
 	Labels            map[string]string `json:"labels"`
+	Annotations       map[string]string `json:"annotations"`
 }
 
 type podItem struct {

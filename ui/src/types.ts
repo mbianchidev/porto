@@ -257,11 +257,15 @@ export type KubernetesConfigMap = {
   immutable: boolean
   keys: string[]
   binaryKeys: string[]
+  resourceVersion: string
   age: string
 }
 
 export type KubernetesConfigMapDetail = KubernetesConfigMap & {
+  labels: Record<string, string>
+  annotations: Record<string, string>
   data: Record<string, string>
+  binaryData: Record<string, string>
 }
 
 export type KubernetesSecret = {

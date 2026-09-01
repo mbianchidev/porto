@@ -58,9 +58,9 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 		case strings.Contains(joined, "get services"):
 			return []byte(`{"items":[]}`), nil
 		case strings.Contains(joined, "get configmap api-config"):
-			return []byte(`{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"immutable":true,"data":{"LOG_LEVEL":"debug","config.yaml":"port: 8080"},"binaryData":{"logo.png":"aW1hZ2U="}}`), nil
+			return []byte(`{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z","resourceVersion":"42","labels":{"app":"api"},"annotations":{"owner":"platform"}},"immutable":true,"data":{"LOG_LEVEL":"debug","config.yaml":"port: 8080"},"binaryData":{"logo.png":"aW1hZ2U="}}`), nil
 		case strings.Contains(joined, "get configmaps"):
-			return []byte("dev\tapi-config\ttrue\t2026-08-30T20:00:00Z\tLOG_LEVEL,config.yaml,\tlogo.png,\n"), nil
+			return []byte("dev\tapi-config\ttrue\t2026-08-30T20:00:00Z\t42\tLOG_LEVEL,config.yaml,\tlogo.png,\n"), nil
 		case strings.Contains(joined, "get secrets"):
 			return []byte("dev\tapi-credentials\tOpaque\ttrue\t2026-08-30T20:00:00Z\tpassword,username,\n"), nil
 		case strings.Contains(joined, "get nodes"):
@@ -198,7 +198,12 @@ func TestConfigMapsAndSecretsDecoding(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get config map: %v", err)
 	}
-	if configMap.Data["LOG_LEVEL"] != "debug" || strings.Join(configMap.BinaryKeys, ",") != "logo.png" {
+	if configMap.Data["LOG_LEVEL"] != "debug" ||
+		configMap.BinaryData["logo.png"] != "aW1hZ2U=" ||
+		configMap.ResourceVersion != "42" ||
+		configMap.Labels["app"] != "api" ||
+		configMap.Annotations["owner"] != "platform" ||
+		strings.Join(configMap.BinaryKeys, ",") != "logo.png" {
 		t.Fatalf("unexpected config map data: %+v", configMap)
 	}
 
@@ -273,8 +278,8 @@ func TestResourceListTemplatesExcludeValues(t *testing.T) {
 		{
 			name:     "config maps",
 			template: configMapListTemplate,
-			input:    `{"items":[{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z"},"data":{"config.yaml":"password: secret"},"binaryData":{"logo.png":"aW1hZ2U="}}]}`,
-			want:     "dev\tapi-config\tfalse\t2026-08-30T20:00:00Z\tconfig.yaml,\tlogo.png,\n",
+			input:    `{"items":[{"metadata":{"name":"api-config","namespace":"dev","creationTimestamp":"2026-08-30T20:00:00Z","resourceVersion":"42"},"data":{"config.yaml":"password: secret"},"binaryData":{"logo.png":"aW1hZ2U="}}]}`,
+			want:     "dev\tapi-config\tfalse\t2026-08-30T20:00:00Z\t42\tconfig.yaml,\tlogo.png,\n",
 			forbid:   "password: secret",
 		},
 		{

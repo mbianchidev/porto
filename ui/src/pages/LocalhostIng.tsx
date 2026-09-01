@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { apiGet, apiSend, errorMessage } from '../api'
+import { writeClipboard } from '../clipboard'
 import { formatRelativeTime } from '../format'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -18,22 +19,6 @@ import type {
   Project,
   Settings,
 } from '../types'
-
-async function writeClipboard(text: string) {
-  if (navigator.clipboard?.writeText) {
-    await navigator.clipboard.writeText(text)
-    return
-  }
-  const textarea = document.createElement('textarea')
-  textarea.value = text
-  textarea.style.position = 'fixed'
-  textarea.style.opacity = '0'
-  document.body.appendChild(textarea)
-  textarea.select()
-  const copied = document.execCommand('copy')
-  textarea.remove()
-  if (!copied) throw new Error('Clipboard access was denied')
-}
 
 type ProjectStatusFilter = 'all' | 'starting' | 'running' | 'stopped' | 'error'
 type ScanResult = { count: number; projects: Project[] }
