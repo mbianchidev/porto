@@ -26,6 +26,7 @@ export function Inspector({ title, subtitle, onClose, children }: InspectorProps
   useEffect(() => {
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       if (event.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKeyDown)

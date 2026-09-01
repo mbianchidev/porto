@@ -32,6 +32,12 @@ func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
 	}, "Lima shell failed")
 }
 
+func bridgePodTerminal(w http.ResponseWriter, r *http.Request, args []string) {
+	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
+		return podTerminalCommand(ctx, args)
+	}, "kubectl exec failed")
+}
+
 func bridgeK9sTerminal(w http.ResponseWriter, r *http.Request, cluster kubernetes.Cluster) {
 	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
 		return k9sTerminalCommand(ctx, cluster)

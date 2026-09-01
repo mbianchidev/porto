@@ -8,7 +8,7 @@ import { ActionButton } from './ActionButton'
 
 const CONNECT_TIMEOUT_MS = 5000
 
-type VMTerminalState = 'connecting' | 'open' | 'ended' | 'unavailable'
+type TerminalState = 'connecting' | 'open' | 'ended' | 'unavailable'
 
 function terminalSocketURL(instanceName: string): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -34,7 +34,7 @@ export function InteractiveTerminal({
 }: InteractiveTerminalProps) {
   const [maximized, setMaximized] = useState(false)
   const [sessionToken, setSessionToken] = useState(0)
-  const [state, setState] = useState<VMTerminalState>(
+  const [state, setState] = useState<TerminalState>(
     running && typeof WebSocket !== 'undefined' ? 'connecting' : 'unavailable',
   )
   const terminalHostRef = useRef<HTMLDivElement | null>(null)
@@ -59,10 +59,14 @@ export function InteractiveTerminal({
   useEffect(() => {
     if (!maximized) return
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMaximized(false)
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopImmediatePropagation()
+        setMaximized(false)
+      }
     }
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDown, true)
+    return () => window.removeEventListener('keydown', onKeyDown, true)
   }, [maximized])
 
   useEffect(() => {
@@ -156,15 +160,15 @@ export function InteractiveTerminal({
     }
   }, [endpoint, running, sessionToken])
 
-  const stateLabel = state === 'open'
-    ? 'connected'
-    : state === 'connecting'
-      ? 'connecting…'
-      : state === 'ended'
-        ? 'session ended'
-        : running
-          ? 'unavailable'
-          : 'VM stopped'
+  const stateLabel = !running
+    ? 'stopped'
+    : state === 'open'
+      ? 'connected'
+      : state === 'connecting'
+        ? 'connecting…'
+        : state === 'ended'
+          ? 'session ended'
+          : 'unavailable'
 
   const terminal = (
     <section className={`logConsole vmTerminal ${maximized ? 'terminalMaximized' : ''}`}>

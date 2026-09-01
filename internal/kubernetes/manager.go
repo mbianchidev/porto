@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -515,7 +516,7 @@ func (m *Manager) Files(ctx context.Context, contextName, namespace, pod, contai
 done`
 	output, err := m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-files", directory}, nil)
 	if err != nil {
-		return FileListing{}, err
+		return FileListing{}, fileOperationError(err)
 	}
 	listing := FileListing{Path: directory, Entries: []FileEntry{}}
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
@@ -538,7 +539,7 @@ func (m *Manager) ReadFile(ctx context.Context, contextName, namespace, pod, con
 	script := `head -c "$2" "$1"`
 	output, err := m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-read", filePath, strconv.Itoa(maxFileBytes + 1)}, nil)
 	if err != nil {
-		return FileContent{}, err
+		return FileContent{}, fileOperationError(err)
 	}
 	truncated := len(output) > maxFileBytes
 	if truncated {
@@ -557,7 +558,7 @@ func (m *Manager) WriteFile(ctx context.Context, contextName, namespace, pod, co
 	}
 	script := `cat > "$1"`
 	_, err = m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-write", filePath}, content)
-	return err
+	return fileOperationError(err)
 }
 
 func (m *Manager) DeleteFile(ctx context.Context, contextName, namespace, pod, container, filePath string) error {
@@ -570,6 +571,19 @@ func (m *Manager) DeleteFile(ctx context.Context, contextName, namespace, pod, c
 	}
 	script := `rm -rf -- "$1"`
 	_, err = m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-delete", filePath}, nil)
+	return fileOperationError(err)
+}
+
+func fileOperationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	message := strings.ToLower(err.Error())
+	if strings.Contains(message, `exec: "sh"`) &&
+		(strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file")) {
+		log.Printf("Kubernetes file inspection requires sh: %v", err)
+		return errors.New("container does not include sh; file inspection is unavailable for shellless images")
+	}
 	return err
 }
 

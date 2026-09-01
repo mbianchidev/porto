@@ -1,9 +1,7 @@
-import { useEffect, useRef, useState } from 'react'
+import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
-import { stripTerminalNoise } from '../format'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
-import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -38,6 +36,10 @@ function podPath(pod: KubernetesPod, suffix: string, context: string, extra = ''
 
 const TERMINAL_SHELLS = ['sh', 'bash', 'ash'] as const
 type TerminalShell = (typeof TERMINAL_SHELLS)[number]
+const InteractiveTerminal = lazy(async () => {
+  const terminal = await import('../components/VMTerminal')
+  return { default: terminal.InteractiveTerminal }
+})
 
 function podTerminalSocketURL(pod: KubernetesPod, context: string, container: string, shell: TerminalShell): string {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -90,226 +92,43 @@ function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   )
 }
 
-function ExecTerminalTab({ pod, context }: { pod: KubernetesPod; context: string }) {
-  const { notifyError } = useMessages()
-  const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
-  const [command, setCommand] = useState('')
-  const [running, setRunning] = useState(false)
-  const [history, setHistory] = useState<Array<{ command: string; output: string }>>([])
-
-  async function runCommand() {
-    const trimmed = command.trim()
-    if (trimmed === '') return
-    setRunning(true)
-    try {
-      const result = await apiSend<{ output: string }>(
-        podPath(pod, '/exec', context),
-        'POST',
-        { container, command: trimmed.split(/\s+/), stdin: '' },
-      )
-      setHistory((current) => [...current, { command: trimmed, output: result.output }])
-      setCommand('')
-    } catch (err) {
-      notifyError('pods', errorMessage(err, `Unable to execute "${trimmed}"`))
-    } finally {
-      setRunning(false)
-    }
-  }
-
-  return (
-    <section className="logConsole">
-      <div className="consoleHeader">
-        <div>
-          <h3>Terminal (one-shot)</h3>
-          <p>{pod.namespace}/{pod.name}</p>
-        </div>
-      </div>
-      <div className="inspectorForm inline">
-        <label>
-          <span>Container</span>
-          <select value={container} onChange={(event) => setContainer(event.target.value)}>
-            {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-        </label>
-      </div>
-      <div className="logViewport terminalViewport" role="log" aria-live="polite">
-        {history.length === 0 && <div className="logEmpty">No commands executed yet.</div>}
-        {history.map((entry, index) => (
-          <pre className="logRaw" key={index}>
-            <span className="terminalPrompt">$ {entry.command}</span>
-            {'\n'}
-            {entry.output}
-          </pre>
-        ))}
-      </div>
-      <form
-        className="terminalInput"
-        onSubmit={(event) => { event.preventDefault(); runCommand() }}
-      >
-        <input
-          type="text"
-          value={command}
-          placeholder="cat /etc/os-release"
-          aria-label="Command to execute"
-          disabled={running}
-          onChange={(event) => setCommand(event.target.value)}
-        />
-        <button type="submit" disabled={running || command.trim() === ''}>{running ? 'Running…' : 'Run'}</button>
-      </form>
-    </section>
-  )
-}
-
-type LiveTerminalState = 'connecting' | 'open' | 'ended' | 'unavailable'
-
-const CONNECT_TIMEOUT_MS = 4000
-const TERMINAL_BUFFER_LIMIT = 200_000
-
-/**
- * Interactive pod terminal over the daemon's WebSocket bridge to `kubectl exec
- * --stdin --tty`. Falls back to the one-shot POST /exec form (ExecTerminalTab)
- * whenever the socket never reaches the open state — offline daemon, blocked
- * WebSocket upgrade, or an environment without WebSocket support.
- */
-function LiveTerminalTab({ pod, context }: { pod: KubernetesPod; context: string }) {
+function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
   const [shell, setShell] = useState<TerminalShell>('sh')
-  const [state, setState] = useState<LiveTerminalState>(() => (typeof WebSocket === 'undefined' ? 'unavailable' : 'connecting'))
-  const [output, setOutput] = useState('')
-  const [inputLine, setInputLine] = useState('')
-  const [sessionToken, setSessionToken] = useState(0)
-  const socketRef = useRef<WebSocket | null>(null)
-  const outputRef = useRef<HTMLPreElement>(null)
   const terminalURL = podTerminalSocketURL(pod, context, container, shell)
-
-  useEffect(() => {
-    if (typeof WebSocket === 'undefined') return
-    let opened = false
-    const decoder = new TextDecoder('utf-8')
-    const socket = new WebSocket(terminalURL)
-    socket.binaryType = 'arraybuffer'
-    socketRef.current = socket
-
-    const connectTimeout = window.setTimeout(() => {
-      if (!opened) socket.close()
-    }, CONNECT_TIMEOUT_MS)
-
-    socket.onopen = () => {
-      opened = true
-      window.clearTimeout(connectTimeout)
-      setState('open')
-    }
-    socket.onmessage = (event) => {
-      let chunk = ''
-      if (event.data instanceof ArrayBuffer) {
-        chunk = decoder.decode(new Uint8Array(event.data), { stream: true })
-      } else if (typeof event.data === 'string') {
-        chunk = event.data
-      }
-      if (chunk === '') return
-      setOutput((current) => (current + stripTerminalNoise(chunk)).slice(-TERMINAL_BUFFER_LIMIT))
-    }
-    socket.onclose = () => {
-      window.clearTimeout(connectTimeout)
-      setState(opened ? 'ended' : 'unavailable')
-    }
-
-    return () => {
-      window.clearTimeout(connectTimeout)
-      socket.close()
-      socketRef.current = null
-    }
-  }, [terminalURL, sessionToken])
-
-  useEffect(() => {
-    const node = outputRef.current
-    if (node) node.scrollTop = node.scrollHeight
-  }, [output])
-
-  function sendInput(text: string) {
-    const socket = socketRef.current
-    if (!socket || socket.readyState !== WebSocket.OPEN) return
-    socket.send(text)
-  }
-
-  if (state === 'unavailable') {
-    return (
-      <>
-        <p className="hintLine">Live terminal unavailable; falling back to one-shot command execution.</p>
-        <ExecTerminalTab pod={pod} context={context} />
-      </>
-    )
-  }
-
-  const connected = state === 'open'
+  const running = pod.phase.toLocaleLowerCase() === 'running'
   return (
-    <section className="logConsole">
-      <div className="consoleHeader">
-        <div>
-          <h3>Terminal</h3>
-          <p>
-            {pod.namespace}/{pod.name}
-            {' · '}
-            {state === 'connecting' ? 'connecting…' : connected ? 'connected' : 'session ended'}
-          </p>
+    <>
+      <section className="drawerPanel">
+        <h3>Terminal session</h3>
+        <div className="inspectorForm inline">
+          <label>
+            <span>Container</span>
+            <select value={container} onChange={(event) => setContainer(event.target.value)}>
+              {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
+            </select>
+          </label>
+          <label>
+            <span>Shell</span>
+            <select value={shell} onChange={(event) => setShell(event.target.value as TerminalShell)}>
+              {TERMINAL_SHELLS.map((option) => <option key={option} value={option}>{option}</option>)}
+            </select>
+          </label>
         </div>
-        <div className="consoleActions">
-          {state === 'ended' && (
-            <button type="button" onClick={() => {
-              setState('connecting')
-              setOutput('')
-              setSessionToken((value) => value + 1)
-            }}>Reconnect</button>
-          )}
-        </div>
-      </div>
-      <div className="inspectorForm inline">
-        <label>
-          <span>Container</span>
-          <select value={container} disabled={connected} onChange={(event) => {
-            setState('connecting')
-            setOutput('')
-            setContainer(event.target.value)
-          }}>
-            {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
-          </select>
-        </label>
-        <label>
-          <span>Shell</span>
-          <select value={shell} disabled={connected} onChange={(event) => {
-            setState('connecting')
-            setOutput('')
-            setShell(event.target.value as TerminalShell)
-          }}>
-            {TERMINAL_SHELLS.map((option) => <option key={option} value={option}>{option}</option>)}
-          </select>
-        </label>
-        <ActionButton label="Send Ctrl+C" icon="stop" disabled={!connected} onClick={() => sendInput('\x03')} />
-        <ActionButton label="Send Ctrl+D" icon="close" disabled={!connected} onClick={() => sendInput('\x04')} />
-      </div>
-      <pre className="logViewport terminalViewport logRaw" ref={outputRef} role="log" aria-live="polite">
-        {output || (state === 'connecting' ? 'Connecting…' : '')}
-      </pre>
-      <form
-        className="terminalInput"
-        onSubmit={(event) => {
-          event.preventDefault()
-          if (inputLine === '') return
-          sendInput(`${inputLine}\n`)
-          setInputLine('')
-        }}
-      >
-        <input
-          type="text"
-          value={inputLine}
-          placeholder="type a command, press Enter"
-          aria-label="Terminal input"
-          disabled={!connected}
-          onChange={(event) => setInputLine(event.target.value)}
+        <p className="hintLine">The selected container must include the chosen shell.</p>
+      </section>
+      <Suspense fallback={<div className="terminalPlaceholder">Loading terminal...</div>}>
+        <InteractiveTerminal
+          key={terminalURL}
+          endpoint={terminalURL}
+          title="Pod terminal"
+          detail={`${pod.namespace}/${pod.name} · ${container || 'default container'} · ${shell}`}
+          running={running}
+          ariaLabel={`Interactive terminal for ${pod.namespace}/${pod.name}`}
+          stoppedMessage="The pod must be running to open a terminal."
         />
-        <button type="submit" disabled={!connected}>Send</button>
-      </form>
-    </section>
+      </Suspense>
+    </>
   )
 }
 
@@ -480,7 +299,7 @@ function ManifestTab({ pod, context }: { pod: KubernetesPod; context: string }) 
     <section className="drawerPanel">
       <h3>Manifest</h3>
       {manifest.error && <p className="errorLine">{manifest.error}</p>}
-      {manifest.data && <pre className="logRaw">{manifest.data}</pre>}
+      {manifest.data && <pre className="logViewport manifestViewport logRaw">{manifest.data}</pre>}
     </section>
   )
 }
@@ -581,7 +400,7 @@ export function Pods({ context }: { context: string }) {
               </section>
             )}
             {tab === 'logs' && <LogsTab pod={selected} context={context} />}
-            {tab === 'terminal' && <LiveTerminalTab key={`${selected.namespace}/${selected.name}`} pod={selected} context={context} />}
+            {tab === 'terminal' && <PodTerminalTab key={`${selected.namespace}/${selected.name}`} pod={selected} context={context} />}
             {tab === 'files' && <FilesTab pod={selected} context={context} />}
             {tab === 'stats' && <StatsTab pod={selected} context={context} />}
             {tab === 'events' && <EventsTab pod={selected} context={context} />}

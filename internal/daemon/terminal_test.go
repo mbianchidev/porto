@@ -51,3 +51,20 @@ func TestVMTerminalCommandUsesInteractiveLimaShell(t *testing.T) {
 		t.Fatalf("command args = %q, want %q", command.Args, want)
 	}
 }
+
+func TestPodTerminalCommandUsesKubectlExec(t *testing.T) {
+	command := podTerminalCommand(context.Background(), []string{
+		"--context", "porto-dev",
+		"exec", "--stdin", "--tty", "--namespace", "default", "api",
+		"--container", "app", "--", "sh",
+	})
+	want := []string{
+		"kubectl",
+		"--context", "porto-dev",
+		"exec", "--stdin", "--tty", "--namespace", "default", "api",
+		"--container", "app", "--", "sh",
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("command args = %q, want %q", command.Args, want)
+	}
+}

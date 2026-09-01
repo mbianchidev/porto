@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -293,6 +294,20 @@ func TestFileOperationsKeepPathAsArgument(t *testing.T) {
 	}
 	if string(command.Stdin) != `{"ok":true}` {
 		t.Fatalf("unexpected stdin: %q", command.Stdin)
+	}
+}
+
+func TestFilesReportsShelllessContainer(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(runtimes.Command) ([]byte, error) {
+		return []byte(`error executing command in container: exec: "sh": executable file not found in $PATH`), errors.New("exit status 1")
+	}
+	_, err := New(runner).Files(context.Background(), "porto-dev", "kube-system", "coredns", "coredns", "/")
+	if err == nil {
+		t.Fatal("expected shellless container error")
+	}
+	if err.Error() != "container does not include sh; file inspection is unavailable for shellless images" {
+		t.Fatalf("unexpected error: %v", err)
 	}
 }
 
