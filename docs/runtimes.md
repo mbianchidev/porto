@@ -361,6 +361,8 @@ porto vm stop test-ubuntu
 porto vm delete test-ubuntu
 ```
 
+Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs; Porto disables snapshot controls and returns a clear unsupported-driver error for `vz` and other drivers.
+
 Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically. Porto records ownership metadata and hides unrelated Lima instances and Kubernetes node VMs from the standalone machine inventory.
 
 The image catalog maps to Lima templates. Template availability depends on the installed Lima version and host architecture; Porto surfaces provider failures without changing native project state.

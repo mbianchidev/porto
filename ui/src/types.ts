@@ -391,6 +391,7 @@ export type VMImage = {
 export type VMInstance = {
   name: string
   status: string
+  vmType: string
   architecture: string
   cpus: number
   memoryBytes: number
@@ -398,6 +399,8 @@ export type VMInstance = {
   sshLocalPort: number
   directory: string
   addresses: string[]
+  snapshotSupported: boolean
+  snapshotMessage?: string
 }
 
 export type VMCreateRequest = {

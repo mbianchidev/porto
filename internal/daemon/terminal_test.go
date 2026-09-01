@@ -53,6 +53,9 @@ func TestVMTerminalCommandUsesInteractiveLimaShell(t *testing.T) {
 	if !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("command args = %q, want %q", command.Args, want)
 	}
+	if !slices.Contains(command.Env, "TERM=xterm-256color") || !slices.Contains(command.Env, "COLORTERM=truecolor") {
+		t.Fatalf("command environment does not contain terminal capabilities: %q", command.Env)
+	}
 }
 
 func TestPodTerminalCommandUsesKubectlExec(t *testing.T) {

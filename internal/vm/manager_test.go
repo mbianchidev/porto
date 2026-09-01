@@ -2,6 +2,7 @@ package vm
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -13,6 +14,7 @@ import (
 type recordingRunner struct {
 	mu       sync.Mutex
 	commands []runtimes.Command
+	vmType   string
 }
 
 func (r *recordingRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
@@ -20,7 +22,14 @@ func (r *recordingRunner) Run(_ context.Context, command runtimes.Command) ([]by
 	defer r.mu.Unlock()
 	r.commands = append(r.commands, command)
 	if len(command.Args) >= 2 && command.Args[0] == "list" && command.Args[1] == "--json" {
-		return []byte(`{"name":"test-vm","status":"Running","arch":"aarch64","cpus":2,"memory":2147483648,"disk":21474836480,"sshLocalPort":60022}` + "\n"), nil
+		vmType := r.vmType
+		if vmType == "" {
+			vmType = "qemu"
+		}
+		return []byte(fmt.Sprintf(
+			`{"name":"test-vm","status":"Running","vmType":%q,"arch":"aarch64","cpus":2,"memory":2147483648,"disk":21474836480,"sshLocalPort":60022}`+"\n",
+			vmType,
+		)), nil
 	}
 	if len(command.Args) > 0 && command.Args[0] == "--version" {
 		return []byte("limactl version 2.0.0"), nil
@@ -162,13 +171,74 @@ func TestSnapshotUsesCurrentLimaSyntax(t *testing.T) {
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	create := strings.Join(runner.commands[0].Args, " ")
-	restore := strings.Join(runner.commands[1].Args, " ")
+	var snapshotCommands []string
+	for _, command := range runner.commands {
+		if len(command.Args) > 0 && command.Args[0] == "snapshot" {
+			snapshotCommands = append(snapshotCommands, strings.Join(command.Args, " "))
+		}
+	}
+	if len(snapshotCommands) != 2 {
+		t.Fatalf("snapshot commands = %q", snapshotCommands)
+	}
+	create := snapshotCommands[0]
+	restore := snapshotCommands[1]
 	if create != "snapshot create test-vm --tag before" {
 		t.Fatalf("create command = %q", create)
 	}
 	if restore != "snapshot apply test-vm --tag before" {
 		t.Fatalf("restore command = %q", restore)
+	}
+}
+
+func TestListReportsSnapshotCapability(t *testing.T) {
+	tests := []struct {
+		name      string
+		vmType    string
+		supported bool
+		message   string
+	}{
+		{name: "qemu", vmType: "qemu", supported: true},
+		{name: "vz", vmType: "vz", message: "QEMU"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			instances, err := New(&recordingRunner{vmType: test.vmType}).List(context.Background())
+			if err != nil {
+				t.Fatalf("list: %v", err)
+			}
+			if len(instances) != 1 {
+				t.Fatalf("instances = %+v", instances)
+			}
+			instance := instances[0]
+			if instance.VMType != test.vmType || instance.SnapshotSupported != test.supported {
+				t.Fatalf("unexpected snapshot capability: %+v", instance)
+			}
+			if test.message != "" && !strings.Contains(instance.SnapshotMessage, test.message) {
+				t.Fatalf("snapshot message = %q, want %q", instance.SnapshotMessage, test.message)
+			}
+		})
+	}
+}
+
+func TestSnapshotRejectsUnsupportedDriver(t *testing.T) {
+	runner := &recordingRunner{vmType: "vz"}
+	err := New(runner).CreateSnapshot(context.Background(), "test-vm", "before")
+	if err == nil || !strings.Contains(err.Error(), "unsupported") || !strings.Contains(err.Error(), "QEMU") {
+		t.Fatalf("create snapshot error = %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if len(command.Args) > 0 && command.Args[0] == "snapshot" {
+			t.Fatalf("unsupported snapshot command was executed: %+v", command)
+		}
+	}
+}
+
+func TestSnapshotNameValidationUsesSnapshotTerminology(t *testing.T) {
+	err := New(&recordingRunner{}).CreateSnapshot(context.Background(), "test-vm", "Before Upgrade")
+	if err == nil || !strings.Contains(err.Error(), "snapshot name must match") {
+		t.Fatalf("create snapshot error = %v", err)
 	}
 }
 

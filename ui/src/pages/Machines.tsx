@@ -13,6 +13,13 @@ import type { RuntimeProviderStatus, VMCreateRequest, VMImage, VMInstance, VMSta
 
 const COLUMNS_TEMPLATE = '12px minmax(150px,1.2fr) minmax(110px,0.7fr) minmax(70px,0.4fr) minmax(90px,0.5fr) minmax(90px,0.5fr)'
 const VMTerminal = lazy(() => import('../components/VMTerminal'))
+const LIMA_NAME_PATTERN = /^[a-z0-9][a-z0-9.-]{0,62}$/
+const LIMA_NAME_PATTERN_SOURCE = '[a-z0-9][a-z0-9.-]{0,62}'
+const LIMA_NAME_HELP = 'Use 1-63 lowercase letters, numbers, dots, or hyphens; start with a letter or number.'
+
+function validLimaName(name: string): boolean {
+  return LIMA_NAME_PATTERN.test(name)
+}
 
 function formatBytes(bytes: number): string {
   if (!bytes) return '—'
@@ -24,13 +31,15 @@ function SnapshotTab({ instance }: { instance: VMInstance }) {
   const { notifyError, notifyNotice } = useMessages()
   const [snapshotName, setSnapshotName] = useState('')
   const [busy, setBusy] = useState(false)
+  const snapshotNameValid = validLimaName(snapshotName)
+  const showNameError = snapshotName !== '' && !snapshotNameValid
 
   async function createSnapshot() {
-    if (snapshotName.trim() === '') return
+    if (!instance.snapshotSupported || !snapshotNameValid) return
     setBusy(true)
     try {
-      await apiSend(`/api/vms/instances/${instance.name}/snapshot`, 'POST', { name: snapshotName.trim() })
-      notifyNotice('machines', `Created snapshot ${snapshotName.trim()} for ${instance.name}.`)
+      await apiSend(`/api/vms/instances/${instance.name}/snapshot`, 'POST', { name: snapshotName })
+      notifyNotice('machines', `Created snapshot ${snapshotName} for ${instance.name}.`)
       setSnapshotName('')
     } catch (err) {
       notifyError('machines', errorMessage(err, 'Unable to create snapshot'))
@@ -40,12 +49,12 @@ function SnapshotTab({ instance }: { instance: VMInstance }) {
   }
 
   async function restoreSnapshot() {
-    if (snapshotName.trim() === '') return
-    if (!window.confirm(`Restore ${instance.name} to snapshot ${snapshotName.trim()}? Unsaved state will be lost.`)) return
+    if (!instance.snapshotSupported || !snapshotNameValid) return
+    if (!window.confirm(`Restore ${instance.name} to snapshot ${snapshotName}? Unsaved state will be lost.`)) return
     setBusy(true)
     try {
-      await apiSend(`/api/vms/instances/${instance.name}/restore`, 'POST', { name: snapshotName.trim() })
-      notifyNotice('machines', `Restored ${instance.name} to snapshot ${snapshotName.trim()}.`)
+      await apiSend(`/api/vms/instances/${instance.name}/restore`, 'POST', { name: snapshotName })
+      notifyNotice('machines', `Restored ${instance.name} to snapshot ${snapshotName}.`)
     } catch (err) {
       notifyError('machines', errorMessage(err, 'Unable to restore snapshot'))
     } finally {
@@ -56,16 +65,31 @@ function SnapshotTab({ instance }: { instance: VMInstance }) {
   return (
     <section className="drawerPanel">
       <h3>Snapshots</h3>
-      <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); createSnapshot() }}>
-        <label>
-          <span>Snapshot name</span>
-          <input type="text" value={snapshotName} placeholder="pre-upgrade" onChange={(event) => setSnapshotName(event.target.value)} />
-        </label>
-        <div className="actions">
-          <button type="submit" disabled={busy || snapshotName.trim() === ''}>Create snapshot</button>
-          <button className="destructiveAction" type="button" disabled={busy || snapshotName.trim() === ''} onClick={restoreSnapshot}>Restore snapshot</button>
-        </div>
-      </form>
+      {!instance.snapshotSupported ? (
+        <p className="hintLine">{instance.snapshotMessage || 'Snapshots are unavailable for this VM driver.'}</p>
+      ) : (
+        <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); createSnapshot() }}>
+          <label>
+            <span>Snapshot name</span>
+            <input
+              type="text"
+              value={snapshotName}
+              placeholder="pre-upgrade"
+              pattern={LIMA_NAME_PATTERN_SOURCE}
+              maxLength={63}
+              aria-invalid={showNameError}
+              aria-describedby="snapshot-name-help"
+              onChange={(event) => setSnapshotName(event.target.value)}
+              required
+            />
+          </label>
+          <p id="snapshot-name-help" className={showNameError ? 'hintLine errorLine' : 'hintLine'}>{LIMA_NAME_HELP}</p>
+          <div className="actions">
+            <button type="submit" disabled={busy || !snapshotNameValid}>Create snapshot</button>
+            <button className="destructiveAction" type="button" disabled={busy || !snapshotNameValid} onClick={restoreSnapshot}>Restore snapshot</button>
+          </div>
+        </form>
+      )}
     </section>
   )
 }
@@ -92,6 +116,8 @@ export function Machines() {
   const selectedImage = images.data?.find((image) => image.id === form.image)
   const isRunning = (instance: VMInstance) => instance.status.toLocaleLowerCase() === 'running'
   const imageSupports = (architecture: string) => !selectedImage?.architectures?.length || selectedImage.architectures.includes(architecture)
+  const vmNameValid = validLimaName(form.name)
+  const showVMNameError = form.name !== '' && !vmNameValid
 
   function selectImage(imageID: string) {
     const image = images.data?.find((item) => item.id === imageID)
@@ -104,11 +130,11 @@ export function Machines() {
 
   async function createInstance(event: FormEvent) {
     event.preventDefault()
-    if (form.name.trim() === '' || form.image === '') return
+    if (!vmNameValid || form.image === '') return
     setSubmitting(true)
     try {
       await apiSend('/api/vms/instances', 'POST', form)
-      notifyNotice('machines', `Created VM ${form.name.trim()}.`)
+      notifyNotice('machines', `Created VM ${form.name}.`)
       setForm({ name: '', image: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true })
       setCreating(false)
       instances.reload()
@@ -220,6 +246,7 @@ export function Machines() {
               <section className="drawerPanel">
                 <h3>Instance detail</h3>
                 <dl className="runtimeGrid">
+                  <div><dt>Driver</dt><dd>{selected.vmType || '—'}</dd></div>
                   <div><dt>Architecture</dt><dd>{selected.architecture}</dd></div>
                   <div><dt>CPUs</dt><dd>{selected.cpus}</dd></div>
                   <div><dt>Memory</dt><dd>{formatBytes(selected.memoryBytes)}</dd></div>
@@ -253,8 +280,19 @@ export function Machines() {
             <form className="inspectorForm" onSubmit={createInstance}>
               <label>
                 <span>Name</span>
-                <input type="text" value={form.name} placeholder="dev-box" onChange={(event) => setForm({ ...form, name: event.target.value })} required />
+                <input
+                  type="text"
+                  value={form.name}
+                  placeholder="dev-box"
+                  pattern={LIMA_NAME_PATTERN_SOURCE}
+                  maxLength={63}
+                  aria-invalid={showVMNameError}
+                  aria-describedby="vm-name-help"
+                  onChange={(event) => setForm({ ...form, name: event.target.value })}
+                  required
+                />
               </label>
+              <p id="vm-name-help" className={showVMNameError ? 'hintLine errorLine' : 'hintLine'}>{LIMA_NAME_HELP}</p>
               <label>
                 <span>Distribution</span>
                 <select value={form.image} onChange={(event) => selectImage(event.target.value)} required>
@@ -292,7 +330,7 @@ export function Machines() {
                 <span><strong>Start after creation</strong></span>
                 <input type="checkbox" checked={form.start} onChange={(event) => setForm({ ...form, start: event.target.checked })} />
               </label>
-              <button type="submit" disabled={submitting || form.name.trim() === '' || form.image === '' || selectedImage?.available === false}>{submitting ? 'Creating…' : 'Create machine'}</button>
+              <button type="submit" disabled={submitting || !vmNameValid || form.image === '' || selectedImage?.available === false}>{submitting ? 'Creating…' : 'Create machine'}</button>
             </form>
           </Inspector>
         )}
