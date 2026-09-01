@@ -41,7 +41,8 @@ Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and
 
 ## Install the Docker context
 
-Start Porto and install the named context:
+Porto Desktop creates or updates the named context automatically. For CLI-only
+installations, start Porto and install it explicitly:
 
 ```sh
 porto daemon start

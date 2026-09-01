@@ -4,7 +4,7 @@ const { promisify } = require('node:util')
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
-const EXPECTED_API_VERSION = 11
+const EXPECTED_API_VERSION = 12
 const PATH_MARKER = '__PORTO_PATH__'
 const execFileAsync = promisify(execFile)
 
@@ -69,6 +69,28 @@ async function installDockerEngine({
     if (!response.ok) {
       const message = typeof response.text === 'function' ? await response.text() : ''
       throw new Error(message.trim() || `Porto Docker installation returned HTTP ${response.status || 'error'}`)
+    }
+    return await response.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+async function installDockerContext({
+  daemonURL = DEFAULT_DAEMON_URL,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 30000,
+} = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(`${daemonURL}/api/docker/context/install`, {
+      method: 'POST',
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const message = typeof response.text === 'function' ? await response.text() : ''
+      throw new Error(message.trim() || `Porto Docker context setup returned HTTP ${response.status || 'error'}`)
     }
     return await response.json()
   } finally {
@@ -184,6 +206,7 @@ module.exports = {
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
+  installDockerContext,
   installDockerEngine,
   isDaemonReady,
   mergeExecutablePaths,

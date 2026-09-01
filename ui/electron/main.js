@@ -16,6 +16,7 @@ const {
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
+  installDockerContext,
   installDockerEngine,
   mergeExecutablePaths,
   resolvePortoBinary,
@@ -205,18 +206,25 @@ async function ensureDaemonRunning() {
 
 async function ensureDockerEngine() {
   let status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
+  if (!status.enabled) return
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
     platform: process.platform,
   })
-  if (command === null) return
-  await installDockerEngine({ daemonURL: DAEMON_URL })
-  for (let attempt = 0; attempt < 30; attempt += 1) {
-    status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
-    if (status.available) return
-    await delay(500)
+  if (command !== null) {
+    await installDockerEngine({ daemonURL: DAEMON_URL })
+    for (let attempt = 0; attempt < 30; attempt += 1) {
+      status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
+      if (status.available) break
+      await delay(500)
+    }
+    if (!status.available) {
+      throw new Error(status.message || 'Porto container runtime did not become available')
+    }
   }
-  throw new Error(status.message || 'Porto container runtime did not become available')
+  if (app.isPackaged && process.platform !== 'win32' && status.available) {
+    await installDockerContext({ daemonURL: DAEMON_URL })
+  }
 }
 
 function createBootstrapWindow() {

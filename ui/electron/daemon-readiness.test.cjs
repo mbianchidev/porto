@@ -7,6 +7,7 @@ const {
   dockerBootstrapCommand,
   inspectDaemon,
   installDockerEngine,
+  installDockerContext,
   isDaemonReady,
   mergeExecutablePaths,
   resolvePortoBinary,
@@ -26,7 +27,7 @@ function response(body, ok = true) {
 
 test('accepts a compatible daemon with a dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 11, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 12, dashboardReady: true }),
   })
 
   assert.equal(ready, true)
@@ -42,7 +43,7 @@ test('rejects an older daemon without dashboard readiness metadata', async () =>
 
 test('rejects a daemon that cannot serve the dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 11, dashboardReady: false }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 12, dashboardReady: false }),
   })
 
   assert.equal(ready, false)
@@ -50,7 +51,7 @@ test('rejects a daemon that cannot serve the dashboard', async () => {
 
 test('rejects an incompatible API', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 10, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 11, dashboardReady: true }),
   })
 
   assert.equal(ready, false)
@@ -119,6 +120,20 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('installs the Docker context through the active daemon', async () => {
+  let request = null
+  const context = await installDockerContext({
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return response({ context: 'porto' })
+    },
+  })
+
+  assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/context/install')
+  assert.equal(request.options.method, 'POST')
+  assert.equal(context.context, 'porto')
 })
 
 test('reads the executable path from the user login shell', async () => {
