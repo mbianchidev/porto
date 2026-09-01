@@ -31,11 +31,12 @@ const (
 )
 
 type Manager struct {
-	runner          runtimes.Runner
-	timeout         time.Duration
-	kubeconfigRoot  string
-	capabilityMu    sync.Mutex
-	capabilityCache map[string]cachedContainerCapabilities
+	runner                 runtimes.Runner
+	timeout                time.Duration
+	kubeconfigRoot         string
+	capabilityProbeTimeout time.Duration
+	capabilityMu           sync.Mutex
+	capabilityCache        map[string]cachedContainerCapabilities
 }
 
 type Status struct {
@@ -188,10 +189,11 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 		runner = runtimes.ExecRunner{}
 	}
 	return &Manager{
-		runner:          runner,
-		timeout:         defaultTimeout,
-		kubeconfigRoot:  kubeconfigRoot,
-		capabilityCache: make(map[string]cachedContainerCapabilities),
+		runner:                 runner,
+		timeout:                defaultTimeout,
+		kubeconfigRoot:         kubeconfigRoot,
+		capabilityProbeTimeout: capabilityProbeTimeout,
+		capabilityCache:        make(map[string]cachedContainerCapabilities),
 	}
 }
 
@@ -325,7 +327,7 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 				NodePort:   portItem.NodePort,
 			})
 		}
-		externalIPs := append([]string(nil), item.Spec.ExternalIPs...)
+		externalIPs := append(make([]string, 0, len(item.Spec.ExternalIPs)), item.Spec.ExternalIPs...)
 		for _, ingress := range item.Status.LoadBalancer.Ingress {
 			if ingress.IP != "" {
 				externalIPs = append(externalIPs, ingress.IP)
@@ -537,44 +539,22 @@ func (m *Manager) ContainerCapabilities(
 	if cached, ok := m.cachedContainerCapabilities(cacheKey); ok {
 		return cached, nil
 	}
-	probeContext, cancel := context.WithTimeout(ctx, capabilityProbeTimeout)
-	defer cancel()
-
 	capabilities := ContainerCapabilities{Shells: []string{}}
 	shells := []string{"sh", "bash", "ash"}
-	type shellProbe struct {
-		index int
-		err   error
-	}
-	probes := make(chan shellProbe, len(shells))
-	for index, shell := range shells {
-		go func() {
-			_, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{shell, "-c", "exit 0"}, nil)
-			probes <- shellProbe{index: index, err: err}
-		}()
-	}
-	available := make([]bool, len(shells))
-	var probeErr error
-	for range shells {
-		probe := <-probes
+	for _, shell := range shells {
+		probeContext, cancel := context.WithTimeout(ctx, m.capabilityProbeTimeout)
+		_, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{shell, "-c", "exit 0"}, nil)
+		probeContextErr := probeContext.Err()
+		cancel()
 		switch {
-		case probe.err == nil:
-			available[probe.index] = true
-		case executableUnavailable(probe.err, shells[probe.index]):
-			continue
-		default:
-			probeErr = errors.Join(probeErr, probe.err)
-		}
-	}
-	if probeContext.Err() != nil {
-		return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", probeContext.Err())
-	}
-	if probeErr != nil {
-		return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", probeErr)
-	}
-	for index, shell := range shells {
-		if available[index] {
+		case err == nil:
 			capabilities.Shells = append(capabilities.Shells, shell)
+		case supportedShellUnavailable(err):
+			continue
+		case errors.Is(probeContextErr, context.DeadlineExceeded):
+			return ContainerCapabilities{}, fmt.Errorf("inspect %s shell capability: %w", shell, probeContextErr)
+		default:
+			return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", err)
 		}
 	}
 	if len(capabilities.Shells) == 0 {
@@ -594,10 +574,13 @@ func (m *Manager) ContainerCapabilities(
 	script := `for tool in wc head cat rm; do
   command -v "$tool" >/dev/null 2>&1 || printf '%s\n' "$tool"
 done`
+	probeContext, cancel := context.WithTimeout(ctx, m.capabilityProbeTimeout)
 	output, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{"sh", "-c", script}, nil)
+	probeContextErr := probeContext.Err()
+	cancel()
 	if err != nil {
-		if probeContext.Err() != nil {
-			return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", probeContext.Err())
+		if errors.Is(probeContextErr, context.DeadlineExceeded) {
+			return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", probeContextErr)
 		}
 		return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", err)
 	}
@@ -727,6 +710,15 @@ func executableUnavailable(err error, executable string) bool {
 	executable = strings.ToLower(executable)
 	return strings.Contains(message, `exec: "`+executable+`"`) &&
 		(strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file"))
+}
+
+func supportedShellUnavailable(err error) bool {
+	for _, shell := range []string{"sh", "bash", "ash"} {
+		if executableUnavailable(err, shell) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string) ([]PodStats, error) {

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 	"text/template"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -210,6 +211,30 @@ func TestConfigMapsAndSecretsDecoding(t *testing.T) {
 	}
 }
 
+func TestServicesReturnEmptyExternalIPArray(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Contains(strings.Join(command.Args, " "), "get services") {
+			return []byte(`{"items":[{"metadata":{"name":"metrics-server","namespace":"kube-system"},"spec":{"type":"ClusterIP","clusterIP":"10.96.0.10","ports":[]},"status":{}}]}`), nil
+		}
+		return nil, errors.New("unexpected command")
+	}
+	services, err := New(runner).Services(context.Background(), "porto-dev", "kube-system")
+	if err != nil {
+		t.Fatalf("list services: %v", err)
+	}
+	if len(services) != 1 || services[0].ExternalIPs == nil {
+		t.Fatalf("unexpected services: %+v", services)
+	}
+	encoded, err := json.Marshal(services)
+	if err != nil {
+		t.Fatalf("encode services: %v", err)
+	}
+	if !strings.Contains(string(encoded), `"externalIPs":[]`) {
+		t.Fatalf("external IPs were not encoded as an array: %s", encoded)
+	}
+}
+
 func TestResourceListTemplatesExcludeValues(t *testing.T) {
 	for _, test := range []struct {
 		name     string
@@ -395,6 +420,27 @@ func TestContainerCapabilitiesDoesNotHideMissingKubectl(t *testing.T) {
 	}
 }
 
+func TestContainerCapabilitiesTreatsCrossedShellErrorsAsUnavailable(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(runtimes.Command) ([]byte, error) {
+		return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
+	}
+	capabilities, err := New(runner).ContainerCapabilities(
+		context.Background(),
+		"porto-dev",
+		"kube-system",
+		"konnectivity-agent",
+		"konnectivity-agent",
+		false,
+	)
+	if err != nil {
+		t.Fatalf("inspect capabilities: %v", err)
+	}
+	if len(capabilities.Shells) != 0 {
+		t.Fatalf("unexpected shells: %+v", capabilities)
+	}
+}
+
 func TestContainerCapabilitiesCachesProbeResult(t *testing.T) {
 	runner := newFakeRunner()
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
@@ -417,6 +463,35 @@ func TestContainerCapabilitiesCachesProbeResult(t *testing.T) {
 	defer runner.mu.Unlock()
 	if len(runner.commands) != 3 {
 		t.Fatalf("capability probes = %d, want 3 cached probes", len(runner.commands))
+	}
+}
+
+func TestContainerCapabilitiesBoundsEachSequentialProbe(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		time.Sleep(20 * time.Millisecond)
+		args := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(args, "-- sh -c exit 0"):
+			return nil, nil
+		case strings.Contains(args, "-- bash -c exit 0"):
+			return []byte(`exec: "bash": executable file not found in $PATH`), errors.New("exit status 1")
+		case strings.Contains(args, "-- ash -c exit 0"):
+			return []byte(`exec: "ash": executable file not found in $PATH`), errors.New("exit status 1")
+		case strings.Contains(args, "command -v"):
+			return nil, nil
+		default:
+			return nil, errors.New("unexpected command")
+		}
+	}
+	manager := New(runner)
+	manager.capabilityProbeTimeout = 30 * time.Millisecond
+	capabilities, err := manager.ContainerCapabilities(context.Background(), "porto-dev", "default", "api", "api", true)
+	if err != nil {
+		t.Fatalf("inspect capabilities: %v", err)
+	}
+	if !capabilities.FileInspection {
+		t.Fatalf("file inspection unavailable: %+v", capabilities)
 	}
 }
 

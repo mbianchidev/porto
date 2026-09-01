@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
+import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -345,14 +346,28 @@ function EventsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
 }
 
 function ManifestTab({ pod, context }: { pod: KubernetesPod; context: string }) {
+  const { notifyError, notifyNotice } = useMessages()
   const manifest = usePolledResource<string>(
     (signal) => apiGet(podPath(pod, '/manifest', context), signal),
     0,
     [pod.namespace, pod.name],
   )
+  async function copyManifest() {
+    if (!manifest.data) return
+    try {
+      if (!navigator.clipboard) throw new Error('Clipboard access is unavailable')
+      await navigator.clipboard.writeText(manifest.data)
+      notifyNotice('pods', `Copied the ${pod.name} manifest.`)
+    } catch (err) {
+      notifyError('pods', errorMessage(err, 'Unable to copy the manifest'))
+    }
+  }
   return (
     <section className="drawerPanel">
-      <h3>Manifest</h3>
+      <div className="drawerPanelHeading">
+        <h3>Manifest</h3>
+        <ActionButton label="Copy manifest" icon="copy" disabled={!manifest.data} onClick={copyManifest} />
+      </div>
       {manifest.error && <p className="errorLine">{manifest.error}</p>}
       {manifest.data && <pre className="logViewport manifestViewport logRaw">{manifest.data}</pre>}
     </section>

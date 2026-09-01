@@ -35,6 +35,7 @@ export type IconName =
   | 'terminal'
   | 'file'
   | 'save'
+  | 'copy'
   | 'snapshot'
   | 'restore'
   | 'create'
@@ -84,6 +85,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'terminal' && <><path d="M5 5h14v14H5Z" /><path d="m8 10 3 2-3 2m5 0h4" /></>}
       {name === 'file' && <><path d="M7 3h7l4 4v14H7Z" /><path d="M14 3v4h4" /></>}
       {name === 'save' && <><path d="M5 5h11l3 3v11H5Z" /><path d="M8 5v5h8V5M8 14h8v5H8Z" /></>}
+      {name === 'copy' && <><rect x="8" y="8" width="11" height="11" rx="1" /><path d="M16 8V5H5v11h3" /></>}
       {name === 'snapshot' && <><circle cx="12" cy="12" r="7" /><path d="M12 8.5v3.5l2.4 1.4" /></>}
       {name === 'restore' && <><path d="M4 12a8 8 0 1 0 2.6-5.9" /><path d="M4 4v4h4" /></>}
       {name === 'create' && <path d="M12 5v14M5 12h14" />}

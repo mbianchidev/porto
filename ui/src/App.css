@@ -714,6 +714,23 @@
   text-transform: uppercase;
 }
 
+.drawerPanelHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 9px;
+}
+
+.drawerPanelHeading h3 {
+  margin: 0;
+}
+
+.drawerPanelHeading .iconButton {
+  width: 36px;
+  height: 36px;
+}
+
 .runtimeGrid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
