@@ -26,13 +26,21 @@ Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive.
 install without opening it.
 
 The native-engine release advances Porto's daemon compatibility version. The
-installer stops an older Porto daemon before launching the new app so commands
-cannot accidentally continue through the removed upstream Docker proxy.
+installer and desktop app replace an older Porto daemon before launching the
+new version, so commands cannot accidentally continue through the removed
+upstream Docker proxy.
 
-Desktop archives contain Porto, its dashboard, `kubectl`, `k9s`, Lima, and the
-supported `kind` binary for that platform. Linux installation installs QEMU
+Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
+Lima, and the supported `kind` binary for that platform. Windows ARM64 excludes
+the Docker CLI and KinD because upstream standalone binaries are unavailable.
+Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
 `winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
+
+On macOS and Linux, the packaged app automatically provisions and starts its
+containerd and BuildKit backend on first launch when Docker support is enabled.
+Installing and opening the desktop package requires no follow-up runtime setup
+command.
 
 macOS DMGs still need Developer ID signing/notarization for warning-free
 launches, and Windows installers may show SmartScreen until releases are

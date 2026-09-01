@@ -11,7 +11,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 ## Use Porto
 
 - [Project management](project-management.md) — CLI commands, discovery, dependency setup, lifecycle, ports, state, and logs
-- [Local runtimes](runtimes.md) — Docker endpoint, containers, Compose, Kubernetes clusters, pod inspection, and Linux VMs
+- [Local runtimes](runtimes.md) — Docker endpoint, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
 - [Porto Docker Engine](docker-engine.md) — Docker context setup, native containerd architecture, API compatibility, persistence, and limitations
 - [Branch management](branch-management.md) — branch switching, concurrent instances, managed worktrees, and cleanup
 - [Local networking](networking.md) — project hostnames, HTTP and HTTPS routing, certificates, DNS, and custom forwarding

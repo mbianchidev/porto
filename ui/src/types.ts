@@ -214,6 +214,12 @@ export type KubernetesContainer = {
   state: string
 }
 
+export type KubernetesContainerCapabilities = {
+  shells: string[]
+  fileInspection: boolean
+  message?: string
+}
+
 export type KubernetesPod = {
   name: string
   namespace: string
@@ -242,6 +248,32 @@ export type KubernetesService = {
   clusterIP: string
   externalIPs: string[]
   ports: KubernetesServicePort[]
+  age: string
+}
+
+export type KubernetesConfigMap = {
+  name: string
+  namespace: string
+  immutable: boolean
+  keys: string[]
+  binaryKeys: string[]
+  resourceVersion: string
+  age: string
+}
+
+export type KubernetesConfigMapDetail = KubernetesConfigMap & {
+  labels: Record<string, string>
+  annotations: Record<string, string>
+  data: Record<string, string>
+  binaryData: Record<string, string>
+}
+
+export type KubernetesSecret = {
+  name: string
+  namespace: string
+  type: string
+  immutable: boolean
+  keys: string[]
   age: string
 }
 
@@ -389,6 +421,8 @@ export type RouteID =
   | 'kubernetes'
   | 'pods'
   | 'services'
+  | 'configs'
+  | 'secrets'
   | 'nodes'
   | 'machines'
   | 'activity'

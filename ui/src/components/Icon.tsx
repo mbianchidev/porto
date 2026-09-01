@@ -13,6 +13,8 @@ export type IconName =
   | 'kubernetes'
   | 'pods'
   | 'services'
+  | 'configs'
+  | 'secrets'
   | 'nodes'
   | 'machines'
   | 'activity'
@@ -33,6 +35,7 @@ export type IconName =
   | 'terminal'
   | 'file'
   | 'save'
+  | 'copy'
   | 'snapshot'
   | 'restore'
   | 'create'
@@ -60,6 +63,8 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'kubernetes' && <path d="m12 3 7.5 4.3v9.4L12 21l-7.5-4.3V7.3ZM12 3v18m7.5-13.7L12 12m-7.5-2.7L12 12" />}
       {name === 'pods' && <path d="M12 3a4 4 0 0 1 4 4v3H8V7a4 4 0 0 1 4-4Zm-5 7h10l1 10H6Z" />}
       {name === 'services' && <path d="M12 6a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm0-3v2m0 14v2m8.5-11h-2m-13 0H3M17.7 6.3l-1.4 1.4m-8.6 8.6-1.4 1.4m11.4 0-1.4-1.4M7.7 7.7 6.3 6.3" />}
+      {name === 'configs' && <><path d="M7 3h10v18H7Z" /><path d="M9.5 8h5M9.5 12h5M9.5 16h3" /></>}
+      {name === 'secrets' && <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v2" /></>}
       {name === 'nodes' && <path d="M5 5h5v5H5Zm9 0h5v5h-5ZM5 14h5v5H5Zm9 0h5v5h-5Z" />}
       {name === 'machines' && <path d="M4 5h16v10H4Zm4 14h8m-4-4v4M4 9h16" />}
       {name === 'activity' && <path d="M3 12h4l2-7 4 14 2-7h6" />}
@@ -80,6 +85,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'terminal' && <><path d="M5 5h14v14H5Z" /><path d="m8 10 3 2-3 2m5 0h4" /></>}
       {name === 'file' && <><path d="M7 3h7l4 4v14H7Z" /><path d="M14 3v4h4" /></>}
       {name === 'save' && <><path d="M5 5h11l3 3v11H5Z" /><path d="M8 5v5h8V5M8 14h8v5H8Z" /></>}
+      {name === 'copy' && <><rect x="8" y="8" width="11" height="11" rx="1" /><path d="M16 8V5H5v11h3" /></>}
       {name === 'snapshot' && <><circle cx="12" cy="12" r="7" /><path d="M12 8.5v3.5l2.4 1.4" /></>}
       {name === 'restore' && <><path d="M4 12a8 8 0 1 0 2.6-5.9" /><path d="M4 4v4h4" /></>}
       {name === 'create' && <path d="M12 5v14M5 12h14" />}

@@ -15,6 +15,8 @@ import { Networks } from './pages/Networks'
 import { KubernetesOverview } from './pages/KubernetesOverview'
 import { Pods } from './pages/Pods'
 import { KubernetesServices } from './pages/KubernetesServices'
+import { ConfigMaps } from './pages/ConfigMaps'
+import { Secrets } from './pages/Secrets'
 import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
 import { Activity } from './pages/Activity'
@@ -23,7 +25,7 @@ import type { IntegrationStatus, KillSwitchStatus, KubernetesCluster, Kubernetes
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
-  'kubernetes', 'pods', 'services', 'nodes', 'machines', 'activity', 'settings',
+  'kubernetes', 'pods', 'services', 'configs', 'secrets', 'nodes', 'machines', 'activity', 'settings',
 ]
 
 function routeFromHash(): RouteID {
@@ -101,6 +103,8 @@ function AppShell() {
         {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} onContextChange={setKubeContext} />}
         {route === 'pods' && <Pods context={activeKubeContext} />}
         {route === 'services' && <KubernetesServices context={activeKubeContext} />}
+        {route === 'configs' && <ConfigMaps context={activeKubeContext} />}
+        {route === 'secrets' && <Secrets context={activeKubeContext} />}
         {route === 'nodes' && <Nodes context={activeKubeContext} />}
         {route === 'machines' && <Machines />}
         {route === 'activity' && <Activity />}

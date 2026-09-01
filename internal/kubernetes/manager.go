@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -19,14 +22,21 @@ import (
 )
 
 const (
-	defaultTimeout = 30 * time.Second
-	maxFileBytes   = 1024 * 1024
+	defaultTimeout         = 30 * time.Second
+	maxFileBytes           = 1024 * 1024
+	capabilityProbeTimeout = 5 * time.Second
+	capabilityCacheTTL     = 30 * time.Second
+	configMapListTemplate  = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{.metadata.resourceVersion}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\t"}}{{range $key, $value := .binaryData}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
+	secretListTemplate     = `{{range .items}}{{.metadata.namespace}}{{"\t"}}{{.metadata.name}}{{"\t"}}{{.type}}{{"\t"}}{{if .immutable}}true{{else}}false{{end}}{{"\t"}}{{.metadata.creationTimestamp}}{{"\t"}}{{range $key, $value := .data}}{{$key}}{{","}}{{end}}{{"\n"}}{{end}}`
 )
 
 type Manager struct {
-	runner         runtimes.Runner
-	timeout        time.Duration
-	kubeconfigRoot string
+	runner                 runtimes.Runner
+	timeout                time.Duration
+	kubeconfigRoot         string
+	capabilityProbeTimeout time.Duration
+	capabilityMu           sync.Mutex
+	capabilityCache        map[string]cachedContainerCapabilities
 }
 
 type Status struct {
@@ -90,6 +100,33 @@ type Service struct {
 	Age         string        `json:"age"`
 }
 
+type ConfigMap struct {
+	Name            string   `json:"name"`
+	Namespace       string   `json:"namespace"`
+	Immutable       bool     `json:"immutable"`
+	Keys            []string `json:"keys"`
+	BinaryKeys      []string `json:"binaryKeys"`
+	ResourceVersion string   `json:"resourceVersion"`
+	Age             string   `json:"age"`
+}
+
+type ConfigMapDetail struct {
+	ConfigMap
+	Labels      map[string]string `json:"labels"`
+	Annotations map[string]string `json:"annotations"`
+	Data        map[string]string `json:"data"`
+	BinaryData  map[string]string `json:"binaryData"`
+}
+
+type Secret struct {
+	Name      string   `json:"name"`
+	Namespace string   `json:"namespace"`
+	Type      string   `json:"type"`
+	Immutable bool     `json:"immutable"`
+	Keys      []string `json:"keys"`
+	Age       string   `json:"age"`
+}
+
 type Node struct {
 	Name          string            `json:"name"`
 	Ready         bool              `json:"ready"`
@@ -136,6 +173,17 @@ type FileContent struct {
 	Truncated bool   `json:"truncated"`
 }
 
+type ContainerCapabilities struct {
+	Shells         []string `json:"shells"`
+	FileInspection bool     `json:"fileInspection"`
+	Message        string   `json:"message,omitempty"`
+}
+
+type cachedContainerCapabilities struct {
+	value     ContainerCapabilities
+	expiresAt time.Time
+}
+
 func New(runner runtimes.Runner) *Manager {
 	return NewWithKubeconfigRoot(runner, "")
 }
@@ -144,7 +192,13 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, timeout: defaultTimeout, kubeconfigRoot: kubeconfigRoot}
+	return &Manager{
+		runner:                 runner,
+		timeout:                defaultTimeout,
+		kubeconfigRoot:         kubeconfigRoot,
+		capabilityProbeTimeout: capabilityProbeTimeout,
+		capabilityCache:        make(map[string]cachedContainerCapabilities),
+	}
 }
 
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
@@ -224,13 +278,7 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 }
 
 func (m *Manager) Pods(ctx context.Context, contextName, namespace string) ([]Pod, error) {
-	args := []string{"get", "pods"}
-	if namespace == "" || namespace == "all" {
-		args = append(args, "--all-namespaces")
-	} else {
-		args = append(args, "--namespace", namespace)
-	}
-	args = append(args, "-o", "json")
+	args := namespacedListArgs("pods", namespace)
 	output, err := m.run(ctx, contextName, m.timeout, nil, args...)
 	if err != nil {
 		return nil, err
@@ -262,13 +310,7 @@ func (m *Manager) Pod(ctx context.Context, contextName, namespace, name string) 
 }
 
 func (m *Manager) Services(ctx context.Context, contextName, namespace string) ([]Service, error) {
-	args := []string{"get", "services"}
-	if namespace == "" || namespace == "all" {
-		args = append(args, "--all-namespaces")
-	} else {
-		args = append(args, "--namespace", namespace)
-	}
-	args = append(args, "-o", "json")
+	args := namespacedListArgs("services", namespace)
 	output, err := m.run(ctx, contextName, m.timeout, nil, args...)
 	if err != nil {
 		return nil, err
@@ -289,7 +331,7 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 				NodePort:   portItem.NodePort,
 			})
 		}
-		externalIPs := append([]string(nil), item.Spec.ExternalIPs...)
+		externalIPs := append(make([]string, 0, len(item.Spec.ExternalIPs)), item.Spec.ExternalIPs...)
 		for _, ingress := range item.Status.LoadBalancer.Ingress {
 			if ingress.IP != "" {
 				externalIPs = append(externalIPs, ingress.IP)
@@ -309,6 +351,104 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 		})
 	}
 	return services, nil
+}
+
+func (m *Manager) ConfigMaps(ctx context.Context, contextName, namespace string) ([]ConfigMap, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedOutputArgs("configmaps", namespace, "go-template="+configMapListTemplate)...)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseResourceRows(output, 7)
+	if err != nil {
+		return nil, fmt.Errorf("decode Kubernetes config maps: %w", err)
+	}
+	configMaps := make([]ConfigMap, 0, len(rows))
+	for _, row := range rows {
+		immutable, err := strconv.ParseBool(row[2])
+		if err != nil {
+			return nil, fmt.Errorf("decode Kubernetes config map immutable flag: %w", err)
+		}
+		configMaps = append(configMaps, ConfigMap{
+			Name:            row[1],
+			Namespace:       row[0],
+			Immutable:       immutable,
+			ResourceVersion: row[4],
+			Keys:            parseResourceKeys(row[5]),
+			BinaryKeys:      parseResourceKeys(row[6]),
+			Age:             age(row[3]),
+		})
+	}
+	return configMaps, nil
+}
+
+func (m *Manager) ConfigMap(ctx context.Context, contextName, namespace, name string) (ConfigMapDetail, error) {
+	if err := validateResource(namespace, name); err != nil {
+		return ConfigMapDetail{}, err
+	}
+	output, err := m.run(ctx, contextName, m.timeout, nil, "get", "configmap", name, "--namespace", namespace, "-o", "json")
+	if err != nil {
+		return ConfigMapDetail{}, err
+	}
+	var item configMapItem
+	if err := json.Unmarshal(output, &item); err != nil {
+		return ConfigMapDetail{}, fmt.Errorf("decode Kubernetes config map: %w", err)
+	}
+	data := make(map[string]string, len(item.Data))
+	keys := make([]string, 0, len(item.Data))
+	for key, value := range item.Data {
+		data[key] = value
+		keys = append(keys, key)
+	}
+	binaryKeys := make([]string, 0, len(item.BinaryData))
+	binaryData := make(map[string]string, len(item.BinaryData))
+	for key, value := range item.BinaryData {
+		binaryKeys = append(binaryKeys, key)
+		binaryData[key] = value
+	}
+	sort.Strings(keys)
+	sort.Strings(binaryKeys)
+	return ConfigMapDetail{
+		ConfigMap: ConfigMap{
+			Name:            item.Metadata.Name,
+			Namespace:       item.Metadata.Namespace,
+			Immutable:       item.Immutable,
+			Keys:            keys,
+			BinaryKeys:      binaryKeys,
+			ResourceVersion: item.Metadata.ResourceVersion,
+			Age:             age(item.Metadata.CreationTimestamp),
+		},
+		Labels:      cloneStringMap(item.Metadata.Labels),
+		Annotations: cloneStringMap(item.Metadata.Annotations),
+		Data:        data,
+		BinaryData:  binaryData,
+	}, nil
+}
+
+func (m *Manager) Secrets(ctx context.Context, contextName, namespace string) ([]Secret, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedOutputArgs("secrets", namespace, "go-template="+secretListTemplate)...)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := parseResourceRows(output, 6)
+	if err != nil {
+		return nil, fmt.Errorf("decode Kubernetes secrets: %w", err)
+	}
+	secrets := make([]Secret, 0, len(rows))
+	for _, row := range rows {
+		immutable, err := strconv.ParseBool(row[3])
+		if err != nil {
+			return nil, fmt.Errorf("decode Kubernetes secret immutable flag: %w", err)
+		}
+		secrets = append(secrets, Secret{
+			Name:      row[1],
+			Namespace: row[0],
+			Type:      row[2],
+			Immutable: immutable,
+			Keys:      parseResourceKeys(row[5]),
+			Age:       age(row[4]),
+		})
+	}
+	return secrets, nil
 }
 
 func (m *Manager) Nodes(ctx context.Context, contextName string) ([]Node, error) {
@@ -395,6 +535,99 @@ func (m *Manager) Exec(ctx context.Context, contextName, namespace, pod, contain
 	return m.run(ctx, contextName, 30*time.Minute, stdin, args...)
 }
 
+func (m *Manager) ContainerCapabilities(
+	ctx context.Context,
+	contextName,
+	namespace,
+	pod,
+	container string,
+	checkFiles bool,
+) (ContainerCapabilities, error) {
+	if err := validateResource(namespace, pod); err != nil {
+		return ContainerCapabilities{}, err
+	}
+	cacheKey := strings.Join([]string{contextName, namespace, pod, container, strconv.FormatBool(checkFiles)}, "\x00")
+	if cached, ok := m.cachedContainerCapabilities(cacheKey); ok {
+		return cached, nil
+	}
+	capabilities := ContainerCapabilities{Shells: []string{}}
+	shells := []string{"sh", "bash", "ash"}
+	for _, shell := range shells {
+		probeContext, cancel := context.WithTimeout(ctx, m.capabilityProbeTimeout)
+		_, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{shell, "-c", "exit 0"}, nil)
+		probeContextErr := probeContext.Err()
+		cancel()
+		switch {
+		case err == nil:
+			capabilities.Shells = append(capabilities.Shells, shell)
+		case supportedShellUnavailable(err):
+			continue
+		case errors.Is(probeContextErr, context.DeadlineExceeded):
+			return ContainerCapabilities{}, fmt.Errorf("inspect %s shell capability: %w", shell, probeContextErr)
+		default:
+			return ContainerCapabilities{}, fmt.Errorf("inspect container shell capabilities: %w", err)
+		}
+	}
+	if len(capabilities.Shells) == 0 {
+		capabilities.Message = "This container image is shellless; terminal and file inspection are unavailable."
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	if !checkFiles {
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	if !slices.Contains(capabilities.Shells, "sh") {
+		capabilities.Message = "File inspection requires sh, which is not available in this container."
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	script := `for tool in wc head cat rm; do
+  command -v "$tool" >/dev/null 2>&1 || printf '%s\n' "$tool"
+done`
+	probeContext, cancel := context.WithTimeout(ctx, m.capabilityProbeTimeout)
+	output, err := m.Exec(probeContext, contextName, namespace, pod, container, []string{"sh", "-c", script}, nil)
+	probeContextErr := probeContext.Err()
+	cancel()
+	if err != nil {
+		if errors.Is(probeContextErr, context.DeadlineExceeded) {
+			return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", probeContextErr)
+		}
+		return ContainerCapabilities{}, fmt.Errorf("inspect container file utilities: %w", err)
+	}
+	missingUtilities := strings.Fields(string(output))
+	if len(missingUtilities) > 0 {
+		capabilities.Message = "File inspection requires missing utilities: " + strings.Join(missingUtilities, ", ")
+		m.cacheContainerCapabilities(cacheKey, capabilities)
+		return capabilities, nil
+	}
+	capabilities.FileInspection = true
+	m.cacheContainerCapabilities(cacheKey, capabilities)
+	return capabilities, nil
+}
+
+func (m *Manager) cachedContainerCapabilities(key string) (ContainerCapabilities, bool) {
+	m.capabilityMu.Lock()
+	defer m.capabilityMu.Unlock()
+	cached, ok := m.capabilityCache[key]
+	if !ok || time.Now().After(cached.expiresAt) {
+		delete(m.capabilityCache, key)
+		return ContainerCapabilities{}, false
+	}
+	cached.value.Shells = append([]string(nil), cached.value.Shells...)
+	return cached.value, true
+}
+
+func (m *Manager) cacheContainerCapabilities(key string, value ContainerCapabilities) {
+	value.Shells = append([]string(nil), value.Shells...)
+	m.capabilityMu.Lock()
+	defer m.capabilityMu.Unlock()
+	m.capabilityCache[key] = cachedContainerCapabilities{
+		value:     value,
+		expiresAt: time.Now().Add(capabilityCacheTTL),
+	}
+}
+
 func (m *Manager) Files(ctx context.Context, contextName, namespace, pod, container, directory string) (FileListing, error) {
 	directory, err := cleanRemotePath(directory)
 	if err != nil {
@@ -411,7 +644,7 @@ func (m *Manager) Files(ctx context.Context, contextName, namespace, pod, contai
 done`
 	output, err := m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-files", directory}, nil)
 	if err != nil {
-		return FileListing{}, err
+		return FileListing{}, fileOperationError(err)
 	}
 	listing := FileListing{Path: directory, Entries: []FileEntry{}}
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
@@ -434,7 +667,7 @@ func (m *Manager) ReadFile(ctx context.Context, contextName, namespace, pod, con
 	script := `head -c "$2" "$1"`
 	output, err := m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-read", filePath, strconv.Itoa(maxFileBytes + 1)}, nil)
 	if err != nil {
-		return FileContent{}, err
+		return FileContent{}, fileOperationError(err)
 	}
 	truncated := len(output) > maxFileBytes
 	if truncated {
@@ -453,7 +686,7 @@ func (m *Manager) WriteFile(ctx context.Context, contextName, namespace, pod, co
 	}
 	script := `cat > "$1"`
 	_, err = m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-write", filePath}, content)
-	return err
+	return fileOperationError(err)
 }
 
 func (m *Manager) DeleteFile(ctx context.Context, contextName, namespace, pod, container, filePath string) error {
@@ -466,7 +699,37 @@ func (m *Manager) DeleteFile(ctx context.Context, contextName, namespace, pod, c
 	}
 	script := `rm -rf -- "$1"`
 	_, err = m.Exec(ctx, contextName, namespace, pod, container, []string{"sh", "-c", script, "porto-delete", filePath}, nil)
+	return fileOperationError(err)
+}
+
+func fileOperationError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if executableUnavailable(err, "sh") {
+		log.Printf("Kubernetes file inspection requires sh: %v", err)
+		return errors.New("container does not include sh; file inspection is unavailable for shellless images")
+	}
 	return err
+}
+
+func executableUnavailable(err error, executable string) bool {
+	if err == nil {
+		return false
+	}
+	message := strings.ToLower(err.Error())
+	executable = strings.ToLower(executable)
+	return strings.Contains(message, `exec: "`+executable+`"`) &&
+		(strings.Contains(message, "executable file not found") || strings.Contains(message, "no such file"))
+}
+
+func supportedShellUnavailable(err error) bool {
+	for _, shell := range []string{"sh", "bash", "ash"} {
+		if executableUnavailable(err, shell) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Stats(ctx context.Context, contextName, namespace, pod string) ([]PodStats, error) {
@@ -635,6 +898,55 @@ func validateResource(namespace, name string) error {
 	return nil
 }
 
+func namespacedListArgs(resource, namespace string) []string {
+	return namespacedOutputArgs(resource, namespace, "json")
+}
+
+func namespacedOutputArgs(resource, namespace, output string) []string {
+	args := []string{"get", resource}
+	if namespace == "" || namespace == "all" {
+		args = append(args, "--all-namespaces")
+	} else {
+		args = append(args, "--namespace", namespace)
+	}
+	return append(args, "-o", output)
+}
+
+func parseResourceRows(output []byte, fields int) ([][]string, error) {
+	trimmed := strings.TrimRight(string(output), "\r\n")
+	if trimmed == "" {
+		return [][]string{}, nil
+	}
+	lines := strings.Split(trimmed, "\n")
+	rows := make([][]string, 0, len(lines))
+	for _, line := range lines {
+		row := strings.Split(strings.TrimSuffix(line, "\r"), "\t")
+		if len(row) != fields {
+			return nil, fmt.Errorf("expected %d fields, got %d", fields, len(row))
+		}
+		rows = append(rows, row)
+	}
+	return rows, nil
+}
+
+func parseResourceKeys(value string) []string {
+	value = strings.TrimSuffix(value, ",")
+	if value == "" {
+		return []string{}
+	}
+	keys := strings.Split(value, ",")
+	sort.Strings(keys)
+	return keys
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	result := make(map[string]string, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func cleanRemotePath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -750,7 +1062,9 @@ type metadata struct {
 	Name              string            `json:"name"`
 	Namespace         string            `json:"namespace"`
 	CreationTimestamp string            `json:"creationTimestamp"`
+	ResourceVersion   string            `json:"resourceVersion"`
 	Labels            map[string]string `json:"labels"`
+	Annotations       map[string]string `json:"annotations"`
 }
 
 type podItem struct {
@@ -813,6 +1127,13 @@ type serviceList struct {
 			} `json:"loadBalancer"`
 		} `json:"status"`
 	} `json:"items"`
+}
+
+type configMapItem struct {
+	Metadata   metadata          `json:"metadata"`
+	Immutable  bool              `json:"immutable"`
+	Data       map[string]string `json:"data"`
+	BinaryData map[string]string `json:"binaryData"`
 }
 
 type nodeList struct {

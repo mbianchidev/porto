@@ -24,8 +24,8 @@ type InventoryListProps<T> = {
 
 /**
  * Dense, single-column inventory list shared by every runtime section: containers,
- * images, builds, volumes, networks, pods, services, nodes, and machines. Rows are
- * ranked, not a card grid; selecting a row opens the right-hand inspector.
+ * images, builds, volumes, networks, Kubernetes resources, and machines. Rows
+ * are ranked, not a card grid; selecting a row opens the right-hand inspector.
  */
 export function InventoryList<T>({
   items,

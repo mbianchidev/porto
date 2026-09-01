@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react'
-import type { ReactNode } from 'react'
+import { Component, useEffect, useRef } from 'react'
+import type { ErrorInfo, ReactNode } from 'react'
 import { ActionButton } from './ActionButton'
 
 type InspectorProps = {
@@ -7,6 +7,33 @@ type InspectorProps = {
   subtitle?: string
   onClose: () => void
   children: ReactNode
+}
+
+export class InspectorErrorBoundary extends Component<
+  { children: ReactNode },
+  { failed: boolean }
+> {
+  state = { failed: false }
+
+  static getDerivedStateFromError() {
+    return { failed: true }
+  }
+
+  componentDidCatch(error: Error, info: ErrorInfo) {
+    console.error('Pod inspector view failed', error, info)
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <section className="drawerPanel" role="alert">
+          <h3>Inspector view unavailable</h3>
+          <p className="errorLine">This view could not be rendered. Switch tabs or refresh the pod inventory.</p>
+        </section>
+      )
+    }
+    return this.props.children
+  }
 }
 
 /**
@@ -26,6 +53,7 @@ export function Inspector({ title, subtitle, onClose, children }: InspectorProps
   useEffect(() => {
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
       if (event.key === 'Escape') onCloseRef.current()
     }
     window.addEventListener('keydown', onKeyDown)

@@ -26,6 +26,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
 	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
+	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
@@ -51,11 +52,15 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/contexts", s.requireRuntime("kubernetes", s.kubernetesContexts))
 	mux.HandleFunc("GET /api/kubernetes/pods", s.requireRuntime("kubernetes", s.kubernetesPods))
 	mux.HandleFunc("GET /api/kubernetes/services", s.requireRuntime("kubernetes", s.kubernetesServices))
+	mux.HandleFunc("GET /api/kubernetes/configmaps", s.requireRuntime("kubernetes", s.kubernetesConfigMaps))
+	mux.HandleFunc("GET /api/kubernetes/configmaps/{namespace}/{name}", s.requireRuntime("kubernetes", s.kubernetesConfigMap))
+	mux.HandleFunc("GET /api/kubernetes/secrets", s.requireRuntime("kubernetes", s.kubernetesSecrets))
 	mux.HandleFunc("GET /api/kubernetes/nodes", s.requireRuntime("kubernetes", s.kubernetesNodes))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
 	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/terminal", s.requireRuntime("kubernetes", s.kubernetesPodTerminal))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/capabilities", s.requireRuntime("kubernetes", s.kubernetesPodCapabilities))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/files", s.requireRuntime("kubernetes", s.kubernetesPodFiles))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesPodFile))
 	mux.HandleFunc("PUT /api/kubernetes/pods/{namespace}/{pod}/file", s.requireRuntime("kubernetes", s.kubernetesWritePodFile))
@@ -141,6 +146,11 @@ func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
 	status.Enabled = true
 	status = s.dockerEndpointStatus(status)
 	writeJSON(w, status)
+}
+
+func (s *Server) installDockerEngine(w http.ResponseWriter, r *http.Request) {
+	status, err := s.docker.InstallEngine(r.Context())
+	writeRuntimeResult(w, status, err)
 }
 
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
@@ -340,6 +350,26 @@ func (s *Server) kubernetesServices(w http.ResponseWriter, r *http.Request) {
 	writeRuntimeResult(w, value, err)
 }
 
+func (s *Server) kubernetesConfigMaps(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ConfigMaps(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesConfigMap(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ConfigMap(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("name"),
+	)
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesSecrets(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Secrets(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
 func (s *Server) kubernetesNodes(w http.ResponseWriter, r *http.Request) {
 	value, err := s.kubernetes.Nodes(r.Context(), runtimeContext(r))
 	writeRuntimeResult(w, value, err)
@@ -392,6 +422,18 @@ func (s *Server) kubernetesPodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"output": string(output)})
+}
+
+func (s *Server) kubernetesPodCapabilities(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.ContainerCapabilities(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("pod"),
+		r.URL.Query().Get("container"),
+		queryBool(r, "files"),
+	)
+	writeRuntimeResult(w, value, err)
 }
 
 func (s *Server) kubernetesPodFiles(w http.ResponseWriter, r *http.Request) {

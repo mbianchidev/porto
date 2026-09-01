@@ -25,7 +25,9 @@ npm start
 
 Development runs require the daemon binary (`porto`) on `PATH`. Release
 packages bundle the daemon and portable runtime clients, so users do not need a
-separate Porto, Lima, `kubectl`, or `kind` installation.
+separate Porto, Docker CLI, Lima, `kubectl`, or `kind` installation.
+Windows ARM64 excludes Docker CLI and KinD because upstream binaries are not
+published for that target.
 
 ## Package
 
@@ -52,6 +54,11 @@ EXE package with:
 bash scripts/package-desktop-installer.sh darwin arm64 1.0.0 dist
 # Use: windows amd64 1.0.0 dist on Windows.
 ```
+
+Packaged macOS and Linux apps replace incompatible older daemons and
+automatically provision the bundled Porto container runtime on first launch.
+Packaged apps always start the daemon executable embedded in their resources;
+they never require `PORTO_BINARY` or a separate `porto` executable on `PATH`.
 
 `scripts/bundle-desktop-runtime.sh` creates the runtime directory used by
 releases. Packaged apps resolve the bundled binary and tools from Porto's

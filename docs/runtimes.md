@@ -149,6 +149,8 @@ Docker so the dashboard can group related containers.
 
 Compose builds use Porto's BuildKit bridge, including multi-platform Bake
 targets when the worker supports the requested architectures.
+The Builds screen reads BuildKit history directly and reports active, successful,
+and failed records with their creation time, duration, image name, and platform.
 
 ## Kubernetes
 
@@ -161,10 +163,13 @@ porto kubernetes status
 porto kubernetes contexts
 porto kubernetes pods --namespace all
 porto kubernetes services --namespace default
+porto kubernetes configmaps --namespace default
+porto kubernetes secrets --namespace default
 porto kubernetes nodes
 ```
 
 Pass `--context` when a command should not use the current context.
+`porto kubernetes configs` is a shorter alias for `configmaps`.
 
 ### Create a local cluster
 
@@ -296,9 +301,11 @@ porto kubernetes files default api-7d9f --container api --path /app
 porto kubernetes files default api-7d9f --container api --path /app/config.json --read
 ```
 
-The dashboard adds pod overview, streaming logs, a WebSocket-backed interactive terminal, bounded text-file editing, resource statistics, events, and effective manifest views. Pod operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+The dashboard adds pod overview, streaming logs, an expandable xterm terminal backed by a real PTY, bounded text-file editing, resource statistics, events, readable and copyable effective manifest views, ConfigMap inspection, and Secret inventory. ConfigMap text values are visible to authorized users. Secret values are never returned by Porto; only names, types, and data keys are exposed. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+ConfigMap inspectors provide copy actions for every text or base64-encoded binary value and for the complete Kubernetes resource as formatted JSON.
 
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
+File inspection requires `sh` and basic POSIX utilities inside the selected container. Shellless `scratch` and distroless images report that file inspection is unavailable instead of exposing the underlying `kubectl exec` command.
 
 ## Virtual machines
 

@@ -201,7 +201,7 @@ export function SettingsPage({
             />
           </label>
           <label className="toggleRow">
-            <span><strong>Enable Kubernetes</strong><small>Pods, services, nodes, and Porto-provisioned clusters.</small></span>
+            <span><strong>Enable Kubernetes</strong><small>Pods, services, configs, secrets, nodes, and Porto-provisioned clusters.</small></span>
             <input
               type="checkbox"
               checked={runtimeFeatures.kubernetes}

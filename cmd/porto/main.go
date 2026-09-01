@@ -638,7 +638,7 @@ Commands:
   porto docker context-install|activate|deactivate
   porto docker container <start|stop|restart|pause|unpause|remove> <id>
   porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
-  porto kubernetes status|contexts|pods|services|nodes|kubeconfig|context-install
+  porto kubernetes status|contexts|pods|services|configmaps|configs|secrets|nodes|kubeconfig|context-install
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
   porto kubernetes terminal <cluster> [--namespace name] [--command resource] [--readonly]

@@ -93,6 +93,20 @@ if [ "$goos" = "darwin" ]; then
   fi
 fi
 
+if [ "$goos" = "darwin" ]; then
+  packaged_binary="$builder_input/Contents/Resources/$binary"
+  if [ ! -x "$packaged_binary" ]; then
+    echo "Packaged Porto.app is missing its executable daemon: $packaged_binary" >&2
+    exit 1
+  fi
+else
+  packaged_binary="$packaged_app/resources/$binary"
+  if [ ! -f "$packaged_binary" ]; then
+    echo "Packaged Porto application is missing its daemon: $packaged_binary" >&2
+    exit 1
+  fi
+fi
+
 (
   cd ui/electron
   CSC_IDENTITY_AUTO_DISCOVERY=false npx --no-install electron-builder \
