@@ -231,6 +231,20 @@ func TestContainerActionRejectsUnsupportedAction(t *testing.T) {
 	}
 }
 
+func TestWaitContainerSupportsDockerNextExitCondition(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl wait demo": []byte("0\n")},
+		errors:  map[string]error{},
+	}
+	code, err := New(runner).WaitContainer(context.Background(), "demo", "next-exit")
+	if err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+	if code != 0 {
+		t.Fatalf("exit code = %d, want 0", code)
+	}
+}
+
 func TestManagerReportsMissingNativeRuntime(t *testing.T) {
 	manager := NewWithStateDir(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}, t.TempDir())
 	manager.lookPath = func(string) (string, error) { return "", errors.New("not found") }

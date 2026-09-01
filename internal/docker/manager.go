@@ -669,7 +669,7 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	if err := validateObjectID(id); err != nil {
 		return 0, err
 	}
-	if condition != "" && condition != "not-running" {
+	if condition != "" && condition != "not-running" && condition != "next-exit" {
 		return 0, fmt.Errorf("unsupported wait condition %q", condition)
 	}
 	output, err := m.runWithTimeout(ctx, 24*time.Hour, "wait for Porto container", nil, "wait", id)
