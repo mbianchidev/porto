@@ -732,6 +732,207 @@ func TestContainerCapabilitiesBoundsEachSequentialProbe(t *testing.T) {
 	}
 }
 
+func TestStartDebugContainerUsesPinnedToolboxAndTargetMounts(t *testing.T) {
+	runner := newFakeRunner()
+	var debugName string
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "get pod api-1 --namespace dev -o json") && debugName == "":
+			return []byte(`{
+				"metadata":{"name":"api-1","namespace":"dev","uid":"pod-uid","resourceVersion":"42"},
+				"spec":{"containers":[{"name":"api","image":"example/api","env":[
+					{"name":"HOME","value":"/root"},
+					{"name":"CONFIG_DIR","value":"$(HOME)/config"},
+					{"name":"PATH","value":"/app/bin"},
+					{"name":"TOOL","value":"$(PATH)/tool"}
+				],"envFrom":[{"configMapRef":{"name":"api-env"}}],"volumeMounts":[
+					{"name":"kube-api-access","mountPath":"/var/run/secrets/kubernetes.io/serviceaccount","readOnly":true},
+					{"name":"config","mountPath":"/app/config","subPathExpr":"$(CONFIG_DIR)","readOnly":true,"recursiveReadOnly":"Enabled"}
+				]}]},
+				"status":{"phase":"Running"}
+			}`), nil
+		case strings.Contains(joined, "patch pod api-1"):
+			var patch []struct {
+				Operation string          `json:"op"`
+				Path      string          `json:"path"`
+				Value     json.RawMessage `json:"value"`
+			}
+			for index, arg := range command.Args {
+				if arg == "--patch" && index+1 < len(command.Args) {
+					if err := json.Unmarshal([]byte(command.Args[index+1]), &patch); err != nil {
+						return nil, err
+					}
+				}
+			}
+			if len(patch) != 3 ||
+				patch[0].Operation != "test" || patch[0].Path != "/metadata/uid" || string(patch[0].Value) != `"pod-uid"` ||
+				patch[1].Operation != "test" || patch[1].Path != "/metadata/resourceVersion" || string(patch[1].Value) != `"42"` ||
+				patch[2].Operation != "add" || patch[2].Path != "/spec/ephemeralContainers" {
+				return nil, fmt.Errorf("unexpected atomic debug patch: %+v", patch)
+			}
+			var containers []struct {
+				Name string `json:"name"`
+			}
+			if err := json.Unmarshal(patch[2].Value, &containers); err != nil {
+				return nil, err
+			}
+			if len(containers) != 1 {
+				return nil, fmt.Errorf("unexpected debug containers: %s", patch[2].Value)
+			}
+			debugName = containers[0].Name
+			profile := patch[2].Value
+			homeIndex := bytes.Index(profile, []byte(`"name":"HOME","value":"/tmp"`))
+			configIndex := bytes.Index(profile, []byte(`"name":"CONFIG_DIR"`))
+			pathIndex := bytes.Index(profile, []byte(`"name":"PATH","value":"/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"`))
+			toolIndex := bytes.Index(profile, []byte(`"name":"TOOL"`))
+			if !bytes.Contains(profile, []byte(`"image":"`+DebugToolboxImage+`"`)) ||
+				!bytes.Contains(profile, []byte(`"targetContainerName":"api"`)) ||
+				!bytes.Contains(profile, []byte(`"command":["/bin/sh","-c","sleep \"$1\"","porto-debug","3600"]`)) ||
+				!bytes.Contains(profile, []byte(`"name":"kube-api-access"`)) ||
+				!bytes.Contains(profile, []byte(`"name":"config"`)) ||
+				bytes.Contains(profile, []byte(`subPathExpr`)) ||
+				!bytes.Contains(profile, []byte(`"recursiveReadOnly":"Enabled"`)) ||
+				!bytes.Contains(profile, []byte(`"name":"api-env"`)) ||
+				homeIndex < 0 || configIndex < 0 || homeIndex > configIndex ||
+				pathIndex < 0 || toolIndex < 0 || pathIndex > toolIndex ||
+				bytes.Contains(profile, []byte(`"name":"HOME","value":"/root"`)) ||
+				bytes.Contains(profile, []byte(`"name":"PATH","value":"/app/bin"`)) ||
+				!bytes.Contains(profile, []byte(`"runAsNonRoot":true`)) ||
+				!bytes.Contains(profile, []byte(`"drop":["ALL"]`)) {
+				return nil, fmt.Errorf("debug profile is incomplete: %s", profile)
+			}
+			if debugName == "" {
+				return nil, errors.New("debug container name missing")
+			}
+			return nil, nil
+		case strings.Contains(joined, "get pod api-1 --namespace dev -o json"):
+			return []byte(fmt.Sprintf(
+				`{"metadata":{"uid":"pod-uid","resourceVersion":"43"},"spec":{"ephemeralContainers":[{"name":%q,"image":%q,"targetContainerName":"api"}]},"status":{"ephemeralContainerStatuses":[{"name":%q,"state":{"running":{}}}]}}`,
+				debugName,
+				DebugToolboxImage,
+				debugName,
+			)), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", joined)
+		}
+	}
+
+	debugContainer, err := New(runner).StartDebugContainer(
+		context.Background(),
+		"porto-dev",
+		"dev",
+		"api-1",
+		"pod-uid",
+		"api",
+	)
+	if err != nil {
+		t.Fatalf("start debug container: %v", err)
+	}
+	if debugContainer.Name != debugName ||
+		debugContainer.Image != DebugToolboxImage ||
+		debugContainer.TargetContainer != "api" ||
+		debugContainer.PodUID != "pod-uid" ||
+		debugContainer.LifetimeSeconds != 3600 ||
+		!debugContainer.Ready ||
+		debugContainer.State != "running" {
+		t.Fatalf("unexpected debug container: %+v", debugContainer)
+	}
+}
+
+func TestStartDebugContainerPreservesIdentityWhenStatusCheckFails(t *testing.T) {
+	runner := newFakeRunner()
+	var debugName string
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "get pod api-1 --namespace dev -o json") && debugName == "":
+			return []byte(`{"metadata":{"uid":"pod-uid","resourceVersion":"42"},"spec":{"containers":[{"name":"api","image":"example/api"}]},"status":{"phase":"Running"}}`), nil
+		case strings.Contains(joined, "patch pod api-1"):
+			for index, arg := range command.Args {
+				if arg != "--patch" || index+1 >= len(command.Args) {
+					continue
+				}
+				var patch []struct {
+					Value json.RawMessage `json:"value"`
+				}
+				if err := json.Unmarshal([]byte(command.Args[index+1]), &patch); err != nil {
+					return nil, err
+				}
+				var containers []struct {
+					Name string `json:"name"`
+				}
+				if len(patch) != 3 {
+					return nil, fmt.Errorf("unexpected patch: %+v", patch)
+				}
+				if err := json.Unmarshal(patch[2].Value, &containers); err != nil {
+					return nil, err
+				}
+				if len(containers) == 1 {
+					debugName = containers[0].Name
+				}
+			}
+			return nil, nil
+		case strings.Contains(joined, "get pod api-1 --namespace dev -o json"):
+			return nil, errors.New("temporary API failure")
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", joined)
+		}
+	}
+
+	debugContainer, err := New(runner).StartDebugContainer(
+		context.Background(),
+		"porto-dev",
+		"dev",
+		"api-1",
+		"pod-uid",
+		"api",
+	)
+	if err != nil {
+		t.Fatalf("start debug container: %v", err)
+	}
+	if debugContainer.Name != debugName || debugContainer.State != "pending" ||
+		!strings.Contains(debugContainer.Message, "temporary API failure") {
+		t.Fatalf("debug container identity was lost: %+v", debugContainer)
+	}
+}
+
+func TestStartDebugContainerRejectsTerminatingPod(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		if strings.Contains(joined, "get pod api-1 --namespace dev -o json") {
+			return []byte(`{
+				"metadata":{
+					"uid":"pod-uid",
+					"resourceVersion":"42",
+					"deletionTimestamp":"2026-09-02T16:00:00Z"
+				},
+				"spec":{"containers":[{"name":"api","image":"example/api"}]},
+				"status":{"phase":"Running"}
+			}`), nil
+		}
+		return nil, fmt.Errorf("unexpected command: %s", joined)
+	}
+
+	_, err := New(runner).StartDebugContainer(
+		context.Background(),
+		"porto-dev",
+		"dev",
+		"api-1",
+		"pod-uid",
+		"api",
+	)
+	if err == nil || !strings.Contains(err.Error(), "terminating") {
+		t.Fatalf("terminating pod was not rejected: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 1 {
+		t.Fatalf("terminating pod triggered mutation: %+v", runner.commands)
+	}
+}
+
 func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	runner := newFakeRunner()
 	vmManager := vm.New(runner)

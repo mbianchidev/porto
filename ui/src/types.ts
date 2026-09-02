@@ -316,6 +316,18 @@ export type KubernetesContainerCapabilities = {
   message?: string
 }
 
+export type KubernetesDebugContainer = {
+  name: string
+  image: string
+  targetContainer: string
+  podUID: string
+  lifetimeSeconds: number
+  ready: boolean
+  state: string
+  reason?: string
+  message?: string
+}
+
 export type KubernetesPod = {
   name: string
   namespace: string

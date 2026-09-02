@@ -64,6 +64,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
 	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
+	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/debug", s.requireRuntime("kubernetes", s.kubernetesPodDebug))
+	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/debug/{container}", s.requireRuntime("kubernetes", s.kubernetesPodDebugStatus))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/terminal", s.requireRuntime("kubernetes", s.kubernetesPodTerminal))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/capabilities", s.requireRuntime("kubernetes", s.kubernetesPodCapabilities))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/files", s.requireRuntime("kubernetes", s.kubernetesPodFiles))
@@ -483,6 +485,51 @@ func (s *Server) kubernetesPodExec(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"output": string(output)})
+}
+
+func (s *Server) kubernetesPodDebug(w http.ResponseWriter, r *http.Request) {
+	if !podTerminalSupported() {
+		http.Error(w, "interactive pod debug toolboxes require a PTY-capable host", http.StatusNotImplemented)
+		return
+	}
+	var request struct {
+		TargetContainer string `json:"targetContainer"`
+		PodUID          string `json:"podUID"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	request.TargetContainer = strings.TrimSpace(request.TargetContainer)
+	request.PodUID = strings.TrimSpace(request.PodUID)
+	if request.PodUID == "" {
+		http.Error(w, "podUID is required", http.StatusBadRequest)
+		return
+	}
+	if request.TargetContainer == "" {
+		http.Error(w, "targetContainer is required", http.StatusBadRequest)
+		return
+	}
+	value, err := s.kubernetes.StartDebugContainer(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("pod"),
+		request.PodUID,
+		request.TargetContainer,
+	)
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesPodDebugStatus(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.DebugContainer(
+		r.Context(),
+		runtimeContext(r),
+		r.PathValue("namespace"),
+		r.PathValue("pod"),
+		r.URL.Query().Get("uid"),
+		r.PathValue("container"),
+	)
+	writeRuntimeResult(w, value, err)
 }
 
 func (s *Server) kubernetesPodCapabilities(w http.ResponseWriter, r *http.Request) {

@@ -26,6 +26,10 @@ type terminalResize struct {
 	Rows int    `json:"rows"`
 }
 
+func podTerminalSupported() bool {
+	return true
+}
+
 func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
 	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
 		return vmTerminalCommand(ctx, name)
