@@ -231,7 +231,7 @@ export function KubernetesOverview({
     }
   }
 
-  async function installProvider(name: 'lima' | 'kind' | 'k9s' | 'k0s') {
+  async function installProvider(name: RuntimeProviderStatus['name']) {
     setInstallingProvider(name)
     try {
       await apiSend(`/api/runtime/providers/${name}/install`, 'POST')
@@ -365,7 +365,7 @@ export function KubernetesOverview({
               <Inspector title="New cluster" subtitle="Managed by Porto" onClose={() => setCreatingCluster(false)}>
                 <form className="inspectorForm" onSubmit={createCluster}>
                   <section className="providerReadiness" aria-label="Kubernetes provider readiness">
-                    {(providerTools.data ?? []).map((provider) => (
+                    {(providerTools.data ?? []).filter((provider) => provider.name !== 'qemu').map((provider) => (
                       <div className={`integrationStatus ${provider.installed ? 'ready' : 'missing'}`} key={provider.name}>
                         <strong>{provider.name}</strong>
                         <span>{provider.installed ? provider.version : provider.message}</span>

@@ -108,6 +108,7 @@ Source builds use standard host tools:
 - `kubectl` for Kubernetes inspection
 - `k9s` for interactive cluster terminals
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
+- `qemu-system-*` for snapshot-capable Lima VMs
 - `kind` for Kubernetes-in-Porto clusters
 
 Release desktop apps bundle these provider clients. On macOS source builds can

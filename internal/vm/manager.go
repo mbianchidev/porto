@@ -49,20 +49,24 @@ type Image struct {
 }
 
 type Instance struct {
-	Name         string   `json:"name"`
-	Status       string   `json:"status"`
-	Architecture string   `json:"architecture"`
-	CPUs         int      `json:"cpus"`
-	MemoryBytes  int64    `json:"memoryBytes"`
-	DiskBytes    int64    `json:"diskBytes"`
-	SSHLocalPort int      `json:"sshLocalPort"`
-	Directory    string   `json:"directory"`
-	Addresses    []string `json:"addresses"`
+	Name              string   `json:"name"`
+	Status            string   `json:"status"`
+	VMType            string   `json:"vmType"`
+	Architecture      string   `json:"architecture"`
+	CPUs              int      `json:"cpus"`
+	MemoryBytes       int64    `json:"memoryBytes"`
+	DiskBytes         int64    `json:"diskBytes"`
+	SSHLocalPort      int      `json:"sshLocalPort"`
+	Directory         string   `json:"directory"`
+	Addresses         []string `json:"addresses"`
+	SnapshotSupported bool     `json:"snapshotSupported"`
+	SnapshotMessage   string   `json:"snapshotMessage,omitempty"`
 }
 
 type CreateRequest struct {
 	Name         string        `json:"name"`
 	Image        string        `json:"image"`
+	VMType       string        `json:"vmType,omitempty"`
 	CPUs         int           `json:"cpus"`
 	MemoryMiB    int           `json:"memoryMiB"`
 	DiskGiB      int           `json:"diskGiB"`
@@ -169,6 +173,9 @@ func (m *Manager) ListAll(ctx context.Context) ([]Instance, error) {
 		if line == "" {
 			continue
 		}
+		if line[0] != '{' && line[0] != '[' {
+			continue
+		}
 		var raw map[string]any
 		if err := json.Unmarshal([]byte(line), &raw); err != nil {
 			var batch []map[string]any
@@ -204,6 +211,9 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	if !image.Available {
 		return Instance{}, errors.New(image.Message)
 	}
+	if request.VMType != "" && request.VMType != "qemu" {
+		return Instance{}, fmt.Errorf("unsupported VM type %q; use qemu or omit vmType for the host default", request.VMType)
+	}
 	if request.CPUs <= 0 {
 		request.CPUs = 2
 	}
@@ -235,6 +245,9 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		defer os.Remove(configPath)
 		args = append(args, configPath)
 	} else {
+		if request.VMType != "" {
+			args = append(args, "--vm-type", request.VMType)
+		}
 		args = append(
 			args,
 			"--cpus", strconv.Itoa(request.CPUs),
@@ -263,7 +276,11 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 			}
 		}
 	}
-	return m.Get(ctx, request.Name)
+	instance, err := m.Get(ctx, request.Name)
+	if err != nil {
+		return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
+	}
+	return instance, nil
 }
 
 func supportsArchitecture(image Image, architecture string) bool {
@@ -396,11 +413,10 @@ func (m *Manager) CreateSnapshot(ctx context.Context, name, snapshot string) err
 	if err := m.ensureManaged(name); err != nil {
 		return err
 	}
-	if err := validateName(snapshot); err != nil {
-		return fmt.Errorf("invalid snapshot name: %w", err)
+	if err := validateSnapshotName(snapshot); err != nil {
+		return err
 	}
-	_, err := m.run(ctx, 10*time.Minute, "create VM snapshot", "snapshot", "create", name, "--tag", snapshot)
-	return err
+	return m.runSnapshotOperation(ctx, name, "create VM snapshot", "snapshot", "create", name, "--tag", snapshot)
 }
 
 func (m *Manager) RestoreSnapshot(ctx context.Context, name, snapshot string) error {
@@ -410,11 +426,10 @@ func (m *Manager) RestoreSnapshot(ctx context.Context, name, snapshot string) er
 	if err := m.ensureManaged(name); err != nil {
 		return err
 	}
-	if err := validateName(snapshot); err != nil {
-		return fmt.Errorf("invalid snapshot name: %w", err)
+	if err := validateSnapshotName(snapshot); err != nil {
+		return err
 	}
-	_, err := m.run(ctx, 10*time.Minute, "restore VM snapshot", "snapshot", "apply", name, "--tag", snapshot)
-	return err
+	return m.runSnapshotOperation(ctx, name, "restore VM snapshot", "snapshot", "apply", name, "--tag", snapshot)
 }
 
 func (m *Manager) DeleteSnapshot(ctx context.Context, name, snapshot string) error {
@@ -424,8 +439,11 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, name, snapshot string) err
 	if err := m.ensureManaged(name); err != nil {
 		return err
 	}
-	if err := validateName(snapshot); err != nil {
-		return fmt.Errorf("invalid snapshot name: %w", err)
+	if err := validateSnapshotName(snapshot); err != nil {
+		return err
+	}
+	if err := m.ensureSnapshotSupported(ctx, name); err != nil {
+		return err
 	}
 	_, err := m.run(ctx, 10*time.Minute, "delete VM snapshot", "snapshot", "delete", name, "--tag", snapshot)
 	return err
@@ -488,17 +506,32 @@ func (m *Manager) image(id string) (Image, bool) {
 }
 
 func decodeInstance(raw map[string]any) Instance {
+	vmType := stringValue(raw, "vmType", "VMType")
+	snapshotSupported, snapshotMessage := snapshotCapability(vmType)
 	return Instance{
-		Name:         stringValue(raw, "name", "Name"),
-		Status:       stringValue(raw, "status", "Status"),
-		Architecture: stringValue(raw, "arch", "Arch"),
-		CPUs:         cpuCount(numberValue(raw, "cpus", "CPUs")),
-		MemoryBytes:  numberValue(raw, "memory", "Memory"),
-		DiskBytes:    numberValue(raw, "disk", "Disk"),
-		SSHLocalPort: networkPort(numberValue(raw, "sshLocalPort", "SSHLocalPort")),
-		Directory:    stringValue(raw, "dir", "Dir"),
-		Addresses:    stringSliceValue(raw, "addresses", "Addresses"),
+		Name:              stringValue(raw, "name", "Name"),
+		Status:            stringValue(raw, "status", "Status"),
+		VMType:            vmType,
+		Architecture:      stringValue(raw, "arch", "Arch"),
+		CPUs:              cpuCount(numberValue(raw, "cpus", "CPUs")),
+		MemoryBytes:       numberValue(raw, "memory", "Memory"),
+		DiskBytes:         numberValue(raw, "disk", "Disk"),
+		SSHLocalPort:      networkPort(numberValue(raw, "sshLocalPort", "SSHLocalPort")),
+		Directory:         stringValue(raw, "dir", "Dir"),
+		Addresses:         stringSliceValue(raw, "addresses", "Addresses"),
+		SnapshotSupported: snapshotSupported,
+		SnapshotMessage:   snapshotMessage,
 	}
+}
+
+func snapshotCapability(vmType string) (bool, string) {
+	if vmType == "qemu" {
+		return true, ""
+	}
+	if vmType == "" {
+		vmType = "unknown"
+	}
+	return false, fmt.Sprintf("VM snapshots are unsupported for Lima %s instances; create a QEMU-backed VM to use snapshots", vmType)
 }
 
 func cpuCount(value int64) int {
@@ -560,10 +593,61 @@ func stringSliceValue(values map[string]any, keys ...string) []string {
 }
 
 func validateName(name string) error {
-	if !vmNamePattern.MatchString(name) {
-		return fmt.Errorf("VM name must match %s", vmNamePattern)
+	return validateLimaName("VM", name)
+}
+
+func validateSnapshotName(name string) error {
+	if err := validateLimaName("snapshot", name); err != nil {
+		return fmt.Errorf("invalid snapshot name: %w", err)
 	}
 	return nil
+}
+
+func validateLimaName(kind, name string) error {
+	if !vmNamePattern.MatchString(name) {
+		return fmt.Errorf("%s name must match %s", kind, vmNamePattern)
+	}
+	return nil
+}
+
+func (m *Manager) ensureSnapshotSupported(ctx context.Context, name string) error {
+	_, err := m.snapshotInstance(ctx, name)
+	return err
+}
+
+func (m *Manager) snapshotInstance(ctx context.Context, name string) (Instance, error) {
+	instance, err := m.Get(ctx, name)
+	if err != nil {
+		return Instance{}, err
+	}
+	if instance.SnapshotSupported {
+		return instance, nil
+	}
+	return Instance{}, errors.New(instance.SnapshotMessage)
+}
+
+func (m *Manager) runSnapshotOperation(ctx context.Context, name, action string, args ...string) error {
+	instance, err := m.snapshotInstance(ctx, name)
+	if err != nil {
+		return err
+	}
+	restart := strings.EqualFold(instance.Status, "running")
+	if restart {
+		if err := m.Stop(ctx, name); err != nil {
+			return fmt.Errorf("stop VM %s before %s: %w", name, action, err)
+		}
+	}
+	_, operationErr := m.run(ctx, 10*time.Minute, action, args...)
+	if !restart {
+		return operationErr
+	}
+	restartContext, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	restartErr := m.Start(restartContext, name)
+	if restartErr != nil {
+		restartErr = fmt.Errorf("restart VM %s after %s: %w", name, action, restartErr)
+	}
+	return errors.Join(operationErr, restartErr)
 }
 
 func (m *Manager) ensureManaged(name string) error {
@@ -626,6 +710,11 @@ func (m *Manager) writeCreateConfig(request CreateRequest, image Image) (string,
 	builder.WriteString("\ndisk: ")
 	builder.WriteString(strconv.Quote(strconv.Itoa(request.DiskGiB) + "GiB"))
 	builder.WriteByte('\n')
+	if request.VMType != "" {
+		builder.WriteString("vmType: ")
+		builder.WriteString(strconv.Quote(request.VMType))
+		builder.WriteByte('\n')
+	}
 	if request.Architecture != "" {
 		builder.WriteString("arch: ")
 		builder.WriteString(strconv.Quote(request.Architecture))

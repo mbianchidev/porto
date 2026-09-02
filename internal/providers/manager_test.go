@@ -32,3 +32,13 @@ func TestK9sProviderUsesNativeBinary(t *testing.T) {
 		t.Fatalf("unexpected k9s provider: %+v", provider)
 	}
 }
+
+func TestQEMUProviderUsesArchitectureBinary(t *testing.T) {
+	provider, ok := findTool("qemu")
+	if !ok {
+		t.Fatal("qemu provider is missing")
+	}
+	if !strings.HasPrefix(provider.command, "qemu-system-") || provider.formula != "qemu" {
+		t.Fatalf("unexpected qemu provider: %+v", provider)
+	}
+}
