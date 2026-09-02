@@ -1732,6 +1732,41 @@ button:disabled {
   gap: 8px;
 }
 
+.terminalModePicker {
+  display: flex;
+  gap: 5px;
+  margin-bottom: 11px;
+}
+
+.terminalModePicker button[aria-pressed="true"] {
+  border-color: var(--amber);
+  background: var(--amber-soft);
+  box-shadow: inset 0 -2px 0 var(--amber);
+}
+
+.debugToolboxDetails {
+  display: grid;
+  gap: 7px;
+  margin-top: 10px;
+  border: 1px solid var(--line);
+  padding: 9px;
+  background: var(--panel-raised);
+  font: 10px/1.4 var(--mono);
+}
+
+.debugToolboxDetails p {
+  margin: 0;
+}
+
+.debugToolboxDetails code {
+  overflow-wrap: anywhere;
+  color: var(--ink-soft);
+}
+
+.debugToolboxDetails button {
+  justify-self: start;
+}
+
 /* --- Files / terminal / activity ------------------------------------------- */
 
 .fileList {

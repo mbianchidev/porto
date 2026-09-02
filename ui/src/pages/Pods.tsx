@@ -15,6 +15,7 @@ import type {
   KubernetesEvent,
   KubernetesContainerCapabilities,
   KubernetesContext,
+  KubernetesDebugContainer,
   KubernetesFileContent,
   KubernetesFileListing,
   KubernetesPod,
@@ -39,7 +40,7 @@ function podPath(pod: KubernetesPod, suffix: string, context: string, extra = ''
   return `/api/kubernetes/pods/${encodeURIComponent(pod.namespace)}/${encodeURIComponent(pod.name)}${suffix}${join}${params}`
 }
 
-const TERMINAL_SHELLS = ['sh', 'bash', 'ash'] as const
+const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
 type TerminalShell = (typeof TERMINAL_SHELLS)[number]
 const InteractiveTerminal = lazy(async () => {
   const terminal = await import('../components/VMTerminal')
@@ -119,10 +120,35 @@ function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
   )
 }
 
-function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string }) {
+function debugContainerKey(context: string, pod: KubernetesPod, container: string): string {
+  return `${context}\u0000${pod.uid}\u0000${container}`
+}
+
+function PodTerminalTab({
+  pod,
+  context,
+  debugContainers,
+  debugBusy,
+  onDebugContainerChange,
+  onDebugBusyChange,
+}: {
+  pod: KubernetesPod
+  context: string
+  debugContainers: Record<string, KubernetesDebugContainer>
+  debugBusy: boolean
+  onDebugContainerChange: (key: string, value: KubernetesDebugContainer) => void
+  onDebugBusyChange: (busy: boolean) => void
+}) {
+  const { notifyError, notifyNotice } = useMessages()
   const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
   const [shell, setShell] = useState<TerminalShell>('sh')
+  const [mode, setMode] = useState<'application' | 'debug'>('application')
+  const [debugError, setDebugError] = useState('')
+  const [launchingDebug, setLaunchingDebug] = useState(false)
+  const [checkingDebug, setCheckingDebug] = useState(false)
   const running = pod.phase.toLocaleLowerCase() === 'running'
+  const selectedDebugContainerKey = debugContainerKey(context, pod, container)
+  const debugContainer = debugContainers[selectedDebugContainerKey] ?? null
   const capabilities = usePolledResource<KubernetesContainerCapabilities>(
     (signal) => running
       ? apiGet(podPath(pod, '/capabilities', context, `container=${encodeURIComponent(container)}`), signal)
@@ -137,46 +163,155 @@ function PodTerminalTab({ pod, context }: { pod: KubernetesPod; context: string 
   )
   const availableShells = (capabilities.data?.shells ?? []).filter(isTerminalShell)
   const activeShell = availableShells.includes(shell) ? shell : availableShells[0] ?? 'sh'
-  const ready = !capabilities.loading && !capabilities.error && availableShells.length > 0
-  const terminalURL = podTerminalSocketURL(pod, context, container, activeShell)
+  const applicationReady = !capabilities.loading && !capabilities.error && availableShells.length > 0
+  const debugReady = debugContainer?.ready ?? false
+  const ready = mode === 'debug' ? debugReady : applicationReady
+  const terminalContainer = mode === 'debug' ? debugContainer?.name ?? '' : container
+  const terminalShell = mode === 'debug' ? '/bin/bash' : activeShell
+  const terminalURL = podTerminalSocketURL(pod, context, terminalContainer, terminalShell)
+
+  async function startDebugToolbox() {
+    if (!running || !container || debugBusy) return
+    setLaunchingDebug(true)
+    onDebugBusyChange(true)
+    setDebugError('')
+    try {
+      const result = await apiSend<KubernetesDebugContainer>(
+        podPath(pod, '/debug', context),
+        'POST',
+        { targetContainer: container, podUID: pod.uid },
+      )
+      onDebugContainerChange(selectedDebugContainerKey, result)
+      setMode('debug')
+      notifyNotice('pods', `${result.name} is ${result.state}.`)
+    } catch (err) {
+      const message = errorMessage(err, 'Unable to start the debug toolbox')
+      setDebugError(message)
+      notifyError('pods', message)
+    } finally {
+      setLaunchingDebug(false)
+      onDebugBusyChange(false)
+    }
+  }
+
+  async function checkDebugToolbox() {
+    if (!debugContainer || debugBusy) return
+    setCheckingDebug(true)
+    onDebugBusyChange(true)
+    setDebugError('')
+    try {
+      const result = await apiGet<KubernetesDebugContainer>(
+        podPath(
+          pod,
+          `/debug/${encodeURIComponent(debugContainer.name)}`,
+          context,
+          `uid=${encodeURIComponent(pod.uid)}`,
+        ),
+      )
+      onDebugContainerChange(selectedDebugContainerKey, result)
+      if (result.ready) notifyNotice('pods', `${result.name} is ready.`)
+    } catch (err) {
+      const message = errorMessage(err, 'Unable to inspect the debug toolbox')
+      setDebugError(message)
+      notifyError('pods', message)
+    } finally {
+      setCheckingDebug(false)
+      onDebugBusyChange(false)
+    }
+  }
+
   return (
     <>
       <section className="drawerPanel">
         <h3>Terminal session</h3>
+        <div className="terminalModePicker" role="group" aria-label="Terminal target">
+          <button
+            type="button"
+            aria-pressed={mode === 'application'}
+            onClick={() => setMode('application')}
+          >
+            Application shell
+          </button>
+          <button
+            type="button"
+            aria-pressed={mode === 'debug'}
+            disabled={!running || debugBusy || launchingDebug || checkingDebug}
+            onClick={() => {
+              if (debugContainer) {
+                setMode('debug')
+              } else {
+                void startDebugToolbox()
+              }
+            }}
+          >
+            {launchingDebug ? 'Starting toolbox…' : 'Debug toolbox'}
+          </button>
+        </div>
         <div className="inspectorForm inline">
           <label>
-            <span>Container</span>
-            <select value={container} onChange={(event) => setContainer(event.target.value)}>
+            <span>Target container</span>
+            <select disabled={debugBusy || launchingDebug || checkingDebug} value={container} onChange={(event) => {
+              setContainer(event.target.value)
+              setDebugError('')
+              setMode('application')
+            }}>
               {pod.containers.map((item) => <option key={item.name} value={item.name}>{item.name}</option>)}
             </select>
           </label>
-          <label>
-            <span>Shell</span>
-            <select
-              value={ready ? activeShell : ''}
-              disabled={!ready}
-              onChange={(event) => setShell(event.target.value as TerminalShell)}
-            >
-              {!ready && <option value="">No supported shell</option>}
-              {availableShells.map((option) => <option key={option} value={option}>{option}</option>)}
-            </select>
-          </label>
+          {mode === 'application' && (
+            <label>
+              <span>Shell</span>
+              <select
+                value={applicationReady ? activeShell : ''}
+                disabled={!applicationReady}
+                onChange={(event) => setShell(event.target.value as TerminalShell)}
+              >
+                {!applicationReady && <option value="">No supported shell</option>}
+                {availableShells.map((option) => <option key={option} value={option}>{option}</option>)}
+              </select>
+            </label>
+          )}
         </div>
-        {capabilities.loading && <p className="hintLine">Inspecting container capabilities...</p>}
-        {capabilities.error && <p className="errorLine">{capabilities.error}</p>}
-        {!capabilities.loading && !capabilities.error && capabilities.data?.message && (
-          <p className="hintLine">{capabilities.data.message}</p>
+        {mode === 'application' && capabilities.loading && <p className="hintLine">Inspecting container capabilities...</p>}
+        {mode === 'application' && capabilities.error && <p className="errorLine">{capabilities.error}</p>}
+        {mode === 'application' && !capabilities.loading && !capabilities.error && capabilities.data?.message && (
+          <p className="hintLine">
+            {capabilities.data.message} Use the debug toolbox for a full shell and troubleshooting utilities.
+          </p>
         )}
+        {mode === 'debug' && debugContainer && (
+          <div className="debugToolboxDetails">
+            <p>
+              <strong>{debugContainer.name}</strong> shares the pod network, target process namespace, and mounted volumes.
+              It is {debugContainer.state} and stops automatically after {Math.round(debugContainer.lifetimeSeconds / 60)} minutes.
+            </p>
+            <code>{debugContainer.image}</code>
+            {debugContainer.message && <p>{debugContainer.message}</p>}
+            {debugContainer.state !== 'terminated' && (
+              <button type="button" disabled={checkingDebug} onClick={() => void checkDebugToolbox()}>
+                {checkingDebug ? 'Checking…' : debugContainer.ready ? 'Refresh status' : 'Check toolbox'}
+              </button>
+            )}
+            {debugContainer.state === 'terminated' && (
+              <button type="button" disabled={launchingDebug} onClick={() => void startDebugToolbox()}>
+                Start fresh toolbox
+              </button>
+            )}
+          </div>
+        )}
+        {launchingDebug && <p className="hintLine">Creating the ephemeral container and pulling its pinned image if needed…</p>}
+        {debugError && <p className="errorLine">{debugError}</p>}
+        {!running && <p className="hintLine">The pod must be running before Porto can open either terminal.</p>}
       </section>
       {(ready || !running) && (
         <Suspense fallback={<div className="terminalPlaceholder">Loading terminal...</div>}>
           <InteractiveTerminal
             key={terminalURL}
             endpoint={terminalURL}
-            title="Pod terminal"
-            detail={`${pod.namespace}/${pod.name} · ${container || 'default container'} · ${activeShell}`}
+            title={mode === 'debug' ? 'Debug toolbox' : 'Pod terminal'}
+            detail={`${pod.namespace}/${pod.name} · ${terminalContainer || container || 'default container'} · ${terminalShell}`}
             running={running}
-            ariaLabel={`Interactive terminal for ${pod.namespace}/${pod.name}`}
+            ariaLabel={`${mode === 'debug' ? 'Debug toolbox' : 'Interactive terminal'} for ${pod.namespace}/${pod.name}`}
             stoppedMessage="The pod must be running to open a terminal."
           />
         </Suspense>
@@ -412,10 +547,18 @@ export function Pods({
   context,
   contexts,
   onContextChange,
+  debugContainers,
+  debugBusy,
+  onDebugContainerChange,
+  onDebugBusyChange,
 }: {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
+  debugContainers: Record<string, KubernetesDebugContainer>
+  debugBusy: boolean
+  onDebugContainerChange: (key: string, value: KubernetesDebugContainer) => void
+  onDebugBusyChange: (busy: boolean) => void
 }) {
   const [namespace, setNamespace] = useState('')
   const [query, setQuery] = useState('')
@@ -458,7 +601,7 @@ export function Pods({
           <span>Namespace</span>
           <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
-        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} disabled={debugBusy} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} pods</span>
         <button className="refreshControl" type="button" onClick={() => {
           setInspectorGeneration((generation) => generation + 1)
@@ -518,7 +661,17 @@ export function Pods({
                 </section>
               )}
               {tab === 'logs' && <LogsTab pod={selected} context={context} />}
-              {tab === 'terminal' && <PodTerminalTab key={`${selected.namespace}/${selected.name}`} pod={selected} context={context} />}
+              {tab === 'terminal' && (
+                <PodTerminalTab
+                  key={`${selected.uid}:${selected.namespace}/${selected.name}`}
+                  pod={selected}
+                  context={context}
+                  debugContainers={debugContainers}
+                  debugBusy={debugBusy}
+                  onDebugContainerChange={onDebugContainerChange}
+                  onDebugBusyChange={onDebugBusyChange}
+                />
+              )}
               {tab === 'files' && <FilesTab pod={selected} context={context} />}
               {tab === 'stats' && <StatsTab pod={selected} context={context} />}
               {tab === 'events' && <EventsTab pod={selected} context={context} />}

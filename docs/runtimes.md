@@ -320,6 +320,22 @@ ConfigMap inspectors provide copy actions for every text or base64-encoded binar
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
 File inspection requires `sh` and basic POSIX utilities inside the selected container. Shellless `scratch` and distroless images report that file inspection is unavailable instead of exposing the underlying `kubectl exec` command.
 
+The pod terminal can start a one-hour ephemeral debug toolbox when the
+application image has no shell or troubleshooting utilities. Porto uses the
+multi-platform image
+`docker.io/alpine/k8s:1.36.1@sha256:692239d739589247c4a791205ed9619c28ae85a21286e19a6211c04a62c56668`
+so the toolbox contents are immutable. It includes `kubectl`, Bash, BusyBox
+utilities, `curl`, `jq`, `yq`, Git, Helm, and Kustomize. The debug container
+shares the pod network, targets the selected container's process namespace,
+and mirrors its volume mounts so in-cluster credentials and mounted data remain
+available. It uses a non-root, restricted-compatible security context; tools
+that require elevated Linux capabilities remain subject to the pod's security
+policy. Subpath mounts are exposed at their full volume root because Kubernetes
+does not permit `subPath` or `subPathExpr` on ephemeral containers. Creating it
+requires the selected Kubernetes identity to update the
+pod's `ephemeralcontainers` subresource. Kubernetes retains the terminated
+ephemeral-container record until the pod is replaced.
+
 ## Virtual machines
 
 Porto exposes a versioned VM image catalog:

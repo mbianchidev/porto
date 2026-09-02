@@ -22,7 +22,15 @@ import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
 import { Activity } from './pages/Activity'
 import { SettingsPage } from './pages/SettingsPage'
-import type { IntegrationStatus, KillSwitchStatus, KubernetesCluster, KubernetesContext, RouteID, Settings } from './types'
+import type {
+  IntegrationStatus,
+  KillSwitchStatus,
+  KubernetesCluster,
+  KubernetesContext,
+  KubernetesDebugContainer,
+  RouteID,
+  Settings,
+} from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
@@ -40,6 +48,8 @@ function AppShell() {
   const [railOpen, setRailOpen] = useState(false)
   const [kubeContext, setKubeContext] = useState('')
   const [settingsOverride, setSettingsOverride] = useState<Settings | null>(null)
+  const [podDebugContainers, setPodDebugContainers] = useState<Record<string, KubernetesDebugContainer>>({})
+  const [podDebugOperations, setPodDebugOperations] = useState(0)
   const narrow = useNarrowViewport(860)
 
   useEffect(() => {
@@ -111,7 +121,22 @@ function AppShell() {
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
         {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
-        {route === 'pods' && <Pods key={`pods:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'pods' && (
+          <Pods
+            key={`pods:${activeKubeContext}`}
+            context={activeKubeContext}
+            contexts={kubeContexts}
+            onContextChange={setKubeContext}
+            debugContainers={podDebugContainers}
+            debugBusy={podDebugOperations > 0}
+            onDebugContainerChange={(debugKey, value) => {
+              setPodDebugContainers((current) => ({ ...current, [debugKey]: value }))
+            }}
+            onDebugBusyChange={(busy) => {
+              setPodDebugOperations((current) => Math.max(0, current + (busy ? 1 : -1)))
+            }}
+          />
+        )}
         {route === 'services' && <KubernetesServices key={`services:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'configs' && <ConfigMaps key={`configs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'secrets' && <Secrets key={`secrets:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
