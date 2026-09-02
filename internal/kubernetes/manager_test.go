@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"testing"
@@ -404,6 +405,62 @@ func TestStatsSkipsPodsThatAreNotReadyOrNoLongerExist(t *testing.T) {
 				t.Fatalf("topCalled=%t stats=%+v", topCalled, stats)
 			}
 		})
+	}
+}
+
+func TestResourceStatsUsesNodesForTotalsAndPodsForDetail(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "top nodes"):
+			return []byte("worker-1 250m 12% 512Mi 25%\nworker-2 1 50% 1Gi 50%\n"), nil
+		case strings.Contains(joined, "top pods"):
+			return []byte("default api-1 api 100m 128Mi\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", joined)
+		}
+	}
+
+	stats, err := New(runner).ResourceStats(context.Background(), "porto-dev")
+	if err != nil {
+		t.Fatalf("ResourceStats: %v", err)
+	}
+	if stats.Total.CPUMillicores != 1250 || stats.Total.MemoryBytes != 1610612736 {
+		t.Fatalf("node total = %+v", stats.Total)
+	}
+	if len(stats.Pods) != 1 || stats.Pods[0].Usage.CPUMillicores != 100 ||
+		stats.Pods[0].Usage.MemoryBytes != 134217728 {
+		t.Fatalf("pod detail = %+v", stats.Pods)
+	}
+}
+
+func TestApplyHTTPRouteUsesBothPortoDomains(t *testing.T) {
+	runner := newFakeRunner()
+	var manifest string
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		manifest = string(command.Stdin)
+		return nil, nil
+	}
+	if err := New(runner).ApplyHTTPRoute(
+		context.Background(),
+		"porto-dev",
+		"default",
+		"api",
+		8080,
+		"api-8080.default.dev",
+	); err != nil {
+		t.Fatalf("ApplyHTTPRoute: %v", err)
+	}
+	for _, expected := range []string{
+		`"kind":"HTTPRoute"`,
+		`"api-8080.default.dev.porto.localhost"`,
+		`"api-8080.default.dev.porto.local"`,
+		`"namespace":"porto-system"`,
+	} {
+		if !strings.Contains(manifest, expected) {
+			t.Fatalf("manifest missing %q: %s", expected, manifest)
+		}
 	}
 }
 
@@ -964,20 +1021,23 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	foundTraefikManifest := false
-	foundTraefikPatch := false
+	foundTraefikDisabled := false
+	foundStorage := false
+	foundGateway := false
 	for _, command := range runner.commands {
 		joined := strings.Join(command.Args, " ")
-		if command.Name == "limactl" &&
-			strings.Contains(joined, "/var/lib/rancher/k3s/server/manifests/porto-traefik-config.yaml") {
-			foundTraefikManifest = strings.Contains(string(command.Stdin), "type: ClusterIP")
+		if command.Name == "limactl" && strings.Contains(joined, "porto-install-k3s.sh server --disable traefik") {
+			foundTraefikDisabled = true
 		}
-		if command.Name == "kubectl" && strings.Contains(joined, "patch service traefik") {
-			foundTraefikPatch = true
+		if command.Name == "kubectl" && strings.Contains(joined, localPathManifestURL) {
+			foundStorage = true
+		}
+		if command.Name == "kubectl" && strings.Contains(joined, envoyGatewayManifestURL) {
+			foundGateway = true
 		}
 	}
-	if !foundTraefikManifest || !foundTraefikPatch {
-		t.Fatalf("Traefik ClusterIP defaults were not applied: manifest=%t patch=%t", foundTraefikManifest, foundTraefikPatch)
+	if !foundTraefikDisabled || !foundStorage || !foundGateway {
+		t.Fatalf("cluster addons were not configured: traefikDisabled=%t storage=%t gateway=%t", foundTraefikDisabled, foundStorage, foundGateway)
 	}
 	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); err != nil {
 		t.Fatalf("cluster metadata missing: %v", err)
@@ -1006,6 +1066,8 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	foundUpdate := false
 	foundMetricsApply := false
 	foundMetricsWait := false
+	foundStorage := false
+	foundGateway := false
 	for _, command := range runner.commands {
 		if command.Name == "kind" || command.Name == "docker" {
 			environment := strings.Join(command.Env, "\n")
@@ -1023,7 +1085,9 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 				t.Fatalf("kind resources were not normalized: %+v", command)
 			}
 		}
-		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "apply -f -") {
+		if command.Name == "kubectl" &&
+			strings.Contains(strings.Join(command.Args, " "), "apply -f -") &&
+			strings.Contains(string(command.Stdin), "metrics-server") {
 			foundMetricsApply = true
 			manifest := string(command.Stdin)
 			if !strings.Contains(manifest, "metrics-server:v0.9.0") ||
@@ -1034,12 +1098,21 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "apiservice/v1beta1.metrics.k8s.io") {
 			foundMetricsWait = true
 		}
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), localPathManifestURL) {
+			foundStorage = true
+		}
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), envoyGatewayManifestURL) {
+			foundGateway = true
+		}
 	}
 	if !foundUpdate {
 		t.Fatal("kind node resources were not applied")
 	}
 	if !foundMetricsApply || !foundMetricsWait {
 		t.Fatalf("metrics-server was not installed and awaited: apply=%t wait=%t", foundMetricsApply, foundMetricsWait)
+	}
+	if !foundStorage || !foundGateway {
+		t.Fatalf("kind cluster addons were not installed: storage=%t gateway=%t", foundStorage, foundGateway)
 	}
 }
 
@@ -1193,5 +1266,31 @@ func TestClusterDeletionUsesExactMetadataOwnership(t *testing.T) {
 	}
 	if !runner.instances["porto-app-v2-server-1"] {
 		t.Fatal("app-v2 server VM was deleted by prefix collision")
+	}
+}
+
+func TestStopKindClusterStopsWorkersBeforeControlPlane(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "dev", Provider: "kind",
+		NodeGroups: []NodeGroupSpec{{Name: "workers", Count: 2}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := provisioner.SetRunning(context.Background(), "dev", false); err != nil {
+		t.Fatalf("stop kind cluster: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var stopped []string
+	for _, command := range runner.commands {
+		if command.Name == "docker" && len(command.Args) == 2 && command.Args[0] == "stop" {
+			stopped = append(stopped, command.Args[1])
+		}
+	}
+	want := []string{"porto-dev-worker2", "porto-dev-worker", "porto-dev-control-plane"}
+	if !reflect.DeepEqual(stopped, want) {
+		t.Fatalf("stop order = %v, want %v", stopped, want)
 	}
 }

@@ -193,14 +193,16 @@ type BuildRequest struct {
 }
 
 type ContainerStats struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	CPU      string `json:"cpu"`
-	Memory   string `json:"memory"`
-	MemoryPC string `json:"memoryPercent"`
-	Network  string `json:"network"`
-	BlockIO  string `json:"blockIO"`
-	PIDs     string `json:"pids"`
+	ID            string `json:"id"`
+	Name          string `json:"name"`
+	CPU           string `json:"cpu"`
+	Memory        string `json:"memory"`
+	MemoryPC      string `json:"memoryPercent"`
+	Network       string `json:"network"`
+	BlockIO       string `json:"blockIO"`
+	PIDs          string `json:"pids"`
+	CPUMillicores int64  `json:"cpuMillicores"`
+	MemoryBytes   int64  `json:"memoryBytes"`
 }
 
 type CreateNetworkRequest struct {

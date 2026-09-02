@@ -84,12 +84,18 @@ type PodDetail struct {
 }
 
 type ServicePort struct {
-	Name       string `json:"name"`
-	Protocol   string `json:"protocol"`
-	Port       int32  `json:"port"`
-	TargetPort string `json:"targetPort"`
-	NodePort   int32  `json:"nodePort,omitempty"`
-	LocalPort  int    `json:"localPort,omitempty"`
+	Name         string `json:"name"`
+	Protocol     string `json:"protocol"`
+	Port         int32  `json:"port"`
+	TargetPort   string `json:"targetPort"`
+	NodePort     int32  `json:"nodePort,omitempty"`
+	AppProtocol  string `json:"appProtocol,omitempty"`
+	LocalPort    int    `json:"localPort,omitempty"`
+	Hostname     string `json:"hostname,omitempty"`
+	HTTPURL      string `json:"httpUrl,omitempty"`
+	HTTPSURL     string `json:"httpsUrl,omitempty"`
+	GatewayReady bool   `json:"gatewayReady"`
+	GatewayError string `json:"gatewayError,omitempty"`
 }
 
 type Service struct {
@@ -408,12 +414,17 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 	for _, item := range list.Items {
 		ports := make([]ServicePort, 0, len(item.Spec.Ports))
 		for _, portItem := range item.Spec.Ports {
+			appProtocol := ""
+			if portItem.AppProtocol != nil {
+				appProtocol = *portItem.AppProtocol
+			}
 			ports = append(ports, ServicePort{
-				Name:       portItem.Name,
-				Protocol:   portItem.Protocol,
-				Port:       portItem.Port,
-				TargetPort: interfaceString(portItem.TargetPort),
-				NodePort:   portItem.NodePort,
+				Name:        portItem.Name,
+				Protocol:    portItem.Protocol,
+				Port:        portItem.Port,
+				TargetPort:  interfaceString(portItem.TargetPort),
+				NodePort:    portItem.NodePort,
+				AppProtocol: appProtocol,
 			})
 		}
 		externalIPs := append(make([]string, 0, len(item.Spec.ExternalIPs)), item.Spec.ExternalIPs...)
@@ -1294,11 +1305,12 @@ type serviceList struct {
 			ClusterIP   string   `json:"clusterIP"`
 			ExternalIPs []string `json:"externalIPs"`
 			Ports       []struct {
-				Name       string `json:"name"`
-				Protocol   string `json:"protocol"`
-				Port       int32  `json:"port"`
-				TargetPort any    `json:"targetPort"`
-				NodePort   int32  `json:"nodePort"`
+				Name        string  `json:"name"`
+				Protocol    string  `json:"protocol"`
+				Port        int32   `json:"port"`
+				TargetPort  any     `json:"targetPort"`
+				NodePort    int32   `json:"nodePort"`
+				AppProtocol *string `json:"appProtocol"`
 			} `json:"ports"`
 		} `json:"spec"`
 		Status struct {

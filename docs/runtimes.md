@@ -183,21 +183,37 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
-Porto-managed kind clusters include metrics-server v0.9.0 for pod and container
-CPU/memory stats. Porto installs it during cluster creation or startup and
-repairs it when the Stats view encounters a missing Metrics API.
+Porto-managed clusters include a default local-path storage class and Envoy
+Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
+and node CPU/memory stats. Porto installs or repairs these add-ons during
+cluster creation and startup.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
-`porto-<cluster>` kubeconfigs automatically. Packaged k3s Traefik uses a
-ClusterIP service so its ServiceLB does not reserve host ports 80 and 443 or
-leave `svclb-traefik` pending on single-node clusters.
+`porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the
+packaged Traefik chart; all three providers use the same Gateway API data
+plane instead.
 
 For k3s and k0s, Porto provisions one Lima VM for the controller and one VM
 for each requested worker. CPU, RAM, and disk values are per VM. Nodes share
 Lima's `user-v2` network, the Kubernetes API is forwarded to an allocated
-loopback port, and Porto maintains localhost `kubectl port-forward` listeners
-for LoadBalancer and NodePort services. The Services screen shows the assigned
-localhost port and links directly to it.
+loopback port, and persistent volumes remain on the cluster nodes across stop
+and start operations.
+
+Porto continuously reconciles HTTP-capable Service ports in running managed
+clusters into Gateway API `HTTPRoute` resources. ClusterIP, NodePort, and
+LoadBalancer Services receive a stable hostname such as
+`api-8080.default.dev.porto.localhost`. One internal Envoy data-plane forward
+per cluster feeds Porto's existing HTTP/HTTPS router, so service URLs use the
+same DNS behavior and trusted certificates as Compose and native projects.
+The hostname mapping is stored in Porto's SQLite database and survives daemon
+and cluster restarts. Non-HTTP TCP ports, including database Services, retain
+direct localhost forwarding and now support ClusterIP Services too. Deleting
+the cluster removes its mappings and forwards.
+
+Porto recognizes HTTP routes from `appProtocol: http`, conventional `http` or
+`web` port names, and common development HTTP ports. Give uncommon web ports
+an explicit `appProtocol` or port name; other TCP ports appear as raw
+`localhost:<port>` endpoints.
 
 ```sh
 porto kubernetes cluster create dev \
@@ -290,6 +306,11 @@ porto kubernetes cluster delete dev
 ```
 
 Cluster deletion requires explicit confirmation through the daemon API and removes the matching Porto-managed node VMs and kubeconfig.
+
+The Activity screen samples current CPU and memory for Porto itself, native
+projects, containers, Kubernetes nodes and pod containers, and standalone
+Lima VMs. Kubernetes pod rows are detail-only because their usage is already
+included in the node totals.
 
 ### Pod inspection
 

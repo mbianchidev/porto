@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -1003,7 +1004,7 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 	if err != nil {
 		return nil, err
 	}
-	return decodeLines(output, func(item map[string]string) ContainerStats {
+	stats, err := decodeLines(output, func(item map[string]string) ContainerStats {
 		return ContainerStats{
 			ID:       item["ID"],
 			Name:     item["Name"],
@@ -1015,6 +1016,20 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 			PIDs:     item["PIDs"],
 		}
 	})
+	if err != nil {
+		return nil, err
+	}
+	for index := range stats {
+		stats[index].CPUMillicores, err = resources.ParseCPUPercent(stats[index].CPU)
+		if err != nil {
+			return nil, fmt.Errorf("decode CPU usage for container %s: %w", stats[index].Name, err)
+		}
+		stats[index].MemoryBytes, err = resources.ParseBytes(stats[index].Memory)
+		if err != nil {
+			return nil, fmt.Errorf("decode memory usage for container %s: %w", stats[index].Name, err)
+		}
+	}
+	return stats, nil
 }
 
 func (m *Manager) InspectImage(ctx context.Context, id string) (json.RawMessage, error) {

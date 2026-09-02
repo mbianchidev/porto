@@ -57,6 +57,15 @@ func ProjectHTTPSURL(hostname string) string {
 	return "https://" + net.JoinHostPort(host, port) + "/"
 }
 
+func ProjectHTTPURL(hostname string) string {
+	host := hostname + "." + LocalhostDomain
+	_, port, _ := net.SplitHostPort(RouterAddr)
+	if port == "" || port == "80" {
+		return "http://" + host + "/"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
+}
+
 func ProjectHostname(base, branch, defaultBranch string) string {
 	if branch == "" || branch == defaultBranch {
 		return base

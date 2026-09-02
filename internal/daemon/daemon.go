@@ -67,6 +67,7 @@ type Server struct {
 	sendboxMessages map[int64]string
 	composePorts    map[int64][]int
 	kubeForwards    map[string]*kubeForward
+	kubeAddons      map[string]bool
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	compose         composeIntegration
@@ -132,6 +133,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sendboxMessages: map[int64]string{},
 		composePorts:    map[int64][]int{},
 		kubeForwards:    map[string]*kubeForward{},
+		kubeAddons:      map[string]bool{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		compose:         compose.NewWithDockerHost(nil, portodocker.EndpointURL(dockerSocket)),
@@ -225,6 +227,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	go s.branchCleanupLoop(ctx)
 	go s.certificateRenewalLoop(ctx)
+	go s.kubernetesRouteLoop(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
 	log.Printf(
@@ -2036,24 +2039,49 @@ func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 		s.uiHandler(w, r)
 		return
 	}
-	p, err := s.store.GetProjectByHostname(r.Context(), hostname)
-	if err != nil || p.Port == 0 {
-		http.Error(w, "project not found or port unknown", http.StatusNotFound)
-		return
-	}
-	s.mu.Lock()
-	running := s.running[p.ID]
-	if running == nil || running.stopping || running.cmd == nil || running.cmd.Process == nil {
+	p, projectErr := s.store.GetProjectByHostname(r.Context(), hostname)
+	if projectErr == nil {
+		s.mu.Lock()
+		running := s.running[p.ID]
+		if running == nil || running.stopping || running.cmd == nil || running.cmd.Process == nil {
+			s.mu.Unlock()
+			http.Error(w, "project is not running in this Porto daemon", http.StatusServiceUnavailable)
+			return
+		}
+		port := running.project.Port
 		s.mu.Unlock()
-		http.Error(w, "project is not running in this Porto daemon", http.StatusServiceUnavailable)
+		if port <= 0 {
+			http.Error(w, "project port is unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		proxyLocalPort(w, r, port)
 		return
 	}
-	port := running.project.Port
-	s.mu.Unlock()
-	if port <= 0 {
-		http.Error(w, "project port is unavailable", http.StatusServiceUnavailable)
+	if !errors.Is(projectErr, sql.ErrNoRows) {
+		http.Error(w, fmt.Sprintf("lookup project route: %v", projectErr), http.StatusInternalServerError)
 		return
 	}
+	route, routeErr := s.store.GetKubernetesRouteByHostname(r.Context(), hostname)
+	if routeErr != nil {
+		if errors.Is(routeErr, sql.ErrNoRows) {
+			http.Error(w, "project or Kubernetes service route not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("lookup Kubernetes service route: %v", routeErr), http.StatusInternalServerError)
+		return
+	}
+	forward := s.kubernetesGatewayForward(route.Context)
+	if forward == nil || forward.port <= 0 {
+		http.Error(w, "Kubernetes gateway is not running in this Porto daemon", http.StatusServiceUnavailable)
+		return
+	}
+	if host, _, err := net.SplitHostPort(r.Host); err == nil {
+		r.Host = host
+	}
+	proxyLocalPort(w, r, forward.port)
+}
+
+func proxyLocalPort(w http.ResponseWriter, r *http.Request, port int) {
 	target, _ := url.Parse(fmt.Sprintf("http://127.0.0.1:%d", port))
 	httputil.NewSingleHostReverseProxy(target).ServeHTTP(w, r)
 }
@@ -2138,6 +2166,17 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 				project.Hostname+"."+config.LocalhostDomain,
 			)
 		}
+	}
+	routes, err := s.store.ListKubernetesRoutes(ctx, "")
+	if err != nil {
+		return nil, fmt.Errorf("list Kubernetes routes for TLS certificate: %w", err)
+	}
+	for _, route := range routes {
+		hostnames = append(
+			hostnames,
+			route.Hostname+"."+config.LocalDomain,
+			route.Hostname+"."+config.LocalhostDomain,
+		)
 	}
 	return hostnames, nil
 }

@@ -348,7 +348,13 @@ export type KubernetesServicePort = {
   port: number
   targetPort: string
   nodePort?: number
+  appProtocol?: string
   localPort?: number
+  hostname?: string
+  httpUrl?: string
+  httpsUrl?: string
+  gatewayReady: boolean
+  gatewayError?: string
 }
 
 export type KubernetesService = {
@@ -550,6 +556,34 @@ export type ActivityEntry = {
   message: string
   source: string
   at: string
+}
+
+export type ResourceUsage = {
+  cpuMillicores: number
+  memoryBytes: number
+}
+
+export type ActivityResourceItem = {
+  id: string
+  name: string
+  detail?: string
+  usage: ResourceUsage
+  countedInTotal: boolean
+}
+
+export type ActivityResourceGroup = {
+  id: string
+  name: string
+  total: ResourceUsage
+  items: ActivityResourceItem[]
+  error?: string
+}
+
+export type ActivityResourceSnapshot = {
+  collectedAt: string
+  total: ResourceUsage
+  groups: ActivityResourceGroup[]
+  partial: boolean
 }
 
 export type LampState = 'running' | 'starting' | 'stopped' | 'crashed' | 'neutral'
