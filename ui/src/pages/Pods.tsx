@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
+import { useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
@@ -18,7 +19,6 @@ import type {
   KubernetesFileListing,
   KubernetesPod,
   KubernetesPodStats,
-  KubernetesStatus,
 } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(170px,1.3fr) minmax(110px,0.7fr) minmax(80px,0.4fr) minmax(70px,0.4fr) minmax(120px,0.8fr) minmax(70px,0.4fr)'
@@ -423,17 +423,15 @@ export function Pods({
   const [tab, setTab] = useState('overview')
   const [inspectorGeneration, setInspectorGeneration] = useState(0)
 
-  const status = usePolledResource<KubernetesStatus>(
-    (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
-    10000,
-    [context],
-    `kubernetes:${context}:status`,
-  )
+  const status = useKubernetesStatus(context)
+  const available = status.data?.available ?? false
   const pods = usePolledResource<KubernetesPod[]>(
-    (signal) => apiGet(`/api/kubernetes/pods?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal),
+    (signal) => available
+      ? apiGet(`/api/kubernetes/pods?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      : Promise.resolve([]),
     5000,
-    [context, namespace],
-    `kubernetes:${context}:pods:${namespace}`,
+    [context, namespace, available],
+    available ? `kubernetes:${context}:pods:${namespace}` : undefined,
   )
   const items = pods.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -441,7 +439,6 @@ export function Pods({
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const key = (pod: KubernetesPod) => `${pod.namespace}/${pod.name}`
   const selected = items.find((pod) => key(pod) === selectedKey) ?? null
-  const available = status.data?.available ?? false
 
   return (
     <>
@@ -465,6 +462,7 @@ export function Pods({
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} pods</span>
         <button className="refreshControl" type="button" onClick={() => {
           setInspectorGeneration((generation) => generation + 1)
+          status.reload()
           pods.reload()
         }}>Refresh</button>
       </div>

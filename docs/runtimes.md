@@ -170,6 +170,10 @@ porto kubernetes nodes
 
 Pass `--context` when a command should not use the current context.
 `porto kubernetes configs` is a shorter alias for `configmaps`.
+Stopped managed clusters keep their kubeconfig and context, but the dashboard
+does not poll resource APIs until the selected context is reachable. On first
+load it prefers a fully running managed cluster; start a stopped cluster or
+select another context before opening its resources.
 
 ### Create a local cluster
 
@@ -362,7 +366,7 @@ porto vm stop test-ubuntu
 porto vm delete test-ubuntu
 ```
 
-Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs. Install QEMU with `porto runtime install qemu`, then create the VM with `--vm-type qemu` or choose the QEMU driver in the dashboard. Porto temporarily stops running VMs for snapshot creation and restoration, then restarts them even when the snapshot command fails. Existing `vz` VMs cannot be converted and must be recreated to use snapshots.
+Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs. On macOS, install QEMU with `brew install qemu`, restart Porto, then create the VM with `--vm-type qemu` or choose the QEMU driver in the dashboard. Porto temporarily stops running VMs for snapshot creation and restoration, then restarts them even when the snapshot command fails. Existing `vz` VMs cannot be converted and must be recreated to use snapshots.
 
 Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically. Porto records ownership metadata and hides unrelated Lima instances and Kubernetes node VMs from the standalone machine inventory.
 

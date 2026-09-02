@@ -41,6 +41,125 @@ func TestDockerReadOnlyIntegration(t *testing.T) {
 	}
 }
 
+func TestContainerInventoryIntegration(t *testing.T) {
+	if os.Getenv("PORTO_DOCKER_INTEGRATION") != "1" {
+		t.Skip("set PORTO_DOCKER_INTEGRATION=1 to test the live containerd inventory")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	manager := New(nil)
+	if err := manager.StartContainerInventory(ctx); err != nil {
+		t.Fatalf("start container inventory: %v", err)
+	}
+	t.Cleanup(func() {
+		stopContext, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stopCancel()
+		_ = manager.StopContainerInventory(stopContext)
+	})
+	updates, unsubscribe := manager.SubscribeContainerSnapshots()
+	defer unsubscribe()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("container inventory did not become available: %+v", manager.ContainerSnapshot())
+		case snapshot, ok := <-updates:
+			if !ok {
+				t.Fatal("container inventory subscription closed before becoming available")
+			}
+			if snapshot.Available {
+				if snapshot.Namespace == "" || snapshot.InstanceID == "" {
+					t.Fatalf("inventory identity is incomplete: %+v", snapshot)
+				}
+				return
+			}
+		}
+	}
+}
+
+func TestContainerInventoryExternalLifecycleIntegration(t *testing.T) {
+	if os.Getenv("PORTO_DOCKER_INTEGRATION") != "1" {
+		t.Skip("set PORTO_DOCKER_INTEGRATION=1 to test external container lifecycle events")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+	manager := New(nil)
+	if err := manager.StartContainerInventory(ctx); err != nil {
+		t.Fatalf("start container inventory: %v", err)
+	}
+	t.Cleanup(func() {
+		stopContext, stopCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer stopCancel()
+		_ = manager.StopContainerInventory(stopContext)
+	})
+	updates, unsubscribe := manager.SubscribeContainerSnapshots()
+	defer unsubscribe()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("container inventory did not become available: %+v", manager.ContainerSnapshot())
+		case snapshot, ok := <-updates:
+			if !ok {
+				t.Fatal("container inventory subscription closed")
+			}
+			if snapshot.Available {
+				goto inventoryReady
+			}
+		}
+	}
+
+inventoryReady:
+	backend, err := manager.backend(ctx)
+	if err != nil {
+		t.Fatalf("resolve backend: %v", err)
+	}
+	name := fmt.Sprintf("porto-inventory-test-%d", time.Now().UnixNano())
+	runExternal := func(args ...string) ([]byte, error) {
+		command := exec.CommandContext(ctx, backend.name, append(append([]string(nil), backend.prefix...), args...)...)
+		return command.CombinedOutput()
+	}
+	output, err := runExternal("create", "--name", name, "alpine:latest", "sleep", "30")
+	if err != nil {
+		t.Fatalf("create external container: %v: %s", err, output)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) == 0 {
+		t.Fatalf("external container create returned no identifier: %s", output)
+	}
+	id := fields[len(fields)-1]
+	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cleanupCancel()
+		command := exec.CommandContext(
+			cleanupContext,
+			backend.name,
+			append(append([]string(nil), backend.prefix...), "rm", "--force", id)...,
+		)
+		_ = command.Run()
+	})
+
+	startedAt := time.Now()
+	for {
+		select {
+		case <-ctx.Done():
+			t.Fatalf("external container was not observed: %+v", manager.ContainerSnapshot())
+		case snapshot, ok := <-updates:
+			if !ok {
+				t.Fatal("container inventory subscription closed")
+			}
+			for _, container := range snapshot.Containers {
+				if container.ID == id || container.Name == name {
+					if elapsed := time.Since(startedAt); elapsed > 2*time.Second {
+						t.Fatalf("external container discovery took %s", elapsed)
+					}
+					return
+				}
+			}
+		}
+	}
+}
+
 func TestDockerComposeIntegration(t *testing.T) {
 	if os.Getenv("PORTO_DOCKER_INTEGRATION") != "1" {
 		t.Skip("set PORTO_DOCKER_INTEGRATION=1 to test Docker Compose against the live Porto backend")

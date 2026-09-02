@@ -2,6 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
+import { useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
@@ -13,7 +14,6 @@ import type {
   KubernetesCluster,
   KubernetesContext,
   KubernetesMachineSpec,
-  KubernetesStatus,
   RuntimeProviderStatus,
 } from '../types'
 
@@ -153,12 +153,7 @@ export function KubernetesOverview({
   const [submittingCluster, setSubmittingCluster] = useState(false)
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
 
-  const status = usePolledResource<KubernetesStatus>(
-    (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
-    10000,
-    [context],
-    `kubernetes:${context}:status`,
-  )
+  const status = useKubernetesStatus(context)
   const clusters = usePolledResource<KubernetesCluster[]>(
     (signal) => apiGet('/api/kubernetes/clusters', signal),
     10000,
@@ -213,7 +208,16 @@ export function KubernetesOverview({
     try {
       await apiSend(`/api/kubernetes/clusters/${cluster.name}/${action}`, 'POST')
       notifyNotice('kubernetes', `${cluster.name} ${action === 'start' ? 'starting' : 'stopping'}.`)
+      if (action === 'start') {
+        onContextChange(cluster.context)
+      } else if (context === cluster.context) {
+        const fallback = clusterItems.find((candidate) => candidate.name !== cluster.name && isRunning(candidate))?.context
+          || contexts.find((candidate) => candidate.name !== cluster.context)?.name
+          || ''
+        onContextChange(fallback)
+      }
       clusters.reload()
+      status.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to ${action} ${cluster.name}`))
     }

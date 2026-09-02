@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
+import { useKubernetesStatus } from '../kubernetes'
 import { Inspector, InspectorErrorBoundary } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { KubernetesContext, KubernetesService, KubernetesStatus } from '../types'
+import type { KubernetesContext, KubernetesService } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(90px,0.6fr) minmax(120px,0.9fr) minmax(150px,1fr) minmax(70px,0.4fr)'
 
@@ -23,17 +24,15 @@ export function KubernetesServices({
   const [query, setQuery] = useState('')
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
 
-  const status = usePolledResource<KubernetesStatus>(
-    (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
-    10000,
-    [context],
-    `kubernetes:${context}:status`,
-  )
+  const status = useKubernetesStatus(context)
+  const available = status.data?.available ?? false
   const services = usePolledResource<KubernetesService[]>(
-    (signal) => apiGet(`/api/kubernetes/services?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal),
+    (signal) => available
+      ? apiGet(`/api/kubernetes/services?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      : Promise.resolve([]),
     6000,
-    [context, namespace],
-    `kubernetes:${context}:services:${namespace}`,
+    [context, namespace, available],
+    available ? `kubernetes:${context}:services:${namespace}` : undefined,
   )
   const items = services.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
@@ -41,7 +40,6 @@ export function KubernetesServices({
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const key = (service: KubernetesService) => `${service.namespace}/${service.name}`
   const selected = items.find((service) => key(service) === selectedKey) ?? null
-  const available = status.data?.available ?? false
 
   return (
     <>
@@ -63,7 +61,7 @@ export function KubernetesServices({
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} services</span>
-        <button className="refreshControl" type="button" onClick={services.reload}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => { status.reload(); services.reload() }}>Refresh</button>
       </div>
       <div className="workArea">
         {!available ? (

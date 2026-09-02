@@ -111,8 +111,12 @@ Source builds use standard host tools:
 - `qemu-system-*` for snapshot-capable Lima VMs
 - `kind` for Kubernetes-in-Porto clusters
 
-Release desktop apps bundle these provider clients. On macOS source builds can
-install them explicitly from Porto with `porto runtime install lima|kind|k9s|k0s`.
+Release desktop apps bundle kubectl, k9s, and Lima. Docker and kind are also
+bundled except on Windows ARM64. QEMU is not bundled on any platform because
+upstream does not publish relocatable macOS binaries and package-manager builds
+have large architecture-specific dynamic library closures. On macOS, run
+`brew install qemu` and restart Porto. Source builds can install the other
+providers with `porto runtime install lima|kind|k9s|k0s`.
 
 Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 

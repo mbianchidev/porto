@@ -206,22 +206,34 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 }
 
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
-	status := Status{Context: contextName}
-	if status.Context == "" {
+	if contextName == "" {
 		contexts, err := m.Contexts(ctx)
 		if err != nil {
-			status.Message = err.Error()
-			return status
+			return Status{Message: err.Error()}
 		}
 		if len(contexts) == 0 {
-			status.Message = "No Porto-managed Kubernetes cluster exists. Create one with kind, k0s, or k3s."
-			return status
+			return Status{Message: "No Porto-managed Kubernetes cluster exists. Create one with kind, k0s, or k3s."}
 		}
-		status.Context = contexts[0].Name
+		var unavailable Status
+		for _, candidate := range contexts {
+			status := m.statusForContext(ctx, candidate.Name)
+			if status.Available {
+				return status
+			}
+			if unavailable.Context == "" {
+				unavailable = status
+			}
+		}
+		return unavailable
 	}
+	return m.statusForContext(ctx, contextName)
+}
+
+func (m *Manager) statusForContext(ctx context.Context, contextName string) Status {
+	status := Status{Context: contextName}
 	output, err := m.run(ctx, status.Context, 15*time.Second, nil, "version", "-o", "json")
 	if err != nil {
-		status.Message = err.Error()
+		status.Message = kubernetesUnavailableMessage(status.Context, err)
 		return status
 	}
 	var version struct {
@@ -243,6 +255,24 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 		status.Message = "Kubernetes API server is unavailable"
 	}
 	return status
+}
+
+func kubernetesUnavailableMessage(contextName string, err error) string {
+	message := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(message, "connection refused"),
+		strings.Contains(message, "was refused"),
+		strings.Contains(message, "no route to host"),
+		strings.Contains(message, "i/o timeout"),
+		strings.Contains(message, "context deadline exceeded"),
+		strings.Contains(message, "timed out after"):
+		return fmt.Sprintf(
+			"Kubernetes context %s is offline; start its managed cluster or select another context",
+			contextName,
+		)
+	default:
+		return err.Error()
+	}
 }
 
 func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {

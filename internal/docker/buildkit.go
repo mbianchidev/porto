@@ -107,28 +107,34 @@ func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
 		"-lc",
 		limaBuildKitCommand,
 	)
+	return dialCommandConn(ctx, "BuildKit tunnel", command, buildKitAddr("porto"), buildKitAddr("buildkit"))
+}
+
+func dialCommandConn(ctx context.Context, action string, command *exec.Cmd, localAddr, remoteAddr net.Addr) (net.Conn, error) {
 	stdin, err := command.StdinPipe()
 	if err != nil {
-		return nil, fmt.Errorf("open BuildKit tunnel input: %w", err)
+		return nil, fmt.Errorf("open %s input: %w", action, err)
 	}
 	stdout, err := command.StdoutPipe()
 	if err != nil {
 		_ = stdin.Close()
-		return nil, fmt.Errorf("open BuildKit tunnel output: %w", err)
+		return nil, fmt.Errorf("open %s output: %w", action, err)
 	}
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
-		return nil, fmt.Errorf("start BuildKit tunnel: %w", err)
+		return nil, fmt.Errorf("start %s: %w", action, err)
 	}
 	connection := &commandConn{
-		command: command,
-		stdin:   stdin,
-		stdout:  stdout,
-		stderr:  &stderr,
-		done:    make(chan error, 1),
+		command:    command,
+		stdin:      stdin,
+		stdout:     stdout,
+		stderr:     &stderr,
+		done:       make(chan error, 1),
+		localAddr:  localAddr,
+		remoteAddr: remoteAddr,
 	}
 	go func() {
 		connection.done <- command.Wait()
@@ -141,7 +147,7 @@ func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
 		if message == "" {
 			message = err.Error()
 		}
-		return nil, fmt.Errorf("BuildKit tunnel exited before connecting: %s", message)
+		return nil, fmt.Errorf("%s exited before connecting: %s", action, message)
 	case <-time.After(100 * time.Millisecond):
 		return connection, nil
 	case <-ctx.Done():
@@ -151,12 +157,14 @@ func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
 }
 
 type commandConn struct {
-	command *exec.Cmd
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
-	stderr  *bytes.Buffer
-	done    chan error
-	once    sync.Once
+	command    *exec.Cmd
+	stdin      io.WriteCloser
+	stdout     io.ReadCloser
+	stderr     *bytes.Buffer
+	done       chan error
+	once       sync.Once
+	localAddr  net.Addr
+	remoteAddr net.Addr
 }
 
 func (c *commandConn) Read(data []byte) (int, error) {
@@ -184,11 +192,11 @@ func (c *commandConn) Close() error {
 }
 
 func (c *commandConn) LocalAddr() net.Addr {
-	return buildKitAddr("porto")
+	return c.localAddr
 }
 
 func (c *commandConn) RemoteAddr() net.Addr {
-	return buildKitAddr("buildkit")
+	return c.remoteAddr
 }
 
 func (c *commandConn) SetDeadline(time.Time) error {

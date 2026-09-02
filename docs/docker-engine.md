@@ -18,9 +18,11 @@ Porto Docker API server
         v
 Porto runtime manager
         |
+        +-- persistent containerd gRPC inventory + lifecycle subscription
+        |
         +-- local nerdctl -> local containerd
         |
-        `-- limactl shell porto-engine -> nerdctl -> containerd
+        `-- limactl shell porto-engine -> nerdctl / containerd socket tunnel
 
 Buildx / Compose Bake
         |
@@ -38,6 +40,28 @@ The API server is part of the Porto daemon and starts whenever the Docker runtim
 - Windows exposes the Docker-compatible named pipe, but automatic backend installation is not implemented. Install nerdctl, containerd, and BuildKit manually.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
+
+## Live container inventory
+
+The daemon maintains one authoritative, revisioned container snapshot for both
+the Containers and Localhost views. It connects to the active containerd
+namespace directly, subscribes before the initial list to avoid a startup race,
+and refreshes after container, task, exec, image, namespace, snapshot, and
+sandbox events. Bursts are coalesced for 100 ms, while a 30-second
+reconciliation repairs missed or reordered events.
+
+The dashboard receives snapshots from
+`/api/docker/containers/events` over server-sent events. It reconnects with
+bounded exponential backoff and falls back to a 30-second refresh only while
+the stream is unavailable. `/api/docker/containers/snapshot` exposes the same
+revision, typed task/exit/OOM/restart/health/resource metadata, lifecycle
+history, namespace, and stale-state status.
+
+For the Porto Lima engine, the daemon discovers the rootless containerd socket
+inside the VM and keeps a socket tunnel open for the gRPC connection. The
+connection and subscription are canceled during runtime disable and daemon
+shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
+`limactl shell` processes.
 
 ## Install the Docker context
 
@@ -149,7 +173,7 @@ Not implemented:
 - build history, commit, import, export, load, and save through the legacy Docker API
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
-- events, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint
+- the Docker Engine-compatible `/events` endpoint, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint; the dashboard uses Porto's internal revisioned SSE endpoint instead
 - capability changes, namespace overrides beyond KinD's host/private modes, and resource limits beyond CPU/memory container updates
 - remote TCP/TLS exposure and Windows containers
 

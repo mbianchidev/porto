@@ -290,6 +290,9 @@ func (s *Server) startDockerAPI(ctx context.Context) error {
 		return nil
 	}
 	s.runtimeMu.Unlock()
+	if err := s.docker.StartContainerInventory(ctx); err != nil {
+		return err
+	}
 	apiServer := portodocker.NewAPIServer(s.dockerSocket, portodocker.NewAPI(s.docker, s.dockerSocket))
 	if err := apiServer.Start(ctx); err != nil {
 		return err
@@ -312,9 +315,9 @@ func (s *Server) stopDockerAPI(ctx context.Context) error {
 	s.dockerAPI = nil
 	s.runtimeMu.Unlock()
 	if apiServer == nil {
-		return nil
+		return s.docker.StopContainerInventory(ctx)
 	}
-	return apiServer.Close(ctx)
+	return errors.Join(apiServer.Close(ctx), s.docker.StopContainerInventory(ctx))
 }
 
 func (s *Server) stopManagedApplications(ctx context.Context) error {

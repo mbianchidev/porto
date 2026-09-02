@@ -1,12 +1,13 @@
 import { useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
+import { useKubernetesStatus } from '../kubernetes'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { KubernetesContext, KubernetesNode, KubernetesStatus } from '../types'
+import type { KubernetesContext, KubernetesNode } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(160px,1.3fr) minmax(120px,0.8fr) minmax(110px,0.7fr) minmax(120px,0.8fr) minmax(70px,0.4fr)'
 
@@ -22,23 +23,20 @@ export function Nodes({
   const [query, setQuery] = useState('')
   const [selectedName, setSelectedName] = useState<string | null>(null)
 
-  const status = usePolledResource<KubernetesStatus>(
-    (signal) => apiGet(`/api/kubernetes/status?context=${encodeURIComponent(context)}`, signal),
-    10000,
-    [context],
-    `kubernetes:${context}:status`,
-  )
+  const status = useKubernetesStatus(context)
+  const available = status.data?.available ?? false
   const nodes = usePolledResource<KubernetesNode[]>(
-    (signal) => apiGet(`/api/kubernetes/nodes?context=${encodeURIComponent(context)}`, signal),
+    (signal) => available
+      ? apiGet(`/api/kubernetes/nodes?context=${encodeURIComponent(context)}`, signal)
+      : Promise.resolve([]),
     8000,
-    [context],
-    `kubernetes:${context}:nodes`,
+    [context, available],
+    available ? `kubernetes:${context}:nodes` : undefined,
   )
   const items = nodes.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((node) => normalizedQuery === '' || node.name.toLocaleLowerCase().includes(normalizedQuery))
   const selected = items.find((node) => node.name === selectedName) ?? null
-  const available = status.data?.available ?? false
 
   return (
     <>
@@ -56,7 +54,7 @@ export function Nodes({
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} nodes</span>
-        <button className="refreshControl" type="button" onClick={nodes.reload}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => { status.reload(); nodes.reload() }}>Refresh</button>
       </div>
       <div className="workArea">
         {!available ? (
