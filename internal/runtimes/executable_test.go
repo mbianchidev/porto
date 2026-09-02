@@ -8,6 +8,9 @@ import (
 )
 
 func TestLookPathInDirectoriesFindsExecutable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable mode bits are not meaningful on Windows")
+	}
 	directory := t.TempDir()
 	path := filepath.Join(directory, "provider")
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
@@ -23,6 +26,9 @@ func TestLookPathInDirectoriesFindsExecutable(t *testing.T) {
 }
 
 func TestLookPathInDirectoriesRejectsNonExecutableFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix executable mode bits are not meaningful on Windows")
+	}
 	directory := t.TempDir()
 	if err := os.WriteFile(filepath.Join(directory, "provider"), []byte("not executable"), 0o644); err != nil {
 		t.Fatal(err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -228,6 +229,9 @@ func TestStatusReportsLimaVersion(t *testing.T) {
 }
 
 func TestLimaCommandsIncludeDynamicallyDiscoveredQEMU(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("Homebrew QEMU path behavior is macOS-specific")
+	}
 	runner := &recordingRunner{}
 	manager := New(runner)
 	manager.getenv = func(string) string { return "" }
