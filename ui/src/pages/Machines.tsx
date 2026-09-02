@@ -106,7 +106,7 @@ export function Machines() {
     name: '', image: '', vmType: '', cpus: 2, memoryMiB: 2048, diskGiB: 20, architecture: '', provision: '', start: true,
   })
   const [submitting, setSubmitting] = useState(false)
-  const [installingProvider, setInstallingProvider] = useState<'lima' | 'qemu' | null>(null)
+  const [installingProvider, setInstallingProvider] = useState<'lima' | null>(null)
 
   const status = usePolledResource<VMStatus>((signal) => apiGet('/api/vms/status', signal), 10000, [])
   const images = usePolledResource<VMImage[]>((signal) => apiGet('/api/vms/images', signal), 0, [])
@@ -172,15 +172,15 @@ export function Machines() {
     }
   }
 
-  async function installProvider(provider: 'lima' | 'qemu') {
+  async function installProvider(provider: 'lima') {
     setInstallingProvider(provider)
     try {
       await apiSend(`/api/runtime/providers/${provider}/install`, 'POST')
-      notifyNotice('machines', `${provider === 'qemu' ? 'QEMU' : 'Lima'} provider installed.`)
+      notifyNotice('machines', 'Lima provider installed.')
       providers.reload()
       status.reload()
     } catch (err) {
-      notifyError('machines', errorMessage(err, `Unable to install ${provider === 'qemu' ? 'QEMU' : 'Lima'}`))
+      notifyError('machines', errorMessage(err, 'Unable to install Lima'))
     } finally {
       setInstallingProvider(null)
     }
@@ -331,11 +331,6 @@ export function Machines() {
                 <div className="integrationStatus missing">
                   <strong>QEMU required</strong>
                   <span>{qemu?.message || providers.error || 'Inspecting QEMU availability...'}</span>
-                  {qemu && !qemu.installed && (
-                    <button type="button" disabled={installingProvider !== null} onClick={() => installProvider('qemu')}>
-                      {installingProvider === 'qemu' ? 'Installing QEMU…' : 'Install QEMU'}
-                    </button>
-                  )}
                 </div>
               )}
               <label>

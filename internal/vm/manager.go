@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -27,6 +28,8 @@ type Manager struct {
 	runner   runtimes.Runner
 	timeout  time.Duration
 	stateDir string
+	lookPath func(string) (string, error)
+	getenv   func(string) string
 }
 
 type Status struct {
@@ -97,7 +100,10 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, timeout: defaultTimeout, stateDir: stateDir}
+	return &Manager{
+		runner: runner, timeout: defaultTimeout, stateDir: stateDir,
+		lookPath: runtimes.LookPath, getenv: os.Getenv,
+	}
 }
 
 func (m *Manager) Status(ctx context.Context) Status {
@@ -458,7 +464,7 @@ func (m *Manager) Exec(ctx context.Context, name string, command []string, stdin
 	args := append([]string{"shell", name, "--"}, command...)
 	commandContext, cancel := context.WithTimeout(ctx, 30*time.Minute)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "limactl", Args: args, Stdin: stdin})
+	output, err := m.runner.Run(commandContext, m.limaCommand(args, stdin))
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("execute command in VM %s timed out", name)
 	}
@@ -540,6 +546,7 @@ func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Dura
 		output, err := m.runner.Run(waitContext, runtimes.Command{
 			Name: "limactl",
 			Args: []string{"shell", name, "--", "true"},
+			Env:  m.limaEnvironment(),
 		})
 		if err == nil {
 			return nil
@@ -556,7 +563,7 @@ func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Dura
 func (m *Manager) run(ctx context.Context, timeout time.Duration, action string, args ...string) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "limactl", Args: args})
+	output, err := m.runner.Run(commandContext, m.limaCommand(args, nil))
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%s timed out after %s", action, timeout)
 	}
@@ -564,6 +571,49 @@ func (m *Manager) run(ctx context.Context, timeout time.Duration, action string,
 		return nil, runtimes.CommandError(action, output, err)
 	}
 	return output, nil
+}
+
+func (m *Manager) limaCommand(args []string, stdin []byte) runtimes.Command {
+	return runtimes.Command{Name: "limactl", Args: args, Env: m.limaEnvironment(), Stdin: stdin}
+}
+
+func (m *Manager) limaEnvironment() []string {
+	commands := []string{"qemu-system-aarch64", "qemu-system-x86_64"}
+	if runtime.GOARCH != "arm64" {
+		commands[0], commands[1] = commands[1], commands[0]
+	}
+	var binaryDirectories []string
+	var overrides []string
+	for _, command := range commands {
+		path, err := runtimes.ResolveQEMUPath(command, m.lookPath, m.getenv)
+		if err != nil {
+			continue
+		}
+		directory := filepath.Dir(path)
+		if len(binaryDirectories) == 0 || binaryDirectories[len(binaryDirectories)-1] != directory {
+			binaryDirectories = append(binaryDirectories, directory)
+		}
+		overrideName := "QEMU_SYSTEM_X86_64"
+		if command == "qemu-system-aarch64" {
+			overrideName = "QEMU_SYSTEM_AARCH64"
+		}
+		if strings.TrimSpace(m.getenv(overrideName)) != "" {
+			overrides = append(overrides, overrideName+"="+path)
+		}
+	}
+	if len(binaryDirectories) == 0 {
+		return nil
+	}
+	currentPath := os.Getenv("PATH")
+	pathEntries := append([]string(nil), binaryDirectories...)
+	if currentPath != "" {
+		pathEntries = append(pathEntries, currentPath)
+	}
+	environment := []string{
+		"PATH=" + strings.Join(pathEntries, string(os.PathListSeparator)),
+		"QEMU_HOME=" + filepath.Dir(binaryDirectories[0]),
+	}
+	return append(environment, overrides...)
 }
 
 func (m *Manager) image(id string) (Image, bool) {

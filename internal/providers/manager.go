@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os/exec"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -13,7 +13,10 @@ import (
 )
 
 type Manager struct {
-	runner runtimes.Runner
+	runner   runtimes.Runner
+	lookPath func(string) (string, error)
+	getenv   func(string) string
+	goos     string
 }
 
 type Status struct {
@@ -50,7 +53,7 @@ func New(runner runtimes.Runner) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner}
+	return &Manager{runner: runner, lookPath: runtimes.LookPath, getenv: os.Getenv, goos: runtime.GOOS}
 }
 
 func (m *Manager) Status(ctx context.Context) []Status {
@@ -70,16 +73,20 @@ func (m *Manager) Install(ctx context.Context, name string) (Status, error) {
 	if current.Installed {
 		return current, nil
 	}
-	if runtime.GOOS != "darwin" {
+	if candidate.name == "qemu" && m.goos == "darwin" {
+		return current, errors.New(current.Message)
+	}
+	if m.goos != "darwin" {
 		return current, fmt.Errorf("automatic %s installation is currently supported on macOS; install %s and retry", name, candidate.command)
 	}
-	if _, err := exec.LookPath("brew"); err != nil {
+	brewPath, err := m.lookPath("brew")
+	if err != nil {
 		return current, errors.New("Homebrew is required for automatic provider installation on macOS")
 	}
 	installContext, cancel := context.WithTimeout(ctx, 20*time.Minute)
 	defer cancel()
 	output, err := m.runner.Run(installContext, runtimes.Command{
-		Name: "brew",
+		Name: brewPath,
 		Args: []string{"install", candidate.formula},
 	})
 	if err != nil {
@@ -94,13 +101,14 @@ func (m *Manager) Install(ctx context.Context, name string) (Status, error) {
 
 func (m *Manager) toolStatus(ctx context.Context, candidate tool) Status {
 	status := Status{Name: candidate.name, Command: candidate.command}
-	if _, err := exec.LookPath(candidate.command); err != nil {
-		status.Message = fmt.Sprintf("%s is not installed", candidate.command)
+	commandPath, err := m.toolPath(candidate)
+	if err != nil {
+		status.Message = m.missingToolMessage(candidate)
 		return status
 	}
 	commandContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: candidate.command, Args: candidate.args})
+	output, err := m.runner.Run(commandContext, runtimes.Command{Name: commandPath, Args: candidate.args})
 	if err != nil {
 		status.Message = runtimes.CommandError("inspect "+candidate.name+" provider", output, err).Error()
 		return status
@@ -108,6 +116,27 @@ func (m *Manager) toolStatus(ctx context.Context, candidate tool) Status {
 	status.Installed = true
 	status.Version = strings.TrimSpace(string(output))
 	return status
+}
+
+func (m *Manager) toolPath(candidate tool) (string, error) {
+	if candidate.name == "qemu" {
+		return runtimes.ResolveQEMUPath(candidate.command, m.lookPath, m.getenv)
+	}
+	return m.lookPath(candidate.command)
+}
+
+func (m *Manager) missingToolMessage(candidate tool) string {
+	if candidate.name != "qemu" {
+		return fmt.Sprintf("%s is not installed", candidate.command)
+	}
+	switch m.goos {
+	case "darwin":
+		return "Install QEMU on your Mac with 'brew install qemu', then restart Porto"
+	case "windows":
+		return fmt.Sprintf("Install QEMU and add %s to PATH, then restart Porto", candidate.command)
+	default:
+		return "Install QEMU with your system package manager, then restart Porto"
+	}
 }
 
 func findTool(name string) (tool, bool) {

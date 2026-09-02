@@ -227,6 +227,64 @@ func TestStatusReportsLimaVersion(t *testing.T) {
 	}
 }
 
+func TestLimaCommandsIncludeDynamicallyDiscoveredQEMU(t *testing.T) {
+	runner := &recordingRunner{}
+	manager := New(runner)
+	manager.getenv = func(string) string { return "" }
+	manager.lookPath = func(name string) (string, error) {
+		if name == "qemu-system-aarch64" || name == "qemu-system-x86_64" {
+			return "/opt/homebrew/bin/" + name, nil
+		}
+		return "", errors.New("not found")
+	}
+	if err := manager.Start(context.Background(), "test-vm"); err != nil {
+		t.Fatalf("start VM: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if command.Name != "limactl" {
+			continue
+		}
+		environment := strings.Join(command.Env, "\n")
+		if !strings.Contains(environment, "PATH=/opt/homebrew/bin") ||
+			!strings.Contains(environment, "QEMU_HOME=/opt/homebrew") {
+			t.Fatalf("Lima command is missing QEMU environment: %+v", command)
+		}
+	}
+}
+
+func TestLimaCommandsIncludeConfiguredQEMUOverride(t *testing.T) {
+	runner := &recordingRunner{}
+	manager := New(runner)
+	manager.getenv = func(name string) string {
+		if name == "QEMU_SYSTEM_AARCH64" {
+			return "/Applications/QEMU/bin/qemu-system-aarch64"
+		}
+		return ""
+	}
+	manager.lookPath = func(name string) (string, error) {
+		if name == "/Applications/QEMU/bin/qemu-system-aarch64" {
+			return name, nil
+		}
+		return "", errors.New("not found")
+	}
+	if err := manager.Start(context.Background(), "test-vm"); err != nil {
+		t.Fatalf("start VM: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if command.Name != "limactl" {
+			continue
+		}
+		environment := strings.Join(command.Env, "\n")
+		if !strings.Contains(environment, "QEMU_SYSTEM_AARCH64=/Applications/QEMU/bin/qemu-system-aarch64") {
+			t.Fatalf("Lima command is missing QEMU override: %+v", command)
+		}
+	}
+}
+
 func TestStartRecoversBrokenLimaInstance(t *testing.T) {
 	runner := &brokenInstanceRunner{}
 	if err := New(runner).Start(context.Background(), "test-vm"); err != nil {
