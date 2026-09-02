@@ -6,6 +6,7 @@ import { writeClipboard } from '../clipboard'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { formatRelativeTime } from '../format'
 import { usePolledResource } from '../hooks'
+import { useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { BranchPicker } from '../components/BranchPicker'
@@ -167,13 +168,15 @@ export function LocalhostIng({
     'localhost:projects',
   )
   const dockerDeployments = useContainerSnapshots(settings?.dockerEnabled ?? false)
+  const kubernetesStatus = useKubernetesStatus(kubeContext, settings?.kubernetesEnabled ?? false)
+  const kubernetesAvailable = kubernetesStatus.data?.available ?? false
   const kubernetesDeployments = usePolledResource<KubernetesPod[]>(
-    (signal) => settings?.kubernetesEnabled
+    (signal) => kubernetesAvailable
       ? apiGet(`/api/kubernetes/pods?namespace=all&context=${encodeURIComponent(kubeContext)}`, signal)
       : Promise.resolve([]),
     5000,
-    [settings?.kubernetesEnabled, kubeContext],
-    `kubernetes:${kubeContext}:pods:all`,
+    [kubernetesAvailable, kubeContext],
+    kubernetesAvailable ? `kubernetes:${kubeContext}:pods:all` : undefined,
   )
   const projects = data ?? []
 

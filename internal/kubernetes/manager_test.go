@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -462,6 +463,77 @@ func TestStatusDoesNotUseUnmanagedCurrentContext(t *testing.T) {
 	defer runner.mu.Unlock()
 	if len(runner.commands) != 0 {
 		t.Fatalf("status consulted global kubectl context: %+v", runner.commands)
+	}
+}
+
+func TestStatusCondensesOfflineContextError(t *testing.T) {
+	dir := t.TempDir()
+	kubeconfigPath := filepath.Join(dir, config.KubernetesClusterFileToken("offline")+".yaml")
+	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), "version -o json") {
+			return []byte(`{"clientVersion":{"gitVersion":"v1.36.1"}}` + "\nThe connection to the server 127.0.0.1:49800 was refused"), errors.New("exit status 1")
+		}
+		return nil, nil
+	}
+	status := NewWithKubeconfigRoot(runner, dir).Status(context.Background(), "porto-offline")
+	if status.Available {
+		t.Fatalf("offline context was reported available: %+v", status)
+	}
+	if status.Message != "Kubernetes context porto-offline is offline; start its managed cluster or select another context" {
+		t.Fatalf("unexpected offline message: %q", status.Message)
+	}
+}
+
+func TestStatusSelectsReachableManagedContext(t *testing.T) {
+	dir := t.TempDir()
+	tokens := map[string]string{
+		"offline": config.KubernetesClusterFileToken("offline"),
+		"online":  config.KubernetesClusterFileToken("online"),
+	}
+	for name, token := range tokens {
+		if err := os.WriteFile(filepath.Join(dir, token+".yaml"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		metadata, err := json.Marshal(ClusterRequest{Name: name, Provider: "k0s"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, token+".json"), metadata, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kubectl" && strings.Contains(joined, "config view --raw -o json"):
+			name := "offline"
+			if strings.Contains(joined, tokens["online"]+".yaml") {
+				name = "online"
+			}
+			contextName := "porto-" + name
+			return []byte(fmt.Sprintf(
+				`{"current-context":%q,"contexts":[{"name":%q,"context":{"cluster":%q,"user":%q}}]}`,
+				contextName,
+				contextName,
+				contextName,
+				contextName,
+			)), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "--context porto-offline version -o json"):
+			return []byte("The connection to the server 127.0.0.1:49800 was refused"), errors.New("exit status 1")
+		case command.Name == "kubectl" && strings.Contains(joined, "--context porto-online version -o json"):
+			return []byte(`{"clientVersion":{"gitVersion":"v1.36.1"},"serverVersion":{"gitVersion":"v1.36.3"}}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+		}
+	}
+	status := NewWithKubeconfigRoot(runner, dir).Status(context.Background(), "")
+	if !status.Available || status.Context != "porto-online" || status.ServerVersion != "v1.36.3" {
+		t.Fatalf("reachable managed context was not selected: %+v", status)
 	}
 }
 

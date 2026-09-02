@@ -170,6 +170,10 @@ porto kubernetes nodes
 
 Pass `--context` when a command should not use the current context.
 `porto kubernetes configs` is a shorter alias for `configmaps`.
+Stopped managed clusters keep their kubeconfig and context, but the dashboard
+does not poll resource APIs until the selected context is reachable. On first
+load it prefers a fully running managed cluster; start a stopped cluster or
+select another context before opening its resources.
 
 ### Create a local cluster
 

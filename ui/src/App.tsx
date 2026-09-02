@@ -58,10 +58,15 @@ function AppShell() {
   const kubernetesContexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 10000, [])
   const kubernetesClusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
   const kubeContexts = kubernetesContexts.data ?? []
+  const clusterItems = kubernetesClusters.data ?? []
+  const clusterByContext = new Map(clusterItems.map((cluster) => [cluster.context, cluster]))
+  const clustersLoaded = kubernetesClusters.data !== null
+  const preferredKubeContext = kubeContexts.find((item) => clusterByContext.get(item.name)?.state === 'running')?.name
+    || (clustersLoaded ? kubeContexts.find((item) => !clusterByContext.has(item.name))?.name : '')
   const activeKubeContext = kubeContexts.some((item) => item.name === kubeContext)
     ? kubeContext
-    : kubeContexts[0]?.name || kubeContext
-  const kubernetesRunningCount = (kubernetesClusters.data ?? []).filter((cluster) => cluster.state === 'running').length
+    : preferredKubeContext || (clustersLoaded ? kubeContexts[0]?.name : '') || kubeContext
+  const kubernetesRunningCount = clusterItems.filter((cluster) => cluster.state === 'running').length
 
   function reloadIntegrations() {
     sqlNotSoLite.reload()
