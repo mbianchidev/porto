@@ -22,6 +22,66 @@ type recordingRunner struct {
 	invalidList  bool
 }
 
+type brokenInstanceRunner struct {
+	mu               sync.Mutex
+	commands         []runtimes.Command
+	recovered        bool
+	deleted          bool
+	forceDeleteError bool
+	listStatus       string
+	startOutput      string
+	startError       error
+}
+
+func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, command)
+	joined := strings.Join(command.Args, " ")
+	switch joined {
+	case "list --json":
+		if r.deleted {
+			return nil, nil
+		}
+		status := r.listStatus
+		if status == "" {
+			status = "Broken"
+		}
+		if r.recovered && r.listStatus == "" {
+			status = "Stopped"
+		}
+		return []byte(fmt.Sprintf(
+			`{"name":"test-vm","status":%q,"vmType":"vz","arch":"aarch64","cpus":2,"memory":2147483648,"disk":10737418240}`+"\n",
+			status,
+		)), nil
+	case "start test-vm":
+		if r.startError != nil {
+			return []byte(r.startOutput), r.startError
+		}
+		if !r.recovered {
+			return []byte("Instance \"test-vm\" has configuration errors: dial unix ha.sock: connect: connection refused"), errors.New("exit status 1")
+		}
+		return nil, nil
+	case "stop test-vm":
+		return []byte("expected status `Running`, got `Broken`"), errors.New("exit status 1")
+	case "stop --force test-vm":
+		r.recovered = true
+		return nil, nil
+	case "shell test-vm -- true":
+		return nil, nil
+	case "delete test-vm":
+		return []byte("expected status `Stopped`, got `Broken`"), errors.New("exit status 1")
+	case "delete --force test-vm":
+		r.deleted = true
+		if r.forceDeleteError {
+			return []byte("instance deleted; network reconciliation failed"), errors.New("exit status 1")
+		}
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+	}
+}
+
 func (r *recordingRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -164,6 +224,101 @@ func TestStatusReportsLimaVersion(t *testing.T) {
 	status := New(&recordingRunner{}).Status(context.Background())
 	if !status.Available || !strings.Contains(status.Version, "2.0.0") {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestStartRecoversBrokenLimaInstance(t *testing.T) {
+	runner := &brokenInstanceRunner{}
+	if err := New(runner).Start(context.Background(), "test-vm"); err != nil {
+		t.Fatalf("start broken VM: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var commands []string
+	for _, command := range runner.commands {
+		commands = append(commands, strings.Join(command.Args, " "))
+	}
+	want := []string{
+		"start test-vm",
+		"list --json",
+		"stop --force test-vm",
+		"start test-vm",
+		"shell test-vm -- true",
+	}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("recovery commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestStopRecoversBrokenLimaInstance(t *testing.T) {
+	runner := &brokenInstanceRunner{}
+	if err := New(runner).Stop(context.Background(), "test-vm"); err != nil {
+		t.Fatalf("stop broken VM: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var commands []string
+	for _, command := range runner.commands {
+		commands = append(commands, strings.Join(command.Args, " "))
+	}
+	want := []string{"stop test-vm", "list --json", "stop --force test-vm"}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("recovery commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestDeleteRecoversBrokenLimaInstance(t *testing.T) {
+	runner := &brokenInstanceRunner{}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeMetadata(Metadata{Name: "test-vm", Kind: "standalone", Image: "ubuntu-24.04"}); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	if err := manager.Delete(context.Background(), "test-vm", false); err != nil {
+		t.Fatalf("delete broken VM: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	var commands []string
+	for _, command := range runner.commands {
+		commands = append(commands, strings.Join(command.Args, " "))
+	}
+	want := []string{"delete test-vm", "list --json", "delete --force test-vm"}
+	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("recovery commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+func TestStartDoesNotForceStopRunningInstanceAfterUnrelatedFailure(t *testing.T) {
+	runner := &brokenInstanceRunner{
+		listStatus:  "Running",
+		startOutput: "image download failed",
+		startError:  errors.New("exit status 1"),
+	}
+	err := New(runner).Start(context.Background(), "test-vm")
+	if err == nil || !strings.Contains(err.Error(), "image download failed") {
+		t.Fatalf("unexpected start error: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if strings.Join(command.Args, " ") == "stop --force test-vm" {
+			t.Fatalf("running VM was force-stopped: %+v", runner.commands)
+		}
+	}
+}
+
+func TestDeleteRemovesMetadataWhenLimaDeletedBeforeReportingError(t *testing.T) {
+	runner := &brokenInstanceRunner{forceDeleteError: true}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeMetadata(Metadata{Name: "test-vm", Kind: "standalone", Image: "ubuntu-24.04"}); err != nil {
+		t.Fatalf("write metadata: %v", err)
+	}
+	err := manager.Delete(context.Background(), "test-vm", false)
+	if err == nil || !strings.Contains(err.Error(), "network reconciliation failed") {
+		t.Fatalf("unexpected delete error: %v", err)
+	}
+	if _, statErr := os.Stat(manager.metadataPath("test-vm")); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("stale VM metadata remains after deletion: %v", statErr)
 	}
 }
 

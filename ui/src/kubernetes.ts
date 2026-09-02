@@ -18,19 +18,28 @@ function inactiveStatus(context: string, enabled: boolean): KubernetesStatus {
   }
 }
 
+function checkingStatus(context: string): KubernetesStatus {
+  return {
+    enabled: true,
+    available: false,
+    context,
+    message: 'Checking Kubernetes status…',
+  }
+}
+
 export function useKubernetesStatus(context: string, enabled = true) {
   const active = enabled && context.trim() !== ''
   const key = active ? context : `${enabled ? 'select-context' : 'disabled'}:${context}`
   const [state, setState] = useState<KubernetesStatusState>({
     key,
-    data: active ? null : inactiveStatus(context, enabled),
+    data: active ? checkingStatus(context) : inactiveStatus(context, enabled),
     error: '',
     loading: active,
   })
   const [reloadToken, setReloadToken] = useState(0)
   const current = state.key === key
     ? state
-    : { key, data: active ? null : inactiveStatus(context, enabled), error: '', loading: active }
+    : { key, data: active ? checkingStatus(context) : inactiveStatus(context, enabled), error: '', loading: active }
 
   useEffect(() => {
     if (!active) return

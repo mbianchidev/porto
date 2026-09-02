@@ -336,14 +336,42 @@ func (m *Manager) EnsureStandalone(name string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {
-	if err := m.action(ctx, "start", name); err != nil {
-		return err
+	startErr := m.action(ctx, "start", name)
+	if startErr != nil {
+		exists, broken, inspectErr := m.instanceState(ctx, name)
+		if inspectErr != nil {
+			return errors.Join(startErr, fmt.Errorf("inspect failed Lima start: %w", inspectErr))
+		}
+		if !exists || !broken {
+			return startErr
+		}
+		if _, err := m.run(ctx, 2*time.Minute, "recover broken Lima instance", "stop", "--force", name); err != nil {
+			return errors.Join(startErr, err)
+		}
+		if _, err := m.run(ctx, 5*time.Minute, "start recovered Lima instance", "start", name); err != nil {
+			return errors.Join(startErr, err)
+		}
 	}
 	return m.waitForSSH(ctx, name, 2*time.Minute)
 }
 
 func (m *Manager) Stop(ctx context.Context, name string) error {
-	return m.action(ctx, "stop", name)
+	stopErr := m.action(ctx, "stop", name)
+	if stopErr == nil {
+		return stopErr
+	}
+	exists, broken, inspectErr := m.instanceState(ctx, name)
+	if inspectErr != nil {
+		return errors.Join(stopErr, fmt.Errorf("inspect failed Lima stop: %w", inspectErr))
+	}
+	if !exists || !broken {
+		return stopErr
+	}
+	_, err := m.run(ctx, 2*time.Minute, "force-stop broken Lima instance", "stop", "--force", name)
+	if err != nil {
+		return errors.Join(stopErr, err)
+	}
+	return nil
 }
 
 func (m *Manager) Delete(ctx context.Context, name string, force bool) error {
@@ -355,12 +383,54 @@ func (m *Manager) Delete(ctx context.Context, name string, force bool) error {
 	}
 	deleteErr := m.deleteUntracked(ctx, name, force)
 	if deleteErr != nil {
+		exists, broken, inspectErr := m.instanceState(ctx, name)
+		if inspectErr != nil {
+			return errors.Join(deleteErr, fmt.Errorf("inspect failed Lima delete: %w", inspectErr))
+		}
+		if !exists {
+			return errors.Join(deleteErr, m.removeMetadata(name))
+		}
+		if !force && broken {
+			forceDeleteErr := m.deleteUntracked(ctx, name, true)
+			if forceDeleteErr != nil {
+				deleteErr = errors.Join(deleteErr, forceDeleteErr)
+				exists, _, inspectErr = m.instanceState(ctx, name)
+				if inspectErr != nil {
+					return errors.Join(deleteErr, fmt.Errorf("inspect failed forced Lima delete: %w", inspectErr))
+				}
+				if !exists {
+					return errors.Join(deleteErr, m.removeMetadata(name))
+				}
+			} else {
+				deleteErr = nil
+			}
+		}
+	}
+	if deleteErr != nil {
 		return deleteErr
 	}
-	if m.stateDir != "" {
-		if err := os.Remove(m.metadataPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return fmt.Errorf("remove VM metadata: %w", err)
+	return m.removeMetadata(name)
+}
+
+func (m *Manager) instanceState(ctx context.Context, name string) (exists, broken bool, err error) {
+	instances, err := m.ListAll(ctx)
+	if err != nil {
+		return false, false, err
+	}
+	for _, instance := range instances {
+		if instance.Name == name {
+			return true, strings.EqualFold(instance.Status, "broken"), nil
 		}
+	}
+	return false, false, nil
+}
+
+func (m *Manager) removeMetadata(name string) error {
+	if m.stateDir == "" {
+		return nil
+	}
+	if err := os.Remove(m.metadataPath(name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove VM metadata: %w", err)
 	}
 	return nil
 }

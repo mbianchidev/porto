@@ -119,7 +119,12 @@ export function Containers() {
                 <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
                 <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
                 <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
-                <div><dt>Stop behavior</dt><dd>{selected.stopSignal || 'default'} / {selected.stopTimeout ?? 0}s</dd></div>
+                <div>
+                  <dt>Stop behavior</dt>
+                  <dd>
+                    {selected.stopSignal || 'default signal'} / {selected.stopTimeout === undefined ? 'default timeout' : `${selected.stopTimeout}s`}
+                  </dd>
+                </div>
               </dl>
               {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
             </section>

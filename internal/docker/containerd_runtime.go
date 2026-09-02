@@ -24,11 +24,9 @@ import (
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
-	grpcstatus "google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -401,22 +399,18 @@ func (r *grpcContainerRuntime) Snapshot(ctx context.Context) ([]Container, error
 		return nil, fmt.Errorf("list containerd containers: %w", err)
 	}
 	records := response.GetContainers()
+	taskResponse, err := r.tasks.List(namespacedContext, &tasksapi.ListTasksRequest{})
+	if err != nil {
+		return nil, fmt.Errorf("list containerd tasks: %w", err)
+	}
+	taskByContainer := make(map[string]*tasktypes.Process, len(taskResponse.GetTasks()))
+	for _, process := range taskResponse.GetTasks() {
+		taskByContainer[process.GetContainerID()] = process
+	}
 	enrichment, enrichmentErr := r.compatibilityMetadata(ctx, records)
 	containers := make([]Container, 0, len(records))
 	for _, record := range records {
-		taskResponse, taskErr := r.tasks.Get(namespacedContext, &tasksapi.GetRequest{ContainerID: record.GetID()})
-		var process *tasktypes.Process
-		if taskErr == nil {
-			process = taskResponse.GetProcess()
-		} else if grpcstatus.Code(taskErr) != codes.NotFound {
-			mapped := containerFromContainerd(record, nil)
-			mapped.InventoryError = fmt.Sprintf("read task state: %v", taskErr)
-			mergeContainerCompatibilityMetadata(&mapped, enrichment[record.GetID()])
-			mapped.InventoryError = combineInventoryError(mapped.InventoryError, enrichmentErr)
-			containers = append(containers, mapped)
-			continue
-		}
-		mapped := containerFromContainerd(record, process)
+		mapped := containerFromContainerd(record, taskByContainer[record.GetID()])
 		mergeContainerCompatibilityMetadata(&mapped, enrichment[record.GetID()])
 		mapped.InventoryError = combineInventoryError(mapped.InventoryError, enrichmentErr)
 		containers = append(containers, mapped)
