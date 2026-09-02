@@ -544,6 +544,7 @@ export type RouteID =
   | 'configs'
   | 'secrets'
   | 'nodes'
+  | 'databases'
   | 'machines'
   | 'activity'
   | 'settings'

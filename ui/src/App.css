@@ -1484,6 +1484,19 @@ button:disabled {
   box-shadow: 1px 2px 0 #0d0f0d;
 }
 
+.railItemBadge {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.railGroup a.active .railItemBadge,
+.railGroup a:hover .railItemBadge {
+  color: inherit;
+}
+
 .railBrand:focus-visible,
 .inventoryRowToggle:focus-visible {
   position: relative;
@@ -1919,6 +1932,18 @@ button:disabled {
 
 .activityWorkArea {
   grid-template-columns: minmax(0, 1fr);
+}
+
+.databasesWorkArea {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.databaseComingSoon {
+  padding: 24px;
+}
+
+.databaseComingSoon .runtimeGrid {
+  max-width: 720px;
 }
 
 .activityResources {
