@@ -34,7 +34,8 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 	if container != "" {
 		args = append(args, "--container", container)
 	}
-	args = append(args, "--", shell)
+	args = append(args, "--")
+	args = append(args, podTerminalShellCommand(shell)...)
 	args = s.kubernetes.CommandArgs(runtimeContext(r), args...)
 	bridgePodTerminal(w, r, args)
 }
@@ -81,11 +82,17 @@ func (s *Server) kubernetesClusterTerminal(w http.ResponseWriter, r *http.Reques
 }
 
 func vmTerminalCommand(ctx context.Context, name string) *exec.Cmd {
-	return exec.CommandContext(
+	command := exec.CommandContext(
 		ctx,
 		"limactl", "shell", "--tty=true", name, "--",
 		"sh", "-lc", `cd "$HOME" && exec env PS1="$1 $ " sh -i`, "porto-shell", name,
 	)
+	command.Env = process.WithEnvironment(
+		os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	)
+	return command
 }
 
 func k9sTerminalCommand(ctx context.Context, cluster kubernetes.Cluster) *exec.Cmd {
@@ -106,7 +113,17 @@ func k9sTerminalCommand(ctx context.Context, cluster kubernetes.Cluster) *exec.C
 }
 
 func podTerminalCommand(ctx context.Context, args []string) *exec.Cmd {
-	return exec.CommandContext(ctx, "kubectl", args...)
+	command := exec.CommandContext(ctx, "kubectl", args...)
+	command.Env = process.WithEnvironment(
+		os.Environ(),
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	)
+	return command
+}
+
+func podTerminalShellCommand(shell string) []string {
+	return []string{"env", "TERM=xterm-256color", "COLORTERM=truecolor", shell}
 }
 
 func allowedShell(shell string) bool {

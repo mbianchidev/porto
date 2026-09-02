@@ -53,7 +53,7 @@ export type RuntimeFeatures = {
 export type RuntimeFeatureName = keyof RuntimeFeatures
 
 export type RuntimeProviderStatus = {
-  name: 'lima' | 'kind' | 'k9s' | 'k0s'
+  name: 'lima' | 'qemu' | 'kind' | 'k9s' | 'k0s'
   command: string
   installed: boolean
   version?: string
@@ -487,6 +487,7 @@ export type VMImage = {
 export type VMInstance = {
   name: string
   status: string
+  vmType: string
   architecture: string
   cpus: number
   memoryBytes: number
@@ -494,11 +495,14 @@ export type VMInstance = {
   sshLocalPort: number
   directory: string
   addresses: string[]
+  snapshotSupported: boolean
+  snapshotMessage?: string
 }
 
 export type VMCreateRequest = {
   name: string
   image: string
+  vmType: '' | 'qemu'
   cpus: number
   memoryMiB: number
   diskGiB: number

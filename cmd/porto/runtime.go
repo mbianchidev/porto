@@ -541,16 +541,17 @@ func vmCmd(args []string) error {
 		memory := fs.Int("memory", 2048, "memory MiB")
 		disk := fs.Int("disk", 20, "disk GiB")
 		architecture := fs.String("arch", "", "aarch64 or x86_64")
+		vmType := fs.String("vm-type", "", "qemu for snapshot support")
 		provision := fs.String("provision", "", "post-start shell command")
 		stopped := fs.Bool("stopped", false, "create without starting")
 		if err := parseInterspersed(fs, args[1:], map[string]bool{"stopped": true}); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
-			return errors.New("usage: porto vm create <name> [--image ubuntu-24.04] [--cpus 2] [--memory 2048] [--disk 20]")
+			return errors.New("usage: porto vm create <name> [--image ubuntu-24.04] [--vm-type qemu] [--cpus 2] [--memory 2048] [--disk 20]")
 		}
 		return runtimePOST("/api/vms/instances", vm.CreateRequest{
-			Name: fs.Arg(0), Image: *image, CPUs: *cpus, MemoryMiB: *memory,
+			Name: fs.Arg(0), Image: *image, VMType: *vmType, CPUs: *cpus, MemoryMiB: *memory,
 			DiskGiB: *disk, Architecture: *architecture, Provision: *provision, Start: !*stopped,
 		})
 	case "start", "stop":

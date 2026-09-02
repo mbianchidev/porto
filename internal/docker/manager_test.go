@@ -138,6 +138,44 @@ func (f *fakeRunner) Start(_ context.Context, command runtimes.Command) (runtime
 	return starter(command)
 }
 
+func TestLimaInstanceStatusTargetsEngineAndIgnoresDiagnostics(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"limactl list porto-engine --json": []byte(
+				"time=\"2026-09-01T22:00:00+02:00\" level=warning msg=\"diagnostic\"\n" +
+					`{"name":"porto-engine","status":"Running"}` + "\n",
+			),
+		},
+		errors: map[string]error{},
+	}
+	exists, running, err := New(runner).limaInstanceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("inspect Lima instance: %v", err)
+	}
+	if !exists || !running {
+		t.Fatalf("status = exists:%t running:%t", exists, running)
+	}
+}
+
+func TestLimaInstanceStatusTreatsUnmatchedInstanceAsMissing(t *testing.T) {
+	key := "limactl list porto-engine --json"
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			key: []byte("level=warning msg=\"No instance matching porto-engine found.\"\nlevel=fatal msg=\"unmatched instances\"\n"),
+		},
+		errors: map[string]error{
+			key: errors.New("exit status 1"),
+		},
+	}
+	exists, running, err := New(runner).limaInstanceStatus(context.Background())
+	if err != nil {
+		t.Fatalf("inspect missing Lima instance: %v", err)
+	}
+	if exists || running {
+		t.Fatalf("status = exists:%t running:%t", exists, running)
+	}
+}
+
 func TestManagerStatusAndInventory(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
