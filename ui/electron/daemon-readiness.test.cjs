@@ -10,6 +10,7 @@ const {
   installDockerContext,
   isDaemonReady,
   mergeExecutablePaths,
+  resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
   windowsDaemonProcessIDs,
@@ -174,6 +175,18 @@ test('merges bundled, login-shell, and inherited executable paths once', () => {
     ], ':'),
     '/Applications/Porto.app/Contents/Resources/runtime/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   )
+})
+
+test('resolves the packaged dashboard beside the bundled daemon', () => {
+  const resourcesPath = '/Applications/Porto.app/Contents/Resources'
+  const dashboard = resolvePackagedDashboard({
+    isPackaged: true,
+    resourcesPath,
+    existsImpl: (candidate) => candidate === `${resourcesPath}/dist/index.html`,
+  })
+
+  assert.equal(dashboard, `${resourcesPath}/dist`)
+  assert.equal(resolvePackagedDashboard({ isPackaged: false, resourcesPath }), '')
 })
 
 test('packaged apps always use the bundled Porto binary', () => {

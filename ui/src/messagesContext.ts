@@ -1,11 +1,12 @@
 import { createContext } from 'react'
-import type { ActivityEntry } from './types'
+import type { ActivityEntry, ActivityLevel } from './types'
 
 export type MessagesContextValue = {
   entries: ActivityEntry[]
   clearActivity: () => void
   errorBanner: string
   noticeBanner: string
+  recordActivity: (level: ActivityLevel, source: string, message: string, at?: string) => void
   notifyError: (source: string, message: string) => void
   notifyNotice: (source: string, message: string) => void
   dismissError: () => void

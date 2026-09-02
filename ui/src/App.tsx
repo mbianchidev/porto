@@ -4,6 +4,7 @@ import { apiGet } from './api'
 import { usePolledResource, useNarrowViewport } from './hooks'
 import { MessagesProvider } from './messages'
 import { useMessages } from './useMessages'
+import { RuntimeActivity } from './runtimeActivity'
 import { ActionButton } from './components/ActionButton'
 import { Rail } from './components/Rail'
 import { LocalhostIng } from './pages/LocalhostIng'
@@ -99,6 +100,7 @@ function AppShell() {
       <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
       {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
       <main className="appMain">
+        <RuntimeActivity dockerEnabled={settings?.dockerEnabled ?? false} />
         {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
         {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 

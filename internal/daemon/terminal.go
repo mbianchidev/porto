@@ -123,7 +123,7 @@ func podTerminalCommand(ctx context.Context, args []string) *exec.Cmd {
 }
 
 func podTerminalShellCommand(shell string) []string {
-	return []string{"env", "TERM=xterm-256color", "COLORTERM=truecolor", shell}
+	return []string{shell, "-c", `TERM=xterm-256color COLORTERM=truecolor exec "$0" -i`, shell}
 }
 
 func allowedShell(shell string) bool {

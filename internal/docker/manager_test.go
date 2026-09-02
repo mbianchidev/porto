@@ -176,6 +176,42 @@ func TestLimaInstanceStatusTreatsUnmatchedInstanceAsMissing(t *testing.T) {
 	}
 }
 
+func TestVerifyLimaOwnershipIgnoresLimaDiagnostics(t *testing.T) {
+	const ownerID = "porto-owner"
+	key := `limactl shell porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			key: []byte(
+				"time=\"2026-09-02T14:30:00+02:00\" level=warning msg=\"host agent is starting\"\n" +
+					ownerID + "\n",
+			),
+		},
+		errors: map[string]error{},
+	}
+
+	if err := New(runner).verifyLimaOwnership(context.Background(), ownerID); err != nil {
+		t.Fatalf("verify ownership with Lima diagnostics: %v", err)
+	}
+}
+
+func TestVerifyLimaOwnershipRejectsDifferentMarker(t *testing.T) {
+	key := `limactl shell porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			key: []byte(
+				"time=\"2026-09-02T14:30:00+02:00\" level=warning msg=\"host agent is starting\"\n" +
+					"porto-different-owner\n",
+			),
+		},
+		errors: map[string]error{},
+	}
+
+	err := New(runner).verifyLimaOwnership(context.Background(), "porto-owner")
+	if err == nil || !strings.Contains(err.Error(), "ownership marker does not match") {
+		t.Fatalf("expected ownership mismatch, got %v", err)
+	}
+}
+
 func TestManagerStatusAndInventory(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{

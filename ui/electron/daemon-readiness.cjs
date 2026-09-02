@@ -186,6 +186,16 @@ function dockerBootstrapCommand(status, {
   return ['docker', 'engine-install']
 }
 
+function resolvePackagedDashboard({
+  isPackaged = false,
+  resourcesPath = '',
+  existsImpl = () => false,
+} = {}) {
+  if (!isPackaged) return ''
+  const dashboard = path.join(resourcesPath, 'dist')
+  return existsImpl(path.join(dashboard, 'index.html')) ? dashboard : ''
+}
+
 function resolvePortoBinary({
   isPackaged = false,
   platform = process.platform,
@@ -210,6 +220,7 @@ module.exports = {
   installDockerEngine,
   isDaemonReady,
   mergeExecutablePaths,
+  resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
   windowsDaemonProcessIDs,

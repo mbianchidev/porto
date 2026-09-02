@@ -19,6 +19,7 @@ const {
   installDockerContext,
   installDockerEngine,
   mergeExecutablePaths,
+  resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
   windowsDaemonProcesses,
@@ -76,6 +77,12 @@ async function portoEnvironment() {
     [...bundledPaths, loginShellPath, process.env[pathKey]],
     path.delimiter,
   )
+  const dashboard = resolvePackagedDashboard({
+    isPackaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    existsImpl: fs.existsSync,
+  })
+  if (dashboard !== '') environment.PORTO_UI_DIR = dashboard
   return environment
 }
 

@@ -1337,10 +1337,16 @@ func (m *Manager) verifyLimaOwnership(ctx context.Context, ownerID string) error
 	if err != nil {
 		return err
 	}
-	if strings.TrimSpace(string(output)) != ownerID {
-		return fmt.Errorf("refusing to manage Lima instance %q because its Porto ownership marker does not match", engineInstanceName)
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		if strings.TrimSpace(scanner.Text()) == ownerID {
+			return nil
+		}
 	}
-	return nil
+	if err := scanner.Err(); err != nil {
+		return fmt.Errorf("read Porto engine ownership marker: %w", err)
+	}
+	return fmt.Errorf("refusing to manage Lima instance %q because its Porto ownership marker does not match", engineInstanceName)
 }
 
 func (m *Manager) ensureLimaOwnership(ctx context.Context, state engineState) error {

@@ -61,7 +61,8 @@ For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a socket tunnel open for the gRPC connection. The
 connection and subscription are canceled during runtime disable and daemon
 shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
-`limactl shell` processes.
+`limactl shell` processes. Container lifecycle events and inventory failures
+also flow into the desktop Activity log.
 
 ## Install the Docker context
 

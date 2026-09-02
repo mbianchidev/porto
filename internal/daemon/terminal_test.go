@@ -71,7 +71,7 @@ func TestPodTerminalCommandUsesKubectlExec(t *testing.T) {
 		"--context", "porto-dev",
 		"exec", "--stdin", "--tty", "--namespace", "default", "api",
 		"--container", "app", "--",
-		"env", "TERM=xterm-256color", "COLORTERM=truecolor", "sh",
+		"sh", "-c", `TERM=xterm-256color COLORTERM=truecolor exec "$0" -i`, "sh",
 	}
 	if !reflect.DeepEqual(command.Args, want) {
 		t.Fatalf("command args = %q, want %q", command.Args, want)
@@ -81,8 +81,8 @@ func TestPodTerminalCommandUsesKubectlExec(t *testing.T) {
 	}
 }
 
-func TestPodTerminalShellSetsTerminalCapabilities(t *testing.T) {
-	want := []string{"env", "TERM=xterm-256color", "COLORTERM=truecolor", "ash"}
+func TestPodTerminalShellDoesNotRequireEnvExecutable(t *testing.T) {
+	want := []string{"ash", "-c", `TERM=xterm-256color COLORTERM=truecolor exec "$0" -i`, "ash"}
 	if got := podTerminalShellCommand("ash"); !reflect.DeepEqual(got, want) {
 		t.Fatalf("pod terminal shell command = %q, want %q", got, want)
 	}
