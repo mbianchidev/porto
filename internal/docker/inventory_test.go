@@ -284,6 +284,63 @@ func TestContainerInventoryWaitCapturesRapidExit(t *testing.T) {
 	}
 }
 
+func TestContainerInventoryWaitReconcilesPartialExit(t *testing.T) {
+	exitCode := uint32(17)
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{ID: "one", Name: "api", State: "running"}},
+		[]Container{{ID: "one", Name: "api", State: "exited", ExitCode: &exitCode}},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          5 * time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	result := make(chan int, 1)
+	errs := make(chan error, 1)
+	go func() {
+		code, err := inventory.wait(ctx, "one", "next-exit")
+		result <- code
+		errs <- err
+	}()
+	waitForInventorySubscriber(t, inventory)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		Timestamp:   time.Now().UTC(),
+		Reason:      "partial event payload",
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+		if code := <-result; code != 17 {
+			t.Fatalf("exit code = %d, want reconciled code 17", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for reconciled lifecycle exit")
+	}
+}
+
 func TestManagerUsesContainerInventoryWithoutNerdctlPolling(t *testing.T) {
 	runtimeClient := newFakeContainerRuntime(
 		[]Container{{ID: "one", Name: "api", State: "running"}},

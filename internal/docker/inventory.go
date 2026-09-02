@@ -563,10 +563,11 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 	}
 	knownExits := make(map[uint64]struct{})
 	for _, event := range initial.Events {
-		if event.ContainerID == container.ID && event.Type == "task-exit" {
+		if event.ContainerID == container.ID && containerExitEvent(event) {
 			knownExits[event.Sequence] = struct{}{}
 		}
 	}
+	pendingExit := false
 
 	for {
 		select {
@@ -578,16 +579,27 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			}
 			if condition == "next-exit" {
 				for _, event := range snapshot.Events {
-					if event.ContainerID != container.ID || event.Type != "task-exit" {
+					if event.ContainerID != container.ID || !containerExitEvent(event) {
 						continue
 					}
 					if _, exists := knownExits[event.Sequence]; exists {
 						continue
 					}
+					knownExits[event.Sequence] = struct{}{}
+					pendingExit = true
 					if event.ExitCode == nil {
-						return 0, nil
+						continue
 					}
 					return int(*event.ExitCode), nil
+				}
+				if pendingExit {
+					current, findErr := findSnapshotContainer(snapshot, container.ID)
+					if findErr == nil && !containerActive(current) && current.ExitCode != nil {
+						return int(*current.ExitCode), nil
+					}
+					if findErr != nil && !strings.Contains(strings.ToLower(findErr.Error()), "not found") {
+						return 0, findErr
+					}
 				}
 				continue
 			}
@@ -603,6 +615,10 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			}
 		}
 	}
+}
+
+func containerExitEvent(event ContainerLifecycleEvent) bool {
+	return event.Type == "task-exit" || event.Type == "task-delete"
 }
 
 func findSnapshotContainer(snapshot ContainerSnapshot, id string) (*Container, error) {

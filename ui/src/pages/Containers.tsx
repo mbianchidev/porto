@@ -19,7 +19,7 @@ export function Containers() {
   const [selectedID, setSelectedID] = useState<string | null>(null)
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
-  const containers = useContainerSnapshots(status.data?.enabled ?? true)
+  const containers = useContainerSnapshots(status.data?.enabled ?? false)
   const items = containers.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((container) => normalizedQuery === '' || [container.name, container.image, container.status]
