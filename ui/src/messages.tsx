@@ -46,9 +46,8 @@ function saveActivity(entries: ActivityEntry[]) {
 
 /**
  * Single source of truth for the app-wide error/notice banners and the Activity
- * page's client-side action/error log. Every page reports through notifyError or
- * notifyNotice instead of holding its own banner state, so the Activity page and
- * the shell banner always agree.
+ * page's client-side log. Pages report through notifyError or notifyNotice,
+ * while runtime event streams use recordActivity without showing a banner.
  */
 export function MessagesProvider({ children }: { children: ReactNode }) {
   const [entries, setEntries] = useState<ActivityEntry[]>(loadActivity)
@@ -56,22 +55,23 @@ export function MessagesProvider({ children }: { children: ReactNode }) {
   const [noticeBanner, setNoticeBanner] = useState('')
   const nextID = useRef(entries.reduce((highest, entry) => Math.max(highest, entry.id), 0) + 1)
 
-  const record = useCallback((level: ActivityLevel, source: string, message: string) => {
+  const recordActivity = useCallback((level: ActivityLevel, source: string, message: string, at?: string) => {
     setEntries((current) => {
-      const entry: ActivityEntry = { id: nextID.current++, level, source, message, at: new Date().toISOString() }
+      const timestamp = at && !Number.isNaN(Date.parse(at)) ? at : new Date().toISOString()
+      const entry: ActivityEntry = { id: nextID.current++, level, source, message, at: timestamp }
       return [entry, ...current].slice(0, MAX_ACTIVITY_ENTRIES)
     })
   }, [])
 
   const notifyError = useCallback((source: string, message: string) => {
     setErrorBanner(message)
-    record('error', source, message)
-  }, [record])
+    recordActivity('error', source, message)
+  }, [recordActivity])
 
   const notifyNotice = useCallback((source: string, message: string) => {
     setNoticeBanner(message)
-    record('notice', source, message)
-  }, [record])
+    recordActivity('notice', source, message)
+  }, [recordActivity])
 
   const dismissError = useCallback(() => setErrorBanner(''), [])
   const dismissNotice = useCallback(() => setNoticeBanner(''), [])
@@ -92,8 +92,8 @@ export function MessagesProvider({ children }: { children: ReactNode }) {
   }, [noticeBanner])
 
   const value = useMemo(
-    () => ({ entries, clearActivity, errorBanner, noticeBanner, notifyError, notifyNotice, dismissError, dismissNotice }),
-    [entries, clearActivity, errorBanner, noticeBanner, notifyError, notifyNotice, dismissError, dismissNotice],
+    () => ({ entries, clearActivity, errorBanner, noticeBanner, recordActivity, notifyError, notifyNotice, dismissError, dismissNotice }),
+    [entries, clearActivity, errorBanner, noticeBanner, recordActivity, notifyError, notifyNotice, dismissError, dismissNotice],
   )
 
   return <MessagesContext.Provider value={value}>{children}</MessagesContext.Provider>

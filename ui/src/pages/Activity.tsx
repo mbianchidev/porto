@@ -22,13 +22,14 @@ export function Activity() {
     <>
       <section className="fleetRail" aria-label="Activity status">
         <span className="fleetRailTitle">Recent activity</span>
+        <span className="fleetDatum"><StatusLamp state="starting" />Events <strong>{counts.info}</strong></span>
         <span className="fleetDatum"><StatusLamp state="running" />Notices <strong>{counts.notice}</strong></span>
         <span className="fleetDatum"><StatusLamp state="crashed" />Errors <strong>{counts.error}</strong></span>
         <span className="fleetMessage">{entries.length} saved locally</span>
       </section>
       <div className="controlBar">
         <div className="statusFilters activityFilters" role="group" aria-label="Filter activity by level">
-          {(['all', 'notice', 'error'] as const).map((level) => (
+          {(['all', 'info', 'notice', 'error'] as const).map((level) => (
             <button
               type="button"
               className={`activityFilter-${level}${levelFilter === level ? ' active' : ''}`}
@@ -49,7 +50,7 @@ export function Activity() {
           {filtered.length === 0 && (
             <article className="empty">
               <h2>{entries.length === 0 ? 'No activity recorded' : `No ${levelFilter} activity`}</h2>
-              <p>{entries.length === 0 ? 'Actions and errors from this Porto desktop will appear here and persist across reloads.' : 'Choose another filter to see recorded activity.'}</p>
+              <p>{entries.length === 0 ? 'Actions, runtime events, and errors will appear here and persist across reloads.' : 'Choose another filter to see recorded activity.'}</p>
             </article>
           )}
           {filtered.length > 0 && (
