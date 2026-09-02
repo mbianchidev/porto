@@ -2,7 +2,7 @@
   "name": "porto",
   "productName": "Porto",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
   "author": "Porto",
   "repository": "https://github.com/mbianchidev/porto",
