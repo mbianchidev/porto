@@ -580,6 +580,7 @@ export type KubernetesCluster = {
   server: string
   nodes: string[]
   message?: string
+  stateSince?: string
 }
 
 // --- Virtual machines -----------------------------------------------------------

@@ -71,12 +71,36 @@ type ClusterProvisioner struct {
 	ownershipMu    sync.Mutex
 	reservations   map[string]string
 	clusterNames   map[string]string
+	apiPortMu      sync.Mutex
+	apiPorts       map[int]struct{}
 }
 
 func (p *ClusterProvisioner) runtimeNameReserved(runtimeName, owner string) bool {
 	p.ownershipMu.Lock()
 	defer p.ownershipMu.Unlock()
 	return p.reservations[runtimeName] == owner
+}
+
+func (p *ClusterProvisioner) reconcileInterruptedCreation(request ClusterRequest) (ClusterRequest, error) {
+	p.ownershipMu.Lock()
+	defer p.ownershipMu.Unlock()
+	runtimeName := clusterRuntimeName(request)
+	if p.reservations[runtimeName] != "" || p.clusterNames[request.Name] != "" {
+		return request, nil
+	}
+	current, err := p.readClusterMetadata(request.Name)
+	if err != nil {
+		return ClusterRequest{}, err
+	}
+	if current.Phase != "creating" {
+		return current, nil
+	}
+	current.Phase = "error"
+	current.Error = "Cluster creation was interrupted before Porto recorded completion. Delete this failed cluster record and retry."
+	if err := p.writeClusterMetadata(current); err != nil {
+		return ClusterRequest{}, err
+	}
+	return current, nil
 }
 
 func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
@@ -149,6 +173,8 @@ type ClusterRequest struct {
 	Version      string          `json:"version"`
 	Phase        string          `json:"phase,omitempty"`
 	Error        string          `json:"error,omitempty"`
+	CreatedAt    string          `json:"createdAt,omitempty"`
+	RunningAt    string          `json:"runningAt,omitempty"`
 	APIPort      int             `json:"apiPort,omitempty"`
 	ControlPlane MachineSpec     `json:"controlPlane"`
 	NodeGroups   []NodeGroupSpec `json:"nodeGroups"`
@@ -163,6 +189,7 @@ type Cluster struct {
 	Server         string   `json:"server"`
 	Nodes          []string `json:"nodes"`
 	Message        string   `json:"message,omitempty"`
+	StateSince     string   `json:"stateSince,omitempty"`
 }
 
 func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRoot string) *ClusterProvisioner {
@@ -179,6 +206,7 @@ func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRo
 		metricsRuns:    make(map[string]*metricsServerRun),
 		reservations:   make(map[string]string),
 		clusterNames:   make(map[string]string),
+		apiPorts:       make(map[int]struct{}),
 	}
 }
 
@@ -190,6 +218,8 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	request.RuntimeName = ""
 	request.Phase = ""
 	request.Error = ""
+	request.CreatedAt = ""
+	request.RunningAt = ""
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
 	}
@@ -228,11 +258,13 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 			return Cluster{}, fmt.Errorf("node group %s: %w", group.Name, err)
 		}
 	}
-	if request.Provider != "kind" && request.APIPort == 0 {
-		request.APIPort, err = availableLocalPort()
+	if request.Provider != "kind" {
+		var releasePort func()
+		request.APIPort, releasePort, err = p.reserveAPIPort(request.APIPort)
 		if err != nil {
 			return Cluster{}, err
 		}
+		defer releasePort()
 	}
 	if request.Provider == "kind" {
 		if err := p.ensureKindRuntimeAbsent(ctx, request); err != nil {
@@ -242,6 +274,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		return Cluster{}, err
 	}
 	request.Phase = "creating"
+	request.CreatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := p.writeClusterMetadata(request); err != nil {
 		return Cluster{}, err
 	}
@@ -370,6 +403,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	}
 	request.Phase = ""
 	request.Error = ""
+	request.RunningAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err = p.writeClusterMetadata(request); err != nil {
 		return Cluster{}, err
 	}
@@ -381,6 +415,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		KubeconfigPath: kubeconfigPath,
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
+		StateSince:     request.RunningAt,
 	}
 	return cluster, nil
 }
@@ -472,6 +507,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	}
 	request.Phase = ""
 	request.Error = ""
+	request.RunningAt = time.Now().UTC().Format(time.RFC3339Nano)
 	if err := p.writeClusterMetadata(request); err != nil {
 		return Cluster{}, err
 	}
@@ -495,6 +531,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		KubeconfigPath: kubeconfigPath,
 		Server:         strings.TrimSpace(string(serverOutput)),
 		Nodes:          nodes,
+		StateSince:     request.RunningAt,
 	}, nil
 }
 
@@ -894,9 +931,11 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			return nil, fmt.Errorf("invalid Kubernetes cluster metadata identity in %s", entry.Name())
 		}
 		if request.Phase == "creating" && !p.runtimeNameReserved(clusterRuntimeName(request), request.Name) {
-			request.Phase = "error"
-			request.Error = "Cluster creation was interrupted before Porto recorded completion. Delete this failed cluster record and retry."
-			if err := p.writeClusterMetadata(request); err != nil {
+			request, err = p.reconcileInterruptedCreation(request)
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
+			if err != nil {
 				return nil, err
 			}
 		}
@@ -980,6 +1019,12 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 				}
 			}
 			sort.Strings(cluster.Nodes)
+		}
+		switch cluster.State {
+		case "creating":
+			cluster.StateSince = request.CreatedAt
+		case "running":
+			cluster.StateSince = firstNonEmpty(request.RunningAt, request.CreatedAt)
 		}
 		clusters = append(clusters, cluster)
 	}
@@ -1566,11 +1611,18 @@ func (p *ClusterProvisioner) setRunning(
 		if err := errors.Join(actionErrors...); err != nil || !running {
 			return err
 		}
+		request.RunningAt = time.Now().UTC().Format(time.RFC3339Nano)
+		if err := p.writeClusterMetadata(request); err != nil {
+			return err
+		}
 		contextName := clusterContextName(request)
 		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
 			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
 		}
-		return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName)
+		if err := p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
+			return err
+		}
+		return nil
 	}
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
@@ -1592,6 +1644,10 @@ func (p *ClusterProvisioner) setRunning(
 	if err := errors.Join(actionErrors...); err != nil || !running {
 		return err
 	}
+	request.RunningAt = time.Now().UTC().Format(time.RFC3339Nano)
+	if err := p.writeClusterMetadata(request); err != nil {
+		return err
+	}
 	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
 	contextName := clusterContextName(request)
 	if request.Provider == "k3s" {
@@ -1599,7 +1655,10 @@ func (p *ClusterProvisioner) setRunning(
 			return err
 		}
 	}
-	return p.ensureClusterAddons(ctx, kubeconfigPath, contextName)
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (p *ClusterProvisioner) EnsureMetricsServer(ctx context.Context, contextName string) (bool, error) {
@@ -2023,6 +2082,38 @@ func availableLocalPort() (int, error) {
 	}
 	defer listener.Close()
 	return listener.Addr().(*net.TCPAddr).Port, nil
+}
+
+func (p *ClusterProvisioner) reserveAPIPort(requested int) (int, func(), error) {
+	p.apiPortMu.Lock()
+	defer p.apiPortMu.Unlock()
+	port := requested
+	if port < 0 || port > 65535 {
+		return 0, nil, errors.New("Kubernetes API port must be between 1 and 65535")
+	}
+	if port == 0 {
+		for range 32 {
+			candidate, err := availableLocalPort()
+			if err != nil {
+				return 0, nil, err
+			}
+			if _, reserved := p.apiPorts[candidate]; !reserved {
+				port = candidate
+				break
+			}
+		}
+		if port == 0 {
+			return 0, nil, errors.New("allocate unique Kubernetes API port")
+		}
+	} else if _, reserved := p.apiPorts[port]; reserved {
+		return 0, nil, fmt.Errorf("Kubernetes API port %d is already reserved", port)
+	}
+	p.apiPorts[port] = struct{}{}
+	return port, func() {
+		p.apiPortMu.Lock()
+		delete(p.apiPorts, port)
+		p.apiPortMu.Unlock()
+	}, nil
 }
 
 func (p *ClusterProvisioner) portoDockerEnv() []string {

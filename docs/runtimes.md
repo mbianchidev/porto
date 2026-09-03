@@ -206,6 +206,10 @@ The dashboard records creation in Activity immediately and keeps provisioning
 inside the daemon if the user closes the form or navigates elsewhere. Gateway
 resources use idempotent server-side apply, and a slow final Gateway readiness
 condition no longer removes an otherwise healthy cluster.
+Multiple clusters can provision concurrently; runtime names and VM API ports
+are reserved independently for each in-flight operation. Managed cluster rows
+show a live elapsed-seconds timer while `creating` and while `running`; stopped
+and failed clusters do not show a timer.
 Managed-cluster metadata is created before nodes, so in-progress clusters appear
 with a `creating` state and their control-plane containers are protected as soon
 as they exist. Failed provisioning remains visible with an `error` state and

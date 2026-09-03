@@ -1051,7 +1051,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create cluster: %v", err)
 	}
-	if len(cluster.Nodes) != 3 || cluster.Context != "porto-k3s-dev" {
+	if len(cluster.Nodes) != 3 || cluster.Context != "porto-k3s-dev" || cluster.StateSince == "" {
 		t.Fatalf("unexpected cluster: %+v", cluster)
 	}
 	data, err := os.ReadFile(provisioner.clusterKubeconfigPath("dev"))
@@ -1103,7 +1103,7 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create kind cluster: %v", err)
 	}
-	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" {
+	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" || cluster.StateSince == "" {
 		t.Fatalf("unexpected kind cluster: %+v", cluster)
 	}
 	runner.mu.Lock()
@@ -1279,7 +1279,10 @@ func TestListKeepsProvisioningClusterInCreatingState(t *testing.T) {
 		return nil, nil
 	}
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind", Phase: "creating"}); err != nil {
+	startedAt := "2026-09-03T20:00:00Z"
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "dev", Provider: "kind", Phase: "creating", CreatedAt: startedAt,
+	}); err != nil {
 		t.Fatal(err)
 	}
 	release, err := provisioner.reserveRuntimeName("dev", "dev")
@@ -1292,8 +1295,40 @@ func TestListKeepsProvisioningClusterInCreatingState(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list clusters: %v", err)
 	}
-	if len(clusters) != 1 || clusters[0].State != "creating" {
+	if len(clusters) != 1 || clusters[0].State != "creating" || clusters[0].StateSince != startedAt {
 		t.Fatalf("provisioning cluster state = %+v", clusters)
+	}
+}
+
+func TestListExposesRunningStateTimestamp(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kind" && joined == "get nodes --name porto-dev":
+			return []byte("porto-dev-control-plane\n"), nil
+		case command.Name == "docker" && strings.Contains(joined, "inspect"):
+			return []byte("true\n"), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config view"):
+			return []byte("https://127.0.0.1:6443"), nil
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	runningAt := "2026-09-03T20:05:00Z"
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "dev", Provider: "kind", RunningAt: runningAt,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].State != "running" || clusters[0].StateSince != runningAt {
+		t.Fatalf("running cluster state = %+v", clusters)
 	}
 }
 
@@ -1683,6 +1718,37 @@ func TestRuntimeNameReservationSerializesClusterMutations(t *testing.T) {
 	defer releaseName()
 	if _, err := provisioner.reserveClusterName("shared", "prod"); err == nil || !strings.Contains(err.Error(), "operation is already in progress") {
 		t.Fatalf("concurrent cluster-name reservation error = %v", err)
+	}
+}
+
+func TestRuntimeReservationsAllowDifferentClusters(t *testing.T) {
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
+	releaseDev, err := provisioner.reserveRuntimeName("dev", "dev")
+	if err != nil {
+		t.Fatalf("reserve dev: %v", err)
+	}
+	defer releaseDev()
+	releaseTest, err := provisioner.reserveRuntimeName("test", "test")
+	if err != nil {
+		t.Fatalf("reserve test while dev is active: %v", err)
+	}
+	releaseTest()
+}
+
+func TestAPIPortReservationsAreUniqueAcrossConcurrentClusters(t *testing.T) {
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
+	first, releaseFirst, err := provisioner.reserveAPIPort(0)
+	if err != nil {
+		t.Fatalf("reserve first API port: %v", err)
+	}
+	defer releaseFirst()
+	second, releaseSecond, err := provisioner.reserveAPIPort(0)
+	if err != nil {
+		t.Fatalf("reserve second API port: %v", err)
+	}
+	defer releaseSecond()
+	if first == second {
+		t.Fatalf("concurrent clusters reserved the same API port %d", first)
 	}
 }
 

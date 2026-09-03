@@ -1,4 +1,4 @@
-import { lazy, Suspense, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
@@ -26,6 +26,13 @@ function isRunning(cluster: KubernetesCluster) {
 
 function isLifecycleLocked(cluster: KubernetesCluster) {
   return ['creating', 'error', 'orphaned'].includes(cluster.state)
+}
+
+function clusterElapsed(cluster: KubernetesCluster, now: number) {
+  if (!['creating', 'running'].includes(cluster.state) || !cluster.stateSince) return ''
+  const started = Date.parse(cluster.stateSince)
+  if (Number.isNaN(started)) return ''
+  return `${Math.max(0, Math.floor((now - started) / 1000))}s`
 }
 
 function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onScaled: () => void }) {
@@ -154,12 +161,12 @@ export function KubernetesOverview({
   const [clusterProvider, setClusterProvider] = useState<'kind' | 'k0s' | 'k3s'>('k3s')
   const [controlPlane, setControlPlane] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
   const [initialWorkers, setInitialWorkers] = useState(1)
-  const [submittingCluster, setSubmittingCluster] = useState(false)
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [renamingCluster, setRenamingCluster] = useState(false)
-  const [clusterCreateStatus, setClusterCreateStatus] = useState('')
   const [clusterCreateError, setClusterCreateError] = useState('')
+  const [pendingCreations, setPendingCreations] = useState<Record<string, { provider: string; startedAt: number }>>({})
+  const [clock, setClock] = useState(0)
 
   const status = useKubernetesStatus(context)
   const clusters = usePolledResource<KubernetesCluster[]>(
@@ -180,49 +187,64 @@ export function KubernetesOverview({
   const available = status.data?.available ?? false
   const enabled = status.data?.enabled ?? false
   const runningClusters = clusterItems.filter((cluster) => cluster.state === 'running')
+  const pendingCreationItems = Object.entries(pendingCreations)
+  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => ['creating', 'running'].includes(cluster.state))
 
-  async function createCluster(event: FormEvent) {
+  useEffect(() => {
+    if (!hasTimedClusters) return
+    const timer = window.setInterval(() => setClock(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [hasTimedClusters])
+
+  function createCluster(event: FormEvent) {
     event.preventDefault()
     const requestedName = clusterName.trim()
     const requestedProvider = clusterProvider
-    if (requestedName === '') return
+    if (requestedName === '' || Object.hasOwn(pendingCreations, requestedName)) return
     const progress = `Creating ${requestedProvider} cluster ${requestedName}. Provisioning nodes and add-ons can take several minutes.`
+    const startedAt = Date.now()
     setClusterCreateError('')
-    setClusterCreateStatus(progress)
-    setSubmittingCluster(true)
+    setClock(startedAt)
+    setPendingCreations((current) => ({
+      ...current,
+      [requestedName]: { provider: requestedProvider, startedAt },
+    }))
     recordActivity('info', 'kubernetes', progress)
-    try {
-      const creation = apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
-        name: requestedName,
-        provider: requestedProvider,
-        version: clusterVersion,
-        controlPlane,
-        nodeGroups: initialWorkers > 0
-          ? [{ name: 'workers', count: initialWorkers, machine: DEFAULT_MACHINE, labels: {}, taints: [] }]
-          : [],
-      })
-      window.setTimeout(clusters.reload, 1000)
-      const cluster = await creation
-      notifyNotice('kubernetes', `Created ${cluster.provider} cluster ${cluster.name}.`)
-      onContextChange(cluster.context)
-      setSelectedClusterName(cluster.name)
-      setRenameDraft(cluster.name)
-      setClusterName('')
-      setClusterVersion('')
-      setClusterProvider('k3s')
-      setControlPlane(DEFAULT_MACHINE)
-      setInitialWorkers(1)
-      setClusterCreateStatus('')
-      setCreatingCluster(false)
-      clusters.reload()
-    } catch (err) {
-      const message = errorMessage(err, `Unable to create cluster ${requestedName}`)
-      setClusterCreateStatus('')
-      setClusterCreateError(message)
-      notifyError('kubernetes', message)
-    } finally {
-      setSubmittingCluster(false)
+    const request = {
+      name: requestedName,
+      provider: requestedProvider,
+      version: clusterVersion,
+      controlPlane: { ...controlPlane },
+      nodeGroups: initialWorkers > 0
+        ? [{ name: 'workers', count: initialWorkers, machine: { ...DEFAULT_MACHINE }, labels: {}, taints: [] }]
+        : [],
     }
+    setClusterName('')
+    setClusterVersion('')
+    setClusterProvider('k3s')
+    setControlPlane(DEFAULT_MACHINE)
+    setInitialWorkers(1)
+    const creation = apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', request)
+    window.setTimeout(clusters.reload, 1000)
+    void creation
+      .then((cluster) => {
+        notifyNotice('kubernetes', `Created ${cluster.provider} cluster ${cluster.name}.`)
+        clusters.reload()
+        status.reload()
+      })
+      .catch((err) => {
+        const message = errorMessage(err, `Unable to create cluster ${requestedName}`)
+        setClusterCreateError(message)
+        notifyError('kubernetes', message)
+        clusters.reload()
+      })
+      .finally(() => {
+        setPendingCreations((current) => {
+          const next = { ...current }
+          delete next[requestedName]
+          return next
+        })
+      })
   }
 
   async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop') {
@@ -318,7 +340,7 @@ export function KubernetesOverview({
         <button type="button" disabled={!enabled} onClick={() => {
           setSelectedClusterName(null)
           setCreatingCluster(true)
-        }}>{submittingCluster ? 'View creation' : 'New cluster'}</button>
+        }}>New cluster{pendingCreationItems.length > 0 ? ` (${pendingCreationItems.length} active)` : ''}</button>
       </div>
       <div className="workArea">
         {!enabled ? (
@@ -351,7 +373,7 @@ export function KubernetesOverview({
             <InventoryList
               items={clusterItems}
               getKey={(cluster) => cluster.name}
-              columnsTemplate="12px minmax(130px,1fr) minmax(80px,0.5fr) minmax(90px,0.6fr) minmax(140px,1fr) minmax(140px,1fr) minmax(55px,0.35fr)"
+              columnsTemplate="12px minmax(130px,1fr) minmax(80px,0.5fr) minmax(90px,0.6fr) minmax(70px,0.4fr) minmax(140px,1fr) minmax(140px,1fr) minmax(55px,0.35fr)"
               selectedKey={selectedClusterName}
               onSelect={(cluster) => {
                 setCreatingCluster(false)
@@ -367,6 +389,7 @@ export function KubernetesOverview({
                 { header: 'Name', render: (cluster) => <strong>{cluster.name}</strong> },
                 { header: 'Provider', className: 'mono', render: (cluster) => cluster.provider },
                 { header: 'State', className: 'mono', render: (cluster) => cluster.state },
+                { header: 'Elapsed', className: 'mono', render: (cluster) => clusterElapsed(cluster, clock) || '—' },
                 { header: 'Context', className: 'mono', render: (cluster) => cluster.context },
                 { header: 'Server', className: 'mono', render: (cluster) => cluster.server || '—' },
                 { header: 'Nodes', className: 'mono', render: (cluster) => cluster.nodes?.length ?? 0 },
@@ -416,6 +439,7 @@ export function KubernetesOverview({
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
                       <div><dt>State</dt><dd>{selectedCluster.state}</dd></div>
+                      {clusterElapsed(selectedCluster, clock) && <div><dt>Elapsed</dt><dd>{clusterElapsed(selectedCluster, clock)}</dd></div>}
                       <div><dt>Server</dt><dd>{selectedCluster.server || '—'}</dd></div>
                       <div><dt>Kubeconfig</dt><dd>{selectedCluster.kubeconfigPath}</dd></div>
                       <div><dt>Nodes</dt><dd>{selectedCluster.nodes?.join(', ') || '—'}</dd></div>
@@ -467,7 +491,13 @@ export function KubernetesOverview({
             {creatingCluster && (
               <Inspector title="New cluster" subtitle="Managed by Porto" onClose={() => setCreatingCluster(false)}>
                 <form className="inspectorForm" onSubmit={createCluster}>
-                  {clusterCreateStatus && <p className="hintLine" role="status" aria-live="polite">{clusterCreateStatus}</p>}
+                  {pendingCreationItems.length > 0 && (
+                    <div className="debugToolboxDetails" role="status" aria-live="polite">
+                      {pendingCreationItems.map(([name, creation]) => (
+                        <p key={name}><strong>{name}</strong> · {creation.provider} · {Math.max(0, Math.floor((clock - creation.startedAt) / 1000))}s</p>
+                      ))}
+                    </div>
+                  )}
                   {clusterCreateError && <p className="errorLine" role="alert">{clusterCreateError}</p>}
                   <section className="providerReadiness" aria-label="Kubernetes provider readiness">
                     {(providerTools.data ?? []).filter((provider) => provider.name !== 'qemu').map((provider) => (
@@ -524,7 +554,7 @@ export function KubernetesOverview({
                       ? 'Creates Kubernetes nodes as privileged containers through the Porto Docker endpoint.'
                       : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}
                   </p>
-                  <button type="submit" disabled={submittingCluster || clusterName.trim() === ''}>{submittingCluster ? 'Creating…' : 'Create cluster'}</button>
+                  <button type="submit" disabled={clusterName.trim() === '' || Object.hasOwn(pendingCreations, clusterName.trim())}>Create cluster</button>
                 </form>
               </Inspector>
             )}
