@@ -67,6 +67,8 @@ type ClusterProvisioner struct {
 	kubeconfigRoot string
 	metricsMu      sync.Mutex
 	metricsRuns    map[string]*metricsServerRun
+	kindRemovalMu  sync.Mutex
+	kindRemovals   map[string]int
 }
 
 func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
@@ -164,6 +166,7 @@ func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRo
 		runner:         runner,
 		kubeconfigRoot: kubeconfigRoot,
 		metricsRuns:    make(map[string]*metricsServerRun),
+		kindRemovals:   make(map[string]int),
 	}
 }
 
@@ -175,6 +178,9 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	request.RuntimeName = ""
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
+	}
+	if err := p.ensureRuntimeNameAvailable(request.Name); err != nil {
+		return Cluster{}, err
 	}
 	if request.Version != "" && !versionPattern.MatchString(request.Version) {
 		return Cluster{}, fmt.Errorf("invalid Kubernetes version %q", request.Version)
@@ -348,11 +354,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		}
 		cleanupContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
-		output, cleanupErr := p.runner.Run(cleanupContext, runtimes.Command{
-			Name: "kind",
-			Args: []string{"delete", "cluster", "--name", kindName},
-			Env:  portoDockerEnv(),
-		})
+		output, cleanupErr := p.runKindDelete(cleanupContext, request)
 		if cleanupErr != nil {
 			err = errors.Join(err, runtimes.CommandError("clean up kind cluster", output, cleanupErr))
 		}
@@ -552,11 +554,7 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 	request.Provider = normalizeProvider(request.Provider)
 	var deleteErrors []error
 	if request.Provider == "kind" {
-		output, deleteErr := p.runner.Run(ctx, runtimes.Command{
-			Name: "kind",
-			Args: []string{"delete", "cluster", "--name", "porto-" + clusterRuntimeName(request)},
-			Env:  portoDockerEnv(),
-		})
+		output, deleteErr := p.runKindDelete(ctx, request)
 		if deleteErr != nil {
 			deleteErrors = append(deleteErrors, runtimes.CommandError("delete kind cluster", output, deleteErr))
 		}
@@ -607,12 +605,73 @@ func (p *ClusterProvisioner) ProtectContainerRemoval(_ context.Context, containe
 		}
 		nodes := kindNodeNames(request)
 		if len(nodes) > 0 && nodes[0] == containerName {
+			if p.kindRemovalAuthorized(request.Name, clusterRuntimeName(request)) {
+				return nil
+			}
 			return fmt.Errorf(
 				"container %s is the control plane for managed Kubernetes cluster %s; delete cluster %s from the Kubernetes dashboard instead",
 				containerName,
 				request.Name,
 				request.Name,
 			)
+		}
+	}
+	return nil
+}
+
+func (p *ClusterProvisioner) runKindDelete(ctx context.Context, request ClusterRequest) ([]byte, error) {
+	runtimeName := clusterRuntimeName(request)
+	removalKey := kindRemovalKey(request.Name, runtimeName)
+	p.kindRemovalMu.Lock()
+	p.kindRemovals[removalKey]++
+	p.kindRemovalMu.Unlock()
+	defer func() {
+		p.kindRemovalMu.Lock()
+		p.kindRemovals[removalKey]--
+		if p.kindRemovals[removalKey] == 0 {
+			delete(p.kindRemovals, removalKey)
+		}
+		p.kindRemovalMu.Unlock()
+	}()
+	return p.runner.Run(ctx, runtimes.Command{
+		Name: "kind",
+		Args: []string{"delete", "cluster", "--name", "porto-" + runtimeName},
+		Env:  portoDockerEnv(),
+	})
+}
+
+func kindRemovalKey(clusterName, runtimeName string) string {
+	return clusterName + "\x00" + runtimeName
+}
+
+func (p *ClusterProvisioner) kindRemovalAuthorized(clusterName, runtimeName string) bool {
+	p.kindRemovalMu.Lock()
+	defer p.kindRemovalMu.Unlock()
+	return p.kindRemovals[kindRemovalKey(clusterName, runtimeName)] > 0
+}
+
+func (p *ClusterProvisioner) ensureRuntimeNameAvailable(runtimeName string) error {
+	entries, err := os.ReadDir(p.kubeconfigRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list Kubernetes cluster ownership: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("read Kubernetes cluster ownership %s: %w", entry.Name(), err)
+		}
+		var existing ClusterRequest
+		if err := json.Unmarshal(data, &existing); err != nil {
+			return fmt.Errorf("decode Kubernetes cluster ownership %s: %w", entry.Name(), err)
+		}
+		if existing.Name != runtimeName && clusterRuntimeName(existing) == runtimeName {
+			return fmt.Errorf("Kubernetes runtime name %s is already owned by cluster %s", runtimeName, existing.Name)
 		}
 	}
 	return nil
@@ -1037,16 +1096,20 @@ func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfig
 	if err := ensureGatewayController(run); err != nil {
 		return err
 	}
-	if _, err := run("configure Porto Gateway", []byte(portoGatewayManifest), "apply", "-f", "-"); err != nil {
+	if _, err := run(
+		"configure Porto Gateway",
+		[]byte(portoGatewayManifest),
+		"apply", "--server-side", "--force-conflicts", "-f", "-",
+	); err != nil {
 		return err
 	}
 	if _, err := run(
 		"wait for Porto Gateway",
 		nil,
 		"--namespace", "porto-system",
-		"wait", "--for=condition=Programmed", "gateway/porto", "--timeout=5m",
+		"wait", "--for=condition=Programmed", "gateway/porto", "--timeout=30s",
 	); err != nil {
-		return err
+		log.Printf("Porto Gateway is still becoming ready for context %s: %v", contextName, err)
 	}
 	return nil
 }
@@ -1200,11 +1263,7 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 	if slices.Contains(strings.Fields(string(output)), nodes[0]) {
 		return false, p.SetRunning(ctx, clusterName, true)
 	}
-	deleteOutput, err := p.runner.Run(ctx, runtimes.Command{
-		Name: "kind",
-		Args: []string{"delete", "cluster", "--name", "porto-" + clusterRuntimeName(request)},
-		Env:  portoDockerEnv(),
-	})
+	deleteOutput, err := p.runKindDelete(ctx, request)
 	if err != nil {
 		return false, runtimes.CommandError("remove broken kind cluster", deleteOutput, err)
 	}

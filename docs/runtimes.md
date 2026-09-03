@@ -157,7 +157,8 @@ remove, and force-remove actions in both the inventory and inspector. Normal
 removal is enabled only after a container stops. The inspector can be maximized
 and includes an interactive terminal: application mode executes a selected
 shell inside the container, while debug mode starts a disposable
-`nicolaka/netshoot` toolbox that shares the target namespaces and volumes.
+`nicolaka/netshoot` toolbox that shares the target network, process, and IPC
+namespaces plus its volumes.
 
 ## Kubernetes
 
@@ -197,6 +198,10 @@ cluster creation and startup. Cluster ownership is recorded before the add-on
 phase so a new kind, k0s, or k3s cluster appears in the dashboard while final
 configuration is still running. An orphaned kubeconfig is also surfaced with a
 repair warning instead of disappearing from the managed cluster list.
+The dashboard records creation in Activity immediately and keeps provisioning
+inside the daemon if the user closes the form or navigates elsewhere. Gateway
+resources use idempotent server-side apply, and a slow final Gateway readiness
+condition no longer removes an otherwise healthy cluster.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the

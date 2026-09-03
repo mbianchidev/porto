@@ -141,7 +141,7 @@ export function KubernetesOverview({
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
 }) {
-  const { notifyError, notifyNotice } = useMessages()
+  const { notifyError, notifyNotice, recordActivity } = useMessages()
   const [selectedClusterName, setSelectedClusterName] = useState<string | null>(null)
   const [clusterTab, setClusterTab] = useState('overview')
   const [creatingCluster, setCreatingCluster] = useState(false)
@@ -154,6 +154,8 @@ export function KubernetesOverview({
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
   const [renamingCluster, setRenamingCluster] = useState(false)
+  const [clusterCreateStatus, setClusterCreateStatus] = useState('')
+  const [clusterCreateError, setClusterCreateError] = useState('')
 
   const status = useKubernetesStatus(context)
   const clusters = usePolledResource<KubernetesCluster[]>(
@@ -177,19 +179,25 @@ export function KubernetesOverview({
 
   async function createCluster(event: FormEvent) {
     event.preventDefault()
-    if (clusterName.trim() === '') return
+    const requestedName = clusterName.trim()
+    const requestedProvider = clusterProvider
+    if (requestedName === '') return
+    const progress = `Creating ${requestedProvider} cluster ${requestedName}. Provisioning nodes and add-ons can take several minutes.`
+    setClusterCreateError('')
+    setClusterCreateStatus(progress)
     setSubmittingCluster(true)
+    recordActivity('info', 'kubernetes', progress)
     try {
       const cluster = await apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
-        name: clusterName.trim(),
-        provider: clusterProvider,
+        name: requestedName,
+        provider: requestedProvider,
         version: clusterVersion,
         controlPlane,
         nodeGroups: initialWorkers > 0
           ? [{ name: 'workers', count: initialWorkers, machine: DEFAULT_MACHINE, labels: {}, taints: [] }]
           : [],
       })
-      notifyNotice('kubernetes', `Provisioning cluster ${clusterName.trim()}. Add node groups from its inspector once it is ready.`)
+      notifyNotice('kubernetes', `Created ${cluster.provider} cluster ${cluster.name}.`)
       onContextChange(cluster.context)
       setSelectedClusterName(cluster.name)
       setRenameDraft(cluster.name)
@@ -198,10 +206,14 @@ export function KubernetesOverview({
       setClusterProvider('k3s')
       setControlPlane(DEFAULT_MACHINE)
       setInitialWorkers(1)
+      setClusterCreateStatus('')
       setCreatingCluster(false)
       clusters.reload()
     } catch (err) {
-      notifyError('kubernetes', errorMessage(err, `Unable to create cluster ${clusterName}`))
+      const message = errorMessage(err, `Unable to create cluster ${requestedName}`)
+      setClusterCreateStatus('')
+      setClusterCreateError(message)
+      notifyError('kubernetes', message)
     } finally {
       setSubmittingCluster(false)
     }
@@ -297,7 +309,10 @@ export function KubernetesOverview({
       <div className="controlBar">
         <span className="filterResultCount" aria-live="polite">Active context: {context || 'cluster default'}</span>
         <button className="refreshControl" type="button" onClick={() => { status.reload(); clusters.reload() }}>Refresh</button>
-        <button type="button" disabled={!enabled} onClick={() => { setSelectedClusterName(null); setCreatingCluster(true) }}>New cluster</button>
+        <button type="button" disabled={!enabled} onClick={() => {
+          setSelectedClusterName(null)
+          setCreatingCluster(true)
+        }}>{submittingCluster ? 'View creation' : 'New cluster'}</button>
       </div>
       <div className="workArea">
         {!enabled ? (
@@ -430,6 +445,8 @@ export function KubernetesOverview({
             {creatingCluster && (
               <Inspector title="New cluster" subtitle="Managed by Porto" onClose={() => setCreatingCluster(false)}>
                 <form className="inspectorForm" onSubmit={createCluster}>
+                  {clusterCreateStatus && <p className="hintLine" role="status" aria-live="polite">{clusterCreateStatus}</p>}
+                  {clusterCreateError && <p className="errorLine" role="alert">{clusterCreateError}</p>}
                   <section className="providerReadiness" aria-label="Kubernetes provider readiness">
                     {(providerTools.data ?? []).filter((provider) => provider.name !== 'qemu').map((provider) => (
                       <div className={`integrationStatus ${provider.installed ? 'ready' : 'missing'}`} key={provider.name}>

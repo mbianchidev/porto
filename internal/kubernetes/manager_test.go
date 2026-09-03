@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -1423,6 +1424,80 @@ func TestManagedKindControlPlaneCannotBeRemovedAsContainer(t *testing.T) {
 	}
 	if err := provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-worker"); err != nil {
 		t.Fatalf("worker removal was unexpectedly blocked: %v", err)
+	}
+}
+
+func TestKindDeletionAuthorizesItsOwnControlPlaneRemoval(t *testing.T) {
+	runner := newFakeRunner()
+	var provisioner *ClusterProvisioner
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "kind" && strings.Join(command.Args, " ") == "delete cluster --name porto-dev" {
+			return nil, provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-control-plane")
+		}
+		return nil, nil
+	}
+	provisioner = NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := provisioner.Delete(context.Background(), "dev"); err != nil {
+		t.Fatalf("delete managed kind cluster: %v", err)
+	}
+}
+
+func TestCreateKindRejectsRuntimeNameOwnedByRenamedCluster(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "prod", RuntimeName: "dev", Provider: "kind",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"})
+	if err == nil || !strings.Contains(err.Error(), "runtime name dev is already owned by cluster prod") {
+		t.Fatalf("runtime-name collision error = %v", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("runtime-name collision started provisioning: %+v", runner.commands)
+	}
+}
+
+func TestGatewayProgrammingTimeoutDoesNotFailClusterAddons(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "version --request-timeout=10s"):
+			return []byte(`{"serverVersion":{"gitVersion":"v1.37.0"}}`), nil
+		case strings.Contains(joined, "get storageclass -o json"):
+			return []byte(`{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}`), nil
+		case strings.Contains(joined, "deployment/envoy-gateway"):
+			return []byte("true"), nil
+		case strings.Contains(joined, "wait --for=condition=Programmed gateway/porto"):
+			return []byte("timed out waiting for the condition on gateways/porto"), errors.New("exit status 1")
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+
+	if err := provisioner.ensureClusterAddons(context.Background(), "/tmp/kubeconfig", "porto-dev"); err != nil {
+		t.Fatalf("Gateway readiness delay failed cluster creation: %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, " ")
+		if strings.Contains(joined, "wait --for=condition=Programmed gateway/porto") &&
+			!slices.Contains(command.Args, "--timeout=30s") {
+			t.Fatalf("Gateway readiness wait was not bounded: %+v", command.Args)
+		}
+		if strings.Contains(string(command.Stdin), "kind: GatewayClass") &&
+			!strings.Contains(joined, "apply --server-side --force-conflicts -f -") {
+			t.Fatalf("Porto Gateway was not applied idempotently: %+v", command.Args)
+		}
 	}
 }
 

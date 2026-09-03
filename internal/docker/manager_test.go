@@ -421,6 +421,9 @@ func TestContainerTerminalCommandsSupportApplicationAndDebugShells(t *testing.T)
 			t.Fatalf("debug command missing %q: %s", expected, joined)
 		}
 	}
+	if strings.Contains(joined, "--uts") {
+		t.Fatalf("debug command uses unsupported container UTS sharing: %s", joined)
+	}
 }
 
 func TestForceRemoveCompletesStoppedContainerCleanup(t *testing.T) {

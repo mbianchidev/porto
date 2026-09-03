@@ -746,7 +746,13 @@ func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request)
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	cluster, err := s.clusters.Create(r.Context(), request)
+	operationBase := s.runtimeContext
+	if operationBase == nil {
+		operationBase = context.Background()
+	}
+	operationContext, cancel := context.WithTimeout(operationBase, 20*time.Minute)
+	defer cancel()
+	cluster, err := s.clusters.Create(operationContext, request)
 	if err != nil {
 		writeRuntimeError(w, err)
 		return
