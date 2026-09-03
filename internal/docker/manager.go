@@ -41,7 +41,6 @@ type Manager struct {
 	lookPath         func(string) (string, error)
 	goos             string
 	directCLI        bool
-	removalGuard     func(context.Context, string) error
 	dialBuildKit     func(context.Context) (net.Conn, error)
 	installMu        sync.Mutex
 	healthMu         sync.Mutex
@@ -88,10 +87,6 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	return manager
-}
-
-func (m *Manager) SetContainerRemovalGuard(guard func(context.Context, string) error) {
-	m.removalGuard = guard
 }
 
 func (m *Manager) Status(ctx context.Context, socketPath string) Status {
@@ -744,15 +739,6 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 			action = "unpause"
 		}
 	}
-	if strings.HasPrefix(action, "remove") && m.removalGuard != nil {
-		_, name, err := m.resolveContainerIdentity(ctx, id)
-		if err != nil {
-			return err
-		}
-		if err := m.removalGuard(ctx, name); err != nil {
-			return err
-		}
-	}
 	var args []string
 	switch action {
 	case "start", "pause", "unpause":
@@ -854,6 +840,11 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 func (m *Manager) resolveContainerID(ctx context.Context, id string) (string, error) {
 	containerID, _, err := m.resolveContainerIdentity(ctx, id)
 	return containerID, err
+}
+
+func (m *Manager) ContainerName(ctx context.Context, id string) (string, error) {
+	_, name, err := m.resolveContainerIdentity(ctx, id)
+	return name, err
 }
 
 func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (string, string, error) {

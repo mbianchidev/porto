@@ -211,6 +211,21 @@ func TestUIHandlerNeverReusesCachedIndex(t *testing.T) {
 	}
 }
 
+func TestWaitForRuntimeOperationsAllowsCleanupToFinish(t *testing.T) {
+	server := &Server{}
+	server.runtimeOps.Add(1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		server.runtimeOps.Done()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := server.waitForRuntimeOperations(ctx); err != nil {
+		t.Fatalf("wait for runtime operations: %v", err)
+	}
+}
+
 func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {

@@ -325,7 +325,19 @@ func (s *Server) dockerContainerStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dockerContainerAction(w http.ResponseWriter, r *http.Request) {
-	if err := s.docker.ContainerAction(r.Context(), r.PathValue("id"), r.PathValue("action")); err != nil {
+	action := r.PathValue("action")
+	if strings.HasPrefix(action, "remove") && s.clusters != nil {
+		name, err := s.docker.ContainerName(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if err := s.clusters.ProtectContainerRemoval(r.Context(), name); err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+	}
+	if err := s.docker.ContainerAction(r.Context(), r.PathValue("id"), action); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -742,6 +754,11 @@ func (s *Server) kubernetesPodManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRuntimeOperation() {
+		http.Error(w, "Porto is shutting down; cluster creation was not started", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endRuntimeOperation()
 	var request kubernetes.ClusterRequest
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
@@ -1124,6 +1141,10 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if feature == "docker" && !enabled {
+		if s.hasRuntimeOperations() {
+			http.Error(w, "wait for active runtime operations to finish before disabling Docker", http.StatusConflict)
+			return
+		}
 		statePath, pathErr := config.DockerEndpointStatePath()
 		if pathErr != nil {
 			writeRuntimeError(w, pathErr)

@@ -367,27 +367,19 @@ func TestContainerStartResumesPausedContainer(t *testing.T) {
 	}
 }
 
-func TestContainerRemovalGuardReceivesResolvedName(t *testing.T) {
+func TestContainerNameResolvesInspectIdentity(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
 			"nerdctl container inspect abc123": []byte(`[{"Id":"abc123","Name":"/porto-kind-control-plane"}]`),
 		},
 		errors: map[string]error{},
 	}
-	manager := New(runner)
-	manager.SetContainerRemovalGuard(func(_ context.Context, name string) error {
-		if name != "porto-kind-control-plane" {
-			t.Fatalf("guard name = %q", name)
-		}
-		return errors.New("managed Kubernetes control plane")
-	})
-
-	err := manager.ContainerAction(context.Background(), "abc123", "remove-force")
-	if err == nil || !strings.Contains(err.Error(), "managed Kubernetes control plane") {
-		t.Fatalf("remove-force error = %v", err)
+	name, err := New(runner).ContainerName(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("resolve container name: %v", err)
 	}
-	if len(runner.commands) != 1 {
-		t.Fatalf("removal continued after guard rejection: %+v", runner.commands)
+	if name != "porto-kind-control-plane" {
+		t.Fatalf("container name = %q", name)
 	}
 }
 
