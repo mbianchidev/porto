@@ -157,7 +157,7 @@ remove, and force-remove actions in both the inventory and inspector. Normal
 removal is enabled only after a container stops. The inspector can be maximized
 and includes an interactive terminal: application mode executes a selected
 shell inside the container, while debug mode starts a disposable
-`nicolaka/netshoot` toolbox that shares the target network, process, and IPC
+`nicolaka/netshoot` toolbox that shares the target network and process
 namespaces plus its volumes.
 
 ## Kubernetes

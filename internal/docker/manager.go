@@ -1126,7 +1126,6 @@ func (m *Manager) ContainerTerminalCommand(ctx context.Context, id, shell string
 			"run", "--rm", "--interactive", "--tty",
 			"--network", "container:"+id,
 			"--pid", "container:"+id,
-			"--ipc", "container:"+id,
 			"--volumes-from", id,
 			"nicolaka/netshoot:latest", "/bin/bash",
 		)

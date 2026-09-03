@@ -421,8 +421,8 @@ func TestContainerTerminalCommandsSupportApplicationAndDebugShells(t *testing.T)
 			t.Fatalf("debug command missing %q: %s", expected, joined)
 		}
 	}
-	if strings.Contains(joined, "--uts") {
-		t.Fatalf("debug command uses unsupported container UTS sharing: %s", joined)
+	if strings.Contains(joined, "--uts") || strings.Contains(joined, "--ipc") {
+		t.Fatalf("debug command uses target namespace modes that are not generally shareable: %s", joined)
 	}
 }
 
