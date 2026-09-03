@@ -159,6 +159,10 @@ and includes an interactive terminal: application mode executes a selected
 shell inside the container, while debug mode starts a disposable
 `nicolaka/netshoot` toolbox that shares the target network and process
 namespaces plus its volumes.
+Containers carrying Docker Compose project labels are grouped into expandable
+application sections with service names, aggregate state, and running/container
+counts. Containers without Compose ownership remain in a separate standalone
+inventory.
 
 ## Kubernetes
 

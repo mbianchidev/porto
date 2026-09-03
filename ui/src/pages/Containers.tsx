@@ -1,11 +1,11 @@
-import { lazy, Suspense, useState, type FormEvent } from 'react'
+import { lazy, Suspense, useState, type FormEvent, type ReactNode } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
-import { InventoryList } from '../components/InventoryList'
+import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -16,6 +16,7 @@ import type {
   DockerContainerCreateResult,
   DockerImage,
   DockerStatus,
+  LampState,
 } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(180px,1.3fr) minmax(160px,1fr) minmax(150px,1fr) minmax(120px,0.8fr)'
@@ -68,6 +69,41 @@ function healthLabel(status: string) {
   return status === 'disabled' ? 'Not configured' : status
 }
 
+function containerMatches(container: DockerContainer, query: string) {
+  return query === '' || [
+    container.name,
+    container.image,
+    container.status,
+    container.composeProject ?? '',
+    container.composeService ?? '',
+  ].some((value) => value.toLocaleLowerCase().includes(query))
+}
+
+function composeGroupLamp(containers: DockerContainer[]): LampState {
+  const states = containers.map((container) => lampStateFor(container.state))
+  for (const state of ['crashed', 'starting', 'running', 'stopped', 'neutral'] as const) {
+    if (states.includes(state)) return state
+  }
+  return 'neutral'
+}
+
+function containerColumns(grouped: boolean): InventoryColumn<DockerContainer>[] {
+  return [
+    {
+      header: grouped ? 'Service / container' : 'Name',
+      render: (container) => (
+        <span className="containerIdentity">
+          <strong>{grouped ? container.composeService || container.name.replace(/^\//, '') : container.name.replace(/^\//, '')}</strong>
+          {grouped && container.composeService && <small>{container.name.replace(/^\//, '')}</small>}
+        </span>
+      ),
+    },
+    { header: 'Image', className: 'mono', render: (container) => container.image },
+    { header: 'Status', className: 'mono', render: (container) => container.status },
+    { header: 'Ports', className: 'mono', render: (container) => container.ports || '—' },
+  ]
+}
+
 export function Containers() {
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
@@ -81,8 +117,24 @@ export function Containers() {
   const containers = useContainerSnapshots(status.data?.enabled ?? false)
   const items = containers.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((container) => normalizedQuery === '' || [container.name, container.image, container.status]
-    .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
+  const standaloneContainers = items.filter((container) => !container.composeProject && containerMatches(container, normalizedQuery))
+  const composeProjects = new Map<string, DockerContainer[]>()
+  for (const container of items) {
+    if (!container.composeProject) continue
+    const projectContainers = composeProjects.get(container.composeProject) ?? []
+    projectContainers.push(container)
+    composeProjects.set(container.composeProject, projectContainers)
+  }
+  const composeGroups = [...composeProjects.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([project, projectContainers]) => ({
+      project,
+      containers: project.toLocaleLowerCase().includes(normalizedQuery)
+        ? projectContainers
+        : projectContainers.filter((container) => containerMatches(container, normalizedQuery)),
+    }))
+    .filter((group) => group.containers.length > 0)
+  const filteredCount = standaloneContainers.length + composeGroups.reduce((count, group) => count + group.containers.length, 0)
   const selected = items.find((container) => container.id === selectedID) ?? null
   const available = containers.snapshot?.available ?? status.data?.available ?? false
   const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
@@ -182,7 +234,7 @@ export function Containers() {
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
           <input type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} containers</span>
+        <span className="filterResultCount" aria-live="polite">{filteredCount} / {items.length} containers</span>
         <button className="refreshControl" type="button" disabled={!available} onClick={() => setCreateOpen((value) => !value)}>
           {createOpen ? 'Close creator' : 'Create container'}
         </button>
@@ -268,24 +320,41 @@ export function Containers() {
             message={containers.snapshot?.message || containers.error || status.data?.message || status.error || (status.data?.enabled ? 'Confirm the configured Docker-compatible engine is running.' : undefined)}
           />
         ) : (
-          <InventoryList
-            items={filtered}
-            getKey={(container) => container.id}
-            columnsTemplate={COLUMNS_TEMPLATE}
-            getLamp={(container) => lampStateFor(container.state)}
-            getLampLabel={(container) => container.state}
-            selectedKey={selectedID}
-            onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
-            ariaLabel="Docker containers"
-            emptyMessage={containers.error || 'No containers found.'}
-            columns={[
-              { header: 'Name', render: (container) => <strong>{container.name.replace(/^\//, '')}</strong> },
-              { header: 'Image', className: 'mono', render: (container) => container.image },
-              { header: 'Status', className: 'mono', render: (container) => container.status },
-              { header: 'Ports', className: 'mono', render: (container) => container.ports || '—' },
-            ]}
-            renderActions={containerActions}
-          />
+          <div className="containerInventoryGroups">
+            {composeGroups.map((group) => (
+              <ComposeContainerGroup
+                project={group.project}
+                containers={group.containers}
+                selectedID={selectedID}
+                onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                renderActions={containerActions}
+                key={group.project}
+              />
+            ))}
+            {standaloneContainers.length > 0 && (
+              <section
+                className="standaloneContainerGroup"
+                aria-label={composeGroups.length === 0 ? 'Standalone containers' : undefined}
+                aria-labelledby={composeGroups.length > 0 ? 'standalone-containers-title' : undefined}
+              >
+                {composeGroups.length > 0 && <h2 className="sectionSubhead" id="standalone-containers-title">Standalone containers</h2>}
+                <InventoryList
+                  items={standaloneContainers}
+                  getKey={(container) => container.id}
+                  columnsTemplate={COLUMNS_TEMPLATE}
+                  getLamp={(container) => lampStateFor(container.state)}
+                  getLampLabel={(container) => container.state}
+                  selectedKey={selectedID}
+                  onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                  ariaLabel="Standalone Docker containers"
+                  emptyMessage={containers.error || 'No standalone containers found.'}
+                  columns={containerColumns(false)}
+                  renderActions={containerActions}
+                />
+              </section>
+            )}
+            {filteredCount === 0 && <article className="empty"><p>{containers.error || 'No containers found.'}</p></article>}
+          </div>
         )}
 
         {selected && (
@@ -358,6 +427,56 @@ export function Containers() {
   )
 }
 
+function ComposeContainerGroup({
+  project,
+  containers,
+  selectedID,
+  onSelect,
+  renderActions,
+}: {
+  project: string
+  containers: DockerContainer[]
+  selectedID: string | null
+  onSelect: (container: DockerContainer) => void
+  renderActions: (container: DockerContainer) => ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  const services = new Set(containers.map((container) => container.composeService).filter(Boolean)).size
+  const running = containers.filter((container) => containerState(container) === 'running').length
+  const groupState = composeGroupLamp(containers)
+
+  return (
+    <details className="containerComposeGroup" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        <span className="containerComposeIdentity">
+          <StatusLamp state={groupState} />
+          <span className="visuallyHidden">{groupState} application state</span>
+          <span>
+            <strong>{project}</strong>
+            <small>Compose application</small>
+          </span>
+        </span>
+        <span className="containerComposeMeta">{services} service(s) · {containers.length} container(s) · {running} running</span>
+      </summary>
+      <div className="containerComposeBody">
+        <InventoryList
+          items={containers}
+          getKey={(container) => container.id}
+          columnsTemplate={COLUMNS_TEMPLATE}
+          getLamp={(container) => lampStateFor(container.state)}
+          getLampLabel={(container) => container.state}
+          selectedKey={selectedID}
+          onSelect={onSelect}
+          ariaLabel={`${project} Compose containers`}
+          emptyMessage={`No matching containers in ${project}.`}
+          columns={containerColumns(true)}
+          renderActions={renderActions}
+        />
+      </div>
+    </details>
+  )
+}
+
 function ContainerTerminal({ container }: { container: DockerContainer }) {
   const [mode, setMode] = useState<'application' | 'debug'>('application')
   const [shell, setShell] = useState<TerminalShell>('sh')
@@ -385,7 +504,7 @@ function ContainerTerminal({ container }: { container: DockerContainer }) {
         )}
         <p className="hintLine">
           {debug
-            ? 'Runs a disposable netshoot toolbox sharing the target container network, process, IPC, UTS, and volumes.'
+            ? 'Runs a disposable netshoot toolbox sharing the target container network, process namespace, and volumes.'
             : 'Executes the selected shell inside the container. Use the debug toolbox when the image has no shell.'}
         </p>
       </section>
