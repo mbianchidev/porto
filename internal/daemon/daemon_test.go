@@ -27,6 +27,8 @@ import (
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/store"
 )
@@ -34,6 +36,12 @@ import (
 type killSwitchRunner struct {
 	mu       sync.Mutex
 	syncArgs chan []string
+}
+
+type runtimeRunnerFunc func(context.Context, runtimes.Command) ([]byte, error)
+
+func (f runtimeRunnerFunc) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	return f(ctx, command)
 }
 
 func TestLoadProjectGitMetadataRunsConcurrently(t *testing.T) {
@@ -245,12 +253,32 @@ func TestStopKubernetesForwardsScopesByContext(t *testing.T) {
 	}
 }
 
+func TestStopKubernetesForwardsWaitsForProcessExit(t *testing.T) {
+	done := make(chan struct{})
+	server := &Server{kubeForwards: map[string]*kubeForward{
+		"porto-dev/gateway": {done: done},
+	}}
+	go func() {
+		time.Sleep(50 * time.Millisecond)
+		close(done)
+	}()
+
+	started := time.Now()
+	if err := server.stopKubernetesForwards("porto-dev"); err != nil {
+		t.Fatalf("stop forwards: %v", err)
+	}
+	if elapsed := time.Since(started); elapsed < 40*time.Millisecond {
+		t.Fatalf("stop returned before the forward exited: %s", elapsed)
+	}
+}
+
 func TestStopKubernetesClusterForwardsIncludesLegacyK3sContext(t *testing.T) {
 	root := t.TempDir()
 	metadata, err := json.Marshal(kubernetes.ClusterRequest{Name: "local", Provider: "k3s"})
 	if err != nil {
 		t.Fatal(err)
 	}
+
 	if err := os.WriteFile(
 		filepath.Join(root, config.KubernetesClusterFileToken("local")+".json"),
 		metadata,
@@ -271,6 +299,184 @@ func TestStopKubernetesClusterForwardsIncludesLegacyK3sContext(t *testing.T) {
 	}
 	if len(server.kubeForwards) != 1 || server.kubeForwards["porto-other/default/api/80"] == nil {
 		t.Fatalf("unexpected remaining forwards: %+v", server.kubeForwards)
+	}
+}
+
+func TestReconcileServiceRoutesMapsClusterIPThroughGateway(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	defer st.Close()
+	var applied []byte
+	server := New(st, nil)
+	server.kubernetes = kubernetes.New(runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+		if strings.Contains(strings.Join(command.Args, " "), "apply -f -") {
+			applied = append([]byte(nil), command.Stdin...)
+		}
+		return nil, nil
+	}))
+	server.kubeForwards["porto-dev/gateway"] = &kubeForward{port: 45000}
+	server.kubeForwards["porto-dev/raw/default/database/5432"] = &kubeForward{port: 45432}
+	if forward := server.kubernetesForward(kubernetesRawForwardKey("porto-dev", "default", "database", 5432)); forward == nil {
+		t.Fatal("raw test forward was not registered")
+	}
+	services := []kubernetes.Service{
+		{
+			Name:      "api",
+			Namespace: "default",
+			Type:      "ClusterIP",
+			ClusterIP: "10.96.0.20",
+			Ports: []kubernetes.ServicePort{{
+				Name:     "http",
+				Protocol: "TCP",
+				Port:     8080,
+			}},
+		},
+		{
+			Name:      "database",
+			Namespace: "default",
+			Type:      "ClusterIP",
+			ClusterIP: "10.96.0.21",
+			Ports: []kubernetes.ServicePort{{
+				Name:     "postgres",
+				Protocol: "TCP",
+				Port:     5432,
+			}},
+		},
+	}
+
+	if err := server.reconcileServiceRoutes(context.Background(), "porto-dev", services); err != nil {
+		t.Fatalf("reconcile routes: %v", err)
+	}
+	port := services[0].Ports[0]
+	if !port.GatewayReady || port.Hostname != "api-8080.default.dev" ||
+		!strings.Contains(port.HTTPSURL, "api-8080.default.dev.porto.localhost") {
+		t.Fatalf("unexpected routed port: %+v", port)
+	}
+	if !strings.Contains(string(applied), `"kind":"HTTPRoute"`) ||
+		!strings.Contains(string(applied), `"api-8080.default.dev.porto.localhost"`) {
+		t.Fatalf("unexpected HTTPRoute manifest: %s", applied)
+	}
+	if databasePort := services[1].Ports[0]; databasePort.Hostname != "" || databasePort.LocalPort != 45432 {
+		t.Fatalf("non-HTTP service did not retain raw forwarding: %+v", databasePort)
+	}
+}
+
+func TestAppendResourceGroupDoesNotCountKubernetesPodDetailsTwice(t *testing.T) {
+	snapshot := activityResourceSnapshot{}
+	appendResourceGroup(&snapshot, activityResourceGroup{
+		ID:    "kubernetes",
+		Name:  "Kubernetes",
+		Total: resources.Usage{CPUMillicores: 500, MemoryBytes: 1024},
+		Items: []activityResourceItem{
+			{ID: "node", Usage: resources.Usage{CPUMillicores: 500, MemoryBytes: 1024}, CountedInTotal: true},
+			{ID: "pod", Usage: resources.Usage{CPUMillicores: 200, MemoryBytes: 512}, CountedInTotal: false},
+		},
+	})
+	if snapshot.Total.CPUMillicores != 500 || snapshot.Total.MemoryBytes != 1024 {
+		t.Fatalf("snapshot total double-counted detail rows: %+v", snapshot.Total)
+	}
+}
+
+func TestFilteredServiceRequestDoesNotDeleteOtherNamespaceRoutes(t *testing.T) {
+	root := t.TempDir()
+	metadata, err := json.Marshal(kubernetes.ClusterRequest{Name: "dev", Provider: "k3s"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, config.KubernetesClusterFileToken("dev")+".json"), metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	otherRoute := store.KubernetesRoute{
+		Context: "porto-k3s-dev", Namespace: "other", Service: "web", ServicePort: 8080,
+		Hostname: "web-8080.other.dev",
+	}
+	if err := st.UpsertKubernetesRoute(context.Background(), otherRoute); err != nil {
+		t.Fatal(err)
+	}
+	runner := runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "limactl" && joined == "list --json":
+			return nil, nil
+		case command.Name == "kubectl" && strings.Contains(joined, "get services --all-namespaces"):
+			return []byte(`{"items":[
+					{"metadata":{"name":"api","namespace":"default"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.1","ports":[{"name":"http","protocol":"TCP","port":8080}]},"status":{}},
+					{"metadata":{"name":"web","namespace":"other"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.2","ports":[{"name":"http","protocol":"TCP","port":8080}]},"status":{}}
+				]}`), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "get services --namespace default"):
+			return []byte(`{"items":[{"metadata":{"name":"api","namespace":"default"},"spec":{"type":"ClusterIP","clusterIP":"10.0.0.1","ports":[{"name":"http","protocol":"TCP","port":8080}]},"status":{}}]}`), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "apply -f -"):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+		}
+	})
+	server := New(st, nil)
+	server.kubernetes = kubernetes.New(runner)
+	server.clusters = kubernetes.NewClusterProvisioner(nil, runner, root)
+	server.kubeForwards["porto-k3s-dev/gateway"] = &kubeForward{port: 45000}
+
+	response := httptest.NewRecorder()
+	server.kubernetesServices(
+		response,
+		httptest.NewRequest(http.MethodGet, "/api/kubernetes/services?context=porto-k3s-dev&namespace=default", nil),
+	)
+	if response.Code != http.StatusOK {
+		t.Fatalf("services response = %d: %s", response.Code, response.Body.String())
+	}
+	if _, err := st.GetKubernetesRouteByHostname(context.Background(), otherRoute.Hostname); err != nil {
+		t.Fatalf("route from another namespace was deleted: %v", err)
+	}
+}
+
+func TestDeleteClusterCleansRoutesAfterProviderFailure(t *testing.T) {
+	root := t.TempDir()
+	metadata, err := json.Marshal(kubernetes.ClusterRequest{Name: "dev", Provider: "kind"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, config.KubernetesClusterFileToken("dev")+".json"), metadata, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	route := store.KubernetesRoute{
+		Context: "porto-dev", Namespace: "default", Service: "api", ServicePort: 8080,
+		Hostname: "api-8080.default.dev",
+	}
+	if err := st.UpsertKubernetesRoute(context.Background(), route); err != nil {
+		t.Fatal(err)
+	}
+	runner := runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+		if command.Name == "kind" && strings.HasPrefix(strings.Join(command.Args, " "), "delete cluster") {
+			return []byte("delete failed"), errors.New("exit status 1")
+		}
+		return nil, nil
+	})
+	server := New(st, nil)
+	server.kubernetes = kubernetes.New(runner)
+	server.clusters = kubernetes.NewClusterProvisioner(nil, runner, root)
+
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(http.MethodDelete, "/api/kubernetes/clusters/dev?confirm=true", nil)
+	request.SetPathValue("name", "dev")
+	server.deleteKubernetesCluster(response, request)
+	if response.Code == http.StatusNoContent {
+		t.Fatal("provider deletion failure was not reported")
+	}
+	if _, err := st.GetKubernetesRouteByHostname(context.Background(), route.Hostname); err == nil {
+		t.Fatal("route remained after cluster metadata was removed")
 	}
 }
 
@@ -1235,6 +1441,7 @@ func TestProxyUsesConfiguredHostname(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parse backend URL: %v", err)
 	}
+
 	_, rawPort, err := net.SplitHostPort(backendURL.Host)
 	if err != nil {
 		t.Fatalf("parse backend address: %v", err)
@@ -1270,6 +1477,53 @@ func TestProxyUsesConfiguredHostname(t *testing.T) {
 	response := httptest.NewRecorder()
 	server.proxyByHost(response, request)
 	if response.Code != http.StatusOK || response.Body.String() != "proxied" {
+		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
+	}
+}
+
+func TestProxyUsesKubernetesGatewayHostname(t *testing.T) {
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Host != "api-8080.default.dev.porto.localhost" {
+			http.Error(w, "unexpected gateway host: "+r.Host, http.StatusBadRequest)
+			return
+		}
+		_, _ = w.Write([]byte("gateway"))
+	}))
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, rawPort, err := net.SplitHostPort(backendURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	port, err := strconv.Atoi(rawPort)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.UpsertKubernetesRoute(context.Background(), store.KubernetesRoute{
+		Context:     "porto-dev",
+		Namespace:   "default",
+		Service:     "api",
+		ServicePort: 8080,
+		Hostname:    "api-8080.default.dev",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	server := New(st, nil)
+	server.kubeForwards["porto-dev/gateway"] = &kubeForward{port: port}
+
+	request := httptest.NewRequest(http.MethodGet, "https://api-8080.default.dev.porto.localhost/", nil)
+	request.Host = "api-8080.default.dev.porto.localhost:37681"
+	response := httptest.NewRecorder()
+	server.proxyByHost(response, request)
+	if response.Code != http.StatusOK || response.Body.String() != "gateway" {
 		t.Fatalf("proxy response = %d %q", response.Code, response.Body.String())
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -17,6 +18,14 @@ import (
 )
 
 type Store struct{ db *sql.DB }
+
+type KubernetesRoute struct {
+	Context     string `json:"context"`
+	Namespace   string `json:"namespace"`
+	Service     string `json:"service"`
+	ServicePort int32  `json:"servicePort"`
+	Hostname    string `json:"hostname"`
+}
 
 var defaultProtectedBranches = []string{
 	"main",
@@ -86,6 +95,16 @@ CREATE TABLE IF NOT EXISTS logs (
 );
 CREATE INDEX IF NOT EXISTS idx_logs_project_created ON logs(project_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_logs_project_stream_created ON logs(project_id, stream, created_at);
+CREATE TABLE IF NOT EXISTS kubernetes_routes (
+ context_name TEXT NOT NULL,
+ namespace TEXT NOT NULL,
+ service_name TEXT NOT NULL,
+ service_port INTEGER NOT NULL,
+ hostname TEXT NOT NULL UNIQUE,
+ updated_at TEXT NOT NULL,
+ PRIMARY KEY(context_name, namespace, service_name, service_port)
+);
+CREATE INDEX IF NOT EXISTS idx_kubernetes_routes_context ON kubernetes_routes(context_name);
 CREATE TABLE IF NOT EXISTS settings (
  id INTEGER PRIMARY KEY CHECK (id = 1),
  cleanup_local_merged INTEGER NOT NULL DEFAULT 0,
@@ -215,6 +234,136 @@ func (s *Store) GetProjectByHostname(ctx context.Context, hostname string) (app.
 	return scanProject(row)
 }
 
+func (s *Store) UpsertKubernetesRoute(ctx context.Context, route KubernetesRoute) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO kubernetes_routes(context_name,namespace,service_name,service_port,hostname,updated_at)
+VALUES(?,?,?,?,?,?)
+ON CONFLICT(context_name,namespace,service_name,service_port) DO UPDATE SET hostname=excluded.hostname,updated_at=excluded.updated_at`,
+		route.Context,
+		route.Namespace,
+		route.Service,
+		route.ServicePort,
+		route.Hostname,
+		time.Now().UTC().Format(time.RFC3339Nano),
+	)
+	return err
+}
+
+func (s *Store) EnsureKubernetesRoute(ctx context.Context, route KubernetesRoute) (KubernetesRoute, error) {
+	existing, err := s.GetKubernetesRoute(ctx, route.Context, route.Namespace, route.Service, route.ServicePort)
+	if err == nil {
+		return existing, nil
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return KubernetesRoute{}, err
+	}
+	available, err := s.hostnameAvailable(ctx, route.Hostname)
+	if err != nil {
+		return KubernetesRoute{}, err
+	}
+	if !available {
+		base := route.Hostname
+		suffix := shortHash(route.Context + "/" + route.Namespace + "/" + route.Service + "/" + strconv.Itoa(int(route.ServicePort)))
+		route.Hostname = base + "-" + suffix
+		for attempt := 2; ; attempt++ {
+			available, err = s.hostnameAvailable(ctx, route.Hostname)
+			if err != nil {
+				return KubernetesRoute{}, err
+			}
+			if available {
+				break
+			}
+			route.Hostname = fmt.Sprintf("%s-%s-%d", base, suffix, attempt)
+		}
+	}
+	if err := s.UpsertKubernetesRoute(ctx, route); err != nil {
+		return KubernetesRoute{}, err
+	}
+	return route, nil
+}
+
+func (s *Store) GetKubernetesRoute(
+	ctx context.Context,
+	contextName string,
+	namespace string,
+	service string,
+	servicePort int32,
+) (KubernetesRoute, error) {
+	var route KubernetesRoute
+	err := s.db.QueryRowContext(ctx, `SELECT context_name,namespace,service_name,service_port,hostname
+FROM kubernetes_routes WHERE context_name=? AND namespace=? AND service_name=? AND service_port=?`,
+		contextName,
+		namespace,
+		service,
+		servicePort,
+	).Scan(
+		&route.Context,
+		&route.Namespace,
+		&route.Service,
+		&route.ServicePort,
+		&route.Hostname,
+	)
+	return route, err
+}
+
+func (s *Store) GetKubernetesRouteByHostname(ctx context.Context, hostname string) (KubernetesRoute, error) {
+	var route KubernetesRoute
+	err := s.db.QueryRowContext(ctx, `SELECT context_name,namespace,service_name,service_port,hostname
+FROM kubernetes_routes WHERE hostname=?`, hostname).Scan(
+		&route.Context,
+		&route.Namespace,
+		&route.Service,
+		&route.ServicePort,
+		&route.Hostname,
+	)
+	return route, err
+}
+
+func (s *Store) ListKubernetesRoutes(ctx context.Context, contextName string) ([]KubernetesRoute, error) {
+	query := `SELECT context_name,namespace,service_name,service_port,hostname FROM kubernetes_routes`
+	args := []any{}
+	if contextName != "" {
+		query += ` WHERE context_name=?`
+		args = append(args, contextName)
+	}
+	query += ` ORDER BY context_name,namespace,service_name,service_port`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	routes := make([]KubernetesRoute, 0)
+	for rows.Next() {
+		var route KubernetesRoute
+		if err := rows.Scan(&route.Context, &route.Namespace, &route.Service, &route.ServicePort, &route.Hostname); err != nil {
+			return nil, err
+		}
+		routes = append(routes, route)
+	}
+	return routes, rows.Err()
+}
+
+func (s *Store) DeleteKubernetesRoute(
+	ctx context.Context,
+	contextName string,
+	namespace string,
+	service string,
+	servicePort int32,
+) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kubernetes_routes
+WHERE context_name=? AND namespace=? AND service_name=? AND service_port=?`,
+		contextName,
+		namespace,
+		service,
+		servicePort,
+	)
+	return err
+}
+
+func (s *Store) DeleteKubernetesRoutesByContext(ctx context.Context, contextName string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM kubernetes_routes WHERE context_name=?`, contextName)
+	return err
+}
+
 func (s *Store) UsedPorts(ctx context.Context) (map[int]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT port FROM projects WHERE port > 0`)
 	if err != nil {
@@ -256,7 +405,13 @@ func (s *Store) SetBranchIdentity(ctx context.Context, id int64, branch, hostnam
 
 func (s *Store) HostnameExists(ctx context.Context, hostname string, exceptID int64) (bool, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE hostname=? AND id<>?`, hostname, exceptID).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT
+	(SELECT COUNT(*) FROM projects WHERE hostname=? AND id<>?) +
+	(SELECT COUNT(*) FROM kubernetes_routes WHERE hostname=?)`,
+		hostname,
+		exceptID,
+		hostname,
+	).Scan(&count)
 	return count > 0, err
 }
 
@@ -420,23 +575,41 @@ func (s *Store) ensureUniqueHostnames() error {
 func (s *Store) availableHostname(ctx context.Context, path, hostname string) (string, error) {
 	var existingPath string
 	err := s.db.QueryRowContext(ctx, `SELECT path FROM projects WHERE hostname=?`, hostname).Scan(&existingPath)
-	if errors.Is(err, sql.ErrNoRows) || canonicalProjectPath(existingPath) == path {
-		return hostname, nil
-	}
-	if err != nil {
+	if errors.Is(err, sql.ErrNoRows) {
+		available, availableErr := s.hostnameAvailable(ctx, hostname)
+		if availableErr != nil {
+			return "", availableErr
+		}
+		if available {
+			return hostname, nil
+		}
+	} else if err != nil {
 		return "", err
+	} else if canonicalProjectPath(existingPath) == path {
+		return hostname, nil
 	}
 	candidate := hostname + "-" + shortHash(path)
 	for i := 0; ; i++ {
-		var count int
-		if err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM projects WHERE hostname=?`, candidate).Scan(&count); err != nil {
+		available, err := s.hostnameAvailable(ctx, candidate)
+		if err != nil {
 			return "", err
 		}
-		if count == 0 {
+		if available {
 			return candidate, nil
 		}
 		candidate = fmt.Sprintf("%s-%s-%d", hostname, shortHash(path), i+2)
 	}
+}
+
+func (s *Store) hostnameAvailable(ctx context.Context, hostname string) (bool, error) {
+	var count int
+	err := s.db.QueryRowContext(ctx, `SELECT
+	(SELECT COUNT(*) FROM projects WHERE hostname=?) +
+	(SELECT COUNT(*) FROM kubernetes_routes WHERE hostname=?)`,
+		hostname,
+		hostname,
+	).Scan(&count)
+	return count == 0, err
 }
 
 func (s *Store) AddLog(ctx context.Context, id int64, stream, line string) error {

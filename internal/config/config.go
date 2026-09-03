@@ -16,7 +16,7 @@ import (
 const (
 	AppName                  = "porto"
 	Version                  = "1.0.0"
-	APIVersion               = 25
+	APIVersion               = 28
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
@@ -55,6 +55,15 @@ func ProjectHTTPSURL(hostname string) string {
 		return "https://" + host + "/"
 	}
 	return "https://" + net.JoinHostPort(host, port) + "/"
+}
+
+func ProjectHTTPURL(hostname string) string {
+	host := hostname + "." + LocalhostDomain
+	_, port, _ := net.SplitHostPort(RouterAddr)
+	if port == "" || port == "80" {
+		return "http://" + host + "/"
+	}
+	return "http://" + net.JoinHostPort(host, port) + "/"
 }
 
 func ProjectHostname(base, branch, defaultBranch string) string {

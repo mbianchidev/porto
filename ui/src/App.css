@@ -428,6 +428,61 @@
   gap: 5px;
 }
 
+.containerCreatePanel {
+  margin-bottom: 12px;
+  padding: 13px;
+}
+
+.containerCreatePanel .drawerPanelHeading {
+  margin-bottom: 10px;
+}
+
+.containerCreatePanel .drawerPanelHeading p {
+  max-width: 70ch;
+  margin: 4px 0 0;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.containerCreateForm {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.75fr) minmax(240px, 1.25fr) minmax(110px, 0.5fr) minmax(110px, 0.5fr);
+  gap: 10px;
+}
+
+.containerCreateForm label {
+  display: grid;
+  align-content: start;
+  gap: 4px;
+  min-width: 0;
+  color: var(--ink-faint);
+  font: 700 9px/1.2 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.containerCreateForm label > small {
+  color: var(--ink-soft);
+  font: 10px/1.35 var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.containerCreateForm input {
+  width: 100%;
+}
+
+.containerHealthField {
+  grid-column: 1 / -1;
+}
+
+.containerCreateActions {
+  grid-column: 1 / -1;
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 .channelBoard {
   display: grid;
   gap: 8px;
@@ -1484,6 +1539,19 @@ button:disabled {
   box-shadow: 1px 2px 0 #0d0f0d;
 }
 
+.railItemBadge {
+  margin-left: auto;
+  color: var(--ink-faint);
+  font: 700 9px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.railGroup a.active .railItemBadge,
+.railGroup a:hover .railItemBadge {
+  color: inherit;
+}
+
 .railBrand:focus-visible,
 .inventoryRowToggle:focus-visible {
   position: relative;
@@ -1921,7 +1989,113 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.databasesWorkArea {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.databaseComingSoon {
+  padding: 24px;
+}
+
+.databaseComingSoon .runtimeGrid {
+  max-width: 720px;
+}
+
+.activityResources {
+  display: grid;
+  gap: 12px;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  padding: 14px;
+  background: var(--paper);
+}
+
+.activityResourcesHeading,
+.activityResourceGroup > header,
+.activityResourceGroup dl > div {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.activityResourcesHeading h2 {
+  margin: 3px 0 0;
+  font-size: 18px;
+}
+
+.activityResourceGroups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.activityResourceGroup {
+  min-width: 0;
+  border: 1px solid var(--line-strong);
+  border-radius: 3px;
+  background: var(--panel-dark);
+  color: var(--white);
+}
+
+.activityResourceGroup > header {
+  border-bottom: 1px solid #4c514a;
+  padding: 9px 11px;
+}
+
+.activityResourceGroup > header div,
+.activityResourceGroup dt {
+  display: grid;
+  gap: 2px;
+}
+
+.activityResourceGroup > header small,
+.activityResourceGroup dt small {
+  color: var(--ink-faint);
+  font: 9px/1.25 var(--mono);
+}
+
+.activityResourceGroup > header > span,
+.activityResourceGroup dd {
+  color: #bec7a7;
+  font: 700 10px/1.2 var(--mono);
+  white-space: nowrap;
+}
+
+.activityResourceGroup dl {
+  display: grid;
+  max-height: 240px;
+  margin: 0;
+  overflow: auto;
+}
+
+.activityResourceGroup dl > div {
+  border-bottom: 1px solid var(--line-strong);
+  padding: 8px 11px;
+}
+
+.activityResourceGroup dl > div:last-child {
+  border-bottom: 0;
+}
+
+.activityResourceGroup dt,
+.activityResourceGroup dd {
+  margin: 0;
+}
+
+.activityResourceGroup .inlineError {
+  margin: 9px 11px;
+}
+
 @media (max-width: 1080px) {
+  .containerCreateForm {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .containerImageField {
+    grid-column: span 1;
+  }
+
   .channelToggle {
     grid-template-columns: 12px minmax(170px, 1.1fr) minmax(130px, 0.8fr) minmax(150px, 1fr) minmax(80px, 0.5fr);
     gap: 10px;
@@ -2016,6 +2190,15 @@ button:disabled {
 }
 
 @media (max-width: 620px) {
+  .containerCreateForm {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .containerHealthField,
+  .containerCreateActions {
+    grid-column: 1;
+  }
+
   .appMain {
     padding: 9px 9px 32px;
   }

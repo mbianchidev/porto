@@ -11,7 +11,10 @@ Porto assigns stable ports to projects and routes friendly local hostnames over 
 | Project HTTPS router | `https://127.0.0.1:37681` |
 | Portless HTTPS helper | `https://127.0.0.1:443` |
 
-Use `http://<project>.porto.localhost:37680` without any setup. With the macOS HTTPS helper installed, use `https://<project>.porto.localhost/`.
+Use `http://<project>.porto.localhost:37680` without any setup. Managed
+Kubernetes Service ports use the same router with stable names such as
+`api-8080.default.dev.porto.localhost`. With the macOS HTTPS helper installed,
+use the equivalent `https://...porto.localhost/` URL without a port.
 
 Project names retain valid dots. For example, `devoidofbeauty.com` is routed as `devoidofbeauty.com.porto.localhost`, not `devoidofbeauty-com.porto.localhost`.
 
@@ -42,7 +45,12 @@ The daemon creates a persistent ECDSA local certificate authority and a renewabl
 
 Use `porto cert path` to print the active paths or `porto cert generate` to replace the base server certificate. Renewal updates a running daemon immediately, and the daemon checks daily for certificates within 30 days of expiry.
 
-The base certificate covers `porto.local`, `*.porto.local`, `porto.localhost`, `*.porto.localhost`, `localhost`, and loopback IP addresses. Dotted project names receive isolated in-memory certificates containing only their exact hostname, selected through TLS SNI. Server certificate renewal keeps the same trusted local authority, so browser trust persists. Private keys are written with owner-only permissions on Unix.
+The base certificate covers `porto.local`, `*.porto.local`, `porto.localhost`,
+`*.porto.localhost`, `localhost`, and loopback IP addresses. Dotted project
+names and Kubernetes service routes receive isolated in-memory certificates
+containing only their exact hostname, selected through TLS SNI. Server
+certificate renewal keeps the same trusted local authority, so browser trust
+persists. Private keys are written with owner-only permissions on Unix.
 
 ## DNS and custom forwarding
 
@@ -58,6 +66,9 @@ Hosts files do not support wildcards, so add each project hostname separately. F
 curl --resolve api.porto.local:37681:127.0.0.1 https://api.porto.local:37681
 ```
 
-The HTTP router accepts both `<project>.porto.localhost` and `<project>.porto.local`. Without the portless helper, HTTPS remains available on port `37681`. Use `PORTO_TLS_ADDR` and `PORTO_TLS_PUBLIC_PORT` for custom forwarding.
+The HTTP router accepts both `<name>.porto.localhost` and
+`<name>.porto.local` for project and Kubernetes service mappings. Without the
+portless helper, HTTPS remains available on port `37681`. Use
+`PORTO_TLS_ADDR` and `PORTO_TLS_PUBLIC_PORT` for custom forwarding.
 
 Never run the Porto daemon with `sudo`, because managed projects inherit the daemon's privileges.

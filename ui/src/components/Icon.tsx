@@ -16,6 +16,7 @@ export type IconName =
   | 'configs'
   | 'secrets'
   | 'nodes'
+  | 'databases'
   | 'machines'
   | 'activity'
   | 'settings'
@@ -66,6 +67,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'configs' && <><path d="M7 3h10v18H7Z" /><path d="M9.5 8h5M9.5 12h5M9.5 16h3" /></>}
       {name === 'secrets' && <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v2" /></>}
       {name === 'nodes' && <path d="M5 5h5v5H5Zm9 0h5v5h-5ZM5 14h5v5H5Zm9 0h5v5h-5Z" />}
+      {name === 'databases' && <path d="M5 6c0-2 3-3 7-3s7 1 7 3v12c0 2-3 3-7 3s-7-1-7-3Zm0 0c0 2 3 3 7 3s7-1 7-3M5 12c0 2 3 3 7 3s7-1 7-3" />}
       {name === 'machines' && <path d="M4 5h16v10H4Zm4 14h8m-4-4v4M4 9h16" />}
       {name === 'activity' && <path d="M3 12h4l2-7 4 14 2-7h6" />}
       {name === 'settings' && <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Zm8-3.5a8 8 0 0 1-.1 1.2l2 1.6-2 3.4-2.3-.9a8 8 0 0 1-2 1.2L15 21H9l-.6-2.4a8 8 0 0 1-2-1.2l-2.3.9-2-3.4 2-1.6A8 8 0 0 1 4 12a8 8 0 0 1 .1-1.2l-2-1.6 2-3.4 2.3.9a8 8 0 0 1 2-1.2L9 3h6l.6 2.5a8 8 0 0 1 2 1.2l2.3-.9 2 3.4-2 1.6c.067.394.1.795.1 1.2Z" />}

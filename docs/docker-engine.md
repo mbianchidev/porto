@@ -123,10 +123,24 @@ docker --context porto ps -a
 docker --context porto rm --force demo
 ```
 
+The Containers dashboard can also create and start a container from either a
+local image name or a remote image reference. It supports an optional
+loopback-only published port and an optional shell health command.
+
 Container creation supports image, command, entrypoint, environment, labels, working directory, user, hostname, stop behavior, healthchecks, `--volume` bind/volume mappings, published ports, network mode, restart policy, TTY, stdin, and automatic removal.
 The nerdctl backend exposes a shell healthcheck command, so Docker `CMD`
 healthchecks are safely quoted and executed through the container shell; the
 create response includes a warning about that compatibility behavior.
+
+For example, run nginx with an explicit health check:
+
+```sh
+docker --context porto run --detach --name porto-nginx \
+  --publish 8080:80 \
+  --health-cmd 'wget -q -O /dev/null http://127.0.0.1/' \
+  --health-interval 30s \
+  nginx:alpine
+```
 
 The Porto socket is also a Compose backend. Compose uses normal project labels,
 service-name networking, health dependencies, named volumes, builds, container

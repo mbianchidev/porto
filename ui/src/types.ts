@@ -237,6 +237,20 @@ export type DockerImage = {
   createdAt: string
 }
 
+export type DockerContainerCreateRequest = {
+  name: string
+  image: string
+  hostPort: number
+  containerPort: number
+  healthCommand: string
+}
+
+export type DockerContainerCreateResult = {
+  id: string
+  name: string
+  status: string
+}
+
 export type DockerNetwork = {
   id: string
   name: string
@@ -348,7 +362,13 @@ export type KubernetesServicePort = {
   port: number
   targetPort: string
   nodePort?: number
+  appProtocol?: string
   localPort?: number
+  hostname?: string
+  httpUrl?: string
+  httpsUrl?: string
+  gatewayReady: boolean
+  gatewayError?: string
 }
 
 export type KubernetesService = {
@@ -538,6 +558,7 @@ export type RouteID =
   | 'configs'
   | 'secrets'
   | 'nodes'
+  | 'databases'
   | 'machines'
   | 'activity'
   | 'settings'
@@ -550,6 +571,34 @@ export type ActivityEntry = {
   message: string
   source: string
   at: string
+}
+
+export type ResourceUsage = {
+  cpuMillicores: number
+  memoryBytes: number
+}
+
+export type ActivityResourceItem = {
+  id: string
+  name: string
+  detail?: string
+  usage: ResourceUsage
+  countedInTotal: boolean
+}
+
+export type ActivityResourceGroup = {
+  id: string
+  name: string
+  total: ResourceUsage
+  items: ActivityResourceItem[]
+  error?: string
+}
+
+export type ActivityResourceSnapshot = {
+  collectedAt: string
+  total: ResourceUsage
+  groups: ActivityResourceGroup[]
+  partial: boolean
 }
 
 export type LampState = 'running' | 'starting' | 'stopped' | 'crashed' | 'neutral'

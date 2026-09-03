@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -25,17 +26,37 @@ import (
 var clusterNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
 var versionPattern = regexp.MustCompile(`^[A-Za-z0-9.+-]+$`)
 
-const k3sTraefikConfig = `apiVersion: helm.cattle.io/v1
-kind: HelmChartConfig
+const (
+	envoyGatewayManifestURL = "https://github.com/envoyproxy/gateway/releases/download/v1.9.1/install.yaml"
+	localPathManifestURL    = "https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml"
+	portoGatewayManifest    = `apiVersion: v1
+kind: Namespace
 metadata:
-  name: traefik
-  namespace: kube-system
+  name: porto-system
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: GatewayClass
+metadata:
+  name: porto
 spec:
-  valuesContent: |-
-    service:
-      spec:
-        type: ClusterIP
+  controllerName: gateway.envoyproxy.io/gatewayclass-controller
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: porto
+  namespace: porto-system
+spec:
+  gatewayClassName: porto
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
 `
+)
 
 //go:embed metrics-server.yaml
 var metricsServerManifest []byte
@@ -57,6 +78,17 @@ func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
 		return "", fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
 	return clusterContextName(request), nil
+}
+
+func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName string) error {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request))
 }
 
 func clusterContextName(request ClusterRequest) string {
@@ -265,10 +297,8 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
-	if request.Provider == "k3s" {
-		if err := p.ensureK3sTraefik(ctx, kubeconfigPath, contextName); err != nil {
-			return Cluster{}, err
-		}
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+		return Cluster{}, err
 	}
 	cluster = Cluster{
 		Name:           request.Name,
@@ -358,6 +388,9 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		}
 	}
 	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
+		return Cluster{}, err
+	}
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
 	request.APIPort = 0
@@ -737,10 +770,10 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	return nil
 }
 
-func (p *ClusterProvisioner) ensureK3sTraefik(ctx context.Context, kubeconfigPath, contextName string) error {
+func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName string) error {
 	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
 	defer cancel()
-	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName, "--namespace", "kube-system"}
+	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName}
 	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
 		commandArgs := append(append([]string(nil), baseArgs...), args...)
 		output, err := p.runner.Run(operationContext, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
@@ -761,27 +794,89 @@ func (p *ClusterProvisioner) ensureK3sTraefik(ctx context.Context, kubeconfigPat
 		case <-time.After(time.Second):
 		}
 	}
-	output, err := run("inspect k3s Traefik service", nil, "get", "service", "traefik", "-o", "jsonpath={.spec.type}")
-	if err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "ClusterIP") {
-		return nil
-	}
-	if _, err := run("configure k3s Traefik", []byte(k3sTraefikConfig), "apply", "-f", "-"); err != nil {
+	if err := ensurePersistentStorage(run); err != nil {
 		return err
 	}
-	if _, err := run("wait for k3s Traefik service", nil, "wait", "--for=create", "service/traefik", "--timeout=5m"); err != nil {
+	if err := ensureGatewayController(run); err != nil {
+		return err
+	}
+	if _, err := run("configure Porto Gateway", []byte(portoGatewayManifest), "apply", "-f", "-"); err != nil {
 		return err
 	}
 	if _, err := run(
-		"release k3s Traefik host ports",
+		"wait for Porto Gateway",
 		nil,
-		"patch", "service", "traefik", "--type", "merge", "-p", `{"spec":{"type":"ClusterIP"}}`,
+		"--namespace", "porto-system",
+		"wait", "--for=condition=Programmed", "gateway/porto", "--timeout=5m",
 	); err != nil {
 		return err
 	}
+	return nil
+}
+
+func ensurePersistentStorage(
+	run func(string, []byte, ...string) ([]byte, error),
+) error {
+	output, err := run("inspect Kubernetes storage classes", nil, "get", "storageclass", "-o", "json")
+	if err != nil {
+		return err
+	}
+	var document struct {
+		Items []struct {
+			Metadata struct {
+				Annotations map[string]string `json:"annotations"`
+			} `json:"metadata"`
+		} `json:"items"`
+	}
+	if len(strings.TrimSpace(string(output))) > 0 {
+		if err := json.Unmarshal(output, &document); err != nil {
+			return fmt.Errorf("decode Kubernetes storage classes: %w", err)
+		}
+	}
+	for _, item := range document.Items {
+		if strings.EqualFold(item.Metadata.Annotations["storageclass.kubernetes.io/is-default-class"], "true") ||
+			strings.EqualFold(item.Metadata.Annotations["storageclass.beta.kubernetes.io/is-default-class"], "true") {
+			return nil
+		}
+	}
+	if _, err := run("install local-path persistent storage", nil, "apply", "-f", localPathManifestURL); err != nil {
+		return err
+	}
 	if _, err := run(
-		"wait for k3s Traefik",
+		"wait for local-path persistent storage",
 		nil,
-		"wait", "--for=condition=Available", "deployment/traefik", "--timeout=5m",
+		"--namespace", "local-path-storage",
+		"wait", "--for=condition=Available", "deployment/local-path-provisioner", "--timeout=5m",
+	); err != nil {
+		return err
+	}
+	return nil
+}
+
+func ensureGatewayController(
+	run func(string, []byte, ...string) ([]byte, error),
+) error {
+	output, err := run(
+		"inspect Envoy Gateway",
+		nil,
+		"--namespace", "envoy-gateway-system",
+		"get", "deployment/envoy-gateway",
+		"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`,
+	)
+	if err != nil || !strings.EqualFold(strings.TrimSpace(string(output)), "true") {
+		if _, err := run(
+			"install Envoy Gateway",
+			nil,
+			"apply", "--server-side", "-f", envoyGatewayManifestURL,
+		); err != nil {
+			return err
+		}
+	}
+	if _, err := run(
+		"wait for Envoy Gateway",
+		nil,
+		"--namespace", "envoy-gateway-system",
+		"wait", "--for=condition=Available", "deployment/envoy-gateway", "--timeout=5m",
 	); err != nil {
 		return err
 	}
@@ -857,7 +952,11 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		if !running {
 			action = "stop"
 		}
-		for _, name := range kindNodeNames(request) {
+		kindNodes := kindNodeNames(request)
+		if !running {
+			slices.Reverse(kindNodes)
+		}
+		for _, name := range kindNodes {
 			output, actionErr := p.runner.Run(ctx, runtimes.Command{
 				Name: "docker",
 				Args: []string{action, name},
@@ -873,7 +972,7 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName); err != nil {
 			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
 		}
-		return nil
+		return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName)
 	}
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
@@ -894,15 +993,14 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 	if err := errors.Join(actionErrors...); err != nil || !running {
 		return err
 	}
+	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+	contextName := clusterContextName(request)
 	if request.Provider == "k3s" {
-		kubeconfigPath := p.clusterKubeconfigPath(clusterName)
-		contextName := clusterContextName(request)
 		if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
 			return err
 		}
-		return p.ensureK3sTraefik(ctx, kubeconfigPath, contextName)
 	}
-	return nil
+	return p.ensureClusterAddons(ctx, kubeconfigPath, contextName)
 }
 
 func (p *ClusterProvisioner) EnsureMetricsServer(ctx context.Context, contextName string) (bool, error) {
@@ -1211,18 +1309,6 @@ func (p *ClusterProvisioner) installK3s(
 	labels map[string]string,
 	taints []string,
 ) error {
-	if server {
-		if _, err := p.vms.Exec(ctx, machineName, []string{
-			"sudo", "mkdir", "-p", "/var/lib/rancher/k3s/server/manifests",
-		}, nil); err != nil {
-			return fmt.Errorf("create k3s manifests directory on %s: %w", machineName, err)
-		}
-		if _, err := p.vms.Exec(ctx, machineName, []string{
-			"sudo", "tee", "/var/lib/rancher/k3s/server/manifests/porto-traefik-config.yaml",
-		}, []byte(k3sTraefikConfig)); err != nil {
-			return fmt.Errorf("configure k3s Traefik on %s: %w", machineName, err)
-		}
-	}
 	if _, err := p.vms.Exec(ctx, machineName, []string{
 		"sh", "-c", "curl -sfL https://get.k3s.io -o /tmp/porto-install-k3s.sh",
 	}, nil); err != nil {
@@ -1237,7 +1323,7 @@ func (p *ClusterProvisioner) installK3s(
 	}
 	args := append(env, "sh", "/tmp/porto-install-k3s.sh")
 	if server {
-		args = append(args, "server", "--node-name", machineName, "--write-kubeconfig-mode", "600")
+		args = append(args, "server", "--disable", "traefik", "--node-name", machineName, "--write-kubeconfig-mode", "600")
 	} else {
 		args = append(args, "agent", "--node-name", machineName)
 	}

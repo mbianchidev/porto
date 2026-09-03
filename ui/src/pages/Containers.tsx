@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useState, type FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
@@ -9,14 +9,40 @@ import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { DockerContainer, DockerContainerAction, DockerStatus } from '../types'
+import type {
+  DockerContainer,
+  DockerContainerAction,
+  DockerContainerCreateRequest,
+  DockerContainerCreateResult,
+  DockerImage,
+  DockerStatus,
+} from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(180px,1.3fr) minmax(160px,1fr) minmax(150px,1fr) minmax(120px,0.8fr)'
+const EMPTY_CREATE_DRAFT = {
+  name: '',
+  image: '',
+  hostPort: '',
+  containerPort: '',
+  healthCommand: '',
+}
+
+function taskLabel(container: DockerContainer) {
+  if (!container.taskPresent) return container.state === 'running' ? 'Running' : 'No task'
+  return container.pid ? `PID ${container.pid}` : 'Running'
+}
+
+function healthLabel(status: string) {
+  return status === 'disabled' ? 'Not configured' : status
+}
 
 export function Containers() {
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
+  const [createOpen, setCreateOpen] = useState(false)
+  const [creating, setCreating] = useState(false)
+  const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT)
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const containers = useContainerSnapshots(status.data?.enabled ?? false)
@@ -27,6 +53,41 @@ export function Containers() {
   const selected = items.find((container) => container.id === selectedID) ?? null
   const available = containers.snapshot?.available ?? status.data?.available ?? false
   const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
+  const images = usePolledResource<DockerImage[]>(
+    (signal) => available ? apiGet('/api/docker/images', signal) : Promise.resolve([]),
+    15000,
+    [available],
+    available ? 'docker:images:create' : undefined,
+  )
+  const imageOptions = [...new Set((images.data ?? [])
+    .filter((image) => image.repository && image.repository !== '<none>')
+    .map((image) => image.tag && image.tag !== '<none>' ? `${image.repository}:${image.tag}` : image.repository))]
+
+  async function createContainer(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault()
+    const hostPort = Number.parseInt(createDraft.hostPort, 10) || 0
+    const containerPort = Number.parseInt(createDraft.containerPort, 10) || 0
+    const request: DockerContainerCreateRequest = {
+      name: createDraft.name.trim(),
+      image: createDraft.image.trim(),
+      hostPort,
+      containerPort,
+      healthCommand: createDraft.healthCommand.trim(),
+    }
+    setCreating(true)
+    try {
+      const result = await apiSend<DockerContainerCreateResult>('/api/docker/containers', 'POST', request)
+      notifyNotice('containers', `Created and started ${result.name}.`)
+      setCreateDraft(EMPTY_CREATE_DRAFT)
+      setCreateOpen(false)
+      setSelectedID(result.id)
+      containers.reload()
+    } catch (err) {
+      notifyError('containers', errorMessage(err, 'Unable to create container'))
+    } finally {
+      setCreating(false)
+    }
+  }
 
   async function containerAction(container: DockerContainer, action: DockerContainerAction, confirmMessage?: string) {
     if (confirmMessage && !window.confirm(confirmMessage)) return
@@ -62,8 +123,83 @@ export function Containers() {
           <input type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} containers</span>
+        <button className="refreshControl" type="button" disabled={!available} onClick={() => setCreateOpen((value) => !value)}>
+          {createOpen ? 'Close creator' : 'Create container'}
+        </button>
         <button className="refreshControl" type="button" onClick={containers.reload}>Refresh</button>
       </div>
+      {createOpen && available && (
+        <section className="drawerPanel containerCreatePanel" aria-labelledby="create-container-title">
+          <div className="drawerPanelHeading">
+            <div>
+              <h3 id="create-container-title">Create and start a container</h3>
+              <p>Use a local image name or a remote image reference. Remote images are pulled automatically.</p>
+            </div>
+          </div>
+          <form className="containerCreateForm" onSubmit={createContainer}>
+            <label>
+              <span>Name</span>
+              <input
+                type="text"
+                required
+                value={createDraft.name}
+                placeholder="porto-nginx"
+                onChange={(event) => setCreateDraft({ ...createDraft, name: event.target.value })}
+              />
+            </label>
+            <label className="containerImageField">
+              <span>Local or remote image</span>
+              <input
+                type="text"
+                required
+                list="container-image-options"
+                value={createDraft.image}
+                placeholder="nginx:alpine"
+                onChange={(event) => setCreateDraft({ ...createDraft, image: event.target.value })}
+              />
+              <datalist id="container-image-options">
+                {imageOptions.map((image) => <option value={image} key={image} />)}
+              </datalist>
+            </label>
+            <label>
+              <span>Host port</span>
+              <input
+                type="number"
+                min="1"
+                max="65535"
+                value={createDraft.hostPort}
+                placeholder="8080"
+                onChange={(event) => setCreateDraft({ ...createDraft, hostPort: event.target.value })}
+              />
+            </label>
+            <label>
+              <span>Container port</span>
+              <input
+                type="number"
+                min="1"
+                max="65535"
+                value={createDraft.containerPort}
+                placeholder="80"
+                onChange={(event) => setCreateDraft({ ...createDraft, containerPort: event.target.value })}
+              />
+            </label>
+            <label className="containerHealthField">
+              <span>Health command <small>optional</small></span>
+              <input
+                type="text"
+                value={createDraft.healthCommand}
+                placeholder="wget -q -O /dev/null http://127.0.0.1/"
+                onChange={(event) => setCreateDraft({ ...createDraft, healthCommand: event.target.value })}
+              />
+              <small>Runs inside the container every 30 seconds. Leave blank when the image supplies no suitable command.</small>
+            </label>
+            <div className="containerCreateActions">
+              <button type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create and start'}</button>
+              <button type="button" disabled={creating} onClick={() => { setCreateOpen(false); setCreateDraft(EMPTY_CREATE_DRAFT) }}>Cancel</button>
+            </div>
+          </form>
+        </section>
+      )}
       <div className="workArea">
         {!available ? (
           <RuntimeGate
@@ -102,8 +238,8 @@ export function Containers() {
           <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={() => setSelectedID(null)}>
             <div className="drawerReadouts" aria-label="Container readouts">
               <span><small>State</small><strong>{selected.state}</strong></span>
-              <span><small>Task</small><strong>{selected.taskPresent ? `PID ${selected.pid ?? '—'}` : 'No task'}</strong></span>
-              <span><small>Health</small><strong>{selected.health.status}</strong></span>
+              <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
+              <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
               <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
               <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
             </div>

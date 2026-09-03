@@ -2,7 +2,7 @@ import { Icon, type IconName } from './Icon'
 import { StatusLamp } from './StatusLamp'
 import type { RouteID } from '../types'
 
-type NavItem = { id: RouteID; label: string; icon: IconName }
+type NavItem = { id: RouteID; label: string; icon: IconName; badge?: string }
 type NavGroup = { title: string; items: NavItem[] }
 
 const NAV_GROUPS: NavGroup[] = [
@@ -28,6 +28,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'nodes', label: 'Nodes', icon: 'nodes' },
     ],
   },
+  { title: 'Databases', items: [{ id: 'databases', label: 'Databases', icon: 'databases', badge: 'Soon' }] },
   { title: 'Virtual machines', items: [{ id: 'machines', label: 'Machines', icon: 'machines' }] },
   {
     title: 'System',
@@ -80,6 +81,7 @@ export function Rail({
               >
                 <Icon name={item.icon} />
                 <span>{item.label}</span>
+                {item.badge && <small className="railItemBadge">{item.badge}</small>}
               </a>
             ))}
           </div>

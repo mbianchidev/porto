@@ -554,17 +554,48 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 	updates, unsubscribe := i.subscribe()
 	defer unsubscribe()
 	initial := i.snapshotValue()
+	baselineEvents := append([]ContainerLifecycleEvent(nil), initial.Events...)
+	discovered := false
 	container, err := findSnapshotContainer(initial, id)
 	if err != nil {
-		return 0, err
+		if !strings.Contains(strings.ToLower(err.Error()), "not found") {
+			return 0, err
+		}
+		initial, container, err = waitForContainerDiscovery(
+			ctx,
+			updates,
+			id,
+			min(2*time.Second, i.options.operationTimeout),
+			err,
+		)
+		if err != nil {
+			return 0, err
+		}
+		discovered = true
 	}
 	if condition != "next-exit" && !containerActive(container) {
 		return containerExitCode(container), nil
 	}
 	knownExits := make(map[uint64]struct{})
-	for _, event := range initial.Events {
+	for _, event := range baselineEvents {
 		if event.ContainerID == container.ID && containerExitEvent(event) {
 			knownExits[event.Sequence] = struct{}{}
+		}
+	}
+	if discovered {
+		for _, event := range initial.Events {
+			if event.ContainerID != container.ID || !containerExitEvent(event) {
+				continue
+			}
+			if _, exists := knownExits[event.Sequence]; exists {
+				continue
+			}
+			if event.ExitCode != nil {
+				return int(*event.ExitCode), nil
+			}
+		}
+		if !containerActive(container) {
+			return containerExitCode(container), nil
 		}
 	}
 	pendingExit := false
@@ -612,6 +643,36 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			}
 			if !containerActive(current) {
 				return containerExitCode(current), nil
+			}
+		}
+	}
+}
+
+func waitForContainerDiscovery(
+	ctx context.Context,
+	updates <-chan ContainerSnapshot,
+	id string,
+	timeout time.Duration,
+	notFoundErr error,
+) (ContainerSnapshot, *Container, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ContainerSnapshot{}, nil, context.Cause(ctx)
+		case <-timer.C:
+			return ContainerSnapshot{}, nil, notFoundErr
+		case snapshot, ok := <-updates:
+			if !ok {
+				return ContainerSnapshot{}, nil, errors.New("container inventory subscription closed")
+			}
+			container, err := findSnapshotContainer(snapshot, id)
+			if err == nil {
+				return snapshot, container, nil
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "not found") {
+				return ContainerSnapshot{}, nil, err
 			}
 		}
 	}

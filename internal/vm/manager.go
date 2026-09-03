@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -25,11 +26,12 @@ var (
 )
 
 type Manager struct {
-	runner   runtimes.Runner
-	timeout  time.Duration
-	stateDir string
-	lookPath func(string) (string, error)
-	getenv   func(string) string
+	runner          runtimes.Runner
+	timeout         time.Duration
+	resourceTimeout time.Duration
+	stateDir        string
+	lookPath        func(string) (string, error)
+	getenv          func(string) string
 }
 
 type Status struct {
@@ -85,6 +87,33 @@ type PortForward struct {
 	HostPort  int `json:"hostPort"`
 }
 
+const vmResourceScript = `snapshot() {
+  awk '/^cpu / {
+    idle=$5+$6
+    total=0
+    for (i=2; i<=NF; i++) total+=$i
+    print total, idle
+    exit
+  }' /proc/stat
+}
+set -- $(snapshot)
+total1=$1
+idle1=$2
+sleep 0.2
+set -- $(snapshot)
+total2=$1
+idle2=$2
+delta_total=$((total2-total1))
+delta_idle=$((idle2-idle1))
+cpus=$(getconf _NPROCESSORS_ONLN 2>/dev/null || printf 1)
+if [ "$delta_total" -gt 0 ]; then
+  cpu_millicores=$(((delta_total-delta_idle)*1000*cpus/delta_total))
+else
+  cpu_millicores=0
+fi
+memory_bytes=$(awk '/^MemTotal:/{total=$2}/^MemAvailable:/{available=$2}END{printf "%.0f", (total-available)*1024}' /proc/meminfo)
+printf '%s %s\n' "$cpu_millicores" "$memory_bytes"`
+
 type Metadata struct {
 	Name      string    `json:"name"`
 	Kind      string    `json:"kind"`
@@ -101,7 +130,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		runner = runtimes.ExecRunner{}
 	}
 	return &Manager{
-		runner: runner, timeout: defaultTimeout, stateDir: stateDir,
+		runner: runner, timeout: defaultTimeout, resourceTimeout: 5 * time.Second, stateDir: stateDir,
 		lookPath: runtimes.LookPath, getenv: os.Getenv,
 	}
 }
@@ -472,6 +501,40 @@ func (m *Manager) Exec(ctx context.Context, name string, command []string, stdin
 		return nil, runtimes.CommandError("execute command in VM "+name, output, err)
 	}
 	return output, nil
+}
+
+func (m *Manager) ResourceStats(ctx context.Context, name string) (resources.Usage, error) {
+	if err := validateName(name); err != nil {
+		return resources.Usage{}, err
+	}
+	if err := m.ensureManaged(name); err != nil {
+		return resources.Usage{}, err
+	}
+	commandContext, cancel := context.WithTimeout(ctx, m.resourceTimeout)
+	defer cancel()
+	output, err := m.runner.Run(commandContext, m.limaCommand(
+		[]string{"shell", name, "--", "sh", "-c", vmResourceScript},
+		nil,
+	))
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return resources.Usage{}, fmt.Errorf("sample VM %s resources timed out after %s", name, m.resourceTimeout)
+	}
+	if err != nil {
+		return resources.Usage{}, runtimes.CommandError("sample VM "+name+" resources", output, err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 2 {
+		return resources.Usage{}, fmt.Errorf("decode VM %s resource usage: expected CPU and memory, got %q", name, strings.TrimSpace(string(output)))
+	}
+	cpu, err := strconv.ParseInt(fields[0], 10, 64)
+	if err != nil || cpu < 0 {
+		return resources.Usage{}, fmt.Errorf("decode VM %s CPU usage %q", name, fields[0])
+	}
+	memory, err := strconv.ParseInt(fields[1], 10, 64)
+	if err != nil || memory < 0 {
+		return resources.Usage{}, fmt.Errorf("decode VM %s memory usage %q", name, fields[1])
+	}
+	return resources.Usage{CPUMillicores: cpu, MemoryBytes: memory}, nil
 }
 
 func (m *Manager) Copy(ctx context.Context, source, destination string) error {

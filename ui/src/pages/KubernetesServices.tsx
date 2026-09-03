@@ -80,7 +80,7 @@ export function KubernetesServices({
               { header: 'Namespace', className: 'mono', render: (service) => service.namespace },
               { header: 'Type', className: 'mono', render: (service) => service.type },
               { header: 'Cluster IP', className: 'mono', render: (service) => service.clusterIP },
-              { header: 'Ports', className: 'mono', render: (service) => (service.ports ?? []).map((port) => port.localPort ? `localhost:${port.localPort}` : `${port.port}/${port.protocol}`).join(', ') || '—' },
+              { header: 'Routes', className: 'mono', render: (service) => (service.ports ?? []).map((port) => port.hostname || (port.localPort ? `localhost:${port.localPort}` : `${port.port}/${port.protocol}`)).join(', ') || '—' },
               { header: 'Age', className: 'mono', render: (service) => service.age },
             ]}
           />
@@ -103,7 +103,10 @@ export function KubernetesServices({
                       <dt>{port.name || port.protocol}</dt>
                       <dd>
                         {port.port} → {port.targetPort}{port.nodePort ? ` (node ${port.nodePort})` : ''}
-                        {port.localPort ? <> · <a href={`http://127.0.0.1:${port.localPort}/`} target="_blank" rel="noreferrer">localhost:{port.localPort}</a></> : ''}
+                        {port.httpsUrl ? <> · <a href={port.httpsUrl} target="_blank" rel="noreferrer">{port.hostname}</a></> : ''}
+                        {port.hostname ? ` · ${port.gatewayReady ? 'ready' : 'waiting for gateway'}` : ''}
+                        {port.localPort ? <> · <span className="mono">localhost:{port.localPort}</span></> : ''}
+                        {port.gatewayError ? <><br /><small>{port.gatewayError}</small></> : ''}
                       </dd>
                     </div>
                   ))}

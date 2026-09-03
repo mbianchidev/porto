@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -32,6 +33,13 @@ type brokenInstanceRunner struct {
 	listStatus       string
 	startOutput      string
 	startError       error
+}
+
+type blockingResourceRunner struct{}
+
+func (blockingResourceRunner) Run(ctx context.Context, _ runtimes.Command) ([]byte, error) {
+	<-ctx.Done()
+	return nil, ctx.Err()
 }
 
 func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
@@ -225,6 +233,19 @@ func TestStatusReportsLimaVersion(t *testing.T) {
 	status := New(&recordingRunner{}).Status(context.Background())
 	if !status.Available || !strings.Contains(status.Version, "2.0.0") {
 		t.Fatalf("unexpected status: %+v", status)
+	}
+}
+
+func TestResourceStatsUsesShortDedicatedTimeout(t *testing.T) {
+	manager := New(blockingResourceRunner{})
+	manager.resourceTimeout = 10 * time.Millisecond
+	started := time.Now()
+	_, err := manager.ResourceStats(context.Background(), "test-vm")
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("ResourceStats error = %v", err)
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("ResourceStats blocked for %s", elapsed)
 	}
 }
 

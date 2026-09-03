@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"strconv"
@@ -27,10 +28,12 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
 	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
 	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
+	mux.HandleFunc("GET /api/activity/resources", s.activityResources)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
+	mux.HandleFunc("POST /api/docker/containers", s.requireRuntime("docker", s.createDockerContainer))
 	mux.HandleFunc("GET /api/docker/containers/snapshot", s.requireRuntime("docker", s.dockerContainerSnapshot))
 	mux.HandleFunc("GET /api/docker/containers/events", s.requireRuntime("docker", s.dockerContainerEvents))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
@@ -171,6 +174,67 @@ func (s *Server) installDockerContext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 	value, err := s.docker.Containers(r.Context())
 	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name          string `json:"name"`
+		Image         string `json:"image"`
+		HostPort      int    `json:"hostPort"`
+		ContainerPort int    `json:"containerPort"`
+		HealthCommand string `json:"healthCommand"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	request.Image = strings.TrimSpace(request.Image)
+	request.HealthCommand = strings.TrimSpace(request.HealthCommand)
+	if request.Name == "" || request.Image == "" {
+		http.Error(w, "container name and image are required", http.StatusBadRequest)
+		return
+	}
+	if (request.HostPort == 0) != (request.ContainerPort == 0) {
+		http.Error(w, "host port and container port must be provided together", http.StatusBadRequest)
+		return
+	}
+	for name, port := range map[string]int{"host port": request.HostPort, "container port": request.ContainerPort} {
+		if port < 0 || port > 65535 {
+			http.Error(w, name+" must be between 1 and 65535", http.StatusBadRequest)
+			return
+		}
+	}
+	if strings.ContainsAny(request.HealthCommand, "\r\n\x00") {
+		http.Error(w, "health command cannot contain line breaks", http.StatusBadRequest)
+		return
+	}
+	createRequest := portodocker.CreateContainerRequest{
+		Name:  request.Name,
+		Image: request.Image,
+	}
+	if request.HostPort > 0 {
+		createRequest.Publish = []string{
+			fmt.Sprintf("127.0.0.1:%d:%d/tcp", request.HostPort, request.ContainerPort),
+		}
+	}
+	if request.HealthCommand != "" {
+		createRequest.Healthcheck = &portodocker.ContainerHealthcheck{
+			Test:     []string{"CMD-SHELL", request.HealthCommand},
+			Interval: 30 * time.Second,
+			Timeout:  5 * time.Second,
+			Retries:  3,
+		}
+	}
+	id, err := s.docker.RunContainer(r.Context(), createRequest)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, map[string]string{
+		"id":     id,
+		"name":   request.Name,
+		"status": "running",
+	})
 }
 
 func (s *Server) dockerContainerSnapshot(w http.ResponseWriter, _ *http.Request) {
@@ -406,9 +470,24 @@ func (s *Server) kubernetesPods(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) kubernetesServices(w http.ResponseWriter, r *http.Request) {
-	value, err := s.kubernetes.Services(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	contextName := runtimeContext(r)
+	namespace := r.URL.Query().Get("namespace")
+	value, err := s.kubernetes.Services(r.Context(), contextName, namespace)
 	if err == nil {
-		err = s.attachServiceForwards(runtimeContext(r), value)
+		managed, managedErr := s.managedKubernetesContext(r.Context(), contextName)
+		if managedErr != nil {
+			err = managedErr
+		} else if managed {
+			if namespace == "" || namespace == "all" {
+				err = s.reconcileServiceRoutes(r.Context(), contextName, value)
+			} else {
+				allServices, allErr := s.kubernetes.Services(r.Context(), contextName, "")
+				if allErr == nil {
+					allErr = s.reconcileServiceRoutes(r.Context(), contextName, allServices)
+				}
+				err = errors.Join(allErr, s.decorateServiceRoutes(r.Context(), contextName, value))
+			}
+		}
 	}
 	writeRuntimeResult(w, value, err)
 }
@@ -670,6 +749,7 @@ func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		writeRuntimeError(w, err)
 		return
 	}
+	s.rememberKubernetesClusterAddons(cluster.Context)
 	writeJSONStatus(w, http.StatusCreated, cluster)
 }
 
@@ -679,20 +759,28 @@ func (s *Server) kubernetesClusters(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) {
-	if err := s.clusters.SetRunning(r.Context(), r.PathValue("name"), true); err != nil {
+	name := r.PathValue("name")
+	if err := s.clusters.SetRunning(r.Context(), name, true); err != nil {
 		writeRuntimeError(w, err)
 		return
+	}
+	if contextName, err := s.clusters.ContextName(name); err == nil {
+		s.rememberKubernetesClusterAddons(contextName)
 	}
 	writeJSON(w, map[string]string{"status": "started"})
 }
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	contextName, _ := s.clusters.ContextName(name)
 	forwardErr := s.stopKubernetesClusterForwards(name)
-	if err := errors.Join(forwardErr, s.clusters.SetRunning(r.Context(), name, false)); err != nil {
+	operationContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	if err := errors.Join(forwardErr, s.clusters.SetRunning(operationContext, name, false)); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
+	s.forgetKubernetesClusterAddons("porto-"+name, contextName)
 	writeJSON(w, map[string]string{"status": "stopped"})
 }
 
@@ -741,8 +829,19 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
+	contextName, contextErr := s.clusters.ContextName(name)
 	forwardErr := s.stopKubernetesClusterForwards(name)
-	if err := errors.Join(forwardErr, s.clusters.Delete(r.Context(), name)); err != nil {
+	operationContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	defer cancel()
+	httpRouteErr := s.deleteKubernetesHTTPRoutes(operationContext, contextName)
+	deleteErr := s.clusters.Delete(operationContext, name)
+	routeErr := s.deleteKubernetesClusterRoutes(operationContext, name, contextName)
+	s.forgetKubernetesClusterAddons("porto-"+name, contextName)
+	if httpRouteErr != nil && deleteErr == nil {
+		log.Printf("delete Kubernetes HTTPRoutes for removed cluster %s: %v", name, httpRouteErr)
+		httpRouteErr = nil
+	}
+	if err := errors.Join(contextErr, forwardErr, httpRouteErr, deleteErr, routeErr); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}

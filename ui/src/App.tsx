@@ -20,6 +20,7 @@ import { ConfigMaps } from './pages/ConfigMaps'
 import { Secrets } from './pages/Secrets'
 import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
+import { Databases } from './pages/Databases'
 import { Activity } from './pages/Activity'
 import { SettingsPage } from './pages/SettingsPage'
 import type {
@@ -34,7 +35,7 @@ import type {
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
-  'kubernetes', 'pods', 'services', 'configs', 'secrets', 'nodes', 'machines', 'activity', 'settings',
+  'kubernetes', 'pods', 'services', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'activity', 'settings',
 ]
 
 function routeFromHash(): RouteID {
@@ -141,6 +142,7 @@ function AppShell() {
         {route === 'configs' && <ConfigMaps key={`configs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'secrets' && <Secrets key={`secrets:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'nodes' && <Nodes key={`nodes:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'databases' && <Databases />}
         {route === 'machines' && <Machines />}
         {route === 'activity' && <Activity />}
         {route === 'settings' && (

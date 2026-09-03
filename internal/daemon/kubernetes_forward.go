@@ -6,75 +6,21 @@ import (
 	"fmt"
 	"log"
 	"os/exec"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 )
+
+const kubernetesForwardStopTimeout = 5 * time.Second
 
 type kubeForward struct {
 	cmd  *exec.Cmd
 	port int
 	done chan struct{}
 	once sync.Once
-}
-
-func (s *Server) attachServiceForwards(contextName string, services []kubernetes.Service) error {
-	if contextName == "" {
-		return nil
-	}
-	used, err := s.store.UsedPorts(context.Background())
-	if err != nil {
-		return err
-	}
-	s.mu.Lock()
-	for _, forward := range s.kubeForwards {
-		used[forward.port] = true
-	}
-	s.mu.Unlock()
-	for serviceIndex := range services {
-		service := &services[serviceIndex]
-		if service.Type != "LoadBalancer" && service.Type != "NodePort" {
-			continue
-		}
-		for portIndex := range service.Ports {
-			servicePort := &service.Ports[portIndex]
-			if servicePort.Protocol != "" && servicePort.Protocol != "TCP" {
-				continue
-			}
-			key := contextName + "/" + service.Namespace + "/" + service.Name + "/" + strconv.Itoa(int(servicePort.Port))
-			s.mu.Lock()
-			existing := s.kubeForwards[key]
-			s.mu.Unlock()
-			if existing != nil {
-				servicePort.LocalPort = existing.port
-				continue
-			}
-			preferred := int(servicePort.NodePort)
-			localPort, err := ports.Pick(preferred, 45000, used)
-			if err != nil {
-				return fmt.Errorf("allocate localhost port for %s/%s: %w", service.Namespace, service.Name, err)
-			}
-			used[localPort] = true
-			forward, err := s.startServiceForward(
-				key,
-				contextName,
-				service.Namespace,
-				service.Name,
-				localPort,
-				int(servicePort.Port),
-			)
-			if err != nil {
-				return err
-			}
-			servicePort.LocalPort = forward.port
-		}
-	}
-	return nil
 }
 
 func (s *Server) startServiceForward(
@@ -110,7 +56,18 @@ func (s *Server) startServiceForward(
 	s.mu.Lock()
 	if existing := s.kubeForwards[key]; existing != nil {
 		s.mu.Unlock()
+		go s.captureKubernetesForward(key, "stdout", stdout)
+		go s.captureKubernetesForward(key, "stderr", stderr)
+		duplicate := &kubeForward{cmd: cmd, done: make(chan struct{})}
+		go func() {
+			_ = cmd.Wait()
+			close(duplicate.done)
+		}()
 		_ = process.Terminate(cmd)
+		if !waitForKubernetesForward(duplicate, kubernetesForwardStopTimeout) {
+			_ = process.Kill(cmd)
+			_ = waitForKubernetesForward(duplicate, kubernetesForwardStopTimeout)
+		}
 		return existing, nil
 	}
 	s.kubeForwards[key] = forward
@@ -169,11 +126,71 @@ func (s *Server) stopKubernetesForwards(contextName string) error {
 		}
 	}
 	s.mu.Unlock()
-	var stopErrors []error
-	for _, forward := range forwards {
-		if err := process.Terminate(forward.cmd); err != nil {
-			stopErrors = append(stopErrors, err)
+	return stopKubernetesForwardList(forwards)
+}
+
+func (s *Server) stopStaleKubernetesRawForwards(contextName string, desired map[string]bool) error {
+	prefix := contextName + "/raw/"
+	s.mu.Lock()
+	forwards := make([]*kubeForward, 0)
+	for key, forward := range s.kubeForwards {
+		if strings.HasPrefix(key, prefix) && !desired[key] {
+			forwards = append(forwards, forward)
+			delete(s.kubeForwards, key)
 		}
 	}
+	s.mu.Unlock()
+	return stopKubernetesForwardList(forwards)
+}
+
+func stopKubernetesForwardList(forwards []*kubeForward) error {
+	terminateErrors := make([]error, len(forwards))
+	for index, forward := range forwards {
+		if kubernetesForwardDone(forward) {
+			continue
+		}
+		terminateErrors[index] = process.Terminate(forward.cmd)
+	}
+	var stopErrors []error
+	for index, forward := range forwards {
+		if forward.done == nil || waitForKubernetesForward(forward, kubernetesForwardStopTimeout) {
+			continue
+		}
+		killErr := process.Kill(forward.cmd)
+		if waitForKubernetesForward(forward, kubernetesForwardStopTimeout) {
+			continue
+		}
+		stopErrors = append(stopErrors, errors.Join(
+			terminateErrors[index],
+			killErr,
+			errors.New("timed out waiting for Kubernetes forward to exit"),
+		))
+	}
 	return errors.Join(stopErrors...)
+}
+
+func kubernetesForwardDone(forward *kubeForward) bool {
+	if forward == nil || forward.done == nil {
+		return forward == nil
+	}
+	select {
+	case <-forward.done:
+		return true
+	default:
+		return false
+	}
+}
+
+func waitForKubernetesForward(forward *kubeForward, timeout time.Duration) bool {
+	if forward == nil || forward.done == nil {
+		return true
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-forward.done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }

@@ -41,6 +41,38 @@ type concurrentInstallRunner struct {
 	maxActive int
 }
 
+type cancellationCleanupRunner struct {
+	cancel  context.CancelFunc
+	removed bool
+}
+
+func (r *cancellationCleanupRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	args := strings.Join(command.Args, " ")
+	switch args {
+	case "create --name demo alpine:latest":
+		return []byte("container-id\n"), nil
+	case "start container-id":
+		r.cancel()
+		return nil, errors.New("start failed")
+	case "container inspect container-id":
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("cleanup context is canceled: %w", ctx.Err())
+		}
+		if r.removed {
+			return nil, errors.New("no such container: container-id")
+		}
+		return []byte(`[{"Id":"container-id"}]`), nil
+	case "rm --force container-id":
+		if ctx.Err() != nil {
+			return nil, fmt.Errorf("cleanup context is canceled: %w", ctx.Err())
+		}
+		r.removed = true
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unexpected command: %s", args)
+	}
+}
+
 func workingBuildKitDialer(context.Context) (net.Conn, error) {
 	connection, peer := net.Pipe()
 	_ = peer.Close()
@@ -277,6 +309,18 @@ func TestAppendHealthcheckArgsKeepsImageCommandOverrides(t *testing.T) {
 	want := "create --health-interval 5s --health-timeout 2s --health-retries 4"
 	if got != want {
 		t.Fatalf("args = %q, want %q", got, want)
+	}
+}
+
+func TestRunContainerCleansUpWithFreshContextAfterCanceledStart(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	runner := &cancellationCleanupRunner{cancel: cancel}
+	_, err := New(runner).RunContainer(ctx, CreateContainerRequest{Name: "demo", Image: "alpine:latest"})
+	if err == nil || !strings.Contains(err.Error(), "start failed") {
+		t.Fatalf("RunContainer error = %v", err)
+	}
+	if !runner.removed {
+		t.Fatal("created container was not removed after start failure")
 	}
 }
 
