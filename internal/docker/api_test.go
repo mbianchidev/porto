@@ -57,6 +57,12 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 	if document["ID"] != "porto" || document["ServerVersion"] == "" {
 		t.Fatalf("unexpected info: %+v", document)
 	}
+
+	containers := httptest.NewRecorder()
+	handler.ServeHTTP(containers, httptest.NewRequest(http.MethodGet, "/v1.47/containers/json?all=1&size=0", nil))
+	if containers.Code != http.StatusOK {
+		t.Fatalf("containers = %d: %s", containers.Code, containers.Body.String())
+	}
 }
 
 func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {

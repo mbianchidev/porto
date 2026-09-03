@@ -237,6 +237,20 @@ export type DockerImage = {
   createdAt: string
 }
 
+export type DockerContainerCreateRequest = {
+  name: string
+  image: string
+  hostPort: number
+  containerPort: number
+  healthCommand: string
+}
+
+export type DockerContainerCreateResult = {
+  id: string
+  name: string
+  status: string
+}
+
 export type DockerNetwork = {
   id: string
   name: string

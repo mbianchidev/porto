@@ -459,6 +459,12 @@ func (r *grpcContainerRuntime) compatibilityMetadata(
 	return result, r.enrichmentError
 }
 
+func (r *grpcContainerRuntime) invalidateCompatibilityMetadata() {
+	r.enrichMu.Lock()
+	r.enrichmentReady = false
+	r.enrichMu.Unlock()
+}
+
 func containerMetadataVersion(record *containersapi.Container) string {
 	updatedAt := timestampString(record.GetUpdatedAt())
 	return strings.Join([]string{
@@ -476,6 +482,8 @@ func mergeContainerCompatibilityMetadata(container *Container, compatibility Con
 	if !container.TaskPresent && compatibility.State != "" {
 		container.State = compatibility.State
 		container.Status = compatibility.Status
+		container.TaskPresent = compatibility.TaskPresent
+		container.PID = compatibility.PID
 		if code, ok := parseCompatibilityExitCode(compatibility.Status); ok {
 			container.ExitCode = &code
 			container.ExitReason = exitReason(code)
@@ -596,6 +604,7 @@ func (r *grpcContainerRuntime) Subscribe(ctx context.Context) (<-chan ContainerL
 			if !relevant {
 				continue
 			}
+			r.invalidateCompatibilityMetadata()
 			select {
 			case events <- event:
 			case <-ctx.Done():

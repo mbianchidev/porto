@@ -222,11 +222,15 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) containers(w http.ResponseWriter, r *http.Request) {
-	for _, parameter := range []string{"limit", "since", "before", "size"} {
+	for _, parameter := range []string{"limit", "since", "before"} {
 		if r.URL.Query().Get(parameter) != "" {
 			writeDockerUnsupported(w, "container list query parameter "+parameter)
 			return
 		}
+	}
+	if dockerBool(r, "size") {
+		writeDockerUnsupported(w, "container list size calculation")
+		return
 	}
 	filters, err := parseDockerFilters(r.URL.Query().Get("filters"))
 	if err != nil {

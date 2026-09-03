@@ -33,6 +33,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
+	mux.HandleFunc("POST /api/docker/containers", s.requireRuntime("docker", s.createDockerContainer))
 	mux.HandleFunc("GET /api/docker/containers/snapshot", s.requireRuntime("docker", s.dockerContainerSnapshot))
 	mux.HandleFunc("GET /api/docker/containers/events", s.requireRuntime("docker", s.dockerContainerEvents))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
@@ -173,6 +174,67 @@ func (s *Server) installDockerContext(w http.ResponseWriter, r *http.Request) {
 func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 	value, err := s.docker.Containers(r.Context())
 	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name          string `json:"name"`
+		Image         string `json:"image"`
+		HostPort      int    `json:"hostPort"`
+		ContainerPort int    `json:"containerPort"`
+		HealthCommand string `json:"healthCommand"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	request.Name = strings.TrimSpace(request.Name)
+	request.Image = strings.TrimSpace(request.Image)
+	request.HealthCommand = strings.TrimSpace(request.HealthCommand)
+	if request.Name == "" || request.Image == "" {
+		http.Error(w, "container name and image are required", http.StatusBadRequest)
+		return
+	}
+	if (request.HostPort == 0) != (request.ContainerPort == 0) {
+		http.Error(w, "host port and container port must be provided together", http.StatusBadRequest)
+		return
+	}
+	for name, port := range map[string]int{"host port": request.HostPort, "container port": request.ContainerPort} {
+		if port < 0 || port > 65535 {
+			http.Error(w, name+" must be between 1 and 65535", http.StatusBadRequest)
+			return
+		}
+	}
+	if strings.ContainsAny(request.HealthCommand, "\r\n\x00") {
+		http.Error(w, "health command cannot contain line breaks", http.StatusBadRequest)
+		return
+	}
+	createRequest := portodocker.CreateContainerRequest{
+		Name:  request.Name,
+		Image: request.Image,
+	}
+	if request.HostPort > 0 {
+		createRequest.Publish = []string{
+			fmt.Sprintf("127.0.0.1:%d:%d/tcp", request.HostPort, request.ContainerPort),
+		}
+	}
+	if request.HealthCommand != "" {
+		createRequest.Healthcheck = &portodocker.ContainerHealthcheck{
+			Test:     []string{"CMD-SHELL", request.HealthCommand},
+			Interval: 30 * time.Second,
+			Timeout:  5 * time.Second,
+			Retries:  3,
+		}
+	}
+	id, err := s.docker.RunContainer(r.Context(), createRequest)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, map[string]string{
+		"id":     id,
+		"name":   request.Name,
+		"status": "running",
+	})
 }
 
 func (s *Server) dockerContainerSnapshot(w http.ResponseWriter, _ *http.Request) {

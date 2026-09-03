@@ -284,6 +284,130 @@ func TestContainerInventoryWaitCapturesRapidExit(t *testing.T) {
 	}
 }
 
+func TestContainerInventoryWaitAllowsNewContainerDiscovery(t *testing.T) {
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{ID: "existing", Name: "worker", State: "running", TaskPresent: true}},
+		[]Container{
+			{ID: "existing", Name: "worker", State: "running", TaskPresent: true},
+			{ID: "one", Name: "api", State: "running", TaskPresent: true},
+		},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          5 * time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available && len(snapshot.Containers) == 1
+	})
+	result := make(chan int, 1)
+	errs := make(chan error, 1)
+	go func() {
+		code, err := inventory.wait(ctx, "one", "next-exit")
+		result <- code
+		errs <- err
+	}()
+	waitForInventorySubscriber(t, inventory)
+	inventory.triggerRefresh()
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return len(snapshot.Containers) == 2
+	})
+	exitCode := uint32(0)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		Timestamp:   time.Now().UTC(),
+		ExitCode:    &exitCode,
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+		if code := <-result; code != 0 {
+			t.Fatalf("exit code = %d, want 0", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for newly discovered container")
+	}
+}
+
+func TestContainerInventoryWaitCapturesExitDuringDiscovery(t *testing.T) {
+	exitCode := uint32(9)
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{ID: "existing", Name: "worker", State: "running", TaskPresent: true}},
+		[]Container{
+			{ID: "existing", Name: "worker", State: "running", TaskPresent: true},
+			{ID: "one", Name: "job", State: "exited", ExitCode: &exitCode},
+		},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          5 * time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available && len(snapshot.Containers) == 1
+	})
+	result := make(chan int, 1)
+	errs := make(chan error, 1)
+	go func() {
+		code, err := inventory.wait(ctx, "one", "next-exit")
+		result <- code
+		errs <- err
+	}()
+	waitForInventorySubscriber(t, inventory)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		Timestamp:   time.Now().UTC(),
+		ExitCode:    &exitCode,
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+		if code := <-result; code != 9 {
+			t.Fatalf("exit code = %d, want 9", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for exit during discovery")
+	}
+}
+
 func TestContainerInventoryWaitReconcilesPartialExit(t *testing.T) {
 	exitCode := uint32(17)
 	runtimeClient := newFakeContainerRuntime(

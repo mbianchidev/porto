@@ -363,13 +363,15 @@ func (m *Manager) DockerContainers(ctx context.Context, all bool) ([]Container, 
 func decodeNerdctlContainers(output []byte) ([]Container, error) {
 	return decodeLines(output, func(item map[string]string) Container {
 		labels := parseLabels(item["Labels"])
-		return Container{
+		state := normalizeNerdctlContainerState(first(item, "State", "Status"))
+		pid, _ := strconv.ParseUint(first(item, "PID", "Pid"), 10, 32)
+		container := Container{
 			ID:             first(item, "ID", "Id"),
 			Name:           first(item, "Names", "Name"),
 			Image:          item["Image"],
 			ImageID:        first(item, "ImageID", "ImageId"),
 			Command:        item["Command"],
-			State:          strings.ToLower(first(item, "State", "Status")),
+			State:          state,
 			Status:         item["Status"],
 			Ports:          item["Ports"],
 			Networks:       item["Networks"],
@@ -379,7 +381,32 @@ func decodeNerdctlContainers(output []byte) ([]Container, error) {
 			ComposeProject: labels["com.docker.compose.project"],
 			ComposeService: labels["com.docker.compose.service"],
 		}
+		if state == "running" || state == "paused" || state == "pausing" || state == "restarting" {
+			container.TaskPresent = true
+			container.PID = uint32(pid)
+		}
+		return container
 	})
+}
+
+func normalizeNerdctlContainerState(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch {
+	case strings.HasPrefix(value, "up"), strings.HasPrefix(value, "running"):
+		return "running"
+	case strings.HasPrefix(value, "paused"):
+		return "paused"
+	case strings.HasPrefix(value, "pausing"):
+		return "pausing"
+	case strings.HasPrefix(value, "restarting"):
+		return "restarting"
+	case strings.HasPrefix(value, "exited"), strings.HasPrefix(value, "stopped"):
+		return "exited"
+	case strings.HasPrefix(value, "created"):
+		return "created"
+	default:
+		return value
+	}
 }
 
 func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
@@ -495,6 +522,20 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", err
 	}
 	m.invalidateContainerInventory()
+	return id, nil
+}
+
+func (m *Manager) RunContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
+	id, err := m.CreateContainer(ctx, request)
+	if err != nil {
+		return "", err
+	}
+	if err := m.ContainerAction(ctx, id, "start"); err != nil {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		cleanupErr := m.ContainerAction(cleanupContext, id, "remove-force")
+		return "", errors.Join(fmt.Errorf("start container %s: %w", id, err), cleanupErr)
+	}
 	return id, nil
 }
 

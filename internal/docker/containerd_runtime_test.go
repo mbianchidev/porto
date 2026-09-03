@@ -170,12 +170,19 @@ func TestCompatibilityMetadataRefreshesOnlyAfterMetadataChanges(t *testing.T) {
 	if enrichCalls != 1 || first["abc"].Ports == "" || second["abc"].Ports == "" {
 		t.Fatalf("unexpected cached enrichment: calls=%d first=%+v second=%+v", enrichCalls, first, second)
 	}
+	runtimeClient.invalidateCompatibilityMetadata()
+	if _, err := runtimeClient.compatibilityMetadata(context.Background(), records); err != nil {
+		t.Fatalf("lifecycle enrichment refresh: %v", err)
+	}
+	if enrichCalls != 2 {
+		t.Fatalf("enrichment calls = %d, want 2 after lifecycle invalidation", enrichCalls)
+	}
 	records[0].UpdatedAt = timestamppb.New(created.AsTime().Add(time.Second))
 	if _, err := runtimeClient.compatibilityMetadata(context.Background(), records); err != nil {
 		t.Fatalf("refreshed enrichment: %v", err)
 	}
-	if enrichCalls != 2 {
-		t.Fatalf("enrichment calls = %d, want 2 after metadata update", enrichCalls)
+	if enrichCalls != 3 {
+		t.Fatalf("enrichment calls = %d, want 3 after metadata update", enrichCalls)
 	}
 }
 
@@ -198,5 +205,23 @@ func TestMergeCompatibilityMetadataRestoresStoppedTaskAndPorts(t *testing.T) {
 		container.NetworkDetails[0].HostPort != 8080 ||
 		container.NetworkDetails[0].ContainerPort != 80 {
 		t.Fatalf("published ports were not structured: %+v", container.NetworkDetails)
+	}
+}
+
+func TestNerdctlCompatibilityMarksRunningTask(t *testing.T) {
+	compatibility, err := decodeNerdctlContainers([]byte(
+		`{"ID":"abc","Names":"demo","State":"Up","Status":"Up","PID":"42"}` + "\n",
+	))
+	if err != nil {
+		t.Fatalf("decode nerdctl container: %v", err)
+	}
+	if len(compatibility) != 1 || compatibility[0].State != "running" ||
+		!compatibility[0].TaskPresent || compatibility[0].PID != 42 {
+		t.Fatalf("running compatibility state = %+v", compatibility)
+	}
+	container := Container{ID: "abc", State: "created"}
+	mergeContainerCompatibilityMetadata(&container, compatibility[0])
+	if container.State != "running" || !container.TaskPresent || container.PID != 42 {
+		t.Fatalf("running task metadata was not merged: %+v", container)
 	}
 }
