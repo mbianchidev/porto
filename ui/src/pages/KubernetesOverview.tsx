@@ -24,6 +24,10 @@ function isRunning(cluster: KubernetesCluster) {
   return cluster.state.toLowerCase() === 'running'
 }
 
+function isLifecycleLocked(cluster: KubernetesCluster) {
+  return ['creating', 'error', 'orphaned'].includes(cluster.state)
+}
+
 function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onScaled: () => void }) {
   const { notifyError, notifyNotice } = useMessages()
   const [name, setName] = useState('workers')
@@ -188,7 +192,7 @@ export function KubernetesOverview({
     setSubmittingCluster(true)
     recordActivity('info', 'kubernetes', progress)
     try {
-      const cluster = await apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
+      const creation = apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', {
         name: requestedName,
         provider: requestedProvider,
         version: clusterVersion,
@@ -197,6 +201,8 @@ export function KubernetesOverview({
           ? [{ name: 'workers', count: initialWorkers, machine: DEFAULT_MACHINE, labels: {}, taints: [] }]
           : [],
       })
+      window.setTimeout(clusters.reload, 1000)
+      const cluster = await creation
       notifyNotice('kubernetes', `Created ${cluster.provider} cluster ${cluster.name}.`)
       onContextChange(cluster.context)
       setSelectedClusterName(cluster.name)
@@ -368,14 +374,19 @@ export function KubernetesOverview({
               renderActions={(cluster) => (
                 isRunning(cluster)
                   ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(cluster, 'stop')} />
-                  : <ActionButton label="Start cluster" icon="play" disabled={cluster.state === 'orphaned'} onClick={() => clusterLifecycle(cluster, 'start')} />
+                  : <ActionButton
+                      label={cluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'}
+                      icon="play"
+                      disabled={isLifecycleLocked(cluster)}
+                      onClick={() => clusterLifecycle(cluster, 'start')}
+                    />
               )}
             />
 
             {selectedCluster && !creatingCluster && (
               <Inspector title={selectedCluster.name} subtitle={selectedCluster.context} onClose={() => setSelectedClusterName(null)}>
                 <InspectorTabs
-                  tabs={selectedCluster.state === 'orphaned'
+                  tabs={isLifecycleLocked(selectedCluster)
                     ? [{ id: 'overview', label: 'Overview' }]
                     : [
                         { id: 'overview', label: 'Overview' },
@@ -391,6 +402,12 @@ export function KubernetesOverview({
                     <h3>Cluster detail</h3>
                     {selectedCluster.state === 'orphaned' && (
                       <p className="errorLine">The kubeconfig exists but Porto ownership metadata is missing. Delete and recreate the cluster to restore full lifecycle management.</p>
+                    )}
+                    {selectedCluster.state === 'creating' && (
+                      <p className="hintLine" role="status">Porto is still creating nodes and configuring cluster add-ons. You can close this inspector; creation continues in the daemon.</p>
+                    )}
+                    {selectedCluster.state === 'error' && (
+                      <p className="errorLine" role="alert">{selectedCluster.message || 'Cluster creation failed. Delete this failed cluster record before retrying the same name.'}</p>
                     )}
                     {selectedCluster.state === 'broken' && (
                       <p className="errorLine">The control-plane node is missing. Starting a KinD cluster will recreate it from the saved cluster configuration.</p>
@@ -409,14 +426,14 @@ export function KubernetesOverview({
                         <input
                           type="text"
                           value={renameDraft}
-                          disabled={selectedCluster.state === 'orphaned' || renamingCluster}
+                          disabled={isLifecycleLocked(selectedCluster) || renamingCluster}
                           onChange={(event) => setRenameDraft(event.target.value)}
                           required
                         />
                       </label>
                       <button
                         type="submit"
-                        disabled={selectedCluster.state === 'orphaned' || renamingCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name}
+                        disabled={isLifecycleLocked(selectedCluster) || renamingCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name}
                       >
                         {renamingCluster ? 'Renaming…' : 'Rename cluster'}
                       </button>
@@ -426,7 +443,12 @@ export function KubernetesOverview({
                       <div className="actions">
                         {isRunning(selectedCluster)
                           ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(selectedCluster, 'stop')} />
-                          : <ActionButton label="Start cluster" icon="play" disabled={selectedCluster.state === 'orphaned'} onClick={() => clusterLifecycle(selectedCluster, 'start')} />}
+                          : <ActionButton
+                              label={selectedCluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'}
+                              icon="play"
+                              disabled={isLifecycleLocked(selectedCluster)}
+                              onClick={() => clusterLifecycle(selectedCluster, 'start')}
+                            />}
                         <ActionButton className="removeButton" label="Delete cluster" icon="remove" onClick={() => deleteCluster(selectedCluster)} />
                       </div>
                     </div>

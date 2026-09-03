@@ -318,7 +318,7 @@ func (m *Manager) Contexts(ctx context.Context) ([]ContextInfo, error) {
 					return nil, normalizeErr
 				}
 				kubeconfigPath := filepath.Join(m.kubeconfigRoot, entry.Name())
-				if writeErr := writeKubeconfigAtomic(kubeconfigPath, normalized); writeErr != nil {
+				if writeErr := writeFileAtomic(kubeconfigPath, normalized); writeErr != nil {
 					return nil, fmt.Errorf("migrate managed Kubernetes context %s: %w", entry.Name(), writeErr)
 				}
 				if err := json.Unmarshal(normalized, &managedConfig); err != nil {

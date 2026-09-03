@@ -202,6 +202,10 @@ The dashboard records creation in Activity immediately and keeps provisioning
 inside the daemon if the user closes the form or navigates elsewhere. Gateway
 resources use idempotent server-side apply, and a slow final Gateway readiness
 condition no longer removes an otherwise healthy cluster.
+Managed-cluster metadata is created before nodes, so in-progress clusters appear
+with a `creating` state and their control-plane containers are protected as soon
+as they exist. Failed provisioning remains visible with an `error` state and
+the actionable backend message until the user deletes the failed cluster record.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the

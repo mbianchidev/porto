@@ -493,6 +493,7 @@ export type KubernetesCluster = {
   kubeconfigPath: string
   server: string
   nodes: string[]
+  message?: string
 }
 
 // --- Virtual machines -----------------------------------------------------------

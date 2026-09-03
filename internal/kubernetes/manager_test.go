@@ -1216,6 +1216,115 @@ func TestListIncludesOrphanedKubeconfigWithoutMetadata(t *testing.T) {
 	}
 }
 
+func TestListKeepsProvisioningClusterInCreatingState(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "kind" && strings.Join(command.Args, " ") == "get nodes --name porto-dev" {
+			return []byte("porto-dev-control-plane\n"), nil
+		}
+		return nil, nil
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind", Phase: "creating"}); err != nil {
+		t.Fatal(err)
+	}
+	release, err := provisioner.reserveRuntimeName("dev", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].State != "creating" {
+		t.Fatalf("provisioning cluster state = %+v", clusters)
+	}
+}
+
+func TestListMarksInterruptedCreationAsError(t *testing.T) {
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind", Phase: "creating"}); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].State != "error" || !strings.Contains(clusters[0].Message, "interrupted") {
+		t.Fatalf("interrupted cluster state = %+v", clusters)
+	}
+}
+
+func TestFailedKindCreationPersistsErrorMetadata(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner()
+	var provisioner *ClusterProvisioner
+	sawCreating := false
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kind" && joined == "get nodes --name porto-dev":
+			return nil, nil
+		case command.Name == "kind" && strings.HasPrefix(joined, "create cluster --name porto-dev"):
+			request, err := provisioner.readClusterMetadata("dev")
+			if err != nil {
+				return nil, err
+			}
+			sawCreating = request.Phase == "creating"
+			return []byte("creation failed"), errors.New("exit status 1")
+		default:
+			return nil, nil
+		}
+	}
+	provisioner = NewClusterProvisioner(vm.New(runner), runner, root)
+
+	if _, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"}); err == nil {
+		t.Fatal("failed KinD creation returned success")
+	}
+	if !sawCreating {
+		t.Fatal("creating metadata was not visible before KinD started")
+	}
+	request, err := provisioner.readClusterMetadata("dev")
+	if err != nil {
+		t.Fatalf("read failed creation metadata: %v", err)
+	}
+	if request.Phase != "error" || !strings.Contains(request.Error, "creation failed") {
+		t.Fatalf("failed creation metadata = %+v", request)
+	}
+}
+
+func TestCreatingClusterRejectsMutationsExceptDelete(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind", Phase: "creating"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provisioner.clusterKubeconfigPath("dev"), []byte(`{"current-context":"porto-dev"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	mutations := map[string]func() error{
+		"addons": func() error { return provisioner.EnsureAddons(context.Background(), "dev") },
+		"import": func() error { return provisioner.ImportImage(context.Background(), "dev", "example:dev") },
+		"rename": func() error { return provisioner.Rename(context.Background(), "dev", "prod") },
+		"scale": func() error {
+			return provisioner.ScaleNodeGroup(context.Background(), "dev", NodeGroupSpec{Name: "workers", Count: 1}, "")
+		},
+		"start": func() error {
+			_, err := provisioner.Start(context.Background(), "dev")
+			return err
+		},
+		"stop": func() error { return provisioner.SetRunning(context.Background(), "dev", false) },
+	}
+	for name, mutate := range mutations {
+		if err := mutate(); err == nil || !strings.Contains(err.Error(), "only deletion is allowed") {
+			t.Fatalf("%s mutation error = %v", name, err)
+		}
+	}
+}
+
 func TestOrphanedK0sKubeconfigIgnoresKindNoNodesMessage(t *testing.T) {
 	root := t.TempDir()
 	runner := newFakeRunner()
@@ -1446,8 +1555,41 @@ func TestCreateKindDoesNotDeletePreexistingRuntime(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "already exists") {
 		t.Fatalf("pre-existing runtime error = %v", err)
 	}
+	if err := provisioner.Delete(context.Background(), "dev"); err != nil {
+		t.Fatalf("delete failed collision record: %v", err)
+	}
 	if deleted {
-		t.Fatal("failed creation deleted a pre-existing KinD runtime")
+		t.Fatal("failed creation or later record deletion deleted a pre-existing KinD runtime")
+	}
+}
+
+func TestCreateKindCollisionAfterPreflightDoesNotDeleteRuntime(t *testing.T) {
+	runner := newFakeRunner()
+	deleted := false
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kind" && joined == "get nodes --name porto-dev":
+			return nil, nil
+		case command.Name == "kind" && strings.HasPrefix(joined, "create cluster --name porto-dev"):
+			return []byte("ERROR: failed to create cluster: node(s) already exist for a cluster with the name \"porto-dev\""), errors.New("exit status 1")
+		case command.Name == "kind" && joined == "delete cluster --name porto-dev":
+			deleted = true
+			return nil, nil
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+
+	if _, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"}); err == nil {
+		t.Fatal("raced KinD collision returned success")
+	}
+	if deleted {
+		t.Fatal("raced KinD collision deleted the other cluster")
+	}
+	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("collision left an ownership record: %v", err)
 	}
 }
 
@@ -1672,14 +1814,10 @@ func TestFailedKindRecreationPreservesNewKubeconfigWhenCleanupFails(t *testing.T
 		switch {
 		case command.Name == "kind" && joined == "get nodes --name porto-dev":
 			nodeChecks++
-			switch nodeChecks {
-			case 1:
+			if nodeChecks == 1 {
 				return []byte("porto-dev-worker\n"), nil
-			case 2:
-				return nil, nil
-			default:
-				return []byte("porto-dev-control-plane\n"), nil
 			}
+			return []byte("porto-dev-control-plane\n"), nil
 		case command.Name == "kind" && joined == "delete cluster --name porto-dev":
 			deleteAttempts++
 			if deleteAttempts == 1 {
