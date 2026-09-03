@@ -152,6 +152,8 @@ export function KubernetesOverview({
   const [initialWorkers, setInitialWorkers] = useState(1)
   const [submittingCluster, setSubmittingCluster] = useState(false)
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
+  const [renameDraft, setRenameDraft] = useState('')
+  const [renamingCluster, setRenamingCluster] = useState(false)
 
   const status = useKubernetesStatus(context)
   const clusters = usePolledResource<KubernetesCluster[]>(
@@ -190,6 +192,7 @@ export function KubernetesOverview({
       notifyNotice('kubernetes', `Provisioning cluster ${clusterName.trim()}. Add node groups from its inspector once it is ready.`)
       onContextChange(cluster.context)
       setSelectedClusterName(cluster.name)
+      setRenameDraft(cluster.name)
       setClusterName('')
       setClusterVersion('')
       setClusterProvider('k3s')
@@ -206,8 +209,11 @@ export function KubernetesOverview({
 
   async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop') {
     try {
-      await apiSend(`/api/kubernetes/clusters/${cluster.name}/${action}`, 'POST')
-      notifyNotice('kubernetes', `${cluster.name} ${action === 'start' ? 'starting' : 'stopping'}.`)
+      const result = await apiSend<{ status: string; message?: string }>(
+        `/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}/${action}`,
+        'POST',
+      )
+      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'starting' : 'stopping'}.`)
       if (action === 'start') {
         onContextChange(cluster.context)
       } else if (context === cluster.context) {
@@ -224,14 +230,39 @@ export function KubernetesOverview({
   }
 
   async function deleteCluster(cluster: KubernetesCluster) {
-    if (!window.confirm(`Delete cluster ${cluster.name}? This removes its control-plane and worker VMs permanently.`)) return
+    if (!window.confirm(`Delete cluster ${cluster.name}? This permanently removes its control-plane and worker nodes.`)) return
     try {
-      await apiSend(`/api/kubernetes/clusters/${cluster.name}?confirm=true`, 'DELETE')
+      await apiSend(`/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}?confirm=true`, 'DELETE')
       notifyNotice('kubernetes', `Deleted cluster ${cluster.name}.`)
       if (selectedClusterName === cluster.name) setSelectedClusterName(null)
       clusters.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to delete ${cluster.name}`))
+    }
+  }
+
+  async function renameCluster(event: FormEvent) {
+    event.preventDefault()
+    if (!selectedCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name) return
+    setRenamingCluster(true)
+    try {
+      const previousName = selectedCluster.name
+      const previousContext = selectedCluster.context
+      const result = await apiSend<{ name: string; context: string }>(
+        `/api/kubernetes/clusters/${encodeURIComponent(previousName)}/rename`,
+        'POST',
+        { name: renameDraft.trim() },
+      )
+      notifyNotice('kubernetes', `Renamed cluster ${previousName} to ${result.name}.`)
+      setSelectedClusterName(result.name)
+      setRenameDraft(result.name)
+      if (context === previousContext) onContextChange(result.context)
+      clusters.reload()
+      status.reload()
+    } catch (err) {
+      notifyError('kubernetes', errorMessage(err, `Unable to rename ${selectedCluster.name}`))
+    } finally {
+      setRenamingCluster(false)
     }
   }
 
@@ -301,7 +332,12 @@ export function KubernetesOverview({
               getKey={(cluster) => cluster.name}
               columnsTemplate="12px minmax(130px,1fr) minmax(80px,0.5fr) minmax(90px,0.6fr) minmax(140px,1fr) minmax(140px,1fr) minmax(55px,0.35fr)"
               selectedKey={selectedClusterName}
-              onSelect={(cluster) => { setCreatingCluster(false); setSelectedClusterName(cluster.name); setClusterTab('overview') }}
+              onSelect={(cluster) => {
+                setCreatingCluster(false)
+                setSelectedClusterName(cluster.name)
+                setRenameDraft(cluster.name)
+                setClusterTab('overview')
+              }}
               getLamp={(cluster) => lampStateFor(cluster.state)}
               getLampLabel={(cluster) => cluster.state}
               ariaLabel="Porto-provisioned Kubernetes clusters"
@@ -317,25 +353,33 @@ export function KubernetesOverview({
               renderActions={(cluster) => (
                 isRunning(cluster)
                   ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(cluster, 'stop')} />
-                  : <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(cluster, 'start')} />
+                  : <ActionButton label="Start cluster" icon="play" disabled={cluster.state === 'orphaned'} onClick={() => clusterLifecycle(cluster, 'start')} />
               )}
             />
 
             {selectedCluster && !creatingCluster && (
               <Inspector title={selectedCluster.name} subtitle={selectedCluster.context} onClose={() => setSelectedClusterName(null)}>
                 <InspectorTabs
-                  tabs={[
-                    { id: 'overview', label: 'Overview' },
-                    { id: 'terminal', label: 'k9s terminal' },
-                    { id: 'nodeGroup', label: 'Node group' },
-                    { id: 'importImage', label: 'Import image' },
-                  ]}
+                  tabs={selectedCluster.state === 'orphaned'
+                    ? [{ id: 'overview', label: 'Overview' }]
+                    : [
+                        { id: 'overview', label: 'Overview' },
+                        { id: 'terminal', label: 'k9s terminal' },
+                        { id: 'nodeGroup', label: 'Node group' },
+                        { id: 'importImage', label: 'Import image' },
+                      ]}
                   activeID={clusterTab}
                   onSelect={setClusterTab}
                 />
                 {clusterTab === 'overview' && (
                   <section className="drawerPanel">
                     <h3>Cluster detail</h3>
+                    {selectedCluster.state === 'orphaned' && (
+                      <p className="errorLine">The kubeconfig exists but Porto ownership metadata is missing. Delete and recreate the cluster to restore full lifecycle management.</p>
+                    )}
+                    {selectedCluster.state === 'broken' && (
+                      <p className="errorLine">The control-plane node is missing. Starting a KinD cluster will recreate it from the saved cluster configuration.</p>
+                    )}
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
@@ -344,12 +388,30 @@ export function KubernetesOverview({
                       <div><dt>Kubeconfig</dt><dd>{selectedCluster.kubeconfigPath}</dd></div>
                       <div><dt>Nodes</dt><dd>{selectedCluster.nodes?.join(', ') || '—'}</dd></div>
                     </dl>
+                    <form className="inspectorForm inline" onSubmit={renameCluster}>
+                      <label>
+                        <span>Cluster name</span>
+                        <input
+                          type="text"
+                          value={renameDraft}
+                          disabled={selectedCluster.state === 'orphaned' || renamingCluster}
+                          onChange={(event) => setRenameDraft(event.target.value)}
+                          required
+                        />
+                      </label>
+                      <button
+                        type="submit"
+                        disabled={selectedCluster.state === 'orphaned' || renamingCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name}
+                      >
+                        {renamingCluster ? 'Renaming…' : 'Rename cluster'}
+                      </button>
+                    </form>
                     <div className="maintenanceBar">
                       <span>Maintenance controls</span>
                       <div className="actions">
                         {isRunning(selectedCluster)
                           ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(selectedCluster, 'stop')} />
-                          : <ActionButton label="Start cluster" icon="play" onClick={() => clusterLifecycle(selectedCluster, 'start')} />}
+                          : <ActionButton label="Start cluster" icon="play" disabled={selectedCluster.state === 'orphaned'} onClick={() => clusterLifecycle(selectedCluster, 'start')} />}
                         <ActionButton className="removeButton" label="Delete cluster" icon="remove" onClick={() => deleteCluster(selectedCluster)} />
                       </div>
                     </div>

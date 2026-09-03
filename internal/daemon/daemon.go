@@ -122,6 +122,9 @@ func New(st *store.Store, ui fs.FS) *Server {
 	kubeconfigDir, _ := config.KubernetesConfigDir()
 	vmStateDir, _ := config.VMStateDir()
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
+	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
+	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
+	dockerManager.SetContainerRemovalGuard(clusterProvisioner.ProtectContainerRemoval)
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
@@ -149,9 +152,9 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sqnsl:          sqnsl.NewManager(nil),
 		killSwitch:     killswitch.NewManager(nil, nil),
 		userHomeDir:    os.UserHomeDir,
-		docker:         portodocker.NewWithStateDir(runner, dockerEngineDir),
+		docker:         dockerManager,
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
-		clusters:       kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir),
+		clusters:       clusterProvisioner,
 		vms:            vmManager,
 		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,

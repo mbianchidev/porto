@@ -1,10 +1,10 @@
-import { useState, type FormEvent } from 'react'
+import { lazy, Suspense, useState, type FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
-import { Inspector } from '../components/Inspector'
+import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
@@ -26,6 +26,38 @@ const EMPTY_CREATE_DRAFT = {
   containerPort: '',
   healthCommand: '',
 }
+const InteractiveTerminal = lazy(async () => {
+  const terminal = await import('../components/VMTerminal')
+  return { default: terminal.InteractiveTerminal }
+})
+const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
+type TerminalShell = (typeof TERMINAL_SHELLS)[number]
+
+function containerState(container: DockerContainer) {
+  return container.state.toLocaleLowerCase()
+}
+
+function isPaused(container: DockerContainer) {
+  return containerState(container) === 'paused'
+}
+
+function isStopped(container: DockerContainer) {
+  return ['stopped', 'exited'].includes(containerState(container))
+}
+
+function isStartable(container: DockerContainer) {
+  return ['stopped', 'exited', 'created'].includes(containerState(container))
+}
+
+function isActive(container: DockerContainer) {
+  return ['running', 'paused', 'pausing', 'restarting'].includes(containerState(container))
+}
+
+function containerTerminalSocketURL(container: DockerContainer, shell: TerminalShell, debug: boolean): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const params = new URLSearchParams({ shell, debug: String(debug) })
+  return `${protocol}//${window.location.host}/api/docker/containers/${encodeURIComponent(container.id)}/terminal?${params.toString()}`
+}
 
 function taskLabel(container: DockerContainer) {
   if (!container.taskPresent) return container.state === 'running' ? 'Running' : 'No task'
@@ -43,6 +75,7 @@ export function Containers() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT)
+  const [containerTab, setContainerTab] = useState('overview')
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const containers = useContainerSnapshots(status.data?.enabled ?? false)
@@ -99,6 +132,33 @@ export function Containers() {
     } catch (err) {
       notifyError('containers', errorMessage(err, `Unable to ${action} ${container.name}`))
     }
+  }
+
+  function containerActions(container: DockerContainer) {
+    const paused = isPaused(container)
+    const stopped = isStopped(container)
+    const active = isActive(container)
+    return (
+      <>
+        <ActionButton label="Start container" icon="play" disabled={!isStartable(container)} onClick={() => containerAction(container, 'start')} />
+        <ActionButton label="Resume container" icon="play" disabled={!paused} onClick={() => containerAction(container, 'unpause')} />
+        <ActionButton label="Stop container" icon="stop" disabled={!active} onClick={() => containerAction(container, 'stop')} />
+        <ActionButton label="Restart container" icon="restart" disabled={!active} onClick={() => containerAction(container, 'restart')} />
+        <ActionButton
+          className="removeButton"
+          label={stopped ? 'Remove container' : 'Remove container (stop it first)'}
+          icon="remove"
+          disabled={!stopped}
+          onClick={() => containerAction(container, 'remove', `Remove container ${container.name}?`)}
+        />
+        <ActionButton
+          className="removeButton"
+          label="Force remove container"
+          icon="kill"
+          onClick={() => containerAction(container, 'remove-force', `Force-remove container ${container.name} even if running?`)}
+        />
+      </>
+    )
   }
 
   return (
@@ -215,7 +275,7 @@ export function Containers() {
             getLamp={(container) => lampStateFor(container.state)}
             getLampLabel={(container) => container.state}
             selectedKey={selectedID}
-            onSelect={(container) => setSelectedID(container.id)}
+            onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
             ariaLabel="Docker containers"
             emptyMessage={containers.error || 'No containers found.'}
             columns={[
@@ -224,81 +284,122 @@ export function Containers() {
               { header: 'Status', className: 'mono', render: (container) => container.status },
               { header: 'Ports', className: 'mono', render: (container) => container.ports || '—' },
             ]}
-            renderActions={(container) => (
-              <>
-                <ActionButton label="Start container" icon="play" onClick={() => containerAction(container, 'start')} />
-                <ActionButton label="Stop container" icon="stop" onClick={() => containerAction(container, 'stop')} />
-                <ActionButton label="Restart container" icon="restart" onClick={() => containerAction(container, 'restart')} />
-              </>
-            )}
+            renderActions={containerActions}
           />
         )}
 
         {selected && (
           <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={() => setSelectedID(null)}>
-            <div className="drawerReadouts" aria-label="Container readouts">
-              <span><small>State</small><strong>{selected.state}</strong></span>
-              <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
-              <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
-              <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
-              <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
-            </div>
-            <section className="drawerPanel">
-              <h3>Runtime detail</h3>
-              <dl className="runtimeGrid">
-                <div><dt>Status</dt><dd>{selected.status}</dd></div>
-                <div><dt>Ports</dt><dd>{selected.ports || '—'}</dd></div>
-                <div><dt>Networks</dt><dd>{selected.networks || '—'}</dd></div>
-                <div><dt>Mounts</dt><dd>{selected.mounts || '—'}</dd></div>
-                <div><dt>Exit</dt><dd>{selected.exitCode === undefined ? '—' : `${selected.exitCode}${selected.exitSignal ? ` (signal ${selected.exitSignal})` : ''}`}</dd></div>
-                <div><dt>Exit reason</dt><dd>{selected.exitReason || '—'}</dd></div>
-                <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
-                <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
-                <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
-                <div>
-                  <dt>Stop behavior</dt>
-                  <dd>
-                    {selected.stopSignal || 'default signal'} / {selected.stopTimeout === undefined ? 'default timeout' : `${selected.stopTimeout}s`}
-                  </dd>
+            <InspectorTabs
+              tabs={[
+                { id: 'overview', label: 'Overview' },
+                { id: 'terminal', label: 'Terminal' },
+              ]}
+              activeID={containerTab}
+              onSelect={setContainerTab}
+            />
+            {containerTab === 'overview' && (
+              <>
+                <div className="drawerReadouts" aria-label="Container readouts">
+                  <span><small>State</small><strong>{selected.state}</strong></span>
+                  <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
+                  <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
+                  <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
+                  <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
                 </div>
-              </dl>
-              {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
-            </section>
-            {selected.history && selected.history.length > 0 && (
-              <section className="drawerPanel">
-                <h3>Lifecycle history</h3>
-                <dl className="runtimeGrid">
-                  {selected.history.slice(-6).reverse().map((event) => (
-                    <div key={event.sequence}>
-                      <dt>{event.type}</dt>
-                      <dd>{event.reason || event.topic} · {event.timestamp}</dd>
+                <section className="drawerPanel">
+                  <h3>Runtime detail</h3>
+                  <dl className="runtimeGrid">
+                    <div><dt>Status</dt><dd>{selected.status}</dd></div>
+                    <div><dt>Ports</dt><dd>{selected.ports || '—'}</dd></div>
+                    <div><dt>Networks</dt><dd>{selected.networks || '—'}</dd></div>
+                    <div><dt>Mounts</dt><dd>{selected.mounts || '—'}</dd></div>
+                    <div><dt>Exit</dt><dd>{selected.exitCode === undefined ? '—' : `${selected.exitCode}${selected.exitSignal ? ` (signal ${selected.exitSignal})` : ''}`}</dd></div>
+                    <div><dt>Exit reason</dt><dd>{selected.exitReason || '—'}</dd></div>
+                    <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
+                    <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
+                    <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
+                    <div>
+                      <dt>Stop behavior</dt>
+                      <dd>
+                        {selected.stopSignal || 'default signal'} / {selected.stopTimeout === undefined ? 'default timeout' : `${selected.stopTimeout}s`}
+                      </dd>
                     </div>
-                  ))}
-                </dl>
-              </section>
+                  </dl>
+                  {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
+                </section>
+                {selected.history && selected.history.length > 0 && (
+                  <section className="drawerPanel">
+                    <h3>Lifecycle history</h3>
+                    <dl className="runtimeGrid">
+                      {selected.history.slice(-6).reverse().map((event) => (
+                        <div key={event.sequence}>
+                          <dt>{event.type}</dt>
+                          <dd>{event.reason || event.topic} · {event.timestamp}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                )}
+                <div className="maintenanceBar">
+                  <span>Container controls</span>
+                  <div className="actions">
+                    {containerActions(selected)}
+                    <ActionButton label="Pause container" icon="pause" disabled={containerState(selected) !== 'running'} onClick={() => containerAction(selected, 'pause')} />
+                  </div>
+                </div>
+              </>
             )}
-            <div className="maintenanceBar">
-              <span>Maintenance controls</span>
-              <div className="actions">
-                <ActionButton label="Pause container" icon="pause" onClick={() => containerAction(selected, 'pause')} />
-                <ActionButton label="Unpause container" icon="play" onClick={() => containerAction(selected, 'unpause')} />
-                <ActionButton
-                  className="removeButton"
-                  label="Remove container"
-                  icon="remove"
-                  onClick={() => containerAction(selected, 'remove', `Remove container ${selected.name}?`)}
-                />
-                <ActionButton
-                  className="removeButton"
-                  label="Force remove container"
-                  icon="kill"
-                  onClick={() => containerAction(selected, 'remove-force', `Force-remove container ${selected.name} even if running?`)}
-                />
-              </div>
-            </div>
+            {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
           </Inspector>
         )}
       </div>
+    </>
+  )
+}
+
+function ContainerTerminal({ container }: { container: DockerContainer }) {
+  const [mode, setMode] = useState<'application' | 'debug'>('application')
+  const [shell, setShell] = useState<TerminalShell>('sh')
+  const running = containerState(container) === 'running'
+  const debug = mode === 'debug'
+  const endpoint = containerTerminalSocketURL(container, shell, debug)
+
+  return (
+    <>
+      <section className="drawerPanel">
+        <h3>Terminal session</h3>
+        <div className="terminalModePicker" role="group" aria-label="Container terminal target">
+          <button type="button" aria-pressed={!debug} onClick={() => setMode('application')}>Application shell</button>
+          <button type="button" aria-pressed={debug} disabled={!running} onClick={() => setMode('debug')}>Debug toolbox</button>
+        </div>
+        {!debug && (
+          <div className="inspectorForm inline">
+            <label>
+              <span>Shell</span>
+              <select value={shell} onChange={(event) => setShell(event.target.value as TerminalShell)}>
+                {TERMINAL_SHELLS.map((option) => <option value={option} key={option}>{option}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+        <p className="hintLine">
+          {debug
+            ? 'Runs a disposable netshoot toolbox sharing the target container network, process, IPC, UTS, and volumes.'
+            : 'Executes the selected shell inside the container. Use the debug toolbox when the image has no shell.'}
+        </p>
+      </section>
+      <Suspense fallback={<section className="logConsole vmTerminal"><div className="terminalPlaceholder">Loading container terminal…</div></section>}>
+        <InteractiveTerminal
+          key={`${container.id}:${mode}:${shell}:${container.state}`}
+          endpoint={endpoint}
+          title={debug ? 'Debug terminal' : 'Container terminal'}
+          detail={container.name.replace(/^\//, '')}
+          running={running}
+          ariaLabel={`${debug ? 'Debug' : 'Interactive'} terminal for ${container.name}`}
+          stoppedMessage={isPaused(container) ? 'Resume the container to open its terminal.' : 'Start the container to open its terminal.'}
+        />
+      </Suspense>
     </>
   )
 }

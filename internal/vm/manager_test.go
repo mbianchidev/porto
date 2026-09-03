@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -477,6 +478,25 @@ func TestKubernetesNodeCreationReturnsManagedInstanceButIsNotStandalone(t *testi
 	}
 	if err := manager.EnsureStandalone("test-vm"); err == nil || !strings.Contains(err.Error(), "kubernetes-node") {
 		t.Fatalf("expected standalone ownership rejection, got %v", err)
+	}
+}
+
+func TestKubernetesNodeOwnershipSurvivesClusterRename(t *testing.T) {
+	manager := NewWithStateDir(&recordingRunner{}, t.TempDir())
+	if _, err := manager.CreateNode(context.Background(), CreateRequest{
+		Name: "test-vm", Owner: "dev", Image: "ubuntu-24.04", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
+	}); err != nil {
+		t.Fatalf("create node: %v", err)
+	}
+	if err := manager.RenameKubernetesOwner("dev", "prod"); err != nil {
+		t.Fatalf("rename node owner: %v", err)
+	}
+	names, err := manager.KubernetesNodeNames("prod")
+	if err != nil {
+		t.Fatalf("list node ownership: %v", err)
+	}
+	if !reflect.DeepEqual(names, []string{"test-vm"}) {
+		t.Fatalf("owned nodes = %v", names)
 	}
 }
 

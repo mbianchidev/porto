@@ -39,6 +39,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
 	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
+	mux.HandleFunc("GET /api/docker/containers/{id}/terminal", s.requireRuntime("docker", s.dockerContainerTerminal))
 	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
 	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
 	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
@@ -82,6 +83,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters", s.requireRuntime("kubernetes", s.createKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/rename", s.requireRuntime("kubernetes", s.renameKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/images/import", s.requireRuntime("kubernetes", s.importKubernetesImage))
 	mux.HandleFunc("GET /api/kubernetes/clusters/{name}/terminal", s.requireRuntime("kubernetes", s.kubernetesClusterTerminal))
@@ -760,14 +762,20 @@ func (s *Server) kubernetesClusters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.clusters.SetRunning(r.Context(), name, true); err != nil {
+	recreated, err := s.clusters.Start(r.Context(), name)
+	if err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
 	if contextName, err := s.clusters.ContextName(name); err == nil {
 		s.rememberKubernetesClusterAddons(contextName)
 	}
-	writeJSON(w, map[string]string{"status": "started"})
+	response := map[string]string{"status": "started"}
+	if recreated {
+		response["status"] = "recreated"
+		response["message"] = "The control-plane container was missing, so Porto recreated the KinD cluster before starting it."
+	}
+	writeJSON(w, response)
 }
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +790,44 @@ func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	s.forgetKubernetesClusterAddons("porto-"+name, contextName)
 	writeJSON(w, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name string `json:"name"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	oldName := r.PathValue("name")
+	oldContext, err := s.clusters.ContextName(oldName)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.stopKubernetesClusterForwards(oldName); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.clusters.Rename(r.Context(), oldName, strings.TrimSpace(request.Name)); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	newName := strings.TrimSpace(request.Name)
+	newContext, err := s.clusters.ContextName(newName)
+	if err != nil {
+		_ = s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.store.RenameKubernetesRoutesContext(r.Context(), oldContext, newContext); err != nil {
+		_ = s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, err)
+		return
+	}
+	s.forgetKubernetesClusterAddons(oldContext)
+	s.rememberKubernetesClusterAddons(newContext)
+	writeJSON(w, map[string]string{"status": "renamed", "name": newName, "context": newContext})
 }
 
 func (s *Server) scaleKubernetesNodeGroup(w http.ResponseWriter, r *http.Request) {

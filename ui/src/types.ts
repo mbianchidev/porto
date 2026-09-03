@@ -483,11 +483,11 @@ export type KubernetesScaleNodeGroupRequest = {
   taints: string[]
 }
 
-// A Porto-provisioned k3s cluster (VM-backed control plane + worker nodes).
-// `nodes` is a flat list of Lima VM instance names, not grouped by node group.
+// A Porto-provisioned Kubernetes cluster. Nodes are container names for KinD
+// and Lima VM names for k0s/k3s.
 export type KubernetesCluster = {
   name: string
-  provider: 'kind' | 'k0s' | 'k3s'
+  provider: 'kind' | 'k0s' | 'k3s' | 'unknown'
   state: string
   context: string
   kubeconfigPath: string

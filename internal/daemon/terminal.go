@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"os"
 	"os/exec"
@@ -38,6 +39,46 @@ func (s *Server) kubernetesPodTerminal(w http.ResponseWriter, r *http.Request) {
 	args = append(args, podTerminalShellCommand(shell)...)
 	args = s.kubernetes.CommandArgs(runtimeContext(r), args...)
 	bridgePodTerminal(w, r, args)
+}
+
+func (s *Server) dockerContainerTerminal(w http.ResponseWriter, r *http.Request) {
+	id := strings.TrimSpace(r.PathValue("id"))
+	shell := strings.TrimSpace(r.URL.Query().Get("shell"))
+	if shell == "" {
+		shell = "sh"
+	}
+	if !allowedShell(shell) {
+		http.Error(w, "shell must be sh, bash, ash, or an equivalent /bin path", http.StatusBadRequest)
+		return
+	}
+	document, err := s.docker.InspectContainer(r.Context(), id)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	ready, err := containerTerminalReady(document)
+	if err != nil {
+		http.Error(w, "container runtime returned invalid terminal state", http.StatusBadGateway)
+		return
+	}
+	if !ready {
+		http.Error(w, "container must be running and unpaused to open a terminal", http.StatusConflict)
+		return
+	}
+	bridgeContainerTerminal(w, r, s.docker, id, shell, queryBool(r, "debug"))
+}
+
+func containerTerminalReady(document json.RawMessage) (bool, error) {
+	var inspected struct {
+		State struct {
+			Running bool `json:"Running"`
+			Paused  bool `json:"Paused"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return false, err
+	}
+	return inspected.State.Running && !inspected.State.Paused, nil
 }
 
 func (s *Server) vmTerminal(w http.ResponseWriter, r *http.Request) {

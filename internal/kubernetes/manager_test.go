@@ -1154,8 +1154,8 @@ func TestKindListDoesNotTreatMissingNodeMessageAsRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list clusters: %v", err)
 	}
-	if len(clusters) != 1 || clusters[0].State != "stopped" || len(clusters[0].Nodes) != 0 {
-		t.Fatalf("missing KinD nodes were reported as running: %+v", clusters)
+	if len(clusters) != 1 || clusters[0].State != "broken" || len(clusters[0].Nodes) != 0 {
+		t.Fatalf("missing KinD control plane was not reported as broken: %+v", clusters)
 	}
 }
 
@@ -1184,6 +1184,64 @@ func TestKindListInspectsNodeContainerState(t *testing.T) {
 	}
 	if len(clusters) != 1 || clusters[0].State != "stopped" || len(clusters[0].Nodes) != 1 {
 		t.Fatalf("stopped KinD node was reported incorrectly: %+v", clusters)
+	}
+}
+
+func TestListIncludesOrphanedKubeconfigWithoutMetadata(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kubectl" && strings.Contains(joined, "config current-context"):
+			return []byte("porto-kind-smoke\n"), nil
+		case command.Name == "kind" && joined == "get nodes --name porto-kind-smoke":
+			return []byte("porto-kind-smoke-control-plane\n"), nil
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+	if err := os.WriteFile(filepath.Join(root, "orphan.yaml"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].Name != "kind-smoke" || clusters[0].Provider != "kind" || clusters[0].State != "orphaned" {
+		t.Fatalf("orphaned kubeconfig was not surfaced: %+v", clusters)
+	}
+}
+
+func TestOrphanedK0sKubeconfigIgnoresKindNoNodesMessage(t *testing.T) {
+	root := t.TempDir()
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "limactl" && joined == "list --json":
+			return []byte(`{"name":"porto-k0s-dev-server-1","status":"Running"}` + "\n"), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config current-context"):
+			return []byte("porto-k0s-dev\n"), nil
+		case command.Name == "kind" && joined == "get nodes --name porto-k0s-dev":
+			return []byte(`No kind nodes found for cluster "porto-k0s-dev".` + "\n"), nil
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+	if err := os.WriteFile(filepath.Join(root, "orphan.yaml"), []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	clusters, err := provisioner.List(context.Background())
+	if err != nil {
+		t.Fatalf("list clusters: %v", err)
+	}
+	if len(clusters) != 1 || clusters[0].Provider != "k0s" {
+		t.Fatalf("orphaned k0s cluster was misclassified: %+v", clusters)
 	}
 }
 
@@ -1269,6 +1327,105 @@ func TestClusterDeletionUsesExactMetadataOwnership(t *testing.T) {
 	}
 }
 
+func TestClusterDeletionIsIdempotentWhenMetadataIsMissing(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+
+	if err := provisioner.Delete(context.Background(), "porto-kind"); err != nil {
+		t.Fatalf("delete stale cluster: %v", err)
+	}
+}
+
+func TestOrphanedVMClusterDeletionUsesPersistedNodeOwnership(t *testing.T) {
+	runner := newFakeRunner()
+	runner.instances["runtime-server"] = true
+	runner.instances["runtime-worker"] = true
+	vmStateDir := t.TempDir()
+	for _, name := range []string{"runtime-server", "runtime-worker"} {
+		data := fmt.Sprintf(`{"name":%q,"kind":"kubernetes-node","owner":"dev","image":"ubuntu-24.04"}`, name)
+		if err := os.WriteFile(filepath.Join(vmStateDir, name+".json"), []byte(data), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	root := t.TempDir()
+	provisioner := NewClusterProvisioner(vm.NewWithStateDir(runner, vmStateDir), runner, root)
+	kubeconfig := `{"current-context":"porto-k3s-dev"}`
+	if err := os.WriteFile(provisioner.clusterKubeconfigPath("dev"), []byte(kubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := provisioner.Delete(context.Background(), "dev"); err != nil {
+		t.Fatalf("delete orphaned VM cluster: %v", err)
+	}
+	if runner.instances["runtime-server"] || runner.instances["runtime-worker"] {
+		t.Fatalf("owned VM nodes were not deleted: %+v", runner.instances)
+	}
+}
+
+func TestContextNameFallsBackForMissingMetadata(t *testing.T) {
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
+
+	contextName, err := provisioner.ContextName("dev")
+	if err != nil {
+		t.Fatalf("resolve stale cluster context: %v", err)
+	}
+	if contextName != "porto-dev" {
+		t.Fatalf("context name = %q, want porto-dev", contextName)
+	}
+}
+
+func TestRenameClusterPreservesRuntimeNodeIdentity(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name:       "dev",
+		Provider:   "kind",
+		NodeGroups: []NodeGroupSpec{{Name: "workers", Count: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	kubeconfig := `{"apiVersion":"v1","current-context":"porto-dev","clusters":[{"name":"porto-dev","cluster":{}}],"contexts":[{"name":"porto-dev","context":{"cluster":"porto-dev","user":"porto-dev"}}],"users":[{"name":"porto-dev","user":{}}]}`
+	if err := os.WriteFile(provisioner.clusterKubeconfigPath("dev"), []byte(kubeconfig), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := provisioner.Rename(context.Background(), "dev", "prod"); err != nil {
+		t.Fatalf("rename cluster: %v", err)
+	}
+	request, err := provisioner.readClusterMetadata("prod")
+	if err != nil {
+		t.Fatalf("read renamed metadata: %v", err)
+	}
+	if request.Name != "prod" || request.RuntimeName != "dev" {
+		t.Fatalf("renamed request = %+v", request)
+	}
+	if got := kindNodeNames(request); !reflect.DeepEqual(got, []string{"porto-dev-control-plane", "porto-dev-worker"}) {
+		t.Fatalf("runtime nodes changed after rename: %v", got)
+	}
+	contextName, err := provisioner.ContextName("prod")
+	if err != nil || contextName != "porto-prod" {
+		t.Fatalf("renamed context = %q, err = %v", contextName, err)
+	}
+	if _, err := os.Stat(provisioner.clusterMetadataPath("dev")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("old metadata still exists: %v", err)
+	}
+}
+
+func TestManagedKindControlPlaneCannotBeRemovedAsContainer(t *testing.T) {
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+
+	err := provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-control-plane")
+	if err == nil || !strings.Contains(err.Error(), "delete cluster dev") {
+		t.Fatalf("control-plane removal error = %v", err)
+	}
+	if err := provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-worker"); err != nil {
+		t.Fatalf("worker removal was unexpectedly blocked: %v", err)
+	}
+}
+
 func TestStopKindClusterStopsWorkersBeforeControlPlane(t *testing.T) {
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
@@ -1292,5 +1449,42 @@ func TestStopKindClusterStopsWorkersBeforeControlPlane(t *testing.T) {
 	want := []string{"porto-dev-worker2", "porto-dev-worker", "porto-dev-control-plane"}
 	if !reflect.DeepEqual(stopped, want) {
 		t.Fatalf("stop order = %v, want %v", stopped, want)
+	}
+}
+
+func TestStartKindClusterRecreatesMissingControlPlane(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name:       "dev",
+		Provider:   "kind",
+		NodeGroups: []NodeGroupSpec{{Name: "workers", Count: 1}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(provisioner.clusterKubeconfigPath("dev"), []byte(`{"apiVersion":"v1"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recreated, err := provisioner.Start(context.Background(), "dev")
+	if err != nil {
+		t.Fatalf("start kind cluster: %v", err)
+	}
+	if !recreated {
+		t.Fatal("missing control plane did not recreate the cluster")
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	commands := make([]string, 0, len(runner.commands))
+	for _, command := range runner.commands {
+		commands = append(commands, command.Name+" "+strings.Join(command.Args, " "))
+	}
+	joined := strings.Join(commands, "\n")
+	if !strings.Contains(joined, "kind delete cluster --name porto-dev") ||
+		!strings.Contains(joined, "kind create cluster --name porto-dev") {
+		t.Fatalf("cluster was not recreated:\n%s", joined)
+	}
+	if strings.Contains(joined, "docker start porto-dev-worker") {
+		t.Fatalf("worker was started before recreating the control plane:\n%s", joined)
 	}
 }

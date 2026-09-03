@@ -265,6 +265,35 @@ func TestKubernetesRoutePersistsStableHostname(t *testing.T) {
 	}
 }
 
+func TestRenameKubernetesRoutesContextPreservesHostname(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	route := KubernetesRoute{
+		Context:     "porto-dev",
+		Namespace:   "default",
+		Service:     "api",
+		ServicePort: 8080,
+		Hostname:    "api-8080.default.dev",
+	}
+	if err := st.UpsertKubernetesRoute(context.Background(), route); err != nil {
+		t.Fatalf("upsert Kubernetes route: %v", err)
+	}
+
+	if err := st.RenameKubernetesRoutesContext(context.Background(), "porto-dev", "porto-prod"); err != nil {
+		t.Fatalf("rename Kubernetes routes: %v", err)
+	}
+	got, err := st.GetKubernetesRouteByHostname(context.Background(), route.Hostname)
+	if err != nil {
+		t.Fatalf("get Kubernetes route: %v", err)
+	}
+	if got.Context != "porto-prod" || got.Hostname != route.Hostname {
+		t.Fatalf("renamed route = %+v", got)
+	}
+}
+
 func TestProjectInstancesPreserveMetadataAndUniqueHostnames(t *testing.T) {
 	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {

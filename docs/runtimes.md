@@ -152,6 +152,13 @@ targets when the worker supports the requested architectures.
 The Builds screen reads BuildKit history directly and reports active, successful,
 and failed records with their creation time, duration, image name, and platform.
 
+The container dashboard exposes state-aware start, resume, stop, restart,
+remove, and force-remove actions in both the inventory and inspector. Normal
+removal is enabled only after a container stops. The inspector can be maximized
+and includes an interactive terminal: application mode executes a selected
+shell inside the container, while debug mode starts a disposable
+`nicolaka/netshoot` toolbox that shares the target namespaces and volumes.
+
 ## Kubernetes
 
 Porto operates only contexts it created and stores under `PORTO_HOME`.
@@ -186,7 +193,10 @@ Porto supports three native-engine providers:
 Porto-managed clusters include a default local-path storage class and Envoy
 Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
 and node CPU/memory stats. Porto installs or repairs these add-ons during
-cluster creation and startup.
+cluster creation and startup. Cluster ownership is recorded before the add-on
+phase so a new kind, k0s, or k3s cluster appears in the dashboard while final
+configuration is still running. An orphaned kubeconfig is also surfaced with a
+repair warning instead of disappearing from the managed cluster list.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the
@@ -306,6 +316,15 @@ porto kubernetes cluster delete dev
 ```
 
 Cluster deletion requires explicit confirmation through the daemon API and removes the matching Porto-managed node VMs and kubeconfig.
+The dashboard can rename a managed cluster without renaming its existing
+containers or VMs. Porto updates the private kubeconfig context and saved
+service-route ownership while preserving the underlying runtime node identity.
+
+KinD control-plane containers cannot be removed through Porto's Docker API while
+their managed cluster exists; delete the cluster from the Kubernetes dashboard
+instead. If an older installation already lost its control-plane container,
+starting that KinD cluster recreates it from the saved cluster configuration and
+reports that recovery to the user.
 
 The Activity screen samples current CPU and memory for Porto itself, native
 projects, containers, Kubernetes nodes and pod containers, and standalone
@@ -417,6 +436,7 @@ Runtime APIs are served from the existing local daemon:
 GET    /api/runtime
 GET    /api/docker/status
 GET    /api/docker/containers
+GET    /api/docker/containers/{id}/terminal
 GET    /api/docker/images
 GET    /api/docker/builds
 GET    /api/docker/networks
@@ -432,6 +452,8 @@ GET    /api/kubernetes/nodes
 GET    /api/vms/status
 GET    /api/vms/images
 GET    /api/vms/instances
+
+POST   /api/kubernetes/clusters/{name}/rename
 ```
 
 Mutation routes validate JSON input, use argument arrays rather than host-shell concatenation, and require explicit confirmation for deleting clusters, VMs, or pod filesystem paths.

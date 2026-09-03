@@ -1,5 +1,6 @@
-import { Component, useEffect, useRef } from 'react'
+import { Component, useEffect, useRef, useState } from 'react'
 import type { ErrorInfo, ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { ActionButton } from './ActionButton'
 
 type InspectorProps = {
@@ -45,6 +46,7 @@ export class InspectorErrorBoundary extends Component<
 export function Inspector({ title, subtitle, onClose, children }: InspectorProps) {
   const headingRef = useRef<HTMLHeadingElement>(null)
   const onCloseRef = useRef(onClose)
+  const [maximized, setMaximized] = useState(false)
 
   useEffect(() => {
     onCloseRef.current = onClose
@@ -54,24 +56,38 @@ export function Inspector({ title, subtitle, onClose, children }: InspectorProps
     headingRef.current?.focus()
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
-      if (event.key === 'Escape') onCloseRef.current()
+      if (event.key !== 'Escape') return
+      if (maximized) {
+        setMaximized(false)
+      } else {
+        onCloseRef.current()
+      }
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+  }, [maximized])
 
-  return (
-    <aside className="inspector" aria-label={`${title} inspector`}>
+  const inspector = (
+    <aside className={`inspector ${maximized ? 'inspectorMaximized' : ''}`} aria-label={`${title} inspector`}>
       <div className="inspectorHeader">
         <div>
           <h2 tabIndex={-1} ref={headingRef}>{title}</h2>
           {subtitle && <p>{subtitle}</p>}
         </div>
-        <ActionButton label="Close inspector" icon="close" className="inspectorClose" onClick={onClose} />
+        <div className="inspectorHeaderActions">
+          <ActionButton
+            label={maximized ? 'Restore inspector' : 'Maximize inspector'}
+            icon={maximized ? 'minimize' : 'maximize'}
+            aria-pressed={maximized}
+            onClick={() => setMaximized((value) => !value)}
+          />
+          <ActionButton label="Close inspector" icon="close" className="inspectorClose" onClick={onClose} />
+        </div>
       </div>
       <div className="inspectorBody">{children}</div>
     </aside>
   )
+  return maximized ? createPortal(inspector, document.body) : inspector
 }
 
 export function InspectorTabs({

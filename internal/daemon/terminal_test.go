@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"encoding/json"
 	"reflect"
 	"slices"
 	"testing"
@@ -19,6 +20,16 @@ func TestAllowedShell(t *testing.T) {
 		if allowedShell(shell) {
 			t.Errorf("expected %q to be rejected", shell)
 		}
+	}
+}
+
+func TestContainerTerminalStateUsesUnwrappedInspectDocument(t *testing.T) {
+	ready, err := containerTerminalReady(json.RawMessage(`{"State":{"Running":true,"Paused":false}}`))
+	if err != nil {
+		t.Fatalf("decode container terminal state: %v", err)
+	}
+	if !ready {
+		t.Fatal("running container was not terminal-ready")
 	}
 }
 

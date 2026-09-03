@@ -75,6 +75,21 @@ func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
 	}
 	request, err := p.readClusterMetadata(clusterName)
 	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			data, readErr := os.ReadFile(p.clusterKubeconfigPath(clusterName))
+			if readErr == nil {
+				var document struct {
+					CurrentContext string `json:"current-context"`
+				}
+				if json.Unmarshal(data, &document) == nil && document.CurrentContext != "" {
+					return document.CurrentContext, nil
+				}
+			}
+			if readErr == nil || errors.Is(readErr, os.ErrNotExist) {
+				return "porto-" + clusterName, nil
+			}
+			return "", fmt.Errorf("read Kubernetes kubeconfig: %w", readErr)
+		}
 		return "", fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
 	return clusterContextName(request), nil
@@ -119,6 +134,7 @@ type NodeGroupSpec struct {
 
 type ClusterRequest struct {
 	Name         string          `json:"name"`
+	RuntimeName  string          `json:"runtimeName,omitempty"`
 	Provider     string          `json:"provider"`
 	Version      string          `json:"version"`
 	APIPort      int             `json:"apiPort,omitempty"`
@@ -156,6 +172,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		return Cluster{}, fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
 	request.Provider = normalizeProvider(request.Provider)
+	request.RuntimeName = ""
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
 	}
@@ -213,9 +230,10 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		err = errors.Join(err, errors.Join(cleanupErrors...))
 	}()
 
-	serverName := clusterMachineName(request.Name, "server", 1)
+	serverName := clusterMachineName(clusterRuntimeName(request), "server", 1)
 	if _, err = p.vms.CreateNode(ctx, vm.CreateRequest{
 		Name:      serverName,
+		Owner:     request.Name,
 		Image:     "ubuntu-24.04",
 		CPUs:      request.ControlPlane.CPUs,
 		MemoryMiB: request.ControlPlane.MemoryMiB,
@@ -253,9 +271,10 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	nodes := []string{serverName}
 	for _, group := range request.NodeGroups {
 		for nodeIndex := 1; nodeIndex <= group.Count; nodeIndex++ {
-			nodeName := clusterMachineName(request.Name, group.Name, nodeIndex)
+			nodeName := clusterMachineName(clusterRuntimeName(request), group.Name, nodeIndex)
 			if _, err = p.vms.CreateNode(ctx, vm.CreateRequest{
 				Name:      nodeName,
+				Owner:     request.Name,
 				Image:     "ubuntu-24.04",
 				CPUs:      group.Machine.CPUs,
 				MemoryMiB: group.Machine.MemoryMiB,
@@ -297,6 +316,9 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
+	if err = p.writeClusterMetadata(request); err != nil {
+		return Cluster{}, err
+	}
 	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
@@ -309,15 +331,12 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
 	}
-	if err = p.writeClusterMetadata(request); err != nil {
-		return Cluster{}, err
-	}
 	return cluster, nil
 }
 
 func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
 	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
-	kindName := "porto-" + request.Name
+	kindName := "porto-" + clusterRuntimeName(request)
 	configFile, err := writeKindConfig(request)
 	if err != nil {
 		return Cluster{}, err
@@ -387,14 +406,14 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 			return Cluster{}, runtimes.CommandError("apply kind node resources", output, err)
 		}
 	}
+	request.APIPort = 0
+	if err := p.writeClusterMetadata(request); err != nil {
+		return Cluster{}, err
+	}
 	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
 	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
-		return Cluster{}, err
-	}
-	request.APIPort = 0
-	if err := p.writeClusterMetadata(request); err != nil {
 		return Cluster{}, err
 	}
 	serverOutput, err := p.runner.Run(ctx, runtimes.Command{
@@ -452,7 +471,7 @@ func writeKindConfig(request ClusterRequest) (string, error) {
 }
 
 func kindNodeNames(request ClusterRequest) []string {
-	kindName := "porto-" + request.Name
+	kindName := "porto-" + clusterRuntimeName(request)
 	names := []string{kindName + "-control-plane"}
 	workers := 0
 	for _, group := range request.NodeGroups {
@@ -497,16 +516,45 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
+	var inferredNodes []string
 	request, err := p.readClusterMetadata(clusterName)
 	if err != nil {
-		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+		if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+		}
+		kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+		if _, statErr := os.Stat(kubeconfigPath); errors.Is(statErr, os.ErrNotExist) {
+			return nil
+		} else if statErr != nil {
+			return fmt.Errorf("inspect Kubernetes kubeconfig: %w", statErr)
+		}
+		instances, listErr := p.vms.ListAll(ctx)
+		if listErr != nil {
+			return fmt.Errorf("list Kubernetes node VMs: %w", listErr)
+		}
+		instanceByName := make(map[string]vm.Instance, len(instances))
+		for _, instance := range instances {
+			instanceByName[instance.Name] = instance
+		}
+		orphan, inferErr := p.orphanedCluster(ctx, kubeconfigPath, instanceByName)
+		if inferErr != nil {
+			return inferErr
+		}
+		if orphan.Name != clusterName {
+			return fmt.Errorf("orphaned Kubernetes context %q does not belong to cluster %s", orphan.Context, clusterName)
+		}
+		request = ClusterRequest{Name: clusterName, Provider: orphan.Provider}
+		inferredNodes, err = p.vms.KubernetesNodeNames(clusterName)
+		if err != nil {
+			return fmt.Errorf("read Kubernetes node ownership: %w", err)
+		}
 	}
 	request.Provider = normalizeProvider(request.Provider)
 	var deleteErrors []error
 	if request.Provider == "kind" {
 		output, deleteErr := p.runner.Run(ctx, runtimes.Command{
 			Name: "kind",
-			Args: []string{"delete", "cluster", "--name", "porto-" + clusterName},
+			Args: []string{"delete", "cluster", "--name", "porto-" + clusterRuntimeName(request)},
 			Env:  portoDockerEnv(),
 		})
 		if deleteErr != nil {
@@ -514,6 +562,9 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 		}
 	} else {
 		names := clusterNodeNames(request)
+		if len(inferredNodes) > 0 {
+			names = inferredNodes
+		}
 		for index := len(names) - 1; index >= 0; index-- {
 			if err := p.vms.Delete(ctx, names[index], true); err != nil {
 				deleteErrors = append(deleteErrors, err)
@@ -530,6 +581,43 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 	return errors.Join(deleteErrors...)
 }
 
+func (p *ClusterProvisioner) ProtectContainerRemoval(_ context.Context, containerName string) error {
+	containerName = strings.TrimPrefix(strings.TrimSpace(containerName), "/")
+	entries, err := os.ReadDir(p.kubeconfigRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("list Kubernetes cluster ownership: %w", err)
+	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
+		if err != nil {
+			return fmt.Errorf("read Kubernetes cluster ownership %s: %w", entry.Name(), err)
+		}
+		var request ClusterRequest
+		if err := json.Unmarshal(data, &request); err != nil {
+			return fmt.Errorf("decode Kubernetes cluster ownership %s: %w", entry.Name(), err)
+		}
+		if normalizeProvider(request.Provider) != "kind" {
+			continue
+		}
+		nodes := kindNodeNames(request)
+		if len(nodes) > 0 && nodes[0] == containerName {
+			return fmt.Errorf(
+				"container %s is the control plane for managed Kubernetes cluster %s; delete cluster %s from the Kubernetes dashboard instead",
+				containerName,
+				request.Name,
+				request.Name,
+			)
+		}
+	}
+	return nil
+}
+
 func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 	entries, err := os.ReadDir(p.kubeconfigRoot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -544,6 +632,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 		instanceByName[instance.Name] = instance
 	}
 	clusters := make([]Cluster, 0)
+	managedKubeconfigs := make(map[string]struct{})
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
@@ -568,10 +657,12 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Context:        clusterContextName(request),
 			KubeconfigPath: p.clusterKubeconfigPath(name),
 		}
+		managedKubeconfigs[cluster.KubeconfigPath] = struct{}{}
 		if cluster.Provider == "kind" {
+			expectedNodes := kindNodeNames(request)
 			output, kindErr := p.runner.Run(ctx, runtimes.Command{
 				Name: "kind",
-				Args: []string{"get", "nodes", "--name", "porto-" + name},
+				Args: []string{"get", "nodes", "--name", "porto-" + clusterRuntimeName(request)},
 				Env:  portoDockerEnv(),
 			})
 			if kindErr == nil {
@@ -588,7 +679,9 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 					}
 				}
 				switch {
-				case len(cluster.Nodes) == len(kindNodeNames(request)) && runningNodes == len(cluster.Nodes):
+				case len(expectedNodes) > 0 && !slices.Contains(cluster.Nodes, expectedNodes[0]):
+					cluster.State = "broken"
+				case len(cluster.Nodes) == len(expectedNodes) && runningNodes == len(cluster.Nodes):
 					cluster.State = "running"
 				case runningNodes > 0:
 					cluster.State = "degraded"
@@ -611,7 +704,8 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 		}
 		if cluster.Provider != "kind" && instanceErr == nil {
 			runningNodes := 0
-			for _, nodeName := range clusterNodeNames(request) {
+			expectedNodes := clusterNodeNames(request)
+			for _, nodeName := range expectedNodes {
 				if instance, ok := instanceByName[nodeName]; ok {
 					cluster.Nodes = append(cluster.Nodes, nodeName)
 					if strings.EqualFold(instance.Status, "running") {
@@ -620,7 +714,9 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 				}
 			}
 			switch {
-			case runningNodes == len(clusterNodeNames(request)):
+			case len(expectedNodes) > 0 && !slices.Contains(cluster.Nodes, expectedNodes[0]):
+				cluster.State = "broken"
+			case runningNodes == len(expectedNodes):
 				cluster.State = "running"
 			case runningNodes > 0:
 				cluster.State = "degraded"
@@ -629,10 +725,81 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 		}
 		clusters = append(clusters, cluster)
 	}
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".yaml" {
+			continue
+		}
+		kubeconfigPath := filepath.Join(p.kubeconfigRoot, entry.Name())
+		if _, managed := managedKubeconfigs[kubeconfigPath]; managed {
+			continue
+		}
+		cluster, orphanErr := p.orphanedCluster(ctx, kubeconfigPath, instanceByName)
+		if orphanErr != nil {
+			return nil, orphanErr
+		}
+		if cluster.Name != "" {
+			clusters = append(clusters, cluster)
+		}
+	}
 	sort.Slice(clusters, func(left, right int) bool {
 		return clusters[left].Name < clusters[right].Name
 	})
 	return clusters, nil
+}
+
+func (p *ClusterProvisioner) orphanedCluster(
+	ctx context.Context,
+	kubeconfigPath string,
+	instanceByName map[string]vm.Instance,
+) (Cluster, error) {
+	output, err := p.runner.Run(ctx, runtimes.Command{
+		Name: "kubectl",
+		Args: []string{"--kubeconfig", kubeconfigPath, "config", "current-context"},
+	})
+	if err != nil {
+		return Cluster{}, runtimes.CommandError("read orphaned Kubernetes context", output, err)
+	}
+	contextName := strings.TrimSpace(string(output))
+	provider := ""
+	name := ""
+	if candidate, ok := strings.CutPrefix(contextName, "porto-k3s-"); ok {
+		provider = "k3s"
+		name = candidate
+	} else if candidate, ok := strings.CutPrefix(contextName, "porto-"); ok {
+		name = candidate
+	}
+	if !clusterNamePattern.MatchString(name) {
+		return Cluster{}, nil
+	}
+	cluster := Cluster{
+		Name:           name,
+		Provider:       provider,
+		State:          "orphaned",
+		Context:        contextName,
+		KubeconfigPath: kubeconfigPath,
+	}
+	if provider == "" {
+		nodeOutput, nodeErr := p.runner.Run(ctx, runtimes.Command{
+			Name: "kind",
+			Args: []string{"get", "nodes", "--name", contextName},
+			Env:  portoDockerEnv(),
+		})
+		if nodeErr == nil && slices.Contains(strings.Fields(string(nodeOutput)), contextName+"-control-plane") {
+			cluster.Provider = "kind"
+			cluster.Nodes = strings.Fields(string(nodeOutput))
+		} else if ownedNodes, ownershipErr := p.vms.KubernetesNodeNames(name); ownershipErr != nil {
+			return Cluster{}, fmt.Errorf("read orphaned Kubernetes node ownership: %w", ownershipErr)
+		} else if len(ownedNodes) > 0 {
+			cluster.Provider = "k0s"
+			cluster.Nodes = ownedNodes
+		} else if _, exists := instanceByName[clusterMachineName(name, "server", 1)]; exists {
+			cluster.Provider = "k0s"
+		}
+	}
+	if cluster.Provider == "" {
+		cluster.Provider = "unknown"
+	}
+	return cluster, nil
 }
 
 func (p *ClusterProvisioner) ScaleNodeGroup(
@@ -659,6 +826,7 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
 	request.Provider = normalizeProvider(request.Provider)
+	runtimeName := clusterRuntimeName(request)
 	if version == "" {
 		version = request.Version
 	}
@@ -684,7 +852,7 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	}
 	currentComplete := true
 	for index := 1; index <= currentGroup.Count; index++ {
-		if _, exists := instanceByName[clusterMachineName(clusterName, group.Name, index)]; !exists {
+		if _, exists := instanceByName[clusterMachineName(runtimeName, group.Name, index)]; !exists {
 			currentComplete = false
 			break
 		}
@@ -692,7 +860,7 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	if currentGroup.Count == group.Count && currentComplete {
 		return p.updateNodeGroupMetadata(clusterName, group, version)
 	}
-	serverName := clusterMachineName(clusterName, "server", 1)
+	serverName := clusterMachineName(runtimeName, "server", 1)
 	if currentGroup.Count <= group.Count {
 		serverIPOutput, err := p.vms.Exec(ctx, serverName, []string{"hostname", "-I"}, nil)
 		if err != nil {
@@ -706,12 +874,13 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 		token := strings.TrimSpace(string(tokenOutput))
 		created := make([]string, 0)
 		for index := 1; index <= group.Count; index++ {
-			nodeName := clusterMachineName(clusterName, group.Name, index)
+			nodeName := clusterMachineName(runtimeName, group.Name, index)
 			if _, exists := instanceByName[nodeName]; exists {
 				continue
 			}
 			if _, createErr := p.vms.CreateNode(ctx, vm.CreateRequest{
 				Name:      nodeName,
+				Owner:     clusterName,
 				Image:     "ubuntu-24.04",
 				CPUs:      group.Machine.CPUs,
 				MemoryMiB: group.Machine.MemoryMiB,
@@ -728,7 +897,7 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 		}
 	} else {
 		for index := currentGroup.Count; index > group.Count; index-- {
-			nodeName := clusterMachineName(clusterName, group.Name, index)
+			nodeName := clusterMachineName(runtimeName, group.Name, index)
 			if _, exists := instanceByName[nodeName]; !exists {
 				continue
 			}
@@ -766,6 +935,74 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	}
 	if err := p.writeClusterMetadata(request); err != nil {
 		return err
+	}
+	return nil
+}
+
+func (p *ClusterProvisioner) Rename(_ context.Context, clusterName, newName string) error {
+	if !clusterNamePattern.MatchString(clusterName) || !clusterNamePattern.MatchString(newName) {
+		return fmt.Errorf("cluster names must match %s", clusterNamePattern)
+	}
+	if clusterName == newName {
+		return nil
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	oldMetadataPath := p.clusterMetadataPath(clusterName)
+	oldKubeconfigPath := p.clusterKubeconfigPath(clusterName)
+	newMetadataPath := p.clusterMetadataPath(newName)
+	newKubeconfigPath := p.clusterKubeconfigPath(newName)
+	for _, path := range []string{newMetadataPath, newKubeconfigPath} {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("Kubernetes cluster %s already exists", newName)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("inspect renamed Kubernetes cluster state: %w", err)
+		}
+	}
+	oldKubeconfig, err := os.ReadFile(oldKubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes kubeconfig: %w", err)
+	}
+	request.RuntimeName = clusterRuntimeName(request)
+	request.Name = newName
+	normalized, err := normalizeKubeconfigJSON(oldKubeconfig, clusterContextName(request))
+	if err != nil {
+		return err
+	}
+	if err := writeKubeconfigAtomic(newKubeconfigPath, normalized); err != nil {
+		return fmt.Errorf("write renamed Kubernetes kubeconfig: %w", err)
+	}
+	if err := p.writeClusterMetadata(request); err != nil {
+		_ = os.Remove(newKubeconfigPath)
+		return err
+	}
+	ownerRenamed := false
+	if normalizeProvider(request.Provider) != "kind" {
+		if err := p.vms.RenameKubernetesOwner(clusterName, newName); err != nil {
+			_ = os.Remove(newKubeconfigPath)
+			_ = os.Remove(newMetadataPath)
+			return fmt.Errorf("rename Kubernetes node ownership: %w", err)
+		}
+		ownerRenamed = true
+	}
+	if err := os.Remove(oldKubeconfigPath); err != nil {
+		if ownerRenamed {
+			_ = p.vms.RenameKubernetesOwner(newName, clusterName)
+		}
+		_ = os.Remove(newKubeconfigPath)
+		_ = os.Remove(newMetadataPath)
+		return fmt.Errorf("remove old Kubernetes kubeconfig: %w", err)
+	}
+	if err := os.Remove(oldMetadataPath); err != nil {
+		if ownerRenamed {
+			_ = p.vms.RenameKubernetesOwner(newName, clusterName)
+		}
+		_ = writeKubeconfigAtomic(oldKubeconfigPath, oldKubeconfig)
+		_ = os.Remove(newKubeconfigPath)
+		_ = os.Remove(newMetadataPath)
+		return fmt.Errorf("remove old Kubernetes metadata: %w", err)
 	}
 	return nil
 }
@@ -899,7 +1136,7 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	if request.Provider == "kind" {
 		output, err := p.runner.Run(ctx, runtimes.Command{
 			Name: "kind",
-			Args: []string{"load", "docker-image", image, "--name", "porto-" + clusterName},
+			Args: []string{"load", "docker-image", image, "--name", "porto-" + clusterRuntimeName(request)},
 			Env:  portoDockerEnv(),
 		})
 		if err != nil {
@@ -936,6 +1173,50 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	return errors.Join(importErrors...)
 }
 
+func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (bool, error) {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return false, fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return false, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	request.Provider = normalizeProvider(request.Provider)
+	if request.Provider != "kind" {
+		return false, p.SetRunning(ctx, clusterName, true)
+	}
+	nodes := kindNodeNames(request)
+	if len(nodes) == 0 {
+		return false, errors.New("kind cluster has no configured control-plane node")
+	}
+	output, err := p.runner.Run(ctx, runtimes.Command{
+		Name: "kind",
+		Args: []string{"get", "nodes", "--name", "porto-" + clusterRuntimeName(request)},
+		Env:  portoDockerEnv(),
+	})
+	if err != nil {
+		return false, runtimes.CommandError("inspect kind cluster nodes", output, err)
+	}
+	if slices.Contains(strings.Fields(string(output)), nodes[0]) {
+		return false, p.SetRunning(ctx, clusterName, true)
+	}
+	deleteOutput, err := p.runner.Run(ctx, runtimes.Command{
+		Name: "kind",
+		Args: []string{"delete", "cluster", "--name", "porto-" + clusterRuntimeName(request)},
+		Env:  portoDockerEnv(),
+	})
+	if err != nil {
+		return false, runtimes.CommandError("remove broken kind cluster", deleteOutput, err)
+	}
+	if err := os.Remove(p.clusterKubeconfigPath(clusterName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return false, fmt.Errorf("remove broken kind kubeconfig: %w", err)
+	}
+	if _, err := p.createKind(ctx, request); err != nil {
+		return false, fmt.Errorf("recreate kind cluster after its control plane was removed: %w", err)
+	}
+	return true, nil
+}
+
 func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string, running bool) error {
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
@@ -969,10 +1250,11 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		if err := errors.Join(actionErrors...); err != nil || !running {
 			return err
 		}
-		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName); err != nil {
+		contextName := clusterContextName(request)
+		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
 			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
 		}
-		return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), "porto-"+clusterName)
+		return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName)
 	}
 	if !running {
 		for left, right := 0, len(names)-1; left < right; left, right = left+1, right-1 {
@@ -1370,11 +1652,19 @@ func clusterMachineName(cluster, group string, index int) string {
 	return "porto-" + cluster + "-" + group + "-" + strconv.Itoa(index)
 }
 
+func clusterRuntimeName(request ClusterRequest) string {
+	if request.RuntimeName != "" {
+		return request.RuntimeName
+	}
+	return request.Name
+}
+
 func clusterNodeNames(request ClusterRequest) []string {
-	names := []string{clusterMachineName(request.Name, "server", 1)}
+	runtimeName := clusterRuntimeName(request)
+	names := []string{clusterMachineName(runtimeName, "server", 1)}
 	for _, group := range request.NodeGroups {
 		for index := 1; index <= group.Count; index++ {
-			names = append(names, clusterMachineName(request.Name, group.Name, index))
+			names = append(names, clusterMachineName(runtimeName, group.Name, index))
 		}
 	}
 	return names
