@@ -490,12 +490,26 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err != nil {
 		return "", err
 	}
-	id := strings.TrimSpace(string(output))
-	if id == "" {
-		return "", errors.New("container runtime returned an empty container identifier")
+	id, err := createdContainerID(output)
+	if err != nil {
+		return "", err
 	}
 	m.invalidateContainerInventory()
-	return strings.Fields(id)[0], nil
+	return id, nil
+}
+
+func createdContainerID(output []byte) (string, error) {
+	lines := strings.Split(string(output), "\n")
+	for index := len(lines) - 1; index >= 0; index-- {
+		fields := strings.Fields(lines[index])
+		if len(fields) != 1 || strings.ContainsAny(fields[0], "/:") {
+			continue
+		}
+		if err := validateObjectID(fields[0]); err == nil {
+			return fields[0], nil
+		}
+	}
+	return "", errors.New("container runtime returned no usable container identifier")
 }
 
 func containerHostname(request CreateContainerRequest) (string, error) {

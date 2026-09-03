@@ -62,7 +62,8 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
-			"nerdctl create --name demo --stop-signal SIGINT --stop-timeout 12 --network bridge --health-cmd curl -f http://localhost/health --health-interval 30s --health-timeout 5s --health-start-period 10s --health-retries 3 --env MODE=test --label app=demo --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("container-id\n"),
+			"nerdctl create --name demo --stop-signal SIGINT --stop-timeout 12 --network bridge --health-cmd curl -f http://localhost/health --health-interval 30s --health-timeout 5s --health-start-period 10s --health-retries 3 --env MODE=test --label app=demo --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("docker.io/library/alpine:latest\npull complete\ncontainer-id\n"),
+			"nerdctl start container-id": nil,
 		},
 		errors: map[string]error{},
 	}
@@ -92,8 +93,19 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	if response.Code != http.StatusCreated {
 		t.Fatalf("create = %d: %s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), "container-id") {
-		t.Fatalf("unexpected create response: %s", response.Body.String())
+	var created struct {
+		ID string `json:"Id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&created); err != nil {
+		t.Fatalf("decode create response: %v", err)
+	}
+	if created.ID != "container-id" {
+		t.Fatalf("create ID = %q, want container-id", created.ID)
+	}
+	start := httptest.NewRecorder()
+	handler.ServeHTTP(start, httptest.NewRequest(http.MethodPost, "/v1.47/containers/"+created.ID+"/start", nil))
+	if start.Code != http.StatusNoContent {
+		t.Fatalf("start = %d: %s", start.Code, start.Body.String())
 	}
 }
 

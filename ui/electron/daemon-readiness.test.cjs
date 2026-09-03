@@ -28,7 +28,7 @@ function response(body, ok = true) {
 
 test('accepts a compatible daemon with a dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 26, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 27, dashboardReady: true }),
   })
 
   assert.equal(ready, true)
@@ -44,7 +44,7 @@ test('rejects an older daemon without dashboard readiness metadata', async () =>
 
 test('rejects a daemon that cannot serve the dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 26, dashboardReady: false }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 27, dashboardReady: false }),
   })
 
   assert.equal(ready, false)
@@ -52,7 +52,7 @@ test('rejects a daemon that cannot serve the dashboard', async () => {
 
 test('rejects an incompatible API', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 25, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 26, dashboardReady: true }),
   })
 
   assert.equal(ready, false)
