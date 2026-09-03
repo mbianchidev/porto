@@ -186,6 +186,11 @@ function dockerBootstrapCommand(status, {
   return ['docker', 'engine-install']
 }
 
+function dashboardLoadAction({ rootChildren = 0, reloadAttempts = 0 } = {}) {
+  if (rootChildren > 0) return 'ready'
+  return reloadAttempts < 1 ? 'reload' : 'error'
+}
+
 function resolvePackagedDashboard({
   isPackaged = false,
   resourcesPath = '',
@@ -213,6 +218,7 @@ function resolvePortoBinary({
 module.exports = {
   daemonProcessIDs,
   daemonProcesses,
+  dashboardLoadAction,
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,

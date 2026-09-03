@@ -13,6 +13,7 @@ const { promisify } = require('node:util')
 
 const {
   daemonProcesses,
+  dashboardLoadAction,
   dockerBootstrapCommand,
   inspectDaemon,
   inspectDockerStatus,
@@ -333,6 +334,7 @@ function createWindow() {
     window.moveTop()
   }
   let retries = 0
+  let blankReloadAttempts = 0
   const openExternalURL = (targetURL) => {
     try {
       const parsed = new URL(targetURL)
@@ -357,6 +359,32 @@ function createWindow() {
     if (errorCode === -3 || retries >= 10) return
     retries += 1
     setTimeout(() => window.loadURL(DAEMON_URL), 500)
+  })
+  window.webContents.on('did-finish-load', () => {
+    setTimeout(async () => {
+      if (window.isDestroyed() || !window.webContents.getURL().startsWith(DAEMON_URL)) return
+      try {
+        const rootChildren = await window.webContents.executeJavaScript(
+          'document.getElementById("root")?.childElementCount ?? 0',
+          true,
+        )
+        const action = dashboardLoadAction({ rootChildren, reloadAttempts: blankReloadAttempts })
+        if (action === 'ready') {
+          blankReloadAttempts = 0
+          return
+        }
+        if (action === 'reload') {
+          blankReloadAttempts += 1
+          window.webContents.reloadIgnoringCache()
+          return
+        }
+        console.error('Porto dashboard loaded without rendering any content')
+        const html = `<!doctype html><html><body style="margin:0;background:#252925;color:#dedfd7;font:14px system-ui,sans-serif"><main style="padding:38px"><h1 style="color:#fffdf7">Dashboard failed to render</h1><p>Restart Porto. If this continues, reinstall the latest build.</p></main></body></html>`
+        window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+      } catch (error) {
+        console.error('Unable to verify Porto dashboard rendering', error)
+      }
+    }, 500)
   })
   windows.add(window)
   window.on('closed', () => windows.delete(window))

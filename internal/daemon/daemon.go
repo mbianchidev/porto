@@ -2186,6 +2186,21 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 
 func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ui != nil {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			index, err := fs.ReadFile(s.ui, "index.html")
+			if err != nil {
+				http.Error(w, "Porto dashboard index is unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store, max-age=0")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(index)
+			}
+			return
+		}
 		http.FileServer(http.FS(s.ui)).ServeHTTP(w, r)
 		return
 	}
