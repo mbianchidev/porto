@@ -13,8 +13,9 @@ selected item (an accessible full-screen overlay on narrow widths):
   terminal modes.
 - **Kubernetes** — `#/kubernetes` (overview + context picker), `#/pods`
   (Overview/Logs/Terminal/Files/Stats/Events/Manifest inspector tabs),
-  `#/services`, `#/configs`, `#/secrets`, and `#/nodes`; every resource view
-  can switch context directly.
+  `#/services`, `#/storage` (PVs/PVCs), `#/gateways` (GatewayClasses,
+  Gateways, and HTTPRoutes), `#/configs`, `#/secrets`, and `#/nodes`; every
+  resource view can switch context directly.
 - **Virtual machines** — `#/machines` lists the Lima-backed VM image catalog
   and instances, with a create form and terminal/snapshot inspector tabs.
 - **System** — `#/activity` shows recent client-side actions and errors for

@@ -366,6 +366,13 @@ porto kubernetes files default api-7d9f --container api --path /app/config.json 
 The dashboard adds pod overview, streaming logs, an expandable xterm terminal backed by a real PTY, bounded text-file editing, resource statistics, events, readable and copyable effective manifest views, ConfigMap inspection, and Secret inventory. ConfigMap text values are visible to authorized users. Secret values are never returned by Porto; only names, types, and data keys are exposed. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
 ConfigMap inspectors provide copy actions for every text or base64-encoded binary value and for the complete Kubernetes resource as formatted JSON.
 
+The Kubernetes **Storage** section inventories cluster-scoped PersistentVolumes
+and namespaced PersistentVolumeClaims, including phase, capacity, storage class,
+binding, access modes, reclaim policy, and volume mode. The **Gateway API**
+section explores GatewayClasses, Gateways, listeners, attached-route counts,
+addresses, HTTPRoutes, parent references, backend references, and acceptance or
+reference-resolution conditions.
+
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
 File inspection requires `sh` and basic POSIX utilities inside the selected container. Shellless `scratch` and distroless images report that file inspection is unavailable instead of exposing the underlying `kubectl exec` command.
 
@@ -457,6 +464,11 @@ GET    /api/kubernetes/clusters
 GET    /api/kubernetes/pods
 GET    /api/kubernetes/services
 GET    /api/kubernetes/nodes
+GET    /api/kubernetes/persistent-volumes
+GET    /api/kubernetes/persistent-volume-claims
+GET    /api/kubernetes/gateway-classes
+GET    /api/kubernetes/gateways
+GET    /api/kubernetes/http-routes
 
 GET    /api/vms/status
 GET    /api/vms/images

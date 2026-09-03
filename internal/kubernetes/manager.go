@@ -148,6 +148,92 @@ type Node struct {
 	Age           string            `json:"age"`
 }
 
+type PersistentVolume struct {
+	Name          string   `json:"name"`
+	Phase         string   `json:"phase"`
+	Capacity      string   `json:"capacity"`
+	AccessModes   []string `json:"accessModes"`
+	ReclaimPolicy string   `json:"reclaimPolicy"`
+	StorageClass  string   `json:"storageClass"`
+	Claim         string   `json:"claim"`
+	VolumeMode    string   `json:"volumeMode"`
+	Age           string   `json:"age"`
+}
+
+type PersistentVolumeClaim struct {
+	Name         string   `json:"name"`
+	Namespace    string   `json:"namespace"`
+	Phase        string   `json:"phase"`
+	Volume       string   `json:"volume"`
+	Requested    string   `json:"requested"`
+	Capacity     string   `json:"capacity"`
+	AccessModes  []string `json:"accessModes"`
+	StorageClass string   `json:"storageClass"`
+	VolumeMode   string   `json:"volumeMode"`
+	Age          string   `json:"age"`
+}
+
+type GatewayClass struct {
+	Name           string `json:"name"`
+	ControllerName string `json:"controllerName"`
+	Accepted       string `json:"accepted"`
+	Reason         string `json:"reason"`
+	Message        string `json:"message"`
+	Age            string `json:"age"`
+}
+
+type GatewayListener struct {
+	Name              string `json:"name"`
+	Protocol          string `json:"protocol"`
+	Port              int32  `json:"port"`
+	Hostname          string `json:"hostname"`
+	AttachedRoutes    int32  `json:"attachedRoutes"`
+	Accepted          string `json:"accepted"`
+	AcceptedReason    string `json:"acceptedReason"`
+	AcceptedMessage   string `json:"acceptedMessage"`
+	Programmed        string `json:"programmed"`
+	ProgrammedReason  string `json:"programmedReason"`
+	ProgrammedMessage string `json:"programmedMessage"`
+}
+
+type Gateway struct {
+	Name              string            `json:"name"`
+	Namespace         string            `json:"namespace"`
+	ClassName         string            `json:"className"`
+	Addresses         []string          `json:"addresses"`
+	Accepted          string            `json:"accepted"`
+	AcceptedReason    string            `json:"acceptedReason"`
+	AcceptedMessage   string            `json:"acceptedMessage"`
+	Programmed        string            `json:"programmed"`
+	ProgrammedReason  string            `json:"programmedReason"`
+	ProgrammedMessage string            `json:"programmedMessage"`
+	Listeners         []GatewayListener `json:"listeners"`
+	Age               string            `json:"age"`
+}
+
+type HTTPRouteParentStatus struct {
+	ParentRef       string `json:"parentRef"`
+	ControllerName  string `json:"controllerName"`
+	Accepted        string `json:"accepted"`
+	AcceptedReason  string `json:"acceptedReason"`
+	AcceptedMessage string `json:"acceptedMessage"`
+	ResolvedRefs    string `json:"resolvedRefs"`
+	ResolvedReason  string `json:"resolvedReason"`
+	ResolvedMessage string `json:"resolvedMessage"`
+}
+
+type HTTPRoute struct {
+	Name         string                  `json:"name"`
+	Namespace    string                  `json:"namespace"`
+	Hostnames    []string                `json:"hostnames"`
+	ParentRefs   []string                `json:"parentRefs"`
+	BackendRefs  []string                `json:"backendRefs"`
+	Accepted     string                  `json:"accepted"`
+	ResolvedRefs string                  `json:"resolvedRefs"`
+	Parents      []HTTPRouteParentStatus `json:"parents"`
+	Age          string                  `json:"age"`
+}
+
 type Event struct {
 	Type      string `json:"type"`
 	Reason    string `json:"reason"`
@@ -593,6 +679,211 @@ func (m *Manager) Nodes(ctx context.Context, contextName string) ([]Node, error)
 		})
 	}
 	return nodes, nil
+}
+
+func (m *Manager) PersistentVolumes(ctx context.Context, contextName string) ([]PersistentVolume, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, "get", "persistentvolumes", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list persistentVolumeList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes persistent volumes: %w", err)
+	}
+	volumes := make([]PersistentVolume, 0, len(list.Items))
+	for _, item := range list.Items {
+		claim := ""
+		if item.Spec.ClaimRef.Name != "" {
+			claim = item.Spec.ClaimRef.Name
+			if item.Spec.ClaimRef.Namespace != "" {
+				claim = item.Spec.ClaimRef.Namespace + "/" + claim
+			}
+		}
+		volumes = append(volumes, PersistentVolume{
+			Name:          item.Metadata.Name,
+			Phase:         item.Status.Phase,
+			Capacity:      item.Spec.Capacity["storage"],
+			AccessModes:   append([]string{}, item.Spec.AccessModes...),
+			ReclaimPolicy: item.Spec.PersistentVolumeReclaimPolicy,
+			StorageClass:  item.Spec.StorageClassName,
+			Claim:         claim,
+			VolumeMode:    item.Spec.VolumeMode,
+			Age:           age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return volumes, nil
+}
+
+func (m *Manager) PersistentVolumeClaims(
+	ctx context.Context,
+	contextName string,
+	namespace string,
+) ([]PersistentVolumeClaim, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("persistentvolumeclaims", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list persistentVolumeClaimList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes persistent volume claims: %w", err)
+	}
+	claims := make([]PersistentVolumeClaim, 0, len(list.Items))
+	for _, item := range list.Items {
+		accessModes := item.Status.AccessModes
+		if len(accessModes) == 0 {
+			accessModes = item.Spec.AccessModes
+		}
+		claims = append(claims, PersistentVolumeClaim{
+			Name:         item.Metadata.Name,
+			Namespace:    item.Metadata.Namespace,
+			Phase:        item.Status.Phase,
+			Volume:       item.Spec.VolumeName,
+			Requested:    item.Spec.Resources.Requests["storage"],
+			Capacity:     item.Status.Capacity["storage"],
+			AccessModes:  append([]string{}, accessModes...),
+			StorageClass: item.Spec.StorageClassName,
+			VolumeMode:   item.Spec.VolumeMode,
+			Age:          age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return claims, nil
+}
+
+func (m *Manager) GatewayClasses(ctx context.Context, contextName string) ([]GatewayClass, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, "get", "gatewayclasses", "-o", "json")
+	if err != nil {
+		return nil, err
+	}
+	var list gatewayClassList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes GatewayClasses: %w", err)
+	}
+	classes := make([]GatewayClass, 0, len(list.Items))
+	for _, item := range list.Items {
+		accepted, reason, message := resourceCondition(item.Status.Conditions, "Accepted")
+		classes = append(classes, GatewayClass{
+			Name:           item.Metadata.Name,
+			ControllerName: item.Spec.ControllerName,
+			Accepted:       accepted,
+			Reason:         reason,
+			Message:        message,
+			Age:            age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return classes, nil
+}
+
+func (m *Manager) Gateways(ctx context.Context, contextName, namespace string) ([]Gateway, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("gateways", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list gatewayList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes Gateways: %w", err)
+	}
+	gateways := make([]Gateway, 0, len(list.Items))
+	for _, item := range list.Items {
+		accepted, acceptedReason, acceptedMessage := resourceCondition(item.Status.Conditions, "Accepted")
+		programmed, programmedReason, programmedMessage := resourceCondition(item.Status.Conditions, "Programmed")
+		listenerStatus := make(map[string]gatewayListenerStatus, len(item.Status.Listeners))
+		for _, status := range item.Status.Listeners {
+			listenerStatus[status.Name] = status
+		}
+		listeners := make([]GatewayListener, 0, len(item.Spec.Listeners))
+		for _, listener := range item.Spec.Listeners {
+			status := listenerStatus[listener.Name]
+			listenerAccepted, acceptedReason, acceptedMessage := resourceCondition(status.Conditions, "Accepted")
+			listenerProgrammed, programmedReason, programmedMessage := resourceCondition(status.Conditions, "Programmed")
+			listeners = append(listeners, GatewayListener{
+				Name:              listener.Name,
+				Protocol:          listener.Protocol,
+				Port:              listener.Port,
+				Hostname:          listener.Hostname,
+				AttachedRoutes:    status.AttachedRoutes,
+				Accepted:          listenerAccepted,
+				AcceptedReason:    acceptedReason,
+				AcceptedMessage:   acceptedMessage,
+				Programmed:        listenerProgrammed,
+				ProgrammedReason:  programmedReason,
+				ProgrammedMessage: programmedMessage,
+			})
+		}
+		addresses := make([]string, 0, len(item.Status.Addresses))
+		for _, address := range item.Status.Addresses {
+			addresses = append(addresses, address.Value)
+		}
+		gateways = append(gateways, Gateway{
+			Name:              item.Metadata.Name,
+			Namespace:         item.Metadata.Namespace,
+			ClassName:         item.Spec.GatewayClassName,
+			Addresses:         addresses,
+			Accepted:          accepted,
+			AcceptedReason:    acceptedReason,
+			AcceptedMessage:   acceptedMessage,
+			Programmed:        programmed,
+			ProgrammedReason:  programmedReason,
+			ProgrammedMessage: programmedMessage,
+			Listeners:         listeners,
+			Age:               age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return gateways, nil
+}
+
+func (m *Manager) HTTPRoutes(ctx context.Context, contextName, namespace string) ([]HTTPRoute, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("httproutes", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list httpRouteList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes HTTPRoutes: %w", err)
+	}
+	routes := make([]HTTPRoute, 0, len(list.Items))
+	for _, item := range list.Items {
+		parentRefs := make([]string, 0, len(item.Spec.ParentRefs))
+		for _, reference := range item.Spec.ParentRefs {
+			parentRefs = append(parentRefs, gatewayReference(reference.Namespace, reference.Name, reference.SectionName, 0))
+		}
+		backendRefs := make([]string, 0)
+		for _, rule := range item.Spec.Rules {
+			for _, reference := range rule.BackendRefs {
+				backendRefs = append(backendRefs, gatewayReference(reference.Namespace, reference.Name, "", reference.Port))
+			}
+		}
+		parents := make([]HTTPRouteParentStatus, 0, len(item.Status.Parents))
+		accepted := resourceStatusCondition{}
+		resolved := resourceStatusCondition{}
+		for _, parent := range item.Status.Parents {
+			parentAccepted := findResourceCondition(parent.Conditions, "Accepted")
+			parentResolved := findResourceCondition(parent.Conditions, "ResolvedRefs")
+			accepted = mergeResourceCondition(accepted, parentAccepted)
+			resolved = mergeResourceCondition(resolved, parentResolved)
+			parents = append(parents, HTTPRouteParentStatus{
+				ParentRef:       gatewayReference(parent.ParentRef.Namespace, parent.ParentRef.Name, parent.ParentRef.SectionName, 0),
+				ControllerName:  parent.ControllerName,
+				Accepted:        firstNonEmpty(parentAccepted.Status, "Unknown"),
+				AcceptedReason:  parentAccepted.Reason,
+				AcceptedMessage: parentAccepted.Message,
+				ResolvedRefs:    firstNonEmpty(parentResolved.Status, "Unknown"),
+				ResolvedReason:  parentResolved.Reason,
+				ResolvedMessage: parentResolved.Message,
+			})
+		}
+		routes = append(routes, HTTPRoute{
+			Name:         item.Metadata.Name,
+			Namespace:    item.Metadata.Namespace,
+			Hostnames:    append([]string{}, item.Spec.Hostnames...),
+			ParentRefs:   parentRefs,
+			BackendRefs:  backendRefs,
+			Accepted:     firstNonEmpty(accepted.Status, "Unknown"),
+			ResolvedRefs: firstNonEmpty(resolved.Status, "Unknown"),
+			Parents:      parents,
+			Age:          age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return routes, nil
 }
 
 func (m *Manager) Logs(ctx context.Context, contextName, namespace, pod, container string, previous bool, tail int) ([]byte, error) {
@@ -1127,6 +1418,55 @@ func cloneStringMap(values map[string]string) map[string]string {
 	return result
 }
 
+func resourceCondition(conditions []resourceStatusCondition, conditionType string) (string, string, string) {
+	condition := findResourceCondition(conditions, conditionType)
+	return firstNonEmpty(condition.Status, "Unknown"), condition.Reason, condition.Message
+}
+
+func findResourceCondition(conditions []resourceStatusCondition, conditionType string) resourceStatusCondition {
+	for _, condition := range conditions {
+		if condition.Type == conditionType {
+			return condition
+		}
+	}
+	return resourceStatusCondition{Type: conditionType, Status: "Unknown"}
+}
+
+func mergeResourceCondition(current, candidate resourceStatusCondition) resourceStatusCondition {
+	rank := func(status string) int {
+		switch strings.ToLower(status) {
+		case "false":
+			return 3
+		case "unknown":
+			return 2
+		case "":
+			return 0
+		case "true":
+			return 1
+		default:
+			return 2
+		}
+	}
+	if rank(candidate.Status) > rank(current.Status) {
+		return candidate
+	}
+	return current
+}
+
+func gatewayReference(namespace, name, section string, port int32) string {
+	reference := name
+	if namespace != "" {
+		reference = namespace + "/" + reference
+	}
+	if section != "" {
+		reference += "#" + section
+	}
+	if port > 0 {
+		reference += ":" + strconv.Itoa(int(port))
+	}
+	return reference
+}
+
 func cleanRemotePath(value string) (string, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {
@@ -1257,6 +1597,13 @@ type metadata struct {
 	Annotations       map[string]string `json:"annotations"`
 }
 
+type resourceStatusCondition struct {
+	Type    string `json:"type"`
+	Status  string `json:"status"`
+	Reason  string `json:"reason"`
+	Message string `json:"message"`
+}
+
 type podItem struct {
 	Metadata metadata `json:"metadata"`
 	Spec     struct {
@@ -1320,6 +1667,118 @@ type serviceList struct {
 					Hostname string `json:"hostname"`
 				} `json:"ingress"`
 			} `json:"loadBalancer"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type persistentVolumeList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			Capacity                      map[string]string `json:"capacity"`
+			AccessModes                   []string          `json:"accessModes"`
+			PersistentVolumeReclaimPolicy string            `json:"persistentVolumeReclaimPolicy"`
+			StorageClassName              string            `json:"storageClassName"`
+			VolumeMode                    string            `json:"volumeMode"`
+			ClaimRef                      struct {
+				Namespace string `json:"namespace"`
+				Name      string `json:"name"`
+			} `json:"claimRef"`
+		} `json:"spec"`
+		Status struct {
+			Phase string `json:"phase"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type persistentVolumeClaimList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			AccessModes      []string `json:"accessModes"`
+			StorageClassName string   `json:"storageClassName"`
+			VolumeName       string   `json:"volumeName"`
+			VolumeMode       string   `json:"volumeMode"`
+			Resources        struct {
+				Requests map[string]string `json:"requests"`
+			} `json:"resources"`
+		} `json:"spec"`
+		Status struct {
+			Phase       string            `json:"phase"`
+			Capacity    map[string]string `json:"capacity"`
+			AccessModes []string          `json:"accessModes"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type gatewayClassList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			ControllerName string `json:"controllerName"`
+		} `json:"spec"`
+		Status struct {
+			Conditions []resourceStatusCondition `json:"conditions"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type gatewayListenerStatus struct {
+	Name           string                    `json:"name"`
+	AttachedRoutes int32                     `json:"attachedRoutes"`
+	Conditions     []resourceStatusCondition `json:"conditions"`
+}
+
+type gatewayList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			GatewayClassName string `json:"gatewayClassName"`
+			Listeners        []struct {
+				Name     string `json:"name"`
+				Protocol string `json:"protocol"`
+				Port     int32  `json:"port"`
+				Hostname string `json:"hostname"`
+			} `json:"listeners"`
+		} `json:"spec"`
+		Status struct {
+			Addresses []struct {
+				Value string `json:"value"`
+			} `json:"addresses"`
+			Conditions []resourceStatusCondition `json:"conditions"`
+			Listeners  []gatewayListenerStatus   `json:"listeners"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type httpRouteList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			Hostnames  []string `json:"hostnames"`
+			ParentRefs []struct {
+				Namespace   string `json:"namespace"`
+				Name        string `json:"name"`
+				SectionName string `json:"sectionName"`
+			} `json:"parentRefs"`
+			Rules []struct {
+				BackendRefs []struct {
+					Namespace string `json:"namespace"`
+					Name      string `json:"name"`
+					Port      int32  `json:"port"`
+				} `json:"backendRefs"`
+			} `json:"rules"`
+		} `json:"spec"`
+		Status struct {
+			Parents []struct {
+				ParentRef struct {
+					Namespace   string `json:"namespace"`
+					Name        string `json:"name"`
+					SectionName string `json:"sectionName"`
+				} `json:"parentRef"`
+				ControllerName string                    `json:"controllerName"`
+				Conditions     []resourceStatusCondition `json:"conditions"`
+			} `json:"parents"`
 		} `json:"status"`
 	} `json:"items"`
 }

@@ -131,3 +131,30 @@ func TestDockerContainerActionBlocksManagedKindControlPlaneRemoval(t *testing.T)
 		t.Fatal("managed control plane was removed")
 	}
 }
+
+func TestKubernetesStorageAndGatewayHandlers(t *testing.T) {
+	runner := runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), " get ") {
+			return []byte(`{"items":[]}`), nil
+		}
+		return nil, nil
+	})
+	server := &Server{kubernetes: kubernetes.New(runner)}
+	tests := []struct {
+		path    string
+		handler http.HandlerFunc
+	}{
+		{"/api/kubernetes/persistent-volumes?context=porto-dev", server.kubernetesPersistentVolumes},
+		{"/api/kubernetes/persistent-volume-claims?context=porto-dev&namespace=default", server.kubernetesPersistentVolumeClaims},
+		{"/api/kubernetes/gateway-classes?context=porto-dev", server.kubernetesGatewayClasses},
+		{"/api/kubernetes/gateways?context=porto-dev&namespace=porto-system", server.kubernetesGateways},
+		{"/api/kubernetes/http-routes?context=porto-dev&namespace=default", server.kubernetesHTTPRoutes},
+	}
+	for _, test := range tests {
+		response := httptest.NewRecorder()
+		test.handler(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+		if response.Code != http.StatusOK || strings.TrimSpace(response.Body.String()) != "[]" {
+			t.Fatalf("%s response = %d: %s", test.path, response.Code, response.Body.String())
+		}
+	}
+}

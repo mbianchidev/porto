@@ -163,6 +163,50 @@ func TestStatusAndPodDecoding(t *testing.T) {
 	}
 }
 
+func TestStorageAndGatewayResourceDecoding(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "get persistentvolumes -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"data-pv","creationTimestamp":"2026-09-01T10:00:00Z"},"spec":{"capacity":{"storage":"10Gi"},"accessModes":["ReadWriteOnce"],"persistentVolumeReclaimPolicy":"Delete","storageClassName":"local-path","volumeMode":"Filesystem","claimRef":{"namespace":"default","name":"data"}},"status":{"phase":"Bound"}}]}`), nil
+		case strings.Contains(joined, "get persistentvolumeclaims --all-namespaces -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"data","namespace":"default","creationTimestamp":"2026-09-01T10:01:00Z"},"spec":{"accessModes":["ReadWriteOnce"],"storageClassName":"local-path","volumeName":"data-pv","volumeMode":"Filesystem","resources":{"requests":{"storage":"10Gi"}}},"status":{"phase":"Bound","capacity":{"storage":"10Gi"},"accessModes":["ReadWriteOnce"]}}]}`), nil
+		case strings.Contains(joined, "get gatewayclasses -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"porto","creationTimestamp":"2026-09-01T10:02:00Z"},"spec":{"controllerName":"gateway.envoyproxy.io/gatewayclass-controller"},"status":{"conditions":[{"type":"Accepted","status":"True","reason":"Accepted","message":"Valid GatewayClass"}]}}]}`), nil
+		case strings.Contains(joined, "get gateways --all-namespaces -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"porto","namespace":"porto-system","creationTimestamp":"2026-09-01T10:03:00Z"},"spec":{"gatewayClassName":"porto","listeners":[{"name":"http","protocol":"HTTP","port":80,"hostname":"*.porto.localhost"}]},"status":{"addresses":[{"type":"IPAddress","value":"10.0.0.2"}],"conditions":[{"type":"Accepted","status":"True"},{"type":"Programmed","status":"True"}],"listeners":[{"name":"http","attachedRoutes":2,"conditions":[{"type":"Accepted","status":"True"},{"type":"Programmed","status":"True"}]}]}}]}`), nil
+		case strings.Contains(joined, "get httproutes --all-namespaces -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"api","namespace":"default","creationTimestamp":"2026-09-01T10:04:00Z"},"spec":{"hostnames":["api.porto.localhost"],"parentRefs":[{"name":"porto","namespace":"porto-system","sectionName":"http"}],"rules":[{"backendRefs":[{"name":"api","port":8080,"weight":1}]}]},"status":{"parents":[{"parentRef":{"name":"porto","namespace":"porto-system"},"conditions":[{"type":"Accepted","status":"True","reason":"Accepted"},{"type":"ResolvedRefs","status":"True","reason":"ResolvedRefs"}]}]}}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", joined)
+		}
+	}
+	manager := New(runner)
+	ctx := context.Background()
+
+	volumes, err := manager.PersistentVolumes(ctx, "porto-dev")
+	if err != nil || len(volumes) != 1 || volumes[0].Claim != "default/data" || volumes[0].Capacity != "10Gi" {
+		t.Fatalf("persistent volumes = %+v, err = %v", volumes, err)
+	}
+	claims, err := manager.PersistentVolumeClaims(ctx, "porto-dev", "")
+	if err != nil || len(claims) != 1 || claims[0].Volume != "data-pv" || claims[0].Requested != "10Gi" {
+		t.Fatalf("persistent volume claims = %+v, err = %v", claims, err)
+	}
+	classes, err := manager.GatewayClasses(ctx, "porto-dev")
+	if err != nil || len(classes) != 1 || classes[0].Accepted != "True" {
+		t.Fatalf("gateway classes = %+v, err = %v", classes, err)
+	}
+	gateways, err := manager.Gateways(ctx, "porto-dev", "")
+	if err != nil || len(gateways) != 1 || gateways[0].Programmed != "True" || gateways[0].Listeners[0].AttachedRoutes != 2 {
+		t.Fatalf("gateways = %+v, err = %v", gateways, err)
+	}
+	routes, err := manager.HTTPRoutes(ctx, "porto-dev", "")
+	if err != nil || len(routes) != 1 || routes[0].Accepted != "True" || routes[0].BackendRefs[0] != "api:8080" {
+		t.Fatalf("HTTPRoutes = %+v, err = %v", routes, err)
+	}
+}
+
 func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	dir := t.TempDir()
 	kubeconfigPath := filepath.Join(dir, config.KubernetesClusterFileToken("dev")+".yaml")

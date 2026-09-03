@@ -65,6 +65,11 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/configmaps/{namespace}/{name}", s.requireRuntime("kubernetes", s.kubernetesConfigMap))
 	mux.HandleFunc("GET /api/kubernetes/secrets", s.requireRuntime("kubernetes", s.kubernetesSecrets))
 	mux.HandleFunc("GET /api/kubernetes/nodes", s.requireRuntime("kubernetes", s.kubernetesNodes))
+	mux.HandleFunc("GET /api/kubernetes/persistent-volumes", s.requireRuntime("kubernetes", s.kubernetesPersistentVolumes))
+	mux.HandleFunc("GET /api/kubernetes/persistent-volume-claims", s.requireRuntime("kubernetes", s.kubernetesPersistentVolumeClaims))
+	mux.HandleFunc("GET /api/kubernetes/gateway-classes", s.requireRuntime("kubernetes", s.kubernetesGatewayClasses))
+	mux.HandleFunc("GET /api/kubernetes/gateways", s.requireRuntime("kubernetes", s.kubernetesGateways))
+	mux.HandleFunc("GET /api/kubernetes/http-routes", s.requireRuntime("kubernetes", s.kubernetesHTTPRoutes))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
 	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
@@ -528,6 +533,31 @@ func (s *Server) kubernetesSecrets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) kubernetesNodes(w http.ResponseWriter, r *http.Request) {
 	value, err := s.kubernetes.Nodes(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesPersistentVolumes(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.PersistentVolumes(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesPersistentVolumeClaims(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.PersistentVolumeClaims(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesGatewayClasses(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.GatewayClasses(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesGateways(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Gateways(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesHTTPRoutes(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.HTTPRoutes(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
 	writeRuntimeResult(w, value, err)
 }
 
