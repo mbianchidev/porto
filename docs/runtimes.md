@@ -191,6 +191,10 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
+Porto runs internal kind operations with a private Docker client configuration,
+so a user-level credential store such as `docker-credential-osxkeychain` cannot
+break public Kubernetes node-image pulls in the packaged desktop runtime.
+
 Porto-managed clusters include a default local-path storage class and Envoy
 Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
 and node CPU/memory stats. Porto installs or repairs these add-ons during

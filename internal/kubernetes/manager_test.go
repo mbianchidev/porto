@@ -1161,6 +1161,16 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	}
 }
 
+func TestPortoDockerEnvironmentIgnoresUserCredentialHelpers(t *testing.T) {
+	root := t.TempDir()
+	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), root)
+	environment := provisioner.portoDockerEnv()
+
+	if !slices.Contains(environment, "DOCKER_CONFIG="+filepath.Join(root, "docker-client")) {
+		t.Fatalf("Porto Docker environment does not isolate user credentials: %v", environment)
+	}
+}
+
 func TestEnsureMetricsServerRepairsOwnedKindCluster(t *testing.T) {
 	runner := newFakeRunner()
 	root := t.TempDir()

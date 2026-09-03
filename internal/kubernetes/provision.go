@@ -429,7 +429,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	}
 	commandContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kind", Args: args, Env: portoDockerEnv()})
+	output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kind", Args: args, Env: p.portoDockerEnv()})
 	if err != nil {
 		commandErr := runtimes.CommandError("create kind cluster", output, err)
 		if kindCreateCollision(commandErr) {
@@ -457,7 +457,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 				"--memory-swap", strconv.Itoa(machine.MemoryMiB) + "m",
 				node,
 			},
-			Env: portoDockerEnv(),
+			Env: p.portoDockerEnv(),
 		})
 		if err != nil {
 			return Cluster{}, runtimes.CommandError("apply kind node resources", output, err)
@@ -734,7 +734,7 @@ func (p *ClusterProvisioner) runKindDelete(ctx context.Context, request ClusterR
 	return p.runner.Run(ctx, runtimes.Command{
 		Name: "kind",
 		Args: []string{"delete", "cluster", "--name", "porto-" + runtimeName},
-		Env:  portoDockerEnv(),
+		Env:  p.portoDockerEnv(),
 	})
 }
 
@@ -757,7 +757,7 @@ func (p *ClusterProvisioner) ensureKindRuntimeAbsent(ctx context.Context, reques
 	output, err := p.runner.Run(ctx, runtimes.Command{
 		Name: "kind",
 		Args: []string{"get", "nodes", "--name", kindName},
-		Env:  portoDockerEnv(),
+		Env:  p.portoDockerEnv(),
 	})
 	if err != nil && !kindClusterMissing(output) {
 		return runtimes.CommandError("inspect existing kind cluster", output, err)
@@ -917,7 +917,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			output, kindErr := p.runner.Run(ctx, runtimes.Command{
 				Name: "kind",
 				Args: []string{"get", "nodes", "--name", "porto-" + clusterRuntimeName(request)},
-				Env:  portoDockerEnv(),
+				Env:  p.portoDockerEnv(),
 			})
 			if kindErr == nil {
 				cluster.Nodes = runningKindNodeNames(request, output)
@@ -926,7 +926,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 					stateOutput, stateErr := p.runner.Run(ctx, runtimes.Command{
 						Name: "docker",
 						Args: []string{"inspect", "--format", "{{.State.Running}}", node},
-						Env:  portoDockerEnv(),
+						Env:  p.portoDockerEnv(),
 					})
 					if stateErr == nil && strings.EqualFold(strings.TrimSpace(string(stateOutput)), "true") {
 						runningNodes++
@@ -1040,7 +1040,7 @@ func (p *ClusterProvisioner) orphanedCluster(
 		nodeOutput, nodeErr := p.runner.Run(ctx, runtimes.Command{
 			Name: "kind",
 			Args: []string{"get", "nodes", "--name", contextName},
-			Env:  portoDockerEnv(),
+			Env:  p.portoDockerEnv(),
 		})
 		if nodeErr == nil && slices.Contains(strings.Fields(string(nodeOutput)), contextName+"-control-plane") {
 			cluster.Provider = "kind"
@@ -1414,7 +1414,7 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 		output, err := p.runner.Run(ctx, runtimes.Command{
 			Name: "kind",
 			Args: []string{"load", "docker-image", image, "--name", "porto-" + clusterRuntimeName(request)},
-			Env:  portoDockerEnv(),
+			Env:  p.portoDockerEnv(),
 		})
 		if err != nil {
 			return runtimes.CommandError("load image into kind cluster", output, err)
@@ -1474,7 +1474,7 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 	output, err := p.runner.Run(ctx, runtimes.Command{
 		Name: "kind",
 		Args: []string{"get", "nodes", "--name", "porto-" + clusterRuntimeName(request)},
-		Env:  portoDockerEnv(),
+		Env:  p.portoDockerEnv(),
 	})
 	if err != nil {
 		return false, runtimes.CommandError("inspect kind cluster nodes", output, err)
@@ -1497,7 +1497,7 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 		currentOutput, inspectErr := p.runner.Run(ctx, runtimes.Command{
 			Name: "kind",
 			Args: []string{"get", "nodes", "--name", "porto-" + clusterRuntimeName(request)},
-			Env:  portoDockerEnv(),
+			Env:  p.portoDockerEnv(),
 		})
 		runtimeMayRemain := kindRuntimePresent(request, currentOutput) ||
 			(inspectErr != nil && !kindClusterMissing(currentOutput))
@@ -1557,7 +1557,7 @@ func (p *ClusterProvisioner) setRunning(
 			output, actionErr := p.runner.Run(ctx, runtimes.Command{
 				Name: "docker",
 				Args: []string{action, name},
-				Env:  portoDockerEnv(),
+				Env:  p.portoDockerEnv(),
 			})
 			if actionErr != nil {
 				actionErrors = append(actionErrors, runtimes.CommandError(action+" kind node "+name, output, actionErr))
@@ -2025,7 +2025,7 @@ func availableLocalPort() (int, error) {
 	return listener.Addr().(*net.TCPAddr).Port, nil
 }
 
-func portoDockerEnv() []string {
+func (p *ClusterProvisioner) portoDockerEnv() []string {
 	socketPath, err := config.DockerSocketPath()
 	if err != nil || socketPath == "" {
 		return nil
@@ -2034,7 +2034,11 @@ func portoDockerEnv() []string {
 	if strings.HasPrefix(socketPath, `\\.\pipe\`) {
 		endpoint = "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`)
 	}
-	return []string{"DOCKER_HOST=" + endpoint, "DOCKER_CONTEXT="}
+	dockerConfig := filepath.Join(p.kubeconfigRoot, "docker-client")
+	if p.kubeconfigRoot == "" {
+		dockerConfig = filepath.Join(os.TempDir(), "porto-docker-client")
+	}
+	return []string{"DOCKER_HOST=" + endpoint, "DOCKER_CONTEXT=", "DOCKER_CONFIG=" + dockerConfig}
 }
 
 func (p *ClusterProvisioner) normalizeKubeconfig(ctx context.Context, kubeconfigPath, name string) error {
