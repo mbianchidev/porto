@@ -1199,6 +1199,15 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 }
 
 func (m *Manager) PullImage(ctx context.Context, reference, platform string) error {
+	return m.PullImageWithAuth(ctx, reference, platform, nil)
+}
+
+func (m *Manager) PullImageWithAuth(
+	ctx context.Context,
+	reference string,
+	platform string,
+	registryAuth *RegistryAuth,
+) error {
 	if err := validateObjectID(reference); err != nil {
 		return err
 	}
@@ -1206,7 +1215,19 @@ func (m *Manager) PullImage(ctx context.Context, reference, platform string) err
 	args = appendStringFlag(args, "--platform", platform)
 	normalized := normalizeNerdctlReference(reference)
 	args = append(args, normalized)
-	_, err := m.runWithTimeout(ctx, 30*time.Minute, "pull Porto image", nil, args...)
+	config, authenticated, err := registryDockerConfig(normalized, registryAuth)
+	if err != nil {
+		return err
+	}
+	if authenticated {
+		backend, err := m.backend(ctx)
+		if err != nil {
+			return err
+		}
+		_, err = m.runBackendWithDockerConfig(ctx, backend, 30*time.Minute, "pull Porto image", config, args...)
+	} else {
+		_, err = m.runWithTimeout(ctx, 30*time.Minute, "pull Porto image", nil, args...)
+	}
 	if err != nil {
 		return fmt.Errorf("pull image %q: %w", normalized, err)
 	}
@@ -1242,9 +1263,10 @@ func (m *Manager) inspect(ctx context.Context, kind, id string) (json.RawMessage
 }
 
 type commandBackend struct {
-	name        string
-	prefix      []string
-	description string
+	name         string
+	prefix       []string
+	description  string
+	limaInstance string
 }
 
 func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
@@ -1287,9 +1309,10 @@ func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 		return commandBackend{}, err
 	}
 	return commandBackend{
-		name:        "limactl",
-		prefix:      []string{"shell", state.Instance, "--", "nerdctl"},
-		description: "containerd in Lima " + state.Instance,
+		name:         "limactl",
+		prefix:       []string{"shell", state.Instance, "--", "nerdctl"},
+		description:  "containerd in Lima " + state.Instance,
+		limaInstance: state.Instance,
 	}, nil
 }
 
@@ -1314,6 +1337,58 @@ func (m *Manager) runBackend(
 	args ...string,
 ) ([]byte, error) {
 	return m.runCommand(ctx, timeout, action, stdin, backend.name, append(append([]string(nil), backend.prefix...), args...)...)
+}
+
+func (m *Manager) runBackendWithDockerConfig(
+	ctx context.Context,
+	backend commandBackend,
+	timeout time.Duration,
+	action string,
+	config []byte,
+	args ...string,
+) (output []byte, err error) {
+	if backend.limaInstance != "" {
+		const script = `set -eu
+config_dir="$(mktemp -d)"
+trap 'rm -rf "$config_dir"' EXIT
+trap 'exit 1' HUP INT TERM
+umask 077
+cat > "$config_dir/config.json"
+DOCKER_CONFIG="$config_dir" "$@"
+`
+		commandArgs := []string{
+			"shell", backend.limaInstance, "--",
+			"sh", "-c", script, "porto-registry-auth", "nerdctl",
+		}
+		commandArgs = append(commandArgs, args...)
+		return m.runCommand(ctx, timeout, action, config, backend.name, commandArgs...)
+	}
+	configDir, err := os.MkdirTemp("", "porto-registry-auth-*")
+	if err != nil {
+		return nil, fmt.Errorf("create temporary registry auth directory: %w", err)
+	}
+	defer func() {
+		if removeErr := os.RemoveAll(configDir); removeErr != nil {
+			err = errors.Join(err, fmt.Errorf("remove temporary registry auth directory: %w", removeErr))
+		}
+	}()
+	configPath := filepath.Join(configDir, "config.json")
+	if err := os.WriteFile(configPath, config, 0o600); err != nil {
+		return nil, fmt.Errorf("write temporary registry auth config: %w", err)
+	}
+	if err := os.Chmod(configPath, 0o600); err != nil {
+		return nil, fmt.Errorf("protect temporary registry auth config: %w", err)
+	}
+	commandArgs := append(append([]string(nil), backend.prefix...), args...)
+	return m.runCommandWithEnv(
+		ctx,
+		timeout,
+		action,
+		nil,
+		[]string{"DOCKER_CONFIG=" + configDir},
+		backend.name,
+		commandArgs...,
+	)
 }
 
 func (m *Manager) runDockerCLI(ctx context.Context, action string, args ...string) ([]byte, error) {
@@ -1389,9 +1464,26 @@ func (m *Manager) runCommand(
 	name string,
 	args ...string,
 ) ([]byte, error) {
+	return m.runCommandWithEnv(ctx, timeout, action, stdin, nil, name, args...)
+}
+
+func (m *Manager) runCommandWithEnv(
+	ctx context.Context,
+	timeout time.Duration,
+	action string,
+	stdin []byte,
+	environment []string,
+	name string,
+	args ...string,
+) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: name, Args: args, Stdin: stdin})
+	output, err := m.runner.Run(commandContext, runtimes.Command{
+		Name:  name,
+		Args:  args,
+		Env:   environment,
+		Stdin: stdin,
+	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("%s timed out after %s", action, timeout)
 	}

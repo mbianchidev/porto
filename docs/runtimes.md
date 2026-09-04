@@ -195,9 +195,13 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
-Porto runs internal kind operations with a private Docker client configuration,
-so a user-level credential store such as `docker-credential-osxkeychain` cannot
-break public Kubernetes node-image pulls in the packaged desktop runtime.
+Porto runs internal kind operations with a private Docker client configuration.
+When kind needs its Docker Hub node image, Porto can resolve that registry's
+credential from the user's configured helper or stored auth, writes only that
+auth to a temporary `0600` Docker config, and removes it after kind finishes.
+If no usable helper or stored auth is available, Porto falls back to an
+anonymous pull without copying the user's Docker contexts, helper settings, or
+unrelated registry credentials.
 
 Porto-managed clusters include a default local-path storage class and Envoy
 Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
@@ -212,8 +216,9 @@ resources use idempotent server-side apply, and a slow final Gateway readiness
 condition no longer removes an otherwise healthy cluster.
 Multiple clusters can provision concurrently; runtime names and VM API ports
 are reserved independently for each in-flight operation. Managed cluster rows
-show a live elapsed-seconds timer while `creating` and while `running`; stopped
-and failed clusters do not show a timer.
+show a live elapsed-seconds timer only while `creating`.
+Stopping a kind cluster disables its lifecycle controls while Porto gracefully
+stops worker containers before the control plane; this can take a while.
 Managed-cluster metadata is created before nodes, so in-progress clusters appear
 with a `creating` state and their control-plane containers are protected as soon
 as they exist. Failed provisioning remains visible with an `error` state and

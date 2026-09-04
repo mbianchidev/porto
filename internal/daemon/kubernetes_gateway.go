@@ -53,18 +53,50 @@ func (s *Server) reconcileKubernetesClusters(ctx context.Context) {
 		if cluster.State != "running" && cluster.State != "degraded" {
 			continue
 		}
-		if err := s.ensureKubernetesClusterAddons(ctx, cluster); err != nil {
-			log.Printf("ensure Kubernetes addons for %s: %v", cluster.Context, err)
+		release, acquired, lockErr := s.tryBeginKubernetesClusterReconcile(ctx, cluster.Name)
+		if lockErr != nil {
+			log.Printf("lock Kubernetes route reconciliation for %s: %v", cluster.Context, lockErr)
 			continue
 		}
-		services, serviceErr := s.kubernetes.Services(ctx, cluster.Context, "")
-		if serviceErr != nil {
-			log.Printf("list Kubernetes services for %s: %v", cluster.Context, serviceErr)
+		if !acquired {
 			continue
 		}
-		if reconcileErr := s.reconcileServiceRoutes(ctx, cluster.Context, services); reconcileErr != nil {
-			log.Printf("reconcile Kubernetes routes for %s: %v", cluster.Context, reconcileErr)
+		s.reconcileKubernetesCluster(ctx, cluster, release)
+	}
+}
+
+func (s *Server) reconcileKubernetesCluster(
+	ctx context.Context,
+	cluster kubernetes.Cluster,
+	release func(),
+) {
+	defer release()
+	currentClusters, err := s.clusters.List(ctx)
+	if err != nil {
+		log.Printf("revalidate cluster %s for Kubernetes route reconciliation: %v", cluster.Context, err)
+		return
+	}
+	var current kubernetes.Cluster
+	for _, candidate := range currentClusters {
+		if candidate.Name == cluster.Name {
+			current = candidate
+			break
 		}
+	}
+	if current.Name == "" || (current.State != "running" && current.State != "degraded") {
+		return
+	}
+	if err := s.ensureKubernetesClusterAddons(ctx, current); err != nil {
+		log.Printf("ensure Kubernetes addons for %s: %v", current.Context, err)
+		return
+	}
+	services, err := s.kubernetes.Services(ctx, current.Context, "")
+	if err != nil {
+		log.Printf("list Kubernetes services for %s: %v", current.Context, err)
+		return
+	}
+	if err := s.reconcileServiceRoutes(ctx, current.Context, services); err != nil {
+		log.Printf("reconcile Kubernetes routes for %s: %v", current.Context, err)
 	}
 }
 

@@ -129,6 +129,20 @@ func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
 	return clusterContextName(request), nil
 }
 
+func (p *ClusterProvisioner) OperationKey(clusterName string) (string, error) {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return "", fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if errors.Is(err, os.ErrNotExist) {
+		return clusterName, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	return clusterRuntimeName(request), nil
+}
+
 func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName string) error {
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
@@ -415,7 +429,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		KubeconfigPath: kubeconfigPath,
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
-		StateSince:     request.RunningAt,
 	}
 	return cluster, nil
 }
@@ -464,7 +477,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	}
 	commandContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kind", Args: args, Env: p.portoDockerEnv()})
+	output, err := p.runKindCreate(commandContext, args)
 	if err != nil {
 		commandErr := runtimes.CommandError("create kind cluster", output, err)
 		if kindCreateCollision(commandErr) {
@@ -531,7 +544,6 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		KubeconfigPath: kubeconfigPath,
 		Server:         strings.TrimSpace(string(serverOutput)),
 		Nodes:          nodes,
-		StateSince:     request.RunningAt,
 	}, nil
 }
 
@@ -1020,11 +1032,8 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			}
 			sort.Strings(cluster.Nodes)
 		}
-		switch cluster.State {
-		case "creating":
+		if cluster.State == "creating" {
 			cluster.StateSince = request.CreatedAt
-		case "running":
-			cluster.StateSince = firstNonEmpty(request.RunningAt, request.CreatedAt)
 		}
 		clusters = append(clusters, cluster)
 	}
@@ -1454,6 +1463,11 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(request), request.Name)
+	if err != nil {
+		return err
+	}
+	defer releaseRuntime()
 	request.Provider = normalizeProvider(request.Provider)
 	if request.Provider == "kind" {
 		output, err := p.runner.Run(ctx, runtimes.Command{

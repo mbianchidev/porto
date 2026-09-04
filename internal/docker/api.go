@@ -846,7 +846,12 @@ func (a *API) pullImage(w http.ResponseWriter, r *http.Request) {
 		}
 		reference += separator + tag
 	}
-	if err := a.manager.PullImage(r.Context(), reference, r.URL.Query().Get("platform")); err != nil {
+	registryAuth, err := decodeRegistryAuthHeader(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	if err := a.manager.PullImageWithAuth(r.Context(), reference, r.URL.Query().Get("platform"), registryAuth); err != nil {
 		writeDockerError(w, err)
 		return
 	}

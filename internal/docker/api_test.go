@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -249,6 +251,116 @@ func TestDockerAPIPullsDigestFromDockerTagParameter(t *testing.T) {
 	)
 	if response.Code != http.StatusOK {
 		t.Fatalf("pull digest = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIPassesScopedRegistryAuthToPull(t *testing.T) {
+	var configDir string
+	var configData []byte
+	runner := &fakeRunner{
+		outputs: map[string][]byte{},
+		errors:  map[string]error{},
+	}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"pull", "docker.io/kindest/node:v1.36.0"}) {
+			return nil, fmt.Errorf("unexpected command: %s %v", command.Name, command.Args)
+		}
+		for _, entry := range command.Env {
+			if strings.HasPrefix(entry, "DOCKER_CONFIG=") {
+				configDir = strings.TrimPrefix(entry, "DOCKER_CONFIG=")
+				break
+			}
+		}
+		if configDir == "" {
+			return nil, errors.New("authenticated pull did not set DOCKER_CONFIG")
+		}
+		var err error
+		configData, err = os.ReadFile(filepath.Join(configDir, "config.json"))
+		return nil, err
+	}
+	payload, err := json.Marshal(RegistryAuth{
+		Username:      "test-user",
+		Password:      "test-token",
+		ServerAddress: "https://index.docker.io/v1/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1.47/images/create?fromImage=docker.io%2Fkindest%2Fnode&tag=v1.36.0",
+		nil,
+	)
+	request.Header.Set("X-Registry-Auth", base64.URLEncoding.EncodeToString(payload))
+	response := httptest.NewRecorder()
+
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("authenticated pull = %d: %s", response.Code, response.Body.String())
+	}
+	var document map[string]any
+	if err := json.Unmarshal(configData, &document); err != nil {
+		t.Fatalf("decode backend Docker config: %v", err)
+	}
+	if len(document) != 1 {
+		t.Fatalf("backend Docker config copied unrelated settings: %s", configData)
+	}
+	auths, ok := document["auths"].(map[string]any)
+	if !ok || len(auths) != 1 {
+		t.Fatalf("backend Docker config auths = %#v", document["auths"])
+	}
+	registryAuth, ok := auths["https://index.docker.io/v1/"].(map[string]any)
+	if !ok {
+		t.Fatalf("Docker Hub auth missing from backend config: %s", configData)
+	}
+	wantAuth := base64.StdEncoding.EncodeToString([]byte("test-user:test-token"))
+	if registryAuth["auth"] != wantAuth {
+		t.Fatalf("backend Docker auth = %#v, want %q", registryAuth["auth"], wantAuth)
+	}
+	if _, err := os.Stat(configDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("backend Docker config was not removed: %v", err)
+	}
+}
+
+func TestDockerAPIRejectsInvalidRegistryAuth(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	request := httptest.NewRequest(http.MethodPost, "/v1.47/images/create?fromImage=alpine&tag=latest", nil)
+	request.Header.Set("X-Registry-Auth", "not-base64")
+	response := httptest.NewRecorder()
+
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("invalid registry auth = %d: %s", response.Code, response.Body.String())
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("invalid registry auth invoked backend: %+v", runner.commands)
+	}
+}
+
+func TestDockerAPIRejectsUnsupportedRegistryTokenAuth(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	payload, err := json.Marshal(RegistryAuth{
+		RegistryToken: "test-registry-token",
+		Username:      "fallback-user",
+		Password:      "fallback-password",
+		ServerAddress: "https://index.docker.io/v1/",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1.47/images/create?fromImage=alpine&tag=latest", nil)
+	request.Header.Set("X-Registry-Auth", base64.URLEncoding.EncodeToString(payload))
+	response := httptest.NewRecorder()
+
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("registry token auth = %d: %s", response.Code, response.Body.String())
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported registry token invoked backend: %+v", runner.commands)
 	}
 }
 

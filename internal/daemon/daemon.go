@@ -69,6 +69,9 @@ type Server struct {
 	composePorts    map[int64][]int
 	kubeForwards    map[string]*kubeForward
 	kubeAddons      map[string]bool
+	kubeOperationMu sync.Mutex
+	kubeOperations  map[string]string
+	kubeOpGates     map[string]chan struct{}
 	ui              fs.FS
 	sendbox         sendboxIntegration
 	compose         composeIntegration
@@ -141,6 +144,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 		composePorts:    map[int64][]int{},
 		kubeForwards:    map[string]*kubeForward{},
 		kubeAddons:      map[string]bool{},
+		kubeOperations:  map[string]string{},
+		kubeOpGates:     map[string]chan struct{}{},
 		ui:              ui,
 		sendbox:         sendbox.New(nil),
 		compose:         compose.NewWithDockerHost(nil, portodocker.EndpointURL(dockerSocket)),
