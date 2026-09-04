@@ -17,7 +17,10 @@ The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with 
 
 The `cross-build` job compiles `./cmd/porto` with `CGO_ENABLED=0` for every release target (`linux`, `darwin`, and `windows` on `amd64` and `arm64`), so a broken platform build fails the pull request instead of the release.
 
-The `ui` job installs with `npm ci` and runs `npm run lint` and `npm run build` on Node 22.12, 24, and 26. Node 22.12 is the lowest version Vite and oxlint accept.
+The `ui` job installs with `npm ci` and runs `npm run lint`, `npm run build`,
+and the desktop shell tests on Node 22.12, 24, and 26. Node 22.12 is the lowest
+version Vite and oxlint accept. The Node 24 job audits the Electron lockfile
+once, avoiding redundant registry requests and npm-version-specific tree checks.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 

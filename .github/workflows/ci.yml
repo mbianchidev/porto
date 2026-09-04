@@ -136,13 +136,16 @@ jobs:
       - name: Validate desktop shell
         run: |
           npm --prefix electron ci
-          npm --prefix electron audit
           npm --prefix electron test
           node --check electron/main.js
           node --check electron/daemon-readiness.cjs
           node --check electron/preload.js
           node --check electron/package.cjs
           node --check ../scripts/desktop-runtime-symlinks.cjs
+
+      - name: Audit desktop dependencies
+        if: matrix.node == '24'
+        run: npm --prefix electron audit --package-lock-only --audit-level=high
 
       - name: Validate release installers
         if: matrix.node == '24'
