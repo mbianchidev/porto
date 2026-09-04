@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1207,7 +1208,7 @@ func TestKindCreateDockerEnvironmentScopesCredentialHelperIdentityToken(t *testi
 	if err != nil {
 		t.Fatalf("stat temporary Docker config: %v", err)
 	}
-	if info.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("temporary Docker config permissions = %o, want 600", info.Mode().Perm())
 	}
 	data, err := os.ReadFile(configPath)
