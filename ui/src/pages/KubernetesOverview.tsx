@@ -174,10 +174,12 @@ export function KubernetesOverview({
   context,
   contexts,
   onContextChange,
+  onClusterRenamed,
 }: {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
+  onClusterRenamed: (previousName: string, nextName: string, previousContext: string, nextContext: string) => void
 }) {
   const { notifyError, notifyNotice, recordActivity } = useMessages()
   const [selectedClusterName, setSelectedClusterName] = useState<string | null>(null)
@@ -347,6 +349,12 @@ export function KubernetesOverview({
         { name: renameDraft.trim() },
       )
       notifyNotice('kubernetes', `Renamed cluster ${previousName} to ${result.name}.`)
+      clusters.update((current) => current?.map((cluster) => (
+        cluster.name === previousName
+          ? { ...cluster, name: result.name, context: result.context }
+          : cluster
+      )) ?? current)
+      onClusterRenamed(previousName, result.name, previousContext, result.context)
       setSelectedClusterName(result.name)
       setRenameDraft(result.name)
       if (context === previousContext) onContextChange(result.context)

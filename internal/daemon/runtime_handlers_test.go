@@ -150,6 +150,20 @@ func TestKubernetesClusterOperationLockRejectsOverlap(t *testing.T) {
 	releaseAgain()
 }
 
+func TestKubernetesRenameOperationLocksOldAndNewNames(t *testing.T) {
+	server := &Server{}
+	release, err := server.beginKubernetesClusterOperation(context.Background(), "prod", "rename", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if _, err := server.beginKubernetesClusterOperation(context.Background(), "dev", "create"); err == nil ||
+		!strings.Contains(err.Error(), "operation rename is already in progress") {
+		t.Fatalf("create during rename error = %v", err)
+	}
+}
+
 func TestKubernetesStorageAndGatewayHandlers(t *testing.T) {
 	runner := runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
 		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), " get ") {

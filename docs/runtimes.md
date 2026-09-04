@@ -345,6 +345,9 @@ Cluster deletion requires explicit confirmation through the daemon API and remov
 The dashboard can rename a managed cluster without renaming its existing
 containers or VMs. Porto updates the private kubeconfig context and saved
 service-route ownership while preserving the underlying runtime node identity.
+The renamed cluster appears immediately in the dashboard, and its previous
+logical name can be reused at once; Porto allocates a distinct internal runtime
+name when the original containers or VMs still use that identity.
 
 KinD control-plane containers cannot be removed through Porto's Docker API while
 their managed cluster exists; delete the cluster from the Kubernetes dashboard

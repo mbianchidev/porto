@@ -7,6 +7,7 @@ type PolledResource<T> = {
   error: string
   loading: boolean
   reload: () => void
+  update: (updater: (current: T | null) => T | null) => void
 }
 
 type ResourceState<T> = {
@@ -49,6 +50,7 @@ export function usePolledResource<T>(
   const [loading, setLoading] = useState(initialData === null)
   const [reloadToken, setReloadToken] = useState(0)
   const fetcherRef = useRef(fetcher)
+  const generationRef = useRef(0)
   const data = resource.cacheKey === cacheKey ? resource.data : cachedResource<T>(cacheKey)
   const currentError = resource.cacheKey === cacheKey ? error : ''
   const currentLoading = resource.cacheKey === cacheKey ? loading : data === null
@@ -65,9 +67,10 @@ export function usePolledResource<T>(
     const run = async () => {
       if (running) return
       running = true
+      const generation = generationRef.current
       try {
         const result = await fetcherRef.current(controller.signal)
-        if (active) {
+        if (active && generation === generationRef.current) {
           if (cacheKey) cacheResource(cacheKey, result)
           dataRef.current = result
           setResource({ cacheKey, data: result })
@@ -93,8 +96,18 @@ export function usePolledResource<T>(
   }, [cacheKey, intervalMs, reloadToken, ...deps])
 
   const reload = useCallback(() => setReloadToken((value) => value + 1), [])
+  const update = useCallback((updater: (current: T | null) => T | null) => {
+    generationRef.current += 1
+    const next = updater(dataRef.current)
+    dataRef.current = next
+    if (cacheKey) {
+      if (next === null) resourceCache.delete(cacheKey)
+      else cacheResource(cacheKey, next)
+    }
+    setResource({ cacheKey, data: next })
+  }, [cacheKey])
 
-  return { data, error: currentError, loading: currentLoading, reload }
+  return { data, error: currentError, loading: currentLoading, reload, update }
 }
 
 /** Tracks whether the viewport is at or below a breakpoint, for rail/inspector collapse. */

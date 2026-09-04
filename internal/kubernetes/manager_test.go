@@ -1810,7 +1810,7 @@ func TestCreateKindCollisionAfterPreflightDoesNotDeleteRuntime(t *testing.T) {
 	}
 }
 
-func TestCreateKindRejectsRuntimeNameOwnedByRenamedCluster(t *testing.T) {
+func TestCreateKindReusesRenamedClusterOldName(t *testing.T) {
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 	if err := provisioner.writeClusterMetadata(ClusterRequest{
@@ -1819,12 +1819,48 @@ func TestCreateKindRejectsRuntimeNameOwnedByRenamedCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"})
-	if err == nil || !strings.Contains(err.Error(), "runtime name dev is already owned by cluster prod") {
-		t.Fatalf("runtime-name collision error = %v", err)
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"})
+	if err != nil {
+		t.Fatalf("create cluster with released logical name: %v", err)
 	}
-	if len(runner.commands) != 0 {
-		t.Fatalf("runtime-name collision started provisioning: %+v", runner.commands)
+	if !reflect.DeepEqual(cluster.Nodes, []string{"porto-dev-2-control-plane"}) {
+		t.Fatalf("reused logical name nodes = %v", cluster.Nodes)
+	}
+	request, err := provisioner.readClusterMetadata("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RuntimeName != "dev-2" {
+		t.Fatalf("reused logical name runtime = %q, want dev-2", request.RuntimeName)
+	}
+}
+
+func TestCreateVMClusterReusesRenamedClusterOldName(t *testing.T) {
+	runner := newFakeRunner()
+	runner.instances["porto-dev-server-1"] = true
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "prod", RuntimeName: "dev", Provider: "k3s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name: "dev", Provider: "k3s",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	})
+	if err != nil {
+		t.Fatalf("create VM cluster with released logical name: %v", err)
+	}
+	if !reflect.DeepEqual(cluster.Nodes, []string{"porto-dev-2-server-1"}) {
+		t.Fatalf("reused logical name VM nodes = %v", cluster.Nodes)
+	}
+	request, err := provisioner.readClusterMetadata("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RuntimeName != "dev-2" {
+		t.Fatalf("reused logical name runtime = %q, want dev-2", request.RuntimeName)
 	}
 }
 
