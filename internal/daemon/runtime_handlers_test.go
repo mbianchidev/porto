@@ -132,6 +132,38 @@ func TestDockerContainerActionBlocksManagedKindControlPlaneRemoval(t *testing.T)
 	}
 }
 
+func TestKubernetesClusterOperationLockRejectsOverlap(t *testing.T) {
+	server := &Server{}
+	release, err := server.beginKubernetesClusterOperation(context.Background(), "dev", "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := server.beginKubernetesClusterOperation(context.Background(), "dev", "delete"); err == nil ||
+		!strings.Contains(err.Error(), "operation stop is already in progress") {
+		t.Fatalf("overlapping cluster operation error = %v", err)
+	}
+	release()
+	releaseAgain, err := server.beginKubernetesClusterOperation(context.Background(), "dev", "delete")
+	if err != nil {
+		t.Fatalf("cluster operation remained locked: %v", err)
+	}
+	releaseAgain()
+}
+
+func TestKubernetesRenameOperationLocksOldAndNewNames(t *testing.T) {
+	server := &Server{}
+	release, err := server.beginKubernetesClusterOperation(context.Background(), "prod", "rename", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if _, err := server.beginKubernetesClusterOperation(context.Background(), "dev", "create"); err == nil ||
+		!strings.Contains(err.Error(), "operation rename is already in progress") {
+		t.Fatalf("create during rename error = %v", err)
+	}
+}
+
 func TestKubernetesStorageAndGatewayHandlers(t *testing.T) {
 	runner := runtimeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
 		if command.Name == "kubectl" && strings.Contains(strings.Join(command.Args, " "), " get ") {

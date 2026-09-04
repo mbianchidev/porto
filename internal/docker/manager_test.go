@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -158,6 +159,50 @@ func (f *fakeRunner) Run(_ context.Context, command runtimes.Command) ([]byte, e
 	}
 	key := command.Name + " " + strings.Join(command.Args, " ")
 	return f.outputs[key], f.errors[key]
+}
+
+func TestAuthenticatedPullUsesTemporaryConfigInsideLima(t *testing.T) {
+	config := []byte(`{"auths":{"https://index.docker.io/v1/":{"auth":"dGVzdDp0b2tlbg=="}}}`)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{},
+		errors:  map[string]error{},
+	}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "limactl" {
+			return nil, fmt.Errorf("unexpected command: %s", command.Name)
+		}
+		if len(command.Args) < 9 ||
+			!reflect.DeepEqual(command.Args[:4], []string{"shell", "porto-engine", "--", "sh"}) ||
+			command.Args[4] != "-c" ||
+			command.Args[6] != "porto-registry-auth" ||
+			!reflect.DeepEqual(command.Args[7:], []string{"nerdctl", "pull", "docker.io/kindest/node:v1.36.0"}) {
+			return nil, fmt.Errorf("unexpected Lima pull arguments: %v", command.Args)
+		}
+		script := command.Args[5]
+		if !strings.Contains(script, "umask 077") ||
+			!strings.Contains(script, `trap 'rm -rf "$config_dir"' EXIT`) ||
+			!strings.Contains(script, `DOCKER_CONFIG="$config_dir" "$@"`) {
+			return nil, fmt.Errorf("Lima pull does not securely scope credentials: %s", script)
+		}
+		if !bytes.Equal(command.Stdin, config) {
+			return nil, errors.New("Lima pull did not receive the scoped Docker config")
+		}
+		return nil, nil
+	}
+	manager := New(runner)
+
+	_, err := manager.runBackendWithDockerConfig(
+		context.Background(),
+		commandBackend{name: "limactl", limaInstance: "porto-engine"},
+		time.Minute,
+		"pull Porto image",
+		config,
+		"pull",
+		"docker.io/kindest/node:v1.36.0",
+	)
+	if err != nil {
+		t.Fatalf("authenticated Lima pull: %v", err)
+	}
 }
 
 func (f *fakeRunner) Start(_ context.Context, command runtimes.Command) (runtimes.Process, error) {

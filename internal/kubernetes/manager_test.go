@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -1051,7 +1052,7 @@ func TestProvisionClusterCreatesVMBackedNodesAndKubeconfig(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create cluster: %v", err)
 	}
-	if len(cluster.Nodes) != 3 || cluster.Context != "porto-k3s-dev" || cluster.StateSince == "" {
+	if len(cluster.Nodes) != 3 || cluster.Context != "porto-k3s-dev" || cluster.StateSince != "" {
 		t.Fatalf("unexpected cluster: %+v", cluster)
 	}
 	data, err := os.ReadFile(provisioner.clusterKubeconfigPath("dev"))
@@ -1103,7 +1104,7 @@ func TestProvisionKindClusterWithoutLima(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create kind cluster: %v", err)
 	}
-	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" || cluster.StateSince == "" {
+	if cluster.Provider != "kind" || len(cluster.Nodes) != 2 || cluster.Nodes[0] != "porto-kind-dev-control-plane" || cluster.StateSince != "" {
 		t.Fatalf("unexpected kind cluster: %+v", cluster)
 	}
 	runner.mu.Lock()
@@ -1169,6 +1170,133 @@ func TestPortoDockerEnvironmentIgnoresUserCredentialHelpers(t *testing.T) {
 	if !slices.Contains(environment, "DOCKER_CONFIG="+filepath.Join(root, "docker-client")) {
 		t.Fatalf("Porto Docker environment does not isolate user credentials: %v", environment)
 	}
+}
+
+func TestKindCreateDockerEnvironmentScopesCredentialHelperIdentityToken(t *testing.T) {
+	root := t.TempDir()
+	userConfigDir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", userConfigDir)
+	if err := os.WriteFile(
+		filepath.Join(userConfigDir, "config.json"),
+		[]byte(`{"auths":{},"credsStore":"osxkeychain","currentContext":"porto"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "docker-credential-osxkeychain" ||
+			!reflect.DeepEqual(command.Args, []string{"get"}) ||
+			string(command.Stdin) != dockerHubRegistry+"\n" {
+			t.Fatalf("unexpected credential helper command: %+v", command)
+		}
+		return []byte(`{"ServerURL":"https://index.docker.io/v1/","Username":"<token>","Secret":"test-token"}`), nil
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+
+	environment, cleanup, err := provisioner.kindCreateDockerEnv(context.Background())
+	if err != nil {
+		t.Fatalf("prepare kind Docker environment: %v", err)
+	}
+	t.Cleanup(cleanup)
+	configDir := environmentVariable(environment, "DOCKER_CONFIG")
+	if configDir == "" || configDir == filepath.Join(root, "docker-client") {
+		t.Fatalf("kind Docker config was not temporary: %v", environment)
+	}
+	configPath := filepath.Join(configDir, "config.json")
+	info, err := os.Stat(configPath)
+	if err != nil {
+		t.Fatalf("stat temporary Docker config: %v", err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
+		t.Fatalf("temporary Docker config permissions = %o, want 600", info.Mode().Perm())
+	}
+	data, err := os.ReadFile(configPath)
+	if err != nil {
+		t.Fatalf("read temporary Docker config: %v", err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(data, &document); err != nil {
+		t.Fatalf("decode temporary Docker config: %v", err)
+	}
+	if len(document) != 1 {
+		t.Fatalf("temporary Docker config copied unrelated settings: %s", data)
+	}
+	auths, ok := document["auths"].(map[string]any)
+	if !ok || len(auths) != 1 {
+		t.Fatalf("temporary Docker config auths = %#v", document["auths"])
+	}
+	registryAuth, ok := auths[dockerHubRegistry].(map[string]any)
+	if !ok {
+		t.Fatalf("Docker Hub auth missing from temporary config: %s", data)
+	}
+	if registryAuth["identitytoken"] != "test-token" {
+		t.Fatalf("temporary Docker identity token = %#v, want test token", registryAuth["identitytoken"])
+	}
+
+	cleanup()
+	if _, err := os.Stat(configDir); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("temporary Docker config was not removed: %v", err)
+	}
+}
+
+func TestKindCreateDockerEnvironmentFallsBackToAnonymousPull(t *testing.T) {
+	root := t.TempDir()
+	userConfigDir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", userConfigDir)
+	if err := os.WriteFile(
+		filepath.Join(userConfigDir, "config.json"),
+		[]byte(`{"auths":{},"credsStore":"missing"}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name == "docker-credential-missing" {
+			return []byte("credentials not found"), errors.New("exit status 1")
+		}
+		t.Fatalf("unexpected command: %+v", command)
+		return nil, nil
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+
+	environment, cleanup, err := provisioner.kindCreateDockerEnv(context.Background())
+	if err != nil {
+		t.Fatalf("prepare anonymous kind Docker environment: %v", err)
+	}
+	defer cleanup()
+	if got := environmentVariable(environment, "DOCKER_CONFIG"); got != filepath.Join(root, "docker-client") {
+		t.Fatalf("anonymous pull Docker config = %q, want Porto config", got)
+	}
+}
+
+func TestDockerStoredAuthScopesBasicAndIdentityCredentials(t *testing.T) {
+	auth, found := (dockerStoredAuth{
+		Auth:          "basic-auth",
+		IdentityToken: "identity-token",
+		Username:      "ignored-user",
+		Password:      "ignored-password",
+	}).scoped()
+	if !found {
+		t.Fatal("stored Docker auth was not recognized")
+	}
+	if auth.Auth != "basic-auth" || auth.IdentityToken != "identity-token" {
+		t.Fatalf("scoped Docker auth = %+v", auth)
+	}
+	if auth.Username != "" || auth.Password != "" {
+		t.Fatalf("scoped Docker auth retained plaintext credentials: %+v", auth)
+	}
+}
+
+func environmentVariable(environment []string, name string) string {
+	prefix := name + "="
+	for _, entry := range environment {
+		if strings.HasPrefix(entry, prefix) {
+			return strings.TrimPrefix(entry, prefix)
+		}
+	}
+	return ""
 }
 
 func TestEnsureMetricsServerRepairsOwnedKindCluster(t *testing.T) {
@@ -1300,7 +1428,7 @@ func TestListKeepsProvisioningClusterInCreatingState(t *testing.T) {
 	}
 }
 
-func TestListExposesRunningStateTimestamp(t *testing.T) {
+func TestListOmitsRunningStateTimestamp(t *testing.T) {
 	runner := newFakeRunner()
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		joined := strings.Join(command.Args, " ")
@@ -1327,7 +1455,7 @@ func TestListExposesRunningStateTimestamp(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list clusters: %v", err)
 	}
-	if len(clusters) != 1 || clusters[0].State != "running" || clusters[0].StateSince != runningAt {
+	if len(clusters) != 1 || clusters[0].State != "running" || clusters[0].StateSince != "" {
 		t.Fatalf("running cluster state = %+v", clusters)
 	}
 }
@@ -1682,7 +1810,7 @@ func TestCreateKindCollisionAfterPreflightDoesNotDeleteRuntime(t *testing.T) {
 	}
 }
 
-func TestCreateKindRejectsRuntimeNameOwnedByRenamedCluster(t *testing.T) {
+func TestCreateKindReusesRenamedClusterOldName(t *testing.T) {
 	runner := newFakeRunner()
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 	if err := provisioner.writeClusterMetadata(ClusterRequest{
@@ -1691,12 +1819,48 @@ func TestCreateKindRejectsRuntimeNameOwnedByRenamedCluster(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"})
-	if err == nil || !strings.Contains(err.Error(), "runtime name dev is already owned by cluster prod") {
-		t.Fatalf("runtime-name collision error = %v", err)
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{Name: "dev", Provider: "kind"})
+	if err != nil {
+		t.Fatalf("create cluster with released logical name: %v", err)
 	}
-	if len(runner.commands) != 0 {
-		t.Fatalf("runtime-name collision started provisioning: %+v", runner.commands)
+	if !reflect.DeepEqual(cluster.Nodes, []string{"porto-dev-2-control-plane"}) {
+		t.Fatalf("reused logical name nodes = %v", cluster.Nodes)
+	}
+	request, err := provisioner.readClusterMetadata("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RuntimeName != "dev-2" {
+		t.Fatalf("reused logical name runtime = %q, want dev-2", request.RuntimeName)
+	}
+}
+
+func TestCreateVMClusterReusesRenamedClusterOldName(t *testing.T) {
+	runner := newFakeRunner()
+	runner.instances["porto-dev-server-1"] = true
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{
+		Name: "prod", RuntimeName: "dev", Provider: "k3s",
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name: "dev", Provider: "k3s",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	})
+	if err != nil {
+		t.Fatalf("create VM cluster with released logical name: %v", err)
+	}
+	if !reflect.DeepEqual(cluster.Nodes, []string{"porto-dev-2-server-1"}) {
+		t.Fatalf("reused logical name VM nodes = %v", cluster.Nodes)
+	}
+	request, err := provisioner.readClusterMetadata("dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if request.RuntimeName != "dev-2" {
+		t.Fatalf("reused logical name runtime = %q, want dev-2", request.RuntimeName)
 	}
 }
 
@@ -1718,6 +1882,24 @@ func TestRuntimeNameReservationSerializesClusterMutations(t *testing.T) {
 	defer releaseName()
 	if _, err := provisioner.reserveClusterName("shared", "prod"); err == nil || !strings.Contains(err.Error(), "operation is already in progress") {
 		t.Fatalf("concurrent cluster-name reservation error = %v", err)
+	}
+}
+
+func TestImportImageUsesRuntimeReservation(t *testing.T) {
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "kind"}); err != nil {
+		t.Fatal(err)
+	}
+	release, err := provisioner.reserveRuntimeName("dev", "dev")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+
+	if err := provisioner.ImportImage(context.Background(), "dev", "example:latest"); err == nil ||
+		!strings.Contains(err.Error(), "operation is already in progress") {
+		t.Fatalf("concurrent image import error = %v", err)
 	}
 }
 

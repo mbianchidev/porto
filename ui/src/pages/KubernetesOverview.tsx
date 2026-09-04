@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
@@ -20,6 +20,14 @@ import type {
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
 const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
 
+type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import'
+
+type ClusterMutationControl = {
+  disabled: boolean
+  begin: () => boolean
+  end: () => void
+}
+
 function isRunning(cluster: KubernetesCluster) {
   return cluster.state.toLowerCase() === 'running'
 }
@@ -29,13 +37,28 @@ function isLifecycleLocked(cluster: KubernetesCluster) {
 }
 
 function clusterElapsed(cluster: KubernetesCluster, now: number) {
-  if (!['creating', 'running'].includes(cluster.state) || !cluster.stateSince) return ''
+  if (cluster.state !== 'creating' || !cluster.stateSince) return ''
   const started = Date.parse(cluster.stateSince)
   if (Number.isNaN(started)) return ''
   return `${Math.max(0, Math.floor((now - started) / 1000))}s`
 }
 
-function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onScaled: () => void }) {
+function lifecycleLabel(cluster: KubernetesCluster, mutation?: ClusterMutation) {
+  if (mutation === 'stop') return 'Stopping cluster'
+  if (mutation === 'start') return 'Starting cluster'
+  if (mutation !== undefined) return 'Cluster operation in progress'
+  return isRunning(cluster) ? 'Stop cluster' : cluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'
+}
+
+function NodeGroupTab({
+  cluster,
+  onScaled,
+  mutation,
+}: {
+  cluster: KubernetesCluster
+  onScaled: () => void
+  mutation: ClusterMutationControl
+}) {
   const { notifyError, notifyNotice } = useMessages()
   const [name, setName] = useState('workers')
   const [count, setCount] = useState(1)
@@ -55,6 +78,7 @@ function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onSca
   async function scale(event: FormEvent) {
     event.preventDefault()
     if (name.trim() === '') return
+    if (!mutation.begin()) return
     setSubmitting(true)
     try {
       await apiSend(`/api/kubernetes/clusters/${cluster.name}/node-groups/${name.trim()}`, 'POST', {
@@ -70,6 +94,7 @@ function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onSca
       notifyError('kubernetes', errorMessage(err, `Unable to scale node group ${name}`))
     } finally {
       setSubmitting(false)
+      mutation.end()
     }
   }
 
@@ -80,35 +105,35 @@ function NodeGroupTab({ cluster, onScaled }: { cluster: KubernetesCluster; onSca
       <form className="inspectorForm" onSubmit={scale}>
         <label>
           <span>Node group name</span>
-          <input type="text" value={name} onChange={(event) => setName(event.target.value)} required />
+          <input type="text" value={name} disabled={mutation.disabled} onChange={(event) => setName(event.target.value)} required />
         </label>
         <label>
           <span>Node count</span>
-          <input type="number" min={0} max={32} value={count} onChange={(event) => setCount(Number(event.target.value))} />
+          <input type="number" min={0} max={32} value={count} disabled={mutation.disabled} onChange={(event) => setCount(Number(event.target.value))} />
         </label>
         <label>
           <span>CPUs per node</span>
-          <input type="number" min={1} max={32} value={machine.cpus} onChange={(event) => setMachine({ ...machine, cpus: Number(event.target.value) })} />
+          <input type="number" min={1} max={32} value={machine.cpus} disabled={mutation.disabled} onChange={(event) => setMachine({ ...machine, cpus: Number(event.target.value) })} />
         </label>
         <label>
           <span>Memory per node (MiB)</span>
-          <input type="number" min={512} step={512} value={machine.memoryMiB} onChange={(event) => setMachine({ ...machine, memoryMiB: Number(event.target.value) })} />
+          <input type="number" min={512} step={512} value={machine.memoryMiB} disabled={mutation.disabled} onChange={(event) => setMachine({ ...machine, memoryMiB: Number(event.target.value) })} />
         </label>
         <label>
           <span>Disk per node (GiB)</span>
-          <input type="number" min={5} value={machine.diskGiB} onChange={(event) => setMachine({ ...machine, diskGiB: Number(event.target.value) })} />
+          <input type="number" min={5} value={machine.diskGiB} disabled={mutation.disabled} onChange={(event) => setMachine({ ...machine, diskGiB: Number(event.target.value) })} />
         </label>
         <label>
           <span>k3s version (optional)</span>
-          <input type="text" value={version} placeholder="v1.30.4+k3s1" onChange={(event) => setVersion(event.target.value)} />
+          <input type="text" value={version} placeholder="v1.30.4+k3s1" disabled={mutation.disabled} onChange={(event) => setVersion(event.target.value)} />
         </label>
-        <button type="submit" disabled={submitting || name.trim() === ''}>{submitting ? 'Scaling…' : 'Scale node group'}</button>
+        <button type="submit" disabled={submitting || mutation.disabled || name.trim() === ''}>{submitting ? 'Scaling…' : 'Scale node group'}</button>
       </form>
     </section>
   )
 }
 
-function ImportImageTab({ cluster }: { cluster: KubernetesCluster }) {
+function ImportImageTab({ cluster, mutation }: { cluster: KubernetesCluster; mutation: ClusterMutationControl }) {
   const { notifyError, notifyNotice } = useMessages()
   const [image, setImage] = useState('')
   const [submitting, setSubmitting] = useState(false)
@@ -116,6 +141,7 @@ function ImportImageTab({ cluster }: { cluster: KubernetesCluster }) {
   async function importImage(event: FormEvent) {
     event.preventDefault()
     if (image.trim() === '') return
+    if (!mutation.begin()) return
     setSubmitting(true)
     try {
       await apiSend(`/api/kubernetes/clusters/${cluster.name}/images/import`, 'POST', { image: image.trim() })
@@ -125,6 +151,7 @@ function ImportImageTab({ cluster }: { cluster: KubernetesCluster }) {
       notifyError('kubernetes', errorMessage(err, `Unable to import ${image}`))
     } finally {
       setSubmitting(false)
+      mutation.end()
     }
   }
 
@@ -135,9 +162,9 @@ function ImportImageTab({ cluster }: { cluster: KubernetesCluster }) {
       <form className="inspectorForm" onSubmit={importImage}>
         <label>
           <span>Image reference</span>
-          <input type="text" value={image} placeholder="registry/repository:tag" onChange={(event) => setImage(event.target.value)} required />
+          <input type="text" value={image} placeholder="registry/repository:tag" disabled={mutation.disabled} onChange={(event) => setImage(event.target.value)} required />
         </label>
-        <button type="submit" disabled={submitting || image.trim() === ''}>{submitting ? 'Importing…' : 'Import image'}</button>
+        <button type="submit" disabled={submitting || mutation.disabled || image.trim() === ''}>{submitting ? 'Importing…' : 'Import image'}</button>
       </form>
     </section>
   )
@@ -147,10 +174,12 @@ export function KubernetesOverview({
   context,
   contexts,
   onContextChange,
+  onClusterRenamed,
 }: {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
+  onClusterRenamed: (previousName: string, nextName: string, previousContext: string, nextContext: string) => void
 }) {
   const { notifyError, notifyNotice, recordActivity } = useMessages()
   const [selectedClusterName, setSelectedClusterName] = useState<string | null>(null)
@@ -163,9 +192,10 @@ export function KubernetesOverview({
   const [initialWorkers, setInitialWorkers] = useState(1)
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
   const [renameDraft, setRenameDraft] = useState('')
-  const [renamingCluster, setRenamingCluster] = useState(false)
   const [clusterCreateError, setClusterCreateError] = useState('')
   const [pendingCreations, setPendingCreations] = useState<Record<string, { provider: string; startedAt: number }>>({})
+  const [pendingMutations, setPendingMutations] = useState<Record<string, ClusterMutation>>({})
+  const mutationsInFlight = useRef(new Set<string>())
   const [clock, setClock] = useState(0)
 
   const status = useKubernetesStatus(context)
@@ -188,7 +218,7 @@ export function KubernetesOverview({
   const enabled = status.data?.enabled ?? false
   const runningClusters = clusterItems.filter((cluster) => cluster.state === 'running')
   const pendingCreationItems = Object.entries(pendingCreations)
-  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => ['creating', 'running'].includes(cluster.state))
+  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => cluster.state === 'creating')
 
   useEffect(() => {
     if (!hasTimedClusters) return
@@ -247,13 +277,33 @@ export function KubernetesOverview({
       })
   }
 
+  function beginClusterMutation(clusterName: string, mutation: ClusterMutation) {
+    if (mutationsInFlight.current.has(clusterName)) return false
+    mutationsInFlight.current.add(clusterName)
+    setPendingMutations((current) => ({ ...current, [clusterName]: mutation }))
+    return true
+  }
+
+  function endClusterMutation(clusterName: string) {
+    mutationsInFlight.current.delete(clusterName)
+    setPendingMutations((current) => {
+      const next = { ...current }
+      delete next[clusterName]
+      return next
+    })
+  }
+
   async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop') {
+    if (!beginClusterMutation(cluster.name, action)) return
+    if (action === 'stop' && cluster.provider === 'kind') {
+      notifyNotice('kubernetes', `Stopping ${cluster.name}. KinD workers stop before the control plane, so shutdown can take a while.`)
+    }
     try {
       const result = await apiSend<{ status: string; message?: string }>(
         `/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}/${action}`,
         'POST',
       )
-      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'starting' : 'stopping'}.`)
+      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'started' : 'stopped'}.`)
       if (action === 'start') {
         onContextChange(cluster.context)
       } else if (context === cluster.context) {
@@ -266,11 +316,14 @@ export function KubernetesOverview({
       status.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to ${action} ${cluster.name}`))
+    } finally {
+      endClusterMutation(cluster.name)
     }
   }
 
   async function deleteCluster(cluster: KubernetesCluster) {
     if (!window.confirm(`Delete cluster ${cluster.name}? This permanently removes its control-plane and worker nodes.`)) return
+    if (!beginClusterMutation(cluster.name, 'delete')) return
     try {
       await apiSend(`/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}?confirm=true`, 'DELETE')
       notifyNotice('kubernetes', `Deleted cluster ${cluster.name}.`)
@@ -278,15 +331,17 @@ export function KubernetesOverview({
       clusters.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to delete ${cluster.name}`))
+    } finally {
+      endClusterMutation(cluster.name)
     }
   }
 
   async function renameCluster(event: FormEvent) {
     event.preventDefault()
     if (!selectedCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name) return
-    setRenamingCluster(true)
+    const previousName = selectedCluster.name
+    if (!beginClusterMutation(previousName, 'rename')) return
     try {
-      const previousName = selectedCluster.name
       const previousContext = selectedCluster.context
       const result = await apiSend<{ name: string; context: string }>(
         `/api/kubernetes/clusters/${encodeURIComponent(previousName)}/rename`,
@@ -294,6 +349,12 @@ export function KubernetesOverview({
         { name: renameDraft.trim() },
       )
       notifyNotice('kubernetes', `Renamed cluster ${previousName} to ${result.name}.`)
+      clusters.update((current) => current?.map((cluster) => (
+        cluster.name === previousName
+          ? { ...cluster, name: result.name, context: result.context }
+          : cluster
+      )) ?? current)
+      onClusterRenamed(previousName, result.name, previousContext, result.context)
       setSelectedClusterName(result.name)
       setRenameDraft(result.name)
       if (context === previousContext) onContextChange(result.context)
@@ -302,7 +363,7 @@ export function KubernetesOverview({
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to rename ${selectedCluster.name}`))
     } finally {
-      setRenamingCluster(false)
+      endClusterMutation(previousName)
     }
   }
 
@@ -394,16 +455,22 @@ export function KubernetesOverview({
                 { header: 'Server', className: 'mono', render: (cluster) => cluster.server || '—' },
                 { header: 'Nodes', className: 'mono', render: (cluster) => cluster.nodes?.length ?? 0 },
               ]}
-              renderActions={(cluster) => (
-                isRunning(cluster)
-                  ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(cluster, 'stop')} />
+              renderActions={(cluster) => {
+                const pendingMutation = pendingMutations[cluster.name]
+                return isRunning(cluster) || pendingMutation === 'stop'
+                  ? <ActionButton
+                      label={lifecycleLabel(cluster, pendingMutation)}
+                      icon="stop"
+                      disabled={pendingMutation !== undefined}
+                      onClick={() => clusterLifecycle(cluster, 'stop')}
+                    />
                   : <ActionButton
-                      label={cluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'}
+                      label={lifecycleLabel(cluster, pendingMutation)}
                       icon="play"
-                      disabled={isLifecycleLocked(cluster)}
+                      disabled={isLifecycleLocked(cluster) || pendingMutation !== undefined}
                       onClick={() => clusterLifecycle(cluster, 'start')}
                     />
-              )}
+              }}
             />
 
             {selectedCluster && !creatingCluster && (
@@ -435,6 +502,9 @@ export function KubernetesOverview({
                     {selectedCluster.state === 'broken' && (
                       <p className="errorLine">The control-plane node is missing. Starting a KinD cluster will recreate it from the saved cluster configuration.</p>
                     )}
+                    {pendingMutations[selectedCluster.name] === 'stop' && selectedCluster.provider === 'kind' && (
+                      <p className="hintLine" role="status">Stopping KinD worker containers before the control plane. This can take a while.</p>
+                    )}
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
@@ -450,30 +520,41 @@ export function KubernetesOverview({
                         <input
                           type="text"
                           value={renameDraft}
-                          disabled={isLifecycleLocked(selectedCluster) || renamingCluster}
+                          disabled={isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
                           onChange={(event) => setRenameDraft(event.target.value)}
                           required
                         />
                       </label>
                       <button
                         type="submit"
-                        disabled={isLifecycleLocked(selectedCluster) || renamingCluster || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name}
+                        disabled={isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined || renameDraft.trim() === '' || renameDraft.trim() === selectedCluster.name}
                       >
-                        {renamingCluster ? 'Renaming…' : 'Rename cluster'}
+                        {pendingMutations[selectedCluster.name] === 'rename' ? 'Renaming…' : 'Rename cluster'}
                       </button>
                     </form>
                     <div className="maintenanceBar">
                       <span>Maintenance controls</span>
                       <div className="actions">
-                        {isRunning(selectedCluster)
-                          ? <ActionButton label="Stop cluster" icon="stop" onClick={() => clusterLifecycle(selectedCluster, 'stop')} />
+                        {isRunning(selectedCluster) || pendingMutations[selectedCluster.name] === 'stop'
+                          ? <ActionButton
+                              label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
+                              icon="stop"
+                              disabled={pendingMutations[selectedCluster.name] !== undefined}
+                              onClick={() => clusterLifecycle(selectedCluster, 'stop')}
+                            />
                           : <ActionButton
-                              label={selectedCluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'}
+                              label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
                               icon="play"
-                              disabled={isLifecycleLocked(selectedCluster)}
+                              disabled={isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
                               onClick={() => clusterLifecycle(selectedCluster, 'start')}
                             />}
-                        <ActionButton className="removeButton" label="Delete cluster" icon="remove" onClick={() => deleteCluster(selectedCluster)} />
+                        <ActionButton
+                          className="removeButton"
+                          label={pendingMutations[selectedCluster.name] === 'delete' ? 'Deleting cluster' : 'Delete cluster'}
+                          icon="remove"
+                          disabled={pendingMutations[selectedCluster.name] !== undefined}
+                          onClick={() => deleteCluster(selectedCluster)}
+                        />
                       </div>
                     </div>
                   </section>
@@ -483,8 +564,27 @@ export function KubernetesOverview({
                     <ClusterTerminal key={`${selectedCluster.name}:${selectedCluster.state}`} cluster={selectedCluster} />
                   </Suspense>
                 )}
-                {clusterTab === 'nodeGroup' && <NodeGroupTab cluster={selectedCluster} onScaled={clusters.reload} />}
-                {clusterTab === 'importImage' && <ImportImageTab cluster={selectedCluster} />}
+                {clusterTab === 'nodeGroup' && (
+                  <NodeGroupTab
+                    cluster={selectedCluster}
+                    onScaled={clusters.reload}
+                    mutation={{
+                      disabled: pendingMutations[selectedCluster.name] !== undefined,
+                      begin: () => beginClusterMutation(selectedCluster.name, 'scale'),
+                      end: () => endClusterMutation(selectedCluster.name),
+                    }}
+                  />
+                )}
+                {clusterTab === 'importImage' && (
+                  <ImportImageTab
+                    cluster={selectedCluster}
+                    mutation={{
+                      disabled: pendingMutations[selectedCluster.name] !== undefined,
+                      begin: () => beginClusterMutation(selectedCluster.name, 'import'),
+                      end: () => endClusterMutation(selectedCluster.name),
+                    }}
+                  />
+                )}
               </Inspector>
             )}
 

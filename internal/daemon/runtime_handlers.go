@@ -9,6 +9,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -799,6 +800,12 @@ func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request)
 	}
 	operationContext, cancel := context.WithTimeout(operationBase, 20*time.Minute)
 	defer cancel()
+	release, err := s.beginKubernetesClusterOperation(operationContext, request.Name, "create")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	cluster, err := s.clusters.Create(operationContext, request)
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -815,6 +822,12 @@ func (s *Server) kubernetesClusters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	release, err := s.beginKubernetesClusterOperation(r.Context(), name, "start")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	recreated, err := s.clusters.Start(r.Context(), name)
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -833,6 +846,12 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
+	release, err := s.beginKubernetesClusterOperation(r.Context(), name, "stop")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	contextName, _ := s.clusters.ContextName(name)
 	forwardErr := s.stopKubernetesClusterForwards(name)
 	operationContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
@@ -853,6 +872,13 @@ func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	oldName := r.PathValue("name")
+	newName := strings.TrimSpace(request.Name)
+	release, err := s.beginKubernetesClusterOperation(r.Context(), oldName, "rename", newName)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	oldContext, err := s.clusters.ContextName(oldName)
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -862,20 +888,19 @@ func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		writeRuntimeError(w, err)
 		return
 	}
-	if err := s.clusters.Rename(r.Context(), oldName, strings.TrimSpace(request.Name)); err != nil {
+	if err := s.clusters.Rename(r.Context(), oldName, newName); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
-	newName := strings.TrimSpace(request.Name)
 	newContext, err := s.clusters.ContextName(newName)
 	if err != nil {
-		_ = s.clusters.Rename(r.Context(), newName, oldName)
-		writeRuntimeError(w, err)
+		rollbackErr := s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, errors.Join(err, renameRollbackError(rollbackErr)))
 		return
 	}
 	if err := s.store.RenameKubernetesRoutesContext(r.Context(), oldContext, newContext); err != nil {
-		_ = s.clusters.Rename(r.Context(), newName, oldName)
-		writeRuntimeError(w, err)
+		rollbackErr := s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, errors.Join(err, renameRollbackError(rollbackErr)))
 		return
 	}
 	s.forgetKubernetesClusterAddons(oldContext)
@@ -901,6 +926,12 @@ func (s *Server) scaleKubernetesNodeGroup(w http.ResponseWriter, r *http.Request
 		Labels:  request.Labels,
 		Taints:  request.Taints,
 	}
+	release, err := s.beginKubernetesClusterOperation(r.Context(), r.PathValue("name"), "scale")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	if err := s.clusters.ScaleNodeGroup(r.Context(), r.PathValue("name"), group, request.Version); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -915,6 +946,12 @@ func (s *Server) importKubernetesImage(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
+	release, err := s.beginKubernetesClusterOperation(r.Context(), r.PathValue("name"), "import")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	if err := s.clusters.ImportImage(r.Context(), r.PathValue("name"), request.Image); err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -928,6 +965,12 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	name := r.PathValue("name")
+	release, err := s.beginKubernetesClusterOperation(r.Context(), name, "delete")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
 	contextName, contextErr := s.clusters.ContextName(name)
 	forwardErr := s.stopKubernetesClusterForwards(name)
 	operationContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
@@ -945,6 +988,157 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) beginKubernetesClusterOperation(
+	ctx context.Context,
+	clusterName string,
+	action string,
+	relatedNames ...string,
+) (func(), error) {
+	operationKeys, err := s.kubernetesClusterOperationKeys(append([]string{clusterName}, relatedNames...)...)
+	if err != nil {
+		return nil, err
+	}
+	s.kubeOperationMu.Lock()
+	if s.kubeOperations == nil {
+		s.kubeOperations = map[string]string{}
+	}
+	for _, operationKey := range operationKeys {
+		if active := s.kubeOperations[operationKey]; active != "" {
+			s.kubeOperationMu.Unlock()
+			return nil, fmt.Errorf(
+				"Kubernetes cluster %s operation %s is already in progress",
+				clusterName,
+				active,
+			)
+		}
+	}
+	gates := make([]chan struct{}, 0, len(operationKeys))
+	for _, operationKey := range operationKeys {
+		s.kubeOperations[operationKey] = action
+		gates = append(gates, s.kubernetesClusterOperationGateLocked(operationKey))
+	}
+	s.kubeOperationMu.Unlock()
+	acquired := 0
+	for _, gate := range gates {
+		select {
+		case <-ctx.Done():
+			releaseKubernetesOperationGates(gates[:acquired])
+			s.kubeOperationMu.Lock()
+			for _, operationKey := range operationKeys {
+				delete(s.kubeOperations, operationKey)
+			}
+			s.kubeOperationMu.Unlock()
+			return nil, ctx.Err()
+		case <-gate:
+			acquired++
+		}
+	}
+	return func() {
+		releaseKubernetesOperationGates(gates)
+		s.kubeOperationMu.Lock()
+		for _, operationKey := range operationKeys {
+			delete(s.kubeOperations, operationKey)
+		}
+		s.kubeOperationMu.Unlock()
+	}, nil
+}
+
+func (s *Server) tryBeginKubernetesClusterReconcile(
+	ctx context.Context,
+	clusterName string,
+) (func(), bool, error) {
+	operationKeys, err := s.kubernetesClusterOperationKeys(clusterName)
+	if err != nil {
+		return nil, false, err
+	}
+	s.kubeOperationMu.Lock()
+	for _, operationKey := range operationKeys {
+		if s.kubeOperations[operationKey] != "" {
+			s.kubeOperationMu.Unlock()
+			return nil, false, nil
+		}
+	}
+	gates := make([]chan struct{}, 0, len(operationKeys))
+	for _, operationKey := range operationKeys {
+		gates = append(gates, s.kubernetesClusterOperationGateLocked(operationKey))
+	}
+	s.kubeOperationMu.Unlock()
+	acquired := 0
+	for _, gate := range gates {
+		select {
+		case <-ctx.Done():
+			releaseKubernetesOperationGates(gates[:acquired])
+			return nil, false, ctx.Err()
+		case <-gate:
+			acquired++
+		}
+	}
+	s.kubeOperationMu.Lock()
+	active := false
+	for _, operationKey := range operationKeys {
+		if s.kubeOperations[operationKey] != "" {
+			active = true
+			break
+		}
+	}
+	s.kubeOperationMu.Unlock()
+	if active {
+		releaseKubernetesOperationGates(gates)
+		return nil, false, nil
+	}
+	return func() {
+		releaseKubernetesOperationGates(gates)
+	}, true, nil
+}
+
+func (s *Server) kubernetesClusterOperationKeys(clusterNames ...string) ([]string, error) {
+	keySet := make(map[string]struct{}, len(clusterNames)*2)
+	for _, clusterName := range clusterNames {
+		operationKey := clusterName
+		if s.clusters != nil {
+			var err error
+			operationKey, err = s.clusters.OperationKey(clusterName)
+			if err != nil {
+				return nil, err
+			}
+		}
+		keySet["name:"+clusterName] = struct{}{}
+		keySet["runtime:"+operationKey] = struct{}{}
+	}
+	keys := make([]string, 0, len(keySet))
+	for key := range keySet {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return keys, nil
+}
+
+func (s *Server) kubernetesClusterOperationGateLocked(operationKey string) chan struct{} {
+	if s.kubeOpGates == nil {
+		s.kubeOpGates = map[string]chan struct{}{}
+	}
+	gate := s.kubeOpGates[operationKey]
+	if gate == nil {
+		gate = make(chan struct{}, 1)
+		gate <- struct{}{}
+		s.kubeOpGates[operationKey] = gate
+	}
+	return gate
+}
+
+func releaseKubernetesOperationGates(gates []chan struct{}) {
+	for index := len(gates) - 1; index >= 0; index-- {
+		gates[index] <- struct{}{}
+	}
+}
+
+func renameRollbackError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return fmt.Errorf("roll back Kubernetes cluster rename: %w", err)
 }
 
 func (s *Server) stopKubernetesClusterForwards(clusterName string) error {

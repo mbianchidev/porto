@@ -129,6 +129,20 @@ func (p *ClusterProvisioner) ContextName(clusterName string) (string, error) {
 	return clusterContextName(request), nil
 }
 
+func (p *ClusterProvisioner) OperationKey(clusterName string) (string, error) {
+	if !clusterNamePattern.MatchString(clusterName) {
+		return "", fmt.Errorf("cluster name must match %s", clusterNamePattern)
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if errors.Is(err, os.ErrNotExist) {
+		return clusterName, nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	return clusterRuntimeName(request), nil
+}
+
 func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName string) error {
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
@@ -223,11 +237,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
 	}
-	releaseRuntime, err := p.reserveRuntimeName(request.Name, request.Name)
-	if err != nil {
-		return Cluster{}, err
-	}
-	defer releaseRuntime()
 	releaseName, err := p.reserveClusterName(request.Name, request.Name)
 	if err != nil {
 		return Cluster{}, err
@@ -257,6 +266,14 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		if err := validateNodeMetadata(group.Labels, group.Taints); err != nil {
 			return Cluster{}, fmt.Errorf("node group %s: %w", group.Name, err)
 		}
+	}
+	runtimeName, releaseRuntime, err := p.reserveRuntimeNameForCreate(request.Name, request.Name)
+	if err != nil {
+		return Cluster{}, err
+	}
+	defer releaseRuntime()
+	if runtimeName != request.Name {
+		request.RuntimeName = runtimeName
 	}
 	if request.Provider != "kind" {
 		var releasePort func()
@@ -415,7 +432,6 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		KubeconfigPath: kubeconfigPath,
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
-		StateSince:     request.RunningAt,
 	}
 	return cluster, nil
 }
@@ -464,7 +480,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	}
 	commandContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
-	output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kind", Args: args, Env: p.portoDockerEnv()})
+	output, err := p.runKindCreate(commandContext, args)
 	if err != nil {
 		commandErr := runtimes.CommandError("create kind cluster", output, err)
 		if kindCreateCollision(commandErr) {
@@ -531,7 +547,6 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		KubeconfigPath: kubeconfigPath,
 		Server:         strings.TrimSpace(string(serverOutput)),
 		Nodes:          nodes,
-		StateSince:     request.RunningAt,
 	}, nil
 }
 
@@ -853,6 +868,37 @@ func (p *ClusterProvisioner) reserveRuntimeName(runtimeName, owner string) (func
 	}, nil
 }
 
+func (p *ClusterProvisioner) reserveRuntimeNameForCreate(
+	preferred string,
+	owner string,
+) (string, func(), error) {
+	p.ownershipMu.Lock()
+	defer p.ownershipMu.Unlock()
+	owners, err := p.runtimeNameOwners()
+	if err != nil {
+		return "", nil, err
+	}
+	for sequence := 1; sequence <= 9999; sequence++ {
+		candidate := preferred
+		if sequence > 1 {
+			candidate = suffixedRuntimeName(preferred, sequence)
+		}
+		if p.reservations[candidate] != "" {
+			continue
+		}
+		if existingOwner := owners[candidate]; existingOwner != "" && existingOwner != owner {
+			continue
+		}
+		p.reservations[candidate] = owner
+		return candidate, func() {
+			p.ownershipMu.Lock()
+			delete(p.reservations, candidate)
+			p.ownershipMu.Unlock()
+		}, nil
+	}
+	return "", nil, fmt.Errorf("allocate unique Kubernetes runtime name for cluster %s", owner)
+}
+
 func (p *ClusterProvisioner) reserveClusterName(clusterName, owner string) (func(), error) {
 	p.ownershipMu.Lock()
 	defer p.ownershipMu.Unlock()
@@ -872,30 +918,40 @@ func (p *ClusterProvisioner) reserveClusterName(clusterName, owner string) (func
 }
 
 func (p *ClusterProvisioner) ensureRuntimeNameAvailable(runtimeName, owner string) error {
+	owners, err := p.runtimeNameOwners()
+	if err != nil {
+		return err
+	}
+	if existingOwner := owners[runtimeName]; existingOwner != "" && existingOwner != owner {
+		return fmt.Errorf("Kubernetes runtime name %s is already owned by cluster %s", runtimeName, existingOwner)
+	}
+	return nil
+}
+
+func (p *ClusterProvisioner) runtimeNameOwners() (map[string]string, error) {
 	entries, err := os.ReadDir(p.kubeconfigRoot)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil
+		return map[string]string{}, nil
 	}
 	if err != nil {
-		return fmt.Errorf("list Kubernetes cluster ownership: %w", err)
+		return nil, fmt.Errorf("list Kubernetes cluster ownership: %w", err)
 	}
+	owners := make(map[string]string)
 	for _, entry := range entries {
 		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
 			continue
 		}
 		data, err := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
 		if err != nil {
-			return fmt.Errorf("read Kubernetes cluster ownership %s: %w", entry.Name(), err)
+			return nil, fmt.Errorf("read Kubernetes cluster ownership %s: %w", entry.Name(), err)
 		}
 		var existing ClusterRequest
 		if err := json.Unmarshal(data, &existing); err != nil {
-			return fmt.Errorf("decode Kubernetes cluster ownership %s: %w", entry.Name(), err)
+			return nil, fmt.Errorf("decode Kubernetes cluster ownership %s: %w", entry.Name(), err)
 		}
-		if existing.Name != owner && clusterRuntimeName(existing) == runtimeName {
-			return fmt.Errorf("Kubernetes runtime name %s is already owned by cluster %s", runtimeName, existing.Name)
-		}
+		owners[clusterRuntimeName(existing)] = existing.Name
 	}
-	return nil
+	return owners, nil
 }
 
 func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
@@ -1020,11 +1076,8 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			}
 			sort.Strings(cluster.Nodes)
 		}
-		switch cluster.State {
-		case "creating":
+		if cluster.State == "creating" {
 			cluster.StateSince = request.CreatedAt
-		case "running":
-			cluster.StateSince = firstNonEmpty(request.RunningAt, request.CreatedAt)
 		}
 		clusters = append(clusters, cluster)
 	}
@@ -1454,6 +1507,11 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(request), request.Name)
+	if err != nil {
+		return err
+	}
+	defer releaseRuntime()
 	request.Provider = normalizeProvider(request.Provider)
 	if request.Provider == "kind" {
 		output, err := p.runner.Run(ctx, runtimes.Command{
@@ -2054,6 +2112,15 @@ func clusterRuntimeName(request ClusterRequest) string {
 		return request.RuntimeName
 	}
 	return request.Name
+}
+
+func suffixedRuntimeName(preferred string, sequence int) string {
+	suffix := "-" + strconv.Itoa(sequence)
+	maxBaseLength := 40 - len(suffix)
+	if len(preferred) > maxBaseLength {
+		preferred = strings.TrimRight(preferred[:maxBaseLength], "-")
+	}
+	return preferred + suffix
 }
 
 func clusterNodeNames(request ClusterRequest) []string {

@@ -88,6 +88,26 @@ function AppShell() {
     killSwitch.reload()
   }
 
+  function renameKubernetesResources(
+    previousName: string,
+    nextName: string,
+    previousContext: string,
+    nextContext: string,
+  ) {
+    kubernetesClusters.update((current) => current?.map((cluster) => (
+      cluster.name === previousName
+        ? { ...cluster, name: nextName, context: nextContext }
+        : cluster
+    )) ?? current)
+    kubernetesContexts.update((current) => current?.map((candidate) => (
+      candidate.name === previousContext
+        ? { ...candidate, name: nextContext, cluster: nextContext, authInfo: nextContext }
+        : candidate
+    )) ?? current)
+    kubernetesClusters.reload()
+    kubernetesContexts.reload()
+  }
+
   return (
     <div className={`appShell ${railOpen ? 'railOpen' : ''}`}>
       {/*
@@ -123,7 +143,14 @@ function AppShell() {
         {route === 'builds' && <Builds />}
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
-        {route === 'kubernetes' && <KubernetesOverview context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'kubernetes' && (
+          <KubernetesOverview
+            context={activeKubeContext}
+            contexts={kubeContexts}
+            onContextChange={setKubeContext}
+            onClusterRenamed={renameKubernetesResources}
+          />
+        )}
         {route === 'pods' && (
           <Pods
             key={`pods:${activeKubeContext}`}
