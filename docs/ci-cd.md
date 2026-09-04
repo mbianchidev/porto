@@ -21,6 +21,8 @@ The `ui` job installs with `npm ci` and runs `npm run lint`, `npm run build`,
 and the desktop shell tests on Node 22.12, 24, and 26. Node 22.12 is the lowest
 version Vite and oxlint accept. The Node 24 job audits the Electron lockfile
 once, avoiding redundant registry requests and npm-version-specific tree checks.
+Confirmed npm registry transport or server outages emit a warning instead of
+failing the matrix; vulnerability reports and invalid lockfiles still fail.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
