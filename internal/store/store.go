@@ -364,6 +364,15 @@ func (s *Store) DeleteKubernetesRoutesByContext(ctx context.Context, contextName
 	return err
 }
 
+func (s *Store) RenameKubernetesRoutesContext(ctx context.Context, oldContext, newContext string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE kubernetes_routes SET context_name=?,updated_at=? WHERE context_name=?`,
+		newContext,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		oldContext,
+	)
+	return err
+}
+
 func (s *Store) UsedPorts(ctx context.Context) (map[int]bool, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT port FROM projects WHERE port > 0`)
 	if err != nil {

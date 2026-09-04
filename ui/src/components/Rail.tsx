@@ -23,6 +23,8 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'kubernetes', label: 'Overview', icon: 'kubernetes' },
       { id: 'pods', label: 'Pods', icon: 'pods' },
       { id: 'services', label: 'Services', icon: 'services' },
+      { id: 'storage', label: 'Storage', icon: 'volumes' },
+      { id: 'gateways', label: 'Gateway API', icon: 'networks' },
       { id: 'configs', label: 'Configs', icon: 'configs' },
       { id: 'secrets', label: 'Secrets', icon: 'secrets' },
       { id: 'nodes', label: 'Nodes', icon: 'nodes' },

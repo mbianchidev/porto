@@ -420,6 +420,92 @@ export type KubernetesNode = {
   age: string
 }
 
+export type KubernetesPersistentVolume = {
+  name: string
+  phase: string
+  capacity: string
+  accessModes: string[]
+  reclaimPolicy: string
+  storageClass: string
+  claim: string
+  volumeMode: string
+  age: string
+}
+
+export type KubernetesPersistentVolumeClaim = {
+  name: string
+  namespace: string
+  phase: string
+  volume: string
+  requested: string
+  capacity: string
+  accessModes: string[]
+  storageClass: string
+  volumeMode: string
+  age: string
+}
+
+export type KubernetesGatewayClass = {
+  name: string
+  controllerName: string
+  accepted: string
+  reason: string
+  message: string
+  age: string
+}
+
+export type KubernetesGatewayListener = {
+  name: string
+  protocol: string
+  port: number
+  hostname: string
+  attachedRoutes: number
+  accepted: string
+  acceptedReason: string
+  acceptedMessage: string
+  programmed: string
+  programmedReason: string
+  programmedMessage: string
+}
+
+export type KubernetesGateway = {
+  name: string
+  namespace: string
+  className: string
+  addresses: string[]
+  accepted: string
+  acceptedReason: string
+  acceptedMessage: string
+  programmed: string
+  programmedReason: string
+  programmedMessage: string
+  listeners: KubernetesGatewayListener[]
+  age: string
+}
+
+export type KubernetesHTTPRouteParentStatus = {
+  parentRef: string
+  controllerName: string
+  accepted: string
+  acceptedReason: string
+  acceptedMessage: string
+  resolvedRefs: string
+  resolvedReason: string
+  resolvedMessage: string
+}
+
+export type KubernetesHTTPRoute = {
+  name: string
+  namespace: string
+  hostnames: string[]
+  parentRefs: string[]
+  backendRefs: string[]
+  accepted: string
+  resolvedRefs: string
+  parents: KubernetesHTTPRouteParentStatus[]
+  age: string
+}
+
 export type KubernetesEvent = {
   type: string
   reason: string
@@ -483,16 +569,18 @@ export type KubernetesScaleNodeGroupRequest = {
   taints: string[]
 }
 
-// A Porto-provisioned k3s cluster (VM-backed control plane + worker nodes).
-// `nodes` is a flat list of Lima VM instance names, not grouped by node group.
+// A Porto-provisioned Kubernetes cluster. Nodes are container names for KinD
+// and Lima VM names for k0s/k3s.
 export type KubernetesCluster = {
   name: string
-  provider: 'kind' | 'k0s' | 'k3s'
+  provider: 'kind' | 'k0s' | 'k3s' | 'unknown'
   state: string
   context: string
   kubeconfigPath: string
   server: string
   nodes: string[]
+  message?: string
+  stateSince?: string
 }
 
 // --- Virtual machines -----------------------------------------------------------
@@ -555,6 +643,8 @@ export type RouteID =
   | 'kubernetes'
   | 'pods'
   | 'services'
+  | 'storage'
+  | 'gateways'
   | 'configs'
   | 'secrets'
   | 'nodes'

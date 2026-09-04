@@ -17,6 +17,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/creack/pty"
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 )
 
@@ -31,27 +32,40 @@ func podTerminalSupported() bool {
 }
 
 func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
-	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
-		return vmTerminalCommand(ctx, name)
+	bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+		return vmTerminalCommand(ctx, name), nil
 	}, "Lima shell failed")
 }
 
+func bridgeContainerTerminal(
+	w http.ResponseWriter,
+	r *http.Request,
+	manager *portodocker.Manager,
+	id string,
+	shell string,
+	debug bool,
+) {
+	bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+		return manager.ContainerTerminalCommand(ctx, id, shell, debug)
+	}, "container terminal failed")
+}
+
 func bridgePodTerminal(w http.ResponseWriter, r *http.Request, args []string) {
-	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
-		return podTerminalCommand(ctx, args)
+	bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+		return podTerminalCommand(ctx, args), nil
 	}, "kubectl exec failed")
 }
 
 func bridgeK9sTerminal(w http.ResponseWriter, r *http.Request, cluster kubernetes.Cluster) {
-	bridgePTYTerminal(w, r, func(ctx context.Context) *exec.Cmd {
-		return k9sTerminalCommand(ctx, cluster)
+	bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+		return k9sTerminalCommand(ctx, cluster), nil
 	}, "k9s failed")
 }
 
 func bridgePTYTerminal(
 	w http.ResponseWriter,
 	r *http.Request,
-	commandFactory func(context.Context) *exec.Cmd,
+	commandFactory func(context.Context) (*exec.Cmd, error),
 	startFailure string,
 ) {
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -64,7 +78,11 @@ func bridgePTYTerminal(
 
 	sessionContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	command := commandFactory(sessionContext)
+	command, err := commandFactory(sessionContext)
+	if err != nil {
+		_ = connection.Close(websocket.StatusInternalError, err.Error())
+		return
+	}
 	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 120, Rows: 32})
 	if err != nil {
 		_ = connection.Close(websocket.StatusInternalError, startFailure)

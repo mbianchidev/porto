@@ -16,6 +16,8 @@ import { Networks } from './pages/Networks'
 import { KubernetesOverview } from './pages/KubernetesOverview'
 import { Pods } from './pages/Pods'
 import { KubernetesServices } from './pages/KubernetesServices'
+import { KubernetesStorage } from './pages/KubernetesStorage'
+import { KubernetesGateways } from './pages/KubernetesGateways'
 import { ConfigMaps } from './pages/ConfigMaps'
 import { Secrets } from './pages/Secrets'
 import { Nodes } from './pages/Nodes'
@@ -35,7 +37,7 @@ import type {
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
-  'kubernetes', 'pods', 'services', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'activity', 'settings',
+  'kubernetes', 'pods', 'services', 'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'activity', 'settings',
 ]
 
 function routeFromHash(): RouteID {
@@ -139,6 +141,8 @@ function AppShell() {
           />
         )}
         {route === 'services' && <KubernetesServices key={`services:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'storage' && <KubernetesStorage key={`storage:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'gateways' && <KubernetesGateways key={`gateways:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'configs' && <ConfigMaps key={`configs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'secrets' && <Secrets key={`secrets:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'nodes' && <Nodes key={`nodes:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}

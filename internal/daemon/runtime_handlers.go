@@ -39,6 +39,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
 	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
+	mux.HandleFunc("GET /api/docker/containers/{id}/terminal", s.requireRuntime("docker", s.dockerContainerTerminal))
 	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
 	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
 	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
@@ -64,6 +65,11 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/configmaps/{namespace}/{name}", s.requireRuntime("kubernetes", s.kubernetesConfigMap))
 	mux.HandleFunc("GET /api/kubernetes/secrets", s.requireRuntime("kubernetes", s.kubernetesSecrets))
 	mux.HandleFunc("GET /api/kubernetes/nodes", s.requireRuntime("kubernetes", s.kubernetesNodes))
+	mux.HandleFunc("GET /api/kubernetes/persistent-volumes", s.requireRuntime("kubernetes", s.kubernetesPersistentVolumes))
+	mux.HandleFunc("GET /api/kubernetes/persistent-volume-claims", s.requireRuntime("kubernetes", s.kubernetesPersistentVolumeClaims))
+	mux.HandleFunc("GET /api/kubernetes/gateway-classes", s.requireRuntime("kubernetes", s.kubernetesGatewayClasses))
+	mux.HandleFunc("GET /api/kubernetes/gateways", s.requireRuntime("kubernetes", s.kubernetesGateways))
+	mux.HandleFunc("GET /api/kubernetes/http-routes", s.requireRuntime("kubernetes", s.kubernetesHTTPRoutes))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}", s.requireRuntime("kubernetes", s.kubernetesPod))
 	mux.HandleFunc("GET /api/kubernetes/pods/{namespace}/{pod}/logs", s.requireRuntime("kubernetes", s.kubernetesPodLogs))
 	mux.HandleFunc("POST /api/kubernetes/pods/{namespace}/{pod}/exec", s.requireRuntime("kubernetes", s.kubernetesPodExec))
@@ -82,6 +88,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters", s.requireRuntime("kubernetes", s.createKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/rename", s.requireRuntime("kubernetes", s.renameKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/images/import", s.requireRuntime("kubernetes", s.importKubernetesImage))
 	mux.HandleFunc("GET /api/kubernetes/clusters/{name}/terminal", s.requireRuntime("kubernetes", s.kubernetesClusterTerminal))
@@ -323,7 +330,19 @@ func (s *Server) dockerContainerStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dockerContainerAction(w http.ResponseWriter, r *http.Request) {
-	if err := s.docker.ContainerAction(r.Context(), r.PathValue("id"), r.PathValue("action")); err != nil {
+	action := r.PathValue("action")
+	if strings.HasPrefix(action, "remove") && s.clusters != nil {
+		name, err := s.docker.ContainerName(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if err := s.clusters.ProtectContainerRemoval(r.Context(), name); err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+	}
+	if err := s.docker.ContainerAction(r.Context(), r.PathValue("id"), action); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -514,6 +533,31 @@ func (s *Server) kubernetesSecrets(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) kubernetesNodes(w http.ResponseWriter, r *http.Request) {
 	value, err := s.kubernetes.Nodes(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesPersistentVolumes(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.PersistentVolumes(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesPersistentVolumeClaims(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.PersistentVolumeClaims(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesGatewayClasses(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.GatewayClasses(r.Context(), runtimeContext(r))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesGateways(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Gateways(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesHTTPRoutes(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.HTTPRoutes(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
 	writeRuntimeResult(w, value, err)
 }
 
@@ -740,11 +784,22 @@ func (s *Server) kubernetesPodManifest(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRuntimeOperation() {
+		http.Error(w, "Porto is shutting down; cluster creation was not started", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endRuntimeOperation()
 	var request kubernetes.ClusterRequest
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	cluster, err := s.clusters.Create(r.Context(), request)
+	operationBase := s.runtimeContext
+	if operationBase == nil {
+		operationBase = context.Background()
+	}
+	operationContext, cancel := context.WithTimeout(operationBase, 20*time.Minute)
+	defer cancel()
+	cluster, err := s.clusters.Create(operationContext, request)
 	if err != nil {
 		writeRuntimeError(w, err)
 		return
@@ -760,14 +815,20 @@ func (s *Server) kubernetesClusters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if err := s.clusters.SetRunning(r.Context(), name, true); err != nil {
+	recreated, err := s.clusters.Start(r.Context(), name)
+	if err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
 	if contextName, err := s.clusters.ContextName(name); err == nil {
 		s.rememberKubernetesClusterAddons(contextName)
 	}
-	writeJSON(w, map[string]string{"status": "started"})
+	response := map[string]string{"status": "started"}
+	if recreated {
+		response["status"] = "recreated"
+		response["message"] = "The control-plane container was missing, so Porto recreated the KinD cluster before starting it."
+	}
+	writeJSON(w, response)
 }
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
@@ -782,6 +843,44 @@ func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	s.forgetKubernetesClusterAddons("porto-"+name, contextName)
 	writeJSON(w, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		Name string `json:"name"`
+	}
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	oldName := r.PathValue("name")
+	oldContext, err := s.clusters.ContextName(oldName)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.stopKubernetesClusterForwards(oldName); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.clusters.Rename(r.Context(), oldName, strings.TrimSpace(request.Name)); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	newName := strings.TrimSpace(request.Name)
+	newContext, err := s.clusters.ContextName(newName)
+	if err != nil {
+		_ = s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, err)
+		return
+	}
+	if err := s.store.RenameKubernetesRoutesContext(r.Context(), oldContext, newContext); err != nil {
+		_ = s.clusters.Rename(r.Context(), newName, oldName)
+		writeRuntimeError(w, err)
+		return
+	}
+	s.forgetKubernetesClusterAddons(oldContext)
+	s.rememberKubernetesClusterAddons(newContext)
+	writeJSON(w, map[string]string{"status": "renamed", "name": newName, "context": newContext})
 }
 
 func (s *Server) scaleKubernetesNodeGroup(w http.ResponseWriter, r *http.Request) {
@@ -1072,6 +1171,10 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if feature == "docker" && !enabled {
+		if s.hasRuntimeOperations() {
+			http.Error(w, "wait for active runtime operations to finish before disabling Docker", http.StatusConflict)
+			return
+		}
 		statePath, pathErr := config.DockerEndpointStatePath()
 		if pathErr != nil {
 			writeRuntimeError(w, pathErr)

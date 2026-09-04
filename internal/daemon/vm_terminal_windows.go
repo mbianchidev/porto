@@ -5,6 +5,7 @@ package daemon
 import (
 	"net/http"
 
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 )
 
@@ -14,6 +15,10 @@ func podTerminalSupported() bool {
 
 func bridgeVMTerminal(w http.ResponseWriter, _ *http.Request, _ string) {
 	http.Error(w, "interactive VM terminals require a PTY-capable host", http.StatusNotImplemented)
+}
+
+func bridgeContainerTerminal(w http.ResponseWriter, _ *http.Request, _ *portodocker.Manager, _ string, _ string, _ bool) {
+	http.Error(w, "interactive container terminals require a PTY-capable host", http.StatusNotImplemented)
 }
 
 func bridgePodTerminal(w http.ResponseWriter, _ *http.Request, _ []string) {

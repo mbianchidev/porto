@@ -4,6 +4,7 @@ const test = require('node:test')
 const {
   daemonProcessIDs,
   daemonProcesses,
+  dashboardLoadAction,
   dockerBootstrapCommand,
   inspectDaemon,
   installDockerEngine,
@@ -56,6 +57,12 @@ test('rejects an incompatible API', async () => {
   })
 
   assert.equal(ready, false)
+})
+
+test('reloads one blank dashboard without cache before showing an error', () => {
+  assert.equal(dashboardLoadAction({ rootChildren: 1, reloadAttempts: 0 }), 'ready')
+  assert.equal(dashboardLoadAction({ rootChildren: 0, reloadAttempts: 0 }), 'reload')
+  assert.equal(dashboardLoadAction({ rootChildren: 0, reloadAttempts: 1 }), 'error')
 })
 
 test('reports an incompatible daemon as reachable but not ready', async () => {

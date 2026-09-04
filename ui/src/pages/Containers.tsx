@@ -1,11 +1,11 @@
-import { useState, type FormEvent } from 'react'
+import { lazy, Suspense, useState, type FormEvent, type ReactNode } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
-import { Inspector } from '../components/Inspector'
-import { InventoryList } from '../components/InventoryList'
+import { Inspector, InspectorTabs } from '../components/Inspector'
+import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -16,6 +16,7 @@ import type {
   DockerContainerCreateResult,
   DockerImage,
   DockerStatus,
+  LampState,
 } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(180px,1.3fr) minmax(160px,1fr) minmax(150px,1fr) minmax(120px,0.8fr)'
@@ -25,6 +26,38 @@ const EMPTY_CREATE_DRAFT = {
   hostPort: '',
   containerPort: '',
   healthCommand: '',
+}
+const InteractiveTerminal = lazy(async () => {
+  const terminal = await import('../components/VMTerminal')
+  return { default: terminal.InteractiveTerminal }
+})
+const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
+type TerminalShell = (typeof TERMINAL_SHELLS)[number]
+
+function containerState(container: DockerContainer) {
+  return container.state.toLocaleLowerCase()
+}
+
+function isPaused(container: DockerContainer) {
+  return containerState(container) === 'paused'
+}
+
+function isStopped(container: DockerContainer) {
+  return ['stopped', 'exited'].includes(containerState(container))
+}
+
+function isStartable(container: DockerContainer) {
+  return ['stopped', 'exited', 'created'].includes(containerState(container))
+}
+
+function isActive(container: DockerContainer) {
+  return ['running', 'paused', 'pausing', 'restarting'].includes(containerState(container))
+}
+
+function containerTerminalSocketURL(container: DockerContainer, shell: TerminalShell, debug: boolean): string {
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  const params = new URLSearchParams({ shell, debug: String(debug) })
+  return `${protocol}//${window.location.host}/api/docker/containers/${encodeURIComponent(container.id)}/terminal?${params.toString()}`
 }
 
 function taskLabel(container: DockerContainer) {
@@ -36,6 +69,41 @@ function healthLabel(status: string) {
   return status === 'disabled' ? 'Not configured' : status
 }
 
+function containerMatches(container: DockerContainer, query: string) {
+  return query === '' || [
+    container.name,
+    container.image,
+    container.status,
+    container.composeProject ?? '',
+    container.composeService ?? '',
+  ].some((value) => value.toLocaleLowerCase().includes(query))
+}
+
+function composeGroupLamp(containers: DockerContainer[]): LampState {
+  const states = containers.map((container) => lampStateFor(container.state))
+  for (const state of ['crashed', 'starting', 'running', 'stopped', 'neutral'] as const) {
+    if (states.includes(state)) return state
+  }
+  return 'neutral'
+}
+
+function containerColumns(grouped: boolean): InventoryColumn<DockerContainer>[] {
+  return [
+    {
+      header: grouped ? 'Service / container' : 'Name',
+      render: (container) => (
+        <span className="containerIdentity">
+          <strong>{grouped ? container.composeService || container.name.replace(/^\//, '') : container.name.replace(/^\//, '')}</strong>
+          {grouped && container.composeService && <small>{container.name.replace(/^\//, '')}</small>}
+        </span>
+      ),
+    },
+    { header: 'Image', className: 'mono', render: (container) => container.image },
+    { header: 'Status', className: 'mono', render: (container) => container.status },
+    { header: 'Ports', className: 'mono', render: (container) => container.ports || '—' },
+  ]
+}
+
 export function Containers() {
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
@@ -43,13 +111,30 @@ export function Containers() {
   const [createOpen, setCreateOpen] = useState(false)
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT)
+  const [containerTab, setContainerTab] = useState('overview')
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const containers = useContainerSnapshots(status.data?.enabled ?? false)
   const items = containers.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((container) => normalizedQuery === '' || [container.name, container.image, container.status]
-    .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
+  const standaloneContainers = items.filter((container) => !container.composeProject && containerMatches(container, normalizedQuery))
+  const composeProjects = new Map<string, DockerContainer[]>()
+  for (const container of items) {
+    if (!container.composeProject) continue
+    const projectContainers = composeProjects.get(container.composeProject) ?? []
+    projectContainers.push(container)
+    composeProjects.set(container.composeProject, projectContainers)
+  }
+  const composeGroups = [...composeProjects.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([project, projectContainers]) => ({
+      project,
+      containers: project.toLocaleLowerCase().includes(normalizedQuery)
+        ? projectContainers
+        : projectContainers.filter((container) => containerMatches(container, normalizedQuery)),
+    }))
+    .filter((group) => group.containers.length > 0)
+  const filteredCount = standaloneContainers.length + composeGroups.reduce((count, group) => count + group.containers.length, 0)
   const selected = items.find((container) => container.id === selectedID) ?? null
   const available = containers.snapshot?.available ?? status.data?.available ?? false
   const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
@@ -101,6 +186,33 @@ export function Containers() {
     }
   }
 
+  function containerActions(container: DockerContainer) {
+    const paused = isPaused(container)
+    const stopped = isStopped(container)
+    const active = isActive(container)
+    return (
+      <>
+        <ActionButton label="Start container" icon="play" disabled={!isStartable(container)} onClick={() => containerAction(container, 'start')} />
+        <ActionButton label="Resume container" icon="play" disabled={!paused} onClick={() => containerAction(container, 'unpause')} />
+        <ActionButton label="Stop container" icon="stop" disabled={!active} onClick={() => containerAction(container, 'stop')} />
+        <ActionButton label="Restart container" icon="restart" disabled={!active} onClick={() => containerAction(container, 'restart')} />
+        <ActionButton
+          className="removeButton"
+          label={stopped ? 'Remove container' : 'Remove container (stop it first)'}
+          icon="remove"
+          disabled={!stopped}
+          onClick={() => containerAction(container, 'remove', `Remove container ${container.name}?`)}
+        />
+        <ActionButton
+          className="removeButton"
+          label="Force remove container"
+          icon="kill"
+          onClick={() => containerAction(container, 'remove-force', `Force-remove container ${container.name} even if running?`)}
+        />
+      </>
+    )
+  }
+
   return (
     <>
       <section className="fleetRail" aria-label="Docker status">
@@ -122,7 +234,7 @@ export function Containers() {
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
           <input type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
         </label>
-        <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} containers</span>
+        <span className="filterResultCount" aria-live="polite">{filteredCount} / {items.length} containers</span>
         <button className="refreshControl" type="button" disabled={!available} onClick={() => setCreateOpen((value) => !value)}>
           {createOpen ? 'Close creator' : 'Create container'}
         </button>
@@ -208,97 +320,205 @@ export function Containers() {
             message={containers.snapshot?.message || containers.error || status.data?.message || status.error || (status.data?.enabled ? 'Confirm the configured Docker-compatible engine is running.' : undefined)}
           />
         ) : (
-          <InventoryList
-            items={filtered}
-            getKey={(container) => container.id}
-            columnsTemplate={COLUMNS_TEMPLATE}
-            getLamp={(container) => lampStateFor(container.state)}
-            getLampLabel={(container) => container.state}
-            selectedKey={selectedID}
-            onSelect={(container) => setSelectedID(container.id)}
-            ariaLabel="Docker containers"
-            emptyMessage={containers.error || 'No containers found.'}
-            columns={[
-              { header: 'Name', render: (container) => <strong>{container.name.replace(/^\//, '')}</strong> },
-              { header: 'Image', className: 'mono', render: (container) => container.image },
-              { header: 'Status', className: 'mono', render: (container) => container.status },
-              { header: 'Ports', className: 'mono', render: (container) => container.ports || '—' },
-            ]}
-            renderActions={(container) => (
-              <>
-                <ActionButton label="Start container" icon="play" onClick={() => containerAction(container, 'start')} />
-                <ActionButton label="Stop container" icon="stop" onClick={() => containerAction(container, 'stop')} />
-                <ActionButton label="Restart container" icon="restart" onClick={() => containerAction(container, 'restart')} />
-              </>
+          <div className="containerInventoryGroups">
+            {composeGroups.map((group) => (
+              <ComposeContainerGroup
+                project={group.project}
+                containers={group.containers}
+                selectedID={selectedID}
+                onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                renderActions={containerActions}
+                key={group.project}
+              />
+            ))}
+            {standaloneContainers.length > 0 && (
+              <section
+                className="standaloneContainerGroup"
+                aria-label={composeGroups.length === 0 ? 'Standalone containers' : undefined}
+                aria-labelledby={composeGroups.length > 0 ? 'standalone-containers-title' : undefined}
+              >
+                {composeGroups.length > 0 && <h2 className="sectionSubhead" id="standalone-containers-title">Standalone containers</h2>}
+                <InventoryList
+                  items={standaloneContainers}
+                  getKey={(container) => container.id}
+                  columnsTemplate={COLUMNS_TEMPLATE}
+                  getLamp={(container) => lampStateFor(container.state)}
+                  getLampLabel={(container) => container.state}
+                  selectedKey={selectedID}
+                  onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                  ariaLabel="Standalone Docker containers"
+                  emptyMessage={containers.error || 'No standalone containers found.'}
+                  columns={containerColumns(false)}
+                  renderActions={containerActions}
+                />
+              </section>
             )}
-          />
+            {filteredCount === 0 && <article className="empty"><p>{containers.error || 'No containers found.'}</p></article>}
+          </div>
         )}
 
         {selected && (
           <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={() => setSelectedID(null)}>
-            <div className="drawerReadouts" aria-label="Container readouts">
-              <span><small>State</small><strong>{selected.state}</strong></span>
-              <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
-              <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
-              <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
-              <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
-            </div>
-            <section className="drawerPanel">
-              <h3>Runtime detail</h3>
-              <dl className="runtimeGrid">
-                <div><dt>Status</dt><dd>{selected.status}</dd></div>
-                <div><dt>Ports</dt><dd>{selected.ports || '—'}</dd></div>
-                <div><dt>Networks</dt><dd>{selected.networks || '—'}</dd></div>
-                <div><dt>Mounts</dt><dd>{selected.mounts || '—'}</dd></div>
-                <div><dt>Exit</dt><dd>{selected.exitCode === undefined ? '—' : `${selected.exitCode}${selected.exitSignal ? ` (signal ${selected.exitSignal})` : ''}`}</dd></div>
-                <div><dt>Exit reason</dt><dd>{selected.exitReason || '—'}</dd></div>
-                <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
-                <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
-                <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
-                <div>
-                  <dt>Stop behavior</dt>
-                  <dd>
-                    {selected.stopSignal || 'default signal'} / {selected.stopTimeout === undefined ? 'default timeout' : `${selected.stopTimeout}s`}
-                  </dd>
+            <InspectorTabs
+              tabs={[
+                { id: 'overview', label: 'Overview' },
+                { id: 'terminal', label: 'Terminal' },
+              ]}
+              activeID={containerTab}
+              onSelect={setContainerTab}
+            />
+            {containerTab === 'overview' && (
+              <>
+                <div className="drawerReadouts" aria-label="Container readouts">
+                  <span><small>State</small><strong>{selected.state}</strong></span>
+                  <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
+                  <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
+                  <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
+                  <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
                 </div>
-              </dl>
-              {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
-            </section>
-            {selected.history && selected.history.length > 0 && (
-              <section className="drawerPanel">
-                <h3>Lifecycle history</h3>
-                <dl className="runtimeGrid">
-                  {selected.history.slice(-6).reverse().map((event) => (
-                    <div key={event.sequence}>
-                      <dt>{event.type}</dt>
-                      <dd>{event.reason || event.topic} · {event.timestamp}</dd>
+                <section className="drawerPanel">
+                  <h3>Runtime detail</h3>
+                  <dl className="runtimeGrid">
+                    <div><dt>Status</dt><dd>{selected.status}</dd></div>
+                    <div><dt>Ports</dt><dd>{selected.ports || '—'}</dd></div>
+                    <div><dt>Networks</dt><dd>{selected.networks || '—'}</dd></div>
+                    <div><dt>Mounts</dt><dd>{selected.mounts || '—'}</dd></div>
+                    <div><dt>Exit</dt><dd>{selected.exitCode === undefined ? '—' : `${selected.exitCode}${selected.exitSignal ? ` (signal ${selected.exitSignal})` : ''}`}</dd></div>
+                    <div><dt>Exit reason</dt><dd>{selected.exitReason || '—'}</dd></div>
+                    <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
+                    <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
+                    <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
+                    <div>
+                      <dt>Stop behavior</dt>
+                      <dd>
+                        {selected.stopSignal || 'default signal'} / {selected.stopTimeout === undefined ? 'default timeout' : `${selected.stopTimeout}s`}
+                      </dd>
                     </div>
-                  ))}
-                </dl>
-              </section>
+                  </dl>
+                  {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
+                </section>
+                {selected.history && selected.history.length > 0 && (
+                  <section className="drawerPanel">
+                    <h3>Lifecycle history</h3>
+                    <dl className="runtimeGrid">
+                      {selected.history.slice(-6).reverse().map((event) => (
+                        <div key={event.sequence}>
+                          <dt>{event.type}</dt>
+                          <dd>{event.reason || event.topic} · {event.timestamp}</dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                )}
+                <div className="maintenanceBar">
+                  <span>Container controls</span>
+                  <div className="actions">
+                    {containerActions(selected)}
+                    <ActionButton label="Pause container" icon="pause" disabled={containerState(selected) !== 'running'} onClick={() => containerAction(selected, 'pause')} />
+                  </div>
+                </div>
+              </>
             )}
-            <div className="maintenanceBar">
-              <span>Maintenance controls</span>
-              <div className="actions">
-                <ActionButton label="Pause container" icon="pause" onClick={() => containerAction(selected, 'pause')} />
-                <ActionButton label="Unpause container" icon="play" onClick={() => containerAction(selected, 'unpause')} />
-                <ActionButton
-                  className="removeButton"
-                  label="Remove container"
-                  icon="remove"
-                  onClick={() => containerAction(selected, 'remove', `Remove container ${selected.name}?`)}
-                />
-                <ActionButton
-                  className="removeButton"
-                  label="Force remove container"
-                  icon="kill"
-                  onClick={() => containerAction(selected, 'remove-force', `Force-remove container ${selected.name} even if running?`)}
-                />
-              </div>
-            </div>
+            {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
           </Inspector>
         )}
       </div>
+    </>
+  )
+}
+
+function ComposeContainerGroup({
+  project,
+  containers,
+  selectedID,
+  onSelect,
+  renderActions,
+}: {
+  project: string
+  containers: DockerContainer[]
+  selectedID: string | null
+  onSelect: (container: DockerContainer) => void
+  renderActions: (container: DockerContainer) => ReactNode
+}) {
+  const [open, setOpen] = useState(true)
+  const services = new Set(containers.map((container) => container.composeService).filter(Boolean)).size
+  const running = containers.filter((container) => containerState(container) === 'running').length
+  const groupState = composeGroupLamp(containers)
+
+  return (
+    <details className="containerComposeGroup" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
+      <summary>
+        <span className="containerComposeIdentity">
+          <StatusLamp state={groupState} />
+          <span className="visuallyHidden">{groupState} application state</span>
+          <span>
+            <strong>{project}</strong>
+            <small>Compose application</small>
+          </span>
+        </span>
+        <span className="containerComposeMeta">{services} service(s) · {containers.length} container(s) · {running} running</span>
+      </summary>
+      <div className="containerComposeBody">
+        <InventoryList
+          items={containers}
+          getKey={(container) => container.id}
+          columnsTemplate={COLUMNS_TEMPLATE}
+          getLamp={(container) => lampStateFor(container.state)}
+          getLampLabel={(container) => container.state}
+          selectedKey={selectedID}
+          onSelect={onSelect}
+          ariaLabel={`${project} Compose containers`}
+          emptyMessage={`No matching containers in ${project}.`}
+          columns={containerColumns(true)}
+          renderActions={renderActions}
+        />
+      </div>
+    </details>
+  )
+}
+
+function ContainerTerminal({ container }: { container: DockerContainer }) {
+  const [mode, setMode] = useState<'application' | 'debug'>('application')
+  const [shell, setShell] = useState<TerminalShell>('sh')
+  const running = containerState(container) === 'running'
+  const debug = mode === 'debug'
+  const endpoint = containerTerminalSocketURL(container, shell, debug)
+
+  return (
+    <>
+      <section className="drawerPanel">
+        <h3>Terminal session</h3>
+        <div className="terminalModePicker" role="group" aria-label="Container terminal target">
+          <button type="button" aria-pressed={!debug} onClick={() => setMode('application')}>Application shell</button>
+          <button type="button" aria-pressed={debug} disabled={!running} onClick={() => setMode('debug')}>Debug toolbox</button>
+        </div>
+        {!debug && (
+          <div className="inspectorForm inline">
+            <label>
+              <span>Shell</span>
+              <select value={shell} onChange={(event) => setShell(event.target.value as TerminalShell)}>
+                {TERMINAL_SHELLS.map((option) => <option value={option} key={option}>{option}</option>)}
+              </select>
+            </label>
+          </div>
+        )}
+        <p className="hintLine">
+          {debug
+            ? 'Runs a disposable netshoot toolbox sharing the target container network, process namespace, and volumes.'
+            : 'Executes the selected shell inside the container. Use the debug toolbox when the image has no shell.'}
+        </p>
+      </section>
+      <Suspense fallback={<section className="logConsole vmTerminal"><div className="terminalPlaceholder">Loading container terminal…</div></section>}>
+        <InteractiveTerminal
+          key={`${container.id}:${mode}:${shell}:${container.state}`}
+          endpoint={endpoint}
+          title={debug ? 'Debug terminal' : 'Container terminal'}
+          detail={container.name.replace(/^\//, '')}
+          running={running}
+          ariaLabel={`${debug ? 'Debug' : 'Interactive'} terminal for ${container.name}`}
+          stoppedMessage={isPaused(container) ? 'Resume the container to open its terminal.' : 'Start the container to open its terminal.'}
+        />
+      </Suspense>
     </>
   )
 }

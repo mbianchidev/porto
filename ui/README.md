@@ -8,11 +8,14 @@ selected item (an accessible full-screen overlay on narrow widths):
   project control board: fleet health, compact channel rows, quick actions,
   and an inspector with routing, branch, maintenance, and log console detail.
 - **Containers** — `#/containers`, `#/images`, `#/builds`, `#/volumes`,
-  `#/networks` inventory and operate the local Docker engine.
+  `#/networks` inventory and operate the local Docker engine; the container
+  inspector includes state-aware lifecycle controls and application/debug
+  terminal modes.
 - **Kubernetes** — `#/kubernetes` (overview + context picker), `#/pods`
   (Overview/Logs/Terminal/Files/Stats/Events/Manifest inspector tabs),
-  `#/services`, `#/configs`, `#/secrets`, and `#/nodes`; every resource view
-  can switch context directly.
+  `#/services`, `#/storage` (PVs/PVCs), `#/gateways` (GatewayClasses,
+  Gateways, and HTTPRoutes), `#/configs`, `#/secrets`, and `#/nodes`; every
+  resource view can switch context directly.
 - **Virtual machines** — `#/machines` lists the Lima-backed VM image catalog
   and instances, with a create form and terminal/snapshot inspector tabs.
 - **System** — `#/activity` shows recent client-side actions and errors for

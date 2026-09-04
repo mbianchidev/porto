@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"sync"
@@ -346,6 +347,74 @@ func TestContainerActionRejectsUnsupportedAction(t *testing.T) {
 		ContainerAction(context.Background(), "container", "explode")
 	if err == nil || !strings.Contains(err.Error(), "unsupported") {
 		t.Fatalf("expected unsupported action error, got %v", err)
+	}
+}
+
+func TestContainerStartResumesPausedContainer(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl container inspect demo": []byte(`[{"State":{"Status":"paused","Paused":true}}]`),
+			"nerdctl unpause demo":           nil,
+		},
+		errors: map[string]error{},
+	}
+
+	if err := New(runner).ContainerAction(context.Background(), "demo", "start"); err != nil {
+		t.Fatalf("start paused container: %v", err)
+	}
+	if len(runner.commands) != 2 || strings.Join(runner.commands[1].Args, " ") != "unpause demo" {
+		t.Fatalf("commands = %+v, want inspect followed by unpause", runner.commands)
+	}
+}
+
+func TestContainerNameResolvesInspectIdentity(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl container inspect abc123": []byte(`[{"Id":"abc123","Name":"/porto-kind-control-plane"}]`),
+		},
+		errors: map[string]error{},
+	}
+	name, err := New(runner).ContainerName(context.Background(), "abc123")
+	if err != nil {
+		t.Fatalf("resolve container name: %v", err)
+	}
+	if name != "porto-kind-control-plane" {
+		t.Fatalf("container name = %q", name)
+	}
+}
+
+func TestContainerTerminalCommandsSupportApplicationAndDebugShells(t *testing.T) {
+	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
+	application, err := manager.ContainerTerminalCommand(context.Background(), "demo", "sh", false)
+	if err != nil {
+		t.Fatalf("application terminal: %v", err)
+	}
+	wantApplication := []string{
+		"nerdctl", "exec", "--interactive", "--tty", "demo",
+		"sh", "-c", `TERM=xterm-256color COLORTERM=truecolor exec "$0" -i`, "sh",
+	}
+	if !reflect.DeepEqual(application.Args, wantApplication) {
+		t.Fatalf("application command = %q, want %q", application.Args, wantApplication)
+	}
+
+	debug, err := manager.ContainerTerminalCommand(context.Background(), "demo", "sh", true)
+	if err != nil {
+		t.Fatalf("debug terminal: %v", err)
+	}
+	joined := strings.Join(debug.Args, " ")
+	for _, expected := range []string{
+		"nerdctl run --rm --interactive --tty",
+		"--network container:demo",
+		"--pid container:demo",
+		"--volumes-from demo",
+		"nicolaka/netshoot:latest /bin/bash",
+	} {
+		if !strings.Contains(joined, expected) {
+			t.Fatalf("debug command missing %q: %s", expected, joined)
+		}
+	}
+	if strings.Contains(joined, "--uts") || strings.Contains(joined, "--ipc") {
+		t.Fatalf("debug command uses target namespace modes that are not generally shareable: %s", joined)
 	}
 }
 

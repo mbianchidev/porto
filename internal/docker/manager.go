@@ -730,6 +730,15 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	if action == "start" {
+		paused, err := m.containerPaused(ctx, id)
+		if err != nil {
+			return err
+		}
+		if paused {
+			action = "unpause"
+		}
+	}
 	var args []string
 	switch action {
 	case "start", "pause", "unpause":
@@ -764,6 +773,29 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		m.invalidateContainerInventory()
 	}
 	return err
+}
+
+func (m *Manager) containerPaused(ctx context.Context, id string) (bool, error) {
+	output, err := m.run(ctx, "inspect Porto container state", "container", "inspect", id)
+	if err != nil {
+		return false, err
+	}
+	if len(strings.TrimSpace(string(output))) == 0 {
+		return false, nil
+	}
+	var inspected []struct {
+		State struct {
+			Status string `json:"Status"`
+			Paused bool   `json:"Paused"`
+		} `json:"State"`
+	}
+	if err := json.Unmarshal(output, &inspected); err != nil {
+		return false, fmt.Errorf("decode container state: %w", err)
+	}
+	if len(inspected) != 1 {
+		return false, fmt.Errorf("container identifier %q matched %d containers", id, len(inspected))
+	}
+	return inspected[0].State.Paused || strings.EqualFold(inspected[0].State.Status, "paused"), nil
 }
 
 func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes bool) error {
@@ -806,23 +838,34 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 }
 
 func (m *Manager) resolveContainerID(ctx context.Context, id string) (string, error) {
+	containerID, _, err := m.resolveContainerIdentity(ctx, id)
+	return containerID, err
+}
+
+func (m *Manager) ContainerName(ctx context.Context, id string) (string, error) {
+	_, name, err := m.resolveContainerIdentity(ctx, id)
+	return name, err
+}
+
+func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (string, string, error) {
 	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var inspected []struct {
-		ID string `json:"Id"`
+		ID   string `json:"Id"`
+		Name string `json:"Name"`
 	}
 	if err := json.Unmarshal(output, &inspected); err != nil {
-		return "", fmt.Errorf("decode container identity: %w", err)
+		return "", "", fmt.Errorf("decode container identity: %w", err)
 	}
 	if len(inspected) != 1 {
-		return "", fmt.Errorf("container identifier %q matched %d containers", id, len(inspected))
+		return "", "", fmt.Errorf("container identifier %q matched %d containers", id, len(inspected))
 	}
 	if inspected[0].ID == "" {
-		return "", errors.New("container runtime returned an empty container identifier")
+		return "", "", errors.New("container runtime returned an empty container identifier")
 	}
-	return inspected[0].ID, nil
+	return inspected[0].ID, strings.TrimPrefix(inspected[0].Name, "/"), nil
 }
 
 func containerRemovalComplete(err error) bool {
@@ -1052,6 +1095,49 @@ func (m *Manager) ExecContainer(ctx context.Context, id string, command []string
 	args = append(args, id)
 	args = append(args, command...)
 	return m.runWithTimeout(ctx, 30*time.Minute, "execute Porto container command", stdin, args...)
+}
+
+func (m *Manager) ContainerTerminalCommand(ctx context.Context, id, shell string, debug bool) (*exec.Cmd, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	if !allowedContainerShell(shell) {
+		return nil, errors.New("container shell must be sh, bash, ash, or an equivalent /bin path")
+	}
+	backend, err := m.backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	args := append([]string(nil), backend.prefix...)
+	if len(args) >= 4 && args[0] == "shell" && args[2] == "--" {
+		args = append([]string{"shell", "--tty=true", args[1], "--"}, args[3:]...)
+	}
+	if debug {
+		args = append(args,
+			"run", "--rm", "--interactive", "--tty",
+			"--network", "container:"+id,
+			"--pid", "container:"+id,
+			"--volumes-from", id,
+			"nicolaka/netshoot:latest", "/bin/bash",
+		)
+	} else {
+		args = append(args,
+			"exec", "--interactive", "--tty", id,
+			shell, "-c", `TERM=xterm-256color COLORTERM=truecolor exec "$0" -i`, shell,
+		)
+	}
+	command := exec.CommandContext(ctx, backend.name, args...)
+	command.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
+	return command, nil
+}
+
+func allowedContainerShell(shell string) bool {
+	switch shell {
+	case "sh", "bash", "ash", "/bin/sh", "/bin/bash", "/bin/ash":
+		return true
+	default:
+		return false
+	}
 }
 
 func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) {

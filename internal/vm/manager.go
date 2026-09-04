@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -70,6 +71,7 @@ type Instance struct {
 
 type CreateRequest struct {
 	Name         string        `json:"name"`
+	Owner        string        `json:"owner,omitempty"`
 	Image        string        `json:"image"`
 	VMType       string        `json:"vmType,omitempty"`
 	CPUs         int           `json:"cpus"`
@@ -117,6 +119,7 @@ printf '%s %s\n' "$cpu_millicores" "$memory_bytes"`
 type Metadata struct {
 	Name      string    `json:"name"`
 	Kind      string    `json:"kind"`
+	Owner     string    `json:"owner,omitempty"`
 	Image     string    `json:"image"`
 	CreatedAt time.Time `json:"createdAt"`
 }
@@ -297,7 +300,7 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	if _, err := m.run(ctx, 10*time.Minute, "create Lima instance", args...); err != nil {
 		return Instance{}, err
 	}
-	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Image: request.Image, CreatedAt: time.Now().UTC()}); err != nil {
+	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Owner: request.Owner, Image: request.Image, CreatedAt: time.Now().UTC()}); err != nil {
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
@@ -877,6 +880,59 @@ func (m *Manager) readMetadata(name string) (Metadata, error) {
 		return Metadata{}, fmt.Errorf("decode VM metadata: %w", err)
 	}
 	return metadata, nil
+}
+
+func (m *Manager) KubernetesNodeNames(owner string) ([]string, error) {
+	if m.stateDir == "" {
+		return []string{}, nil
+	}
+	entries, err := os.ReadDir(m.stateDir)
+	if errors.Is(err, os.ErrNotExist) {
+		return []string{}, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list VM ownership: %w", err)
+	}
+	names := make([]string, 0)
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		metadata, err := m.readMetadata(strings.TrimSuffix(entry.Name(), ".json"))
+		if err != nil {
+			return nil, err
+		}
+		if metadata.Kind == "kubernetes-node" && metadata.Owner == owner {
+			names = append(names, metadata.Name)
+		}
+	}
+	sort.Strings(names)
+	return names, nil
+}
+
+func (m *Manager) RenameKubernetesOwner(oldOwner, newOwner string) error {
+	if oldOwner == newOwner {
+		return nil
+	}
+	if strings.TrimSpace(oldOwner) == "" || strings.TrimSpace(newOwner) == "" ||
+		strings.ContainsAny(oldOwner+newOwner, "\x00\r\n") {
+		return errors.New("Kubernetes VM owner names cannot be empty or contain control characters")
+	}
+	names, err := m.KubernetesNodeNames(oldOwner)
+	if err != nil {
+		return err
+	}
+	for _, name := range names {
+		metadata, err := m.readMetadata(name)
+		if err != nil {
+			return err
+		}
+		metadata.Owner = newOwner
+		if err := m.writeMetadata(metadata); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (m *Manager) writeCreateConfig(request CreateRequest, image Image) (string, error) {

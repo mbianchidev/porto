@@ -50,6 +50,7 @@ const (
 	composePortCheckInterval  = time.Second
 	httpShutdownTimeout       = 5 * time.Second
 	daemonShutdownTimeout     = 15 * time.Second
+	runtimeOperationTimeout   = 3 * time.Minute
 	projectMetadataWorkers    = 8
 )
 
@@ -82,6 +83,10 @@ type Server struct {
 	dockerAPI       *portodocker.APIServer
 	runtimeMu       sync.Mutex
 	runtimeContext  context.Context
+	runtimeOps      sync.WaitGroup
+	runtimeOpsMu    sync.Mutex
+	runtimeClosing  bool
+	runtimeActive   int
 	kubernetes      *kubernetes.Manager
 	clusters        *kubernetes.ClusterProvisioner
 	vms             *vm.Manager
@@ -122,6 +127,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 	kubeconfigDir, _ := config.KubernetesConfigDir()
 	vmStateDir, _ := config.VMStateDir()
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
+	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
+	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
@@ -149,9 +156,9 @@ func New(st *store.Store, ui fs.FS) *Server {
 		sqnsl:          sqnsl.NewManager(nil),
 		killSwitch:     killswitch.NewManager(nil, nil),
 		userHomeDir:    os.UserHomeDir,
-		docker:         portodocker.NewWithStateDir(runner, dockerEngineDir),
+		docker:         dockerManager,
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
-		clusters:       kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir),
+		clusters:       clusterProvisioner,
 		vms:            vmManager,
 		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,
@@ -269,6 +276,11 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 		}
 	}
 	cancelHTTP()
+	operationContext, cancelOperations := context.WithTimeout(context.Background(), runtimeOperationTimeout)
+	if err := s.waitForRuntimeOperations(operationContext); err != nil {
+		shutdownErrors = append(shutdownErrors, err)
+	}
+	cancelOperations()
 	if s.dockerAPI != nil {
 		apiContext, cancelAPI := context.WithTimeout(context.Background(), httpShutdownTimeout)
 		shutdownErrors = append(shutdownErrors, s.stopDockerAPI(apiContext))
@@ -278,6 +290,47 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	appContext, cancelApps := context.WithTimeout(context.Background(), daemonShutdownTimeout)
 	defer cancelApps()
 	return errors.Join(errors.Join(shutdownErrors...), s.stopManagedApplications(appContext))
+}
+
+func (s *Server) waitForRuntimeOperations(ctx context.Context) error {
+	s.runtimeOpsMu.Lock()
+	s.runtimeClosing = true
+	s.runtimeOpsMu.Unlock()
+	done := make(chan struct{})
+	go func() {
+		s.runtimeOps.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for runtime operation cleanup: %w", ctx.Err())
+	}
+}
+
+func (s *Server) beginRuntimeOperation() bool {
+	s.runtimeOpsMu.Lock()
+	defer s.runtimeOpsMu.Unlock()
+	if s.runtimeClosing {
+		return false
+	}
+	s.runtimeOps.Add(1)
+	s.runtimeActive++
+	return true
+}
+
+func (s *Server) endRuntimeOperation() {
+	s.runtimeOpsMu.Lock()
+	s.runtimeActive--
+	s.runtimeOpsMu.Unlock()
+	s.runtimeOps.Done()
+}
+
+func (s *Server) hasRuntimeOperations() bool {
+	s.runtimeOpsMu.Lock()
+	defer s.runtimeOpsMu.Unlock()
+	return s.runtimeActive > 0
 }
 
 func (s *Server) startDockerAPI(ctx context.Context) error {
@@ -297,7 +350,7 @@ func (s *Server) startDockerAPI(ctx context.Context) error {
 		return err
 	}
 	apiServer := portodocker.NewAPIServer(s.dockerSocket, portodocker.NewAPI(s.docker, s.dockerSocket))
-	if err := apiServer.Start(ctx); err != nil {
+	if err := apiServer.Start(context.Background()); err != nil {
 		return err
 	}
 	s.runtimeMu.Lock()
@@ -2183,6 +2236,21 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 
 func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {
 	if s.ui != nil {
+		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
+			index, err := fs.ReadFile(s.ui, "index.html")
+			if err != nil {
+				http.Error(w, "Porto dashboard index is unavailable", http.StatusInternalServerError)
+				return
+			}
+			w.Header().Set("Cache-Control", "no-store, max-age=0")
+			w.Header().Set("Pragma", "no-cache")
+			w.Header().Set("Expires", "0")
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			if r.Method != http.MethodHead {
+				_, _ = w.Write(index)
+			}
+			return
+		}
 		http.FileServer(http.FS(s.ui)).ServeHTTP(w, r)
 		return
 	}

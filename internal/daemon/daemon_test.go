@@ -183,6 +183,49 @@ func TestHealthReportsDashboardReadiness(t *testing.T) {
 	})
 }
 
+func TestUIHandlerNeverReusesCachedIndex(t *testing.T) {
+	directory := t.TempDir()
+	indexPath := filepath.Join(directory, "index.html")
+	if err := os.WriteFile(indexPath, []byte("<div id=\"root\">current</div>"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 9, 1, 12, 0, 0, 0, time.UTC)
+	if err := os.Chtimes(indexPath, old, old); err != nil {
+		t.Fatal(err)
+	}
+	server := New(nil, os.DirFS(directory))
+	request := httptest.NewRequest(http.MethodGet, "/", nil)
+	request.Header.Set("If-Modified-Since", old.Add(24*time.Hour).Format(http.TimeFormat))
+	response := httptest.NewRecorder()
+
+	server.uiHandler(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", response.Code)
+	}
+	if cacheControl := response.Header().Get("Cache-Control"); cacheControl != "no-store, max-age=0" {
+		t.Fatalf("Cache-Control = %q", cacheControl)
+	}
+	if body := response.Body.String(); body != "<div id=\"root\">current</div>" {
+		t.Fatalf("body = %q", body)
+	}
+}
+
+func TestWaitForRuntimeOperationsAllowsCleanupToFinish(t *testing.T) {
+	server := &Server{}
+	server.runtimeOps.Add(1)
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		server.runtimeOps.Done()
+	}()
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+
+	if err := server.waitForRuntimeOperations(ctx); err != nil {
+		t.Fatalf("wait for runtime operations: %v", err)
+	}
+}
+
 func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
 	if err != nil {

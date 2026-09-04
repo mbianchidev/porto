@@ -152,6 +152,18 @@ targets when the worker supports the requested architectures.
 The Builds screen reads BuildKit history directly and reports active, successful,
 and failed records with their creation time, duration, image name, and platform.
 
+The container dashboard exposes state-aware start, resume, stop, restart,
+remove, and force-remove actions in both the inventory and inspector. Normal
+removal is enabled only after a container stops. The inspector can be maximized
+and includes an interactive terminal: application mode executes a selected
+shell inside the container, while debug mode starts a disposable
+`nicolaka/netshoot` toolbox that shares the target network and process
+namespaces plus its volumes.
+Containers carrying Docker Compose project labels are grouped into expandable
+application sections with service names, aggregate state, and running/container
+counts. Containers without Compose ownership remain in a separate standalone
+inventory.
+
 ## Kubernetes
 
 Porto operates only contexts it created and stores under `PORTO_HOME`.
@@ -183,10 +195,29 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
+Porto runs internal kind operations with a private Docker client configuration,
+so a user-level credential store such as `docker-credential-osxkeychain` cannot
+break public Kubernetes node-image pulls in the packaged desktop runtime.
+
 Porto-managed clusters include a default local-path storage class and Envoy
 Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
 and node CPU/memory stats. Porto installs or repairs these add-ons during
-cluster creation and startup.
+cluster creation and startup. Cluster ownership is recorded before the add-on
+phase so a new kind, k0s, or k3s cluster appears in the dashboard while final
+configuration is still running. An orphaned kubeconfig is also surfaced with a
+repair warning instead of disappearing from the managed cluster list.
+The dashboard records creation in Activity immediately and keeps provisioning
+inside the daemon if the user closes the form or navigates elsewhere. Gateway
+resources use idempotent server-side apply, and a slow final Gateway readiness
+condition no longer removes an otherwise healthy cluster.
+Multiple clusters can provision concurrently; runtime names and VM API ports
+are reserved independently for each in-flight operation. Managed cluster rows
+show a live elapsed-seconds timer while `creating` and while `running`; stopped
+and failed clusters do not show a timer.
+Managed-cluster metadata is created before nodes, so in-progress clusters appear
+with a `creating` state and their control-plane containers are protected as soon
+as they exist. Failed provisioning remains visible with an `error` state and
+the actionable backend message until the user deletes the failed cluster record.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the
@@ -306,6 +337,15 @@ porto kubernetes cluster delete dev
 ```
 
 Cluster deletion requires explicit confirmation through the daemon API and removes the matching Porto-managed node VMs and kubeconfig.
+The dashboard can rename a managed cluster without renaming its existing
+containers or VMs. Porto updates the private kubeconfig context and saved
+service-route ownership while preserving the underlying runtime node identity.
+
+KinD control-plane containers cannot be removed through Porto's Docker API while
+their managed cluster exists; delete the cluster from the Kubernetes dashboard
+instead. If an older installation already lost its control-plane container,
+starting that KinD cluster recreates it from the saved cluster configuration and
+reports that recovery to the user.
 
 The Activity screen samples current CPU and memory for Porto itself, native
 projects, containers, Kubernetes nodes and pod containers, and standalone
@@ -337,6 +377,13 @@ porto kubernetes files default api-7d9f --container api --path /app/config.json 
 
 The dashboard adds pod overview, streaming logs, an expandable xterm terminal backed by a real PTY, bounded text-file editing, resource statistics, events, readable and copyable effective manifest views, ConfigMap inspection, and Secret inventory. ConfigMap text values are visible to authorized users. Secret values are never returned by Porto; only names, types, and data keys are exposed. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
 ConfigMap inspectors provide copy actions for every text or base64-encoded binary value and for the complete Kubernetes resource as formatted JSON.
+
+The Kubernetes **Storage** section inventories cluster-scoped PersistentVolumes
+and namespaced PersistentVolumeClaims, including phase, capacity, storage class,
+binding, access modes, reclaim policy, and volume mode. The **Gateway API**
+section explores GatewayClasses, Gateways, listeners, attached-route counts,
+addresses, HTTPRoutes, parent references, backend references, and acceptance or
+reference-resolution conditions.
 
 File reads and writes are limited to 1 MiB per request. Changes inside an ephemeral container filesystem may disappear when Kubernetes replaces the pod.
 File inspection requires `sh` and basic POSIX utilities inside the selected container. Shellless `scratch` and distroless images report that file inspection is unavailable instead of exposing the underlying `kubectl exec` command.
@@ -417,6 +464,7 @@ Runtime APIs are served from the existing local daemon:
 GET    /api/runtime
 GET    /api/docker/status
 GET    /api/docker/containers
+GET    /api/docker/containers/{id}/terminal
 GET    /api/docker/images
 GET    /api/docker/builds
 GET    /api/docker/networks
@@ -428,10 +476,17 @@ GET    /api/kubernetes/clusters
 GET    /api/kubernetes/pods
 GET    /api/kubernetes/services
 GET    /api/kubernetes/nodes
+GET    /api/kubernetes/persistent-volumes
+GET    /api/kubernetes/persistent-volume-claims
+GET    /api/kubernetes/gateway-classes
+GET    /api/kubernetes/gateways
+GET    /api/kubernetes/http-routes
 
 GET    /api/vms/status
 GET    /api/vms/images
 GET    /api/vms/instances
+
+POST   /api/kubernetes/clusters/{name}/rename
 ```
 
 Mutation routes validate JSON input, use argument arrays rather than host-shell concatenation, and require explicit confirmation for deleting clusters, VMs, or pod filesystem paths.
