@@ -580,6 +580,64 @@ func TestWaitContainerCapturesFastNextExit(t *testing.T) {
 	}
 }
 
+func TestWaitContainerSupportsDockerRemovedCondition(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect demo" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		inspects++
+		if inspects == 1 {
+			return []byte(`[{"State":{"Status":"exited","Running":false,"ExitCode":17}}]`), nil
+		}
+		return nil, errors.New("no such container: demo")
+	}
+
+	code, err := New(runner).WaitContainer(context.Background(), "demo", "removed")
+	if err != nil {
+		t.Fatalf("WaitContainer: %v", err)
+	}
+	if code != 17 {
+		t.Fatalf("exit code = %d, want 17", code)
+	}
+}
+
+func TestWaitContainerRemovedRejectsUnknownContainer(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect missing" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		return nil, errors.New("no such container: missing")
+	}
+
+	if _, err := New(runner).WaitContainer(context.Background(), "missing", "removed"); err == nil {
+		t.Fatal("unknown container removal wait succeeded")
+	}
+}
+
+func TestContainerStartObservedRejectsRemovalWithoutStartEvidence(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") != "container inspect demo" {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		return nil, errors.New("no such container: demo")
+	}
+	observed, err := New(runner).containerStartObserved(
+		context.Background(),
+		"demo",
+		containerStartBaseline{},
+	)
+	if err != nil {
+		t.Fatalf("containerStartObserved: %v", err)
+	}
+	if observed {
+		t.Fatal("container removal without task-start evidence was accepted")
+	}
+}
+
 func TestManagerReportsMissingNativeRuntime(t *testing.T) {
 	manager := NewWithStateDir(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}, t.TempDir())
 	manager.lookPath = func(string) (string, error) { return "", errors.New("not found") }

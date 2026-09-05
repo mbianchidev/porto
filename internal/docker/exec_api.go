@@ -11,12 +11,16 @@ import (
 	"net/http"
 	"os/exec"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 const execRetention = 10 * time.Minute
+const containerAttachStartTimeout = 20 * time.Second
+
+var errContainerAlreadyStarted = errors.New("container is already started")
 
 type execInstance struct {
 	mu          sync.Mutex
@@ -27,6 +31,21 @@ type execInstance struct {
 	running     bool
 	exitCode    int
 	pid         int
+}
+
+type containerAttachSession struct {
+	start          chan containerAttachStart
+	startRequested bool
+	startHandled   bool
+	done           chan struct{}
+	exitCode       int
+	authoritative  bool
+	err            error
+	completeOnce   sync.Once
+}
+
+type containerAttachStart struct {
+	result chan error
 }
 
 func (a *API) createExec(w http.ResponseWriter, r *http.Request) {
@@ -221,33 +240,362 @@ func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerUnsupported(w, "container attach with historical logs")
 		return
 	}
-	tty, err := a.manager.ContainerTTY(r.Context(), r.PathValue("id"))
+	details, session, err := a.prepareContainerAttach(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDockerError(w, err)
 		return
 	}
 	processContext, cancel := context.WithCancel(dockerServerContext(r.Context()))
 	defer cancel()
-	process, err := a.manager.StartAttach(processContext, r.PathValue("id"), dockerBool(r, "stdin"))
+	stdin := dockerBool(r, "stdin")
+	if session == nil {
+		connection, err := hijackDockerStream(w, r)
+		if err != nil {
+			return
+		}
+		process, err := a.manager.StartAttach(processContext, details.ID, stdin)
+		if err != nil {
+			writeDockerStreamError(connection, details.TTY, err)
+			_ = connection.Close()
+			return
+		}
+		_ = serveProcessStream(
+			processContext,
+			connection,
+			process,
+			details.TTY,
+			stdin,
+			dockerBool(r, "stdout"),
+			dockerBool(r, "stderr"),
+		)
+		_ = connection.Close()
+		return
+	}
+	defer a.unregisterContainerAttach(details.ID, session)
+	connection, err := hijackDockerStream(w, r)
 	if err != nil {
+		session.abort(err)
+		return
+	}
+	start, err := waitForContainerAttachStart(processContext, session, containerAttachStartTimeout)
+	if err != nil {
+		session.abort(err)
+		_ = connection.Close()
+		return
+	}
+	current, err := a.manager.containerAttachDetails(processContext, details.ID)
+	if err != nil {
+		session.abort(err)
+		start.result <- err
+		writeDockerStreamError(connection, details.TTY, err)
+		_ = connection.Close()
+		return
+	}
+	if current.State.active() {
+		err = errContainerAlreadyStarted
+		session.abort(err)
+		start.result <- err
+		writeDockerStreamError(connection, details.TTY, err)
+		_ = connection.Close()
+		return
+	}
+	baseline := a.manager.containerStartBaseline(current.State)
+	process, err := a.manager.StartContainerAttached(processContext, details.ID, stdin)
+	if err != nil {
+		session.abort(err)
+		start.result <- err
+		writeDockerStreamError(connection, details.TTY, err)
+		_ = connection.Close()
+		return
+	}
+	streamDone := make(chan processStreamResult, 1)
+	go func() {
+		result := serveProcessStreamResult(
+			processContext,
+			connection,
+			process,
+			details.TTY,
+			stdin,
+			dockerBool(r, "stdout"),
+			dockerBool(r, "stderr"),
+		)
+		streamDone <- result
+	}()
+	started := make(chan error, 1)
+	go func() {
+		started <- a.manager.waitForContainerStart(processContext, details.ID, baseline)
+	}()
+	streamFinished, streamResult, startErr := a.acknowledgeContainerStart(
+		processContext,
+		details.ID,
+		baseline,
+		started,
+		streamDone,
+	)
+	if startErr == nil {
+		a.markContainerAttachStarted(details.ID, session)
+	} else {
+		session.abort(startErr)
+	}
+	start.result <- startErr
+	if startErr != nil {
+		_ = process.Kill()
+	}
+	if !streamFinished {
+		streamResult = <-streamDone
+	}
+	if startErr == nil {
+		session.complete(streamResult)
+	}
+	_ = connection.Close()
+}
+
+func (a *API) startContainer(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("t") != "" {
+		a.containerAction("start")(w, r)
+		return
+	}
+	handled, err := a.startContainerAttach(r.Context(), r.PathValue("id"))
+	if !handled {
+		a.containerAction("start")(w, r)
+		return
+	}
+	if err != nil {
+		if errors.Is(err, errContainerAlreadyStarted) {
+			w.WriteHeader(http.StatusNotModified)
+			return
+		}
 		writeDockerError(w, err)
 		return
 	}
-	connection, err := hijackDockerStream(w, r)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) prepareContainerAttach(
+	ctx context.Context,
+	id string,
+) (containerAttachDetails, *containerAttachSession, error) {
+	a.attachMu.Lock()
+	defer a.attachMu.Unlock()
+	details, err := a.manager.containerAttachDetails(ctx, id)
 	if err != nil {
-		_ = process.Kill()
-		return
+		return containerAttachDetails{}, nil, err
 	}
-	_ = serveProcessStream(
-		processContext,
-		connection,
-		process,
-		tty,
-		dockerBool(r, "stdin"),
-		dockerBool(r, "stdout"),
-		dockerBool(r, "stderr"),
-	)
-	_ = connection.Close()
+	if details.State.active() {
+		return details, nil, nil
+	}
+	if details.State.Status != "created" && details.State.Status != "exited" {
+		return containerAttachDetails{}, nil, fmt.Errorf(
+			"container %q is not running: state is %s",
+			id,
+			details.State.Status,
+		)
+	}
+	if _, exists := a.attaches[details.ID]; exists {
+		return containerAttachDetails{}, nil, fmt.Errorf("container %q already has a pending attach", id)
+	}
+	session := &containerAttachSession{
+		start: make(chan containerAttachStart, 1),
+		done:  make(chan struct{}),
+	}
+	a.attaches[details.ID] = session
+	return details, session, nil
+}
+
+func (a *API) unregisterContainerAttach(id string, session *containerAttachSession) {
+	a.attachMu.Lock()
+	if a.attaches[id] == session {
+		delete(a.attaches, id)
+	}
+	a.attachMu.Unlock()
+}
+
+func (a *API) markContainerAttachStarted(id string, session *containerAttachSession) {
+	a.attachMu.Lock()
+	if a.attaches[id] == session {
+		session.startHandled = true
+	}
+	a.attachMu.Unlock()
+}
+
+func (a *API) containerAttachStartRequested(session *containerAttachSession) bool {
+	a.attachMu.Lock()
+	requested := session.startRequested
+	a.attachMu.Unlock()
+	return requested
+}
+
+func (a *API) startContainerAttach(ctx context.Context, id string) (bool, error) {
+	a.attachMu.Lock()
+	if len(a.attaches) == 0 {
+		a.attachMu.Unlock()
+		return false, nil
+	}
+	containerID := id
+	session := a.attaches[containerID]
+	if session == nil {
+		resolvedID, err := a.manager.resolveContainerID(ctx, id)
+		if err != nil {
+			a.attachMu.Unlock()
+			return false, nil
+		}
+		containerID = resolvedID
+		session = a.attaches[containerID]
+	}
+	if session == nil {
+		a.attachMu.Unlock()
+		return false, nil
+	}
+	if session.startHandled {
+		state, err := a.manager.containerWaitState(ctx, containerID)
+		if err == nil && state.active() {
+			a.attachMu.Unlock()
+			return true, errContainerAlreadyStarted
+		}
+		delete(a.attaches, containerID)
+		a.attachMu.Unlock()
+		return false, nil
+	}
+	if session.startRequested {
+		a.attachMu.Unlock()
+		return true, fmt.Errorf("container %q start is already in progress", containerID)
+	}
+	session.startRequested = true
+	a.attachMu.Unlock()
+
+	start := containerAttachStart{result: make(chan error, 1)}
+	select {
+	case session.start <- start:
+	case <-ctx.Done():
+		return true, context.Cause(ctx)
+	}
+	select {
+	case err := <-start.result:
+		return true, err
+	case <-session.done:
+		_, _, sessionErr := session.result()
+		if sessionErr != nil {
+			return true, sessionErr
+		}
+		select {
+		case err := <-start.result:
+			return true, err
+		case <-ctx.Done():
+			return true, context.Cause(ctx)
+		}
+	case <-ctx.Done():
+		return true, context.Cause(ctx)
+	}
+}
+
+func (a *API) containerAttach(ctx context.Context, id string) *containerAttachSession {
+	a.attachMu.Lock()
+	defer a.attachMu.Unlock()
+	if len(a.attaches) == 0 {
+		return nil
+	}
+	if session := a.attaches[id]; session != nil {
+		return session
+	}
+	containerID, err := a.manager.resolveContainerID(ctx, id)
+	if err != nil {
+		return nil
+	}
+	return a.attaches[containerID]
+}
+
+func (a *API) acknowledgeContainerStart(
+	ctx context.Context,
+	id string,
+	baseline containerStartBaseline,
+	started <-chan error,
+	streamDone <-chan processStreamResult,
+) (bool, processStreamResult, error) {
+	select {
+	case startErr := <-started:
+		if startErr == nil {
+			return false, processStreamResult{}, nil
+		}
+		select {
+		case streamResult := <-streamDone:
+			observed, observedErr := a.manager.containerStartObserved(ctx, id, baseline)
+			if observed || streamResult.exitCode == 0 {
+				return true, streamResult, nil
+			}
+			return true, streamResult, errors.Join(
+				startErr,
+				observedErr,
+				fmt.Errorf(
+					"start attached Porto container exited with code %d before the task started",
+					streamResult.exitCode,
+				),
+			)
+		default:
+			return false, processStreamResult{}, startErr
+		}
+	case streamResult := <-streamDone:
+		observed, observedErr := a.manager.containerStartObserved(ctx, id, baseline)
+		if observed || streamResult.exitCode == 0 {
+			return true, streamResult, nil
+		}
+		startErr := <-started
+		if startErr == nil {
+			return true, streamResult, nil
+		}
+		return true, streamResult, errors.Join(
+			startErr,
+			observedErr,
+			fmt.Errorf(
+				"start attached Porto container exited with code %d before the task started",
+				streamResult.exitCode,
+			),
+		)
+	}
+}
+
+func (session *containerAttachSession) complete(result processStreamResult) {
+	session.finish(result.exitCode, result.authoritative, nil)
+}
+
+func (session *containerAttachSession) abort(err error) {
+	session.finish(0, false, err)
+}
+
+func (session *containerAttachSession) finish(exitCode int, authoritative bool, err error) {
+	session.completeOnce.Do(func() {
+		session.exitCode = exitCode
+		session.authoritative = authoritative
+		session.err = err
+		close(session.done)
+	})
+}
+
+func (session *containerAttachSession) result() (int, bool, error) {
+	<-session.done
+	return session.exitCode, session.authoritative, session.err
+}
+
+func waitForContainerAttachStart(
+	ctx context.Context,
+	session *containerAttachSession,
+	timeout time.Duration,
+) (containerAttachStart, error) {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case start := <-session.start:
+		return start, nil
+	case <-ctx.Done():
+		return containerAttachStart{}, context.Cause(ctx)
+	case <-timer.C:
+		return containerAttachStart{}, errors.New("timed out waiting for container start")
+	}
+}
+
+func writeDockerStreamError(connection net.Conn, tty bool, err error) {
+	var writeMu sync.Mutex
+	writer := dockerProcessWriter{connection: connection, stream: 2, tty: tty, mu: &writeMu}
+	_, _ = writer.Write([]byte(err.Error() + "\n"))
 }
 
 func (a *API) execInstance(id string) *execInstance {
@@ -325,7 +673,33 @@ func serveProcessStream(
 	attachStdout bool,
 	attachStderr bool,
 ) int {
+	return serveProcessStreamResult(
+		ctx,
+		connection,
+		process,
+		tty,
+		attachStdin,
+		attachStdout,
+		attachStderr,
+	).exitCode
+}
+
+type processStreamResult struct {
+	exitCode      int
+	authoritative bool
+}
+
+func serveProcessStreamResult(
+	ctx context.Context,
+	connection net.Conn,
+	process runtimes.Process,
+	tty bool,
+	attachStdin bool,
+	attachStdout bool,
+	attachStderr bool,
+) processStreamResult {
 	var writeMu sync.Mutex
+	var interrupted atomic.Bool
 	copyOutput := func(stream byte, enabled bool, output io.Reader, done chan<- struct{}) {
 		defer func() { done <- struct{}{} }()
 		if !enabled {
@@ -334,6 +708,7 @@ func serveProcessStream(
 		}
 		writer := &dockerProcessWriter{connection: connection, stream: stream, tty: tty, mu: &writeMu}
 		if _, err := io.Copy(writer, output); err != nil {
+			interrupted.Store(true)
 			_ = process.Kill()
 			_, _ = io.Copy(io.Discard, output)
 		}
@@ -356,6 +731,7 @@ func serveProcessStream(
 		case <-outputDone:
 			remainingOutputs--
 		case <-contextDone:
+			interrupted.Store(true)
 			_ = process.Kill()
 			contextDone = nil
 		}
@@ -363,13 +739,16 @@ func serveProcessStream(
 	_ = process.Stdin().Close()
 	waitErr := process.Wait()
 	if waitErr == nil {
-		return 0
+		return processStreamResult{exitCode: 0, authoritative: !interrupted.Load()}
 	}
 	var exitError *exec.ExitError
 	if errors.As(waitErr, &exitError) {
-		return exitError.ExitCode()
+		return processStreamResult{
+			exitCode:      exitError.ExitCode(),
+			authoritative: !interrupted.Load(),
+		}
 	}
-	return -1
+	return processStreamResult{exitCode: -1}
 }
 
 type dockerProcessWriter struct {

@@ -640,6 +640,376 @@ func TestDockerCLIAttachUsesHijackedStdio(t *testing.T) {
 	}
 }
 
+func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix socket compatibility test")
+	}
+	if _, err := exec.LookPath("docker"); err != nil {
+		t.Skip("Docker CLI is not installed")
+	}
+	var stateMu sync.Mutex
+	state := "created"
+	var inventory *containerInventory
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := command.Args
+		switch {
+		case len(args) > 0 && args[0] == "create":
+			if !containsArgumentSequence(args, []string{"--rm"}) {
+				return nil, fmt.Errorf("auto-remove was not forwarded: %v", args)
+			}
+			return []byte("container-id\n"), nil
+		case reflect.DeepEqual(args, []string{"container", "inspect", "container-id"}):
+			stateMu.Lock()
+			current := state
+			stateMu.Unlock()
+			switch current {
+			case "created":
+				return []byte(`[{"Id":"container-id","State":{"Status":"created","Running":false},"Config":{"Tty":false}}]`), nil
+			case "running":
+				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false}}]`), nil
+			default:
+				return nil, errors.New("no such container: container-id")
+			}
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
+		if !reflect.DeepEqual(command.Args, []string{"start", "--attach", "container-id"}) {
+			return nil, fmt.Errorf("unexpected attached start command: %v", command.Args)
+		}
+		stateMu.Lock()
+		state = "running"
+		stateMu.Unlock()
+		inventory.recordEvent(ContainerLifecycleEvent{
+			Topic:       "/tasks/start",
+			Type:        "task-start",
+			ContainerID: "container-id",
+			Timestamp:   time.Now().UTC(),
+		})
+		inventory.publishContainers(
+			"default",
+			"test containerd",
+			time.Now().UTC(),
+			[]Container{{ID: "container-id", State: "running", TaskPresent: true}},
+		)
+		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
+			stateMu.Lock()
+			state = "removed"
+			stateMu.Unlock()
+			exitCode := uint32(23)
+			inventory.recordEvent(ContainerLifecycleEvent{
+				Topic:       "/tasks/exit",
+				Type:        "task-exit",
+				ContainerID: "container-id",
+				ExitCode:    &exitCode,
+				Timestamp:   time.Now().UTC(),
+			})
+			inventory.recordEvent(ContainerLifecycleEvent{
+				Topic:       "/containers/delete",
+				Type:        "container-delete",
+				ContainerID: "container-id",
+				Timestamp:   time.Now().UTC(),
+			})
+			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{})
+			exitErr := exec.Command("sh", "-c", "exit 23").Run()
+			return []byte("attached start\n"), nil, exitErr
+		}), nil
+	}
+	manager := New(runner)
+	inventory = newContainerInventory(
+		func(context.Context) (containerRuntime, error) {
+			return nil, errors.New("not used")
+		},
+		defaultInventoryOptions(),
+	)
+	inventory.snapshot = ContainerSnapshot{
+		Available:  true,
+		Containers: []Container{{ID: "container-id", State: "created"}},
+	}
+	manager.inventory = inventory
+	manager.inventoryCancel = func() {}
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-run-api-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	server := NewAPIServer(socketPath, NewAPI(manager, socketPath))
+	if err := server.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = server.Close(closeContext)
+	})
+
+	configDir := t.TempDir()
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	if output, err := createContext.CombinedOutput(); err != nil {
+		t.Fatalf("create Docker context: %v: %s", err, output)
+	}
+	commandContext, commandCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer commandCancel()
+	command := exec.CommandContext(
+		commandContext,
+		"docker", "--context", "porto", "run", "--rm", "--network", "none",
+		"alpine:latest", "printf", "attached start\n",
+	)
+	command.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
+	output, err := command.CombinedOutput()
+	var exitError *exec.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode() != 23 {
+		t.Fatalf("docker run error = %v, output = %s", err, output)
+	}
+	if string(output) != "attached start\n" {
+		t.Fatalf("docker run output = %q", output)
+	}
+}
+
+func TestPendingContainerAttachTimesOutWithoutStart(t *testing.T) {
+	session := &containerAttachSession{
+		start: make(chan containerAttachStart, 1),
+		done:  make(chan struct{}),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := waitForContainerAttachStart(ctx, session, time.Millisecond); err == nil ||
+		!strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("timeout error = %v", err)
+	}
+}
+
+func TestPendingContainerAttachAbortUnblocksStart(t *testing.T) {
+	session := &containerAttachSession{
+		start: make(chan containerAttachStart, 1),
+		done:  make(chan struct{}),
+	}
+	api := &API{attaches: map[string]*containerAttachSession{"container-id": session}}
+	result := make(chan error, 1)
+	go func() {
+		_, err := api.startContainerAttach(context.Background(), "container-id")
+		result <- err
+	}()
+	select {
+	case <-session.start:
+	case <-time.After(time.Second):
+		t.Fatal("start request was not delivered to pending attach")
+	}
+	session.abort(errors.New("attach timed out"))
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "timed out") {
+			t.Fatalf("start error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("start remained blocked after attach abort")
+	}
+}
+
+func TestDockerAPIWaitContinuesAfterPendingAttachAbort(t *testing.T) {
+	var stateMu sync.Mutex
+	removed := false
+	inspected := make(chan struct{}, 1)
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}) {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		stateMu.Lock()
+		defer stateMu.Unlock()
+		if removed {
+			return nil, errors.New("no such container: container-id")
+		}
+		select {
+		case inspected <- struct{}{}:
+		default:
+		}
+		return []byte(`[{"Id":"container-id","State":{"Status":"created","Running":false}}]`), nil
+	}
+	api := NewAPI(New(runner), "")
+	session := &containerAttachSession{
+		start: make(chan containerAttachStart, 1),
+		done:  make(chan struct{}),
+	}
+	api.attaches["container-id"] = session
+	response := httptest.NewRecorder()
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1.47/containers/container-id/wait?condition=removed",
+		nil,
+	)
+	waitDone := make(chan struct{})
+	go func() {
+		api.ServeHTTP(response, request)
+		close(waitDone)
+	}()
+	select {
+	case <-inspected:
+	case <-time.After(time.Second):
+		t.Fatal("removal wait did not inspect the container")
+	}
+	session.abort(errors.New("attach timed out"))
+	stateMu.Lock()
+	removed = true
+	stateMu.Unlock()
+	select {
+	case <-waitDone:
+	case <-time.After(time.Second):
+		t.Fatal("removal wait remained blocked after attach abort")
+	}
+	if !strings.Contains(response.Body.String(), `"StatusCode":0`) ||
+		strings.Contains(response.Body.String(), `"Error":{"Message"`) {
+		t.Fatalf("unexpected removal response: %s", response.Body.String())
+	}
+}
+
+func TestDockerAPIReportsAttachedContainerAlreadyStarted(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}) {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true}}]`), nil
+	}
+	api := NewAPI(New(runner), "")
+	api.attaches["container-id"] = &containerAttachSession{
+		start:        make(chan containerAttachStart, 1),
+		startHandled: true,
+		done:         make(chan struct{}),
+	}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/containers/container-id/start", nil),
+	)
+	if response.Code != http.StatusNotModified {
+		t.Fatalf("already-started response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIRestartsAfterAttachedContainerExited(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch {
+		case reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}):
+			return []byte(`[{"Id":"container-id","State":{"Status":"exited","Running":false}}]`), nil
+		case reflect.DeepEqual(command.Args, []string{"start", "container-id"}):
+			return nil, nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+	}
+	api := NewAPI(New(runner), "")
+	api.attaches["container-id"] = &containerAttachSession{
+		start:        make(chan containerAttachStart, 1),
+		startHandled: true,
+		done:         make(chan struct{}),
+	}
+	response := httptest.NewRecorder()
+	api.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/containers/container-id/start", nil),
+	)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("restart response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIRemovedWaitPrefersRuntimeExitAfterAttachInterruption(t *testing.T) {
+	inspects := 0
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}) {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		inspects++
+		if inspects == 1 {
+			return []byte(`[{"Id":"container-id","State":{"Status":"exited","Running":false,"ExitCode":17}}]`), nil
+		}
+		return nil, errors.New("no such container: container-id")
+	}
+	api := NewAPI(New(runner), "")
+	session := &containerAttachSession{
+		start:          make(chan containerAttachStart, 1),
+		startRequested: true,
+		done:           make(chan struct{}),
+	}
+	session.complete(processStreamResult{exitCode: -1, authoritative: false})
+	api.attaches["container-id"] = session
+	response := httptest.NewRecorder()
+	api.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1.47/containers/container-id/wait?condition=removed",
+			nil,
+		),
+	)
+	if !strings.Contains(response.Body.String(), `"StatusCode":17`) ||
+		strings.Contains(response.Body.String(), `"Error":{"Message"`) {
+		t.Fatalf("unexpected interrupted-attach response: %s", response.Body.String())
+	}
+}
+
+func TestDockerAPIPreparesAttachedRestartForExitedContainer(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}) {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		return []byte(
+			`[{"Id":"container-id","State":{"Status":"exited","Running":false,"ExitCode":0},"Config":{"Tty":false}}]`,
+		), nil
+	}
+	api := NewAPI(New(runner), "")
+	details, session, err := api.prepareContainerAttach(context.Background(), "container-id")
+	if err != nil {
+		t.Fatalf("prepare exited attach: %v", err)
+	}
+	if details.ID != "container-id" || session == nil {
+		t.Fatalf("attach details = %+v, session = %#v", details, session)
+	}
+}
+
+func TestDockerAPIRemovedWaitUsesAttachedExitAfterFastRemoval(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if !reflect.DeepEqual(command.Args, []string{"container", "inspect", "container-id"}) {
+			return nil, fmt.Errorf("unexpected command: %+v", command)
+		}
+		return nil, errors.New("no such container: container-id")
+	}
+	api := NewAPI(New(runner), "")
+	session := &containerAttachSession{
+		start:          make(chan containerAttachStart, 1),
+		startRequested: true,
+		done:           make(chan struct{}),
+	}
+	session.complete(processStreamResult{exitCode: 23, authoritative: true})
+	api.attaches["container-id"] = session
+	response := httptest.NewRecorder()
+	api.ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1.47/containers/container-id/wait?condition=removed",
+			nil,
+		),
+	)
+	if !strings.Contains(response.Body.String(), `"StatusCode":23`) ||
+		strings.Contains(response.Body.String(), `"Error":{"Message"`) {
+		t.Fatalf("unexpected fast-removal response: %s", response.Body.String())
+	}
+}
+
 func TestDockerCLIContainerArchiveUploadAndDownload(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket compatibility test")

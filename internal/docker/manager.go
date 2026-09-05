@@ -898,13 +898,16 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	if err := validateObjectID(id); err != nil {
 		return 0, err
 	}
-	if condition != "" && condition != "not-running" && condition != "next-exit" {
+	if condition != "" && condition != "not-running" && condition != "next-exit" && condition != "removed" {
 		return 0, fmt.Errorf("unsupported wait condition %q", condition)
 	}
 	waitContext, cancel := context.WithTimeout(ctx, 24*time.Hour)
 	defer cancel()
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		return inventory.wait(waitContext, id, condition)
+	}
+	if condition == "removed" {
+		return m.waitForContainerRemoval(waitContext, id)
 	}
 	initial, err := m.containerWaitState(waitContext, id)
 	if err != nil {
@@ -925,6 +928,34 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 		return 0, fmt.Errorf("decode container exit code: %w", err)
 	}
 	return code, nil
+}
+
+func (m *Manager) waitForContainerRemoval(ctx context.Context, id string) (int, error) {
+	ticker := time.NewTicker(25 * time.Millisecond)
+	defer ticker.Stop()
+	exitCode := 0
+	observed := false
+	for {
+		state, err := m.containerWaitState(ctx, id)
+		if err != nil {
+			if containerRemovalComplete(err) {
+				if !observed {
+					return 0, err
+				}
+				return exitCode, nil
+			}
+			return 0, err
+		}
+		observed = true
+		if !state.active() {
+			exitCode = state.ExitCode
+		}
+		select {
+		case <-ctx.Done():
+			return 0, context.Cause(ctx)
+		case <-ticker.C:
+		}
+	}
 }
 
 type containerWaitState struct {
