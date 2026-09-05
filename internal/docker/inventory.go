@@ -456,14 +456,24 @@ func (i *containerInventory) snapshotValue() ContainerSnapshot {
 }
 
 func (i *containerInventory) subscribe() (<-chan ContainerSnapshot, func()) {
+	channel, _, unsubscribe := i.subscribeWithSnapshot()
+	return channel, unsubscribe
+}
+
+func (i *containerInventory) subscribeWithSnapshot() (
+	<-chan ContainerSnapshot,
+	ContainerSnapshot,
+	func(),
+) {
 	i.mu.Lock()
 	i.nextID++
 	id := i.nextID
 	channel := make(chan ContainerSnapshot, 1)
 	i.subscribers[id] = channel
-	channel <- cloneContainerSnapshot(i.snapshot)
+	initial := cloneContainerSnapshot(i.snapshot)
+	channel <- initial
 	i.mu.Unlock()
-	return channel, func() {
+	return channel, initial, func() {
 		i.mu.Lock()
 		if subscribed, ok := i.subscribers[id]; ok {
 			delete(i.subscribers, id)
@@ -551,29 +561,38 @@ func cloneContainerEvent(event ContainerLifecycleEvent) ContainerLifecycleEvent 
 }
 
 func (i *containerInventory) wait(ctx context.Context, id, condition string) (int, error) {
-	updates, unsubscribe := i.subscribe()
+	updates, initial, unsubscribe := i.subscribeWithSnapshot()
 	defer unsubscribe()
-	initial := i.snapshotValue()
 	baselineEvents := append([]ContainerLifecycleEvent(nil), initial.Events...)
+	baselineSequence := uint64(0)
+	for _, event := range baselineEvents {
+		baselineSequence = max(baselineSequence, event.Sequence)
+	}
 	discovered := false
 	container, err := findSnapshotContainer(initial, id)
 	if err != nil {
 		if !strings.Contains(strings.ToLower(err.Error()), "not found") {
 			return 0, err
 		}
-		initial, container, err = waitForContainerDiscovery(
+		var removed bool
+		initial, container, removed, err = waitForContainerDiscovery(
 			ctx,
 			updates,
 			id,
 			min(2*time.Second, i.options.operationTimeout),
 			err,
+			condition == "removed",
+			baselineSequence,
 		)
 		if err != nil {
 			return 0, err
 		}
+		if removed {
+			return containerRemovalExitCode(initial, id, baselineSequence), nil
+		}
 		discovered = true
 	}
-	if condition != "next-exit" && !containerActive(container) {
+	if condition != "next-exit" && condition != "removed" && !containerActive(container) {
 		return containerExitCode(container), nil
 	}
 	knownExits := make(map[uint64]struct{})
@@ -582,7 +601,7 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			knownExits[event.Sequence] = struct{}{}
 		}
 	}
-	if discovered {
+	if discovered && condition == "next-exit" {
 		for _, event := range initial.Events {
 			if event.ContainerID != container.ID || !containerExitEvent(event) {
 				continue
@@ -599,6 +618,7 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 		}
 	}
 	pendingExit := false
+	removalExitCode := containerExitCode(container)
 
 	for {
 		select {
@@ -608,7 +628,7 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			if !ok {
 				return 0, errors.New("container inventory subscription closed")
 			}
-			if condition == "next-exit" {
+			if condition == "next-exit" || condition == "removed" {
 				for _, event := range snapshot.Events {
 					if event.ContainerID != container.ID || !containerExitEvent(event) {
 						continue
@@ -617,12 +637,19 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 						continue
 					}
 					knownExits[event.Sequence] = struct{}{}
-					pendingExit = true
+					if condition == "next-exit" {
+						pendingExit = true
+					}
 					if event.ExitCode == nil {
 						continue
 					}
-					return int(*event.ExitCode), nil
+					if condition == "next-exit" {
+						return int(*event.ExitCode), nil
+					}
+					removalExitCode = int(*event.ExitCode)
 				}
+			}
+			if condition == "next-exit" {
 				if pendingExit {
 					current, findErr := findSnapshotContainer(snapshot, container.ID)
 					if findErr == nil && !containerActive(current) && current.ExitCode != nil {
@@ -637,9 +664,18 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 			current, findErr := findSnapshotContainer(snapshot, container.ID)
 			if findErr != nil {
 				if strings.Contains(strings.ToLower(findErr.Error()), "not found") {
+					if condition == "removed" {
+						return removalExitCode, nil
+					}
 					return 0, nil
 				}
 				return 0, findErr
+			}
+			if condition == "removed" {
+				if current.ExitCode != nil {
+					removalExitCode = int(*current.ExitCode)
+				}
+				continue
 			}
 			if !containerActive(current) {
 				return containerExitCode(current), nil
@@ -648,34 +684,131 @@ func (i *containerInventory) wait(ctx context.Context, id, condition string) (in
 	}
 }
 
+func (i *containerInventory) waitForStart(
+	ctx context.Context,
+	id string,
+	baseline containerStartBaseline,
+) error {
+	updates, unsubscribe := i.subscribe()
+	defer unsubscribe()
+	for {
+		select {
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		case snapshot, ok := <-updates:
+			if !ok {
+				return errors.New("container inventory subscription closed")
+			}
+			for _, event := range snapshot.Events {
+				if event.Sequence > baseline.eventSequence &&
+					event.ContainerID == id &&
+					event.Type == "task-start" {
+					return nil
+				}
+			}
+			container, err := findSnapshotContainer(snapshot, id)
+			if err == nil {
+				if snapshot.Available &&
+					!snapshot.Stale &&
+					snapshot.Revision > baseline.inventoryRevision &&
+					containerActive(container) {
+					return nil
+				}
+				continue
+			}
+			if !strings.Contains(strings.ToLower(err.Error()), "not found") {
+				return err
+			}
+		}
+	}
+}
+
+func (i *containerInventory) startObserved(id string, baseline containerStartBaseline) bool {
+	snapshot := i.snapshotValue()
+	for _, event := range snapshot.Events {
+		if event.Sequence > baseline.eventSequence &&
+			event.ContainerID == id &&
+			event.Type == "task-start" {
+			return true
+		}
+	}
+	container, err := findSnapshotContainer(snapshot, id)
+	return err == nil &&
+		snapshot.Available &&
+		!snapshot.Stale &&
+		snapshot.Revision > baseline.inventoryRevision &&
+		containerActive(container)
+}
+
 func waitForContainerDiscovery(
 	ctx context.Context,
 	updates <-chan ContainerSnapshot,
 	id string,
 	timeout time.Duration,
 	notFoundErr error,
-) (ContainerSnapshot, *Container, error) {
+	waitForRemoval bool,
+	baselineSequence uint64,
+) (ContainerSnapshot, *Container, bool, error) {
 	timer := time.NewTimer(timeout)
 	defer timer.Stop()
 	for {
 		select {
 		case <-ctx.Done():
-			return ContainerSnapshot{}, nil, context.Cause(ctx)
+			return ContainerSnapshot{}, nil, false, context.Cause(ctx)
 		case <-timer.C:
-			return ContainerSnapshot{}, nil, notFoundErr
+			return ContainerSnapshot{}, nil, false, notFoundErr
 		case snapshot, ok := <-updates:
 			if !ok {
-				return ContainerSnapshot{}, nil, errors.New("container inventory subscription closed")
+				return ContainerSnapshot{}, nil, false, errors.New("container inventory subscription closed")
 			}
 			container, err := findSnapshotContainer(snapshot, id)
 			if err == nil {
-				return snapshot, container, nil
+				return snapshot, container, false, nil
 			}
 			if !strings.Contains(strings.ToLower(err.Error()), "not found") {
-				return ContainerSnapshot{}, nil, err
+				return ContainerSnapshot{}, nil, false, err
+			}
+			if waitForRemoval && containerRemovalObserved(snapshot, id, baselineSequence) {
+				return snapshot, nil, true, nil
 			}
 		}
 	}
+}
+
+func containerRemovalObserved(snapshot ContainerSnapshot, id string, baselineSequence uint64) bool {
+	id = strings.TrimPrefix(id, "/")
+	for index := len(snapshot.Events) - 1; index >= 0; index-- {
+		event := snapshot.Events[index]
+		if event.Sequence <= baselineSequence {
+			break
+		}
+		if event.Type != "container-delete" {
+			continue
+		}
+		eventID := strings.TrimPrefix(event.ContainerID, "/")
+		if eventID == id || strings.HasPrefix(eventID, id) {
+			return true
+		}
+	}
+	return false
+}
+
+func containerRemovalExitCode(snapshot ContainerSnapshot, id string, baselineSequence uint64) int {
+	id = strings.TrimPrefix(id, "/")
+	exitCode := 0
+	for _, event := range snapshot.Events {
+		if event.Sequence <= baselineSequence {
+			continue
+		}
+		eventID := strings.TrimPrefix(event.ContainerID, "/")
+		if eventID != id && !strings.HasPrefix(eventID, id) {
+			continue
+		}
+		if containerExitEvent(event) && event.ExitCode != nil {
+			exitCode = int(*event.ExitCode)
+		}
+	}
+	return exitCode
 }
 
 func containerExitEvent(event ContainerLifecycleEvent) bool {

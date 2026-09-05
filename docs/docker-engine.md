@@ -123,6 +123,16 @@ docker --context porto ps -a
 docker --context porto rm --force demo
 ```
 
+Attached runs start with their standard input/output streams connected before
+the container task begins, including short-lived automatic-removal workloads:
+
+```sh
+docker --context porto run --rm --network none alpine:latest printf 'hello\n'
+```
+
+Container waits support Docker's `not-running`, `next-exit`, and `removed`
+conditions and preserve the container exit code after automatic removal.
+
 The Containers dashboard can also create and start a container from either a
 local image name or a remote image reference. It supports an optional
 loopback-only published port and an optional shell health command.

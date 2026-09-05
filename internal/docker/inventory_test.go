@@ -465,6 +465,101 @@ func TestContainerInventoryWaitReconcilesPartialExit(t *testing.T) {
 	}
 }
 
+func TestContainerInventoryWaitsForContainerRemoval(t *testing.T) {
+	exitCode := uint32(0)
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{ID: "one", Name: "job", State: "exited", ExitCode: &exitCode}},
+		[]Container{},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          5 * time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available && len(snapshot.Containers) == 1
+	})
+	result := make(chan int, 1)
+	errs := make(chan error, 1)
+	go func() {
+		code, err := inventory.wait(ctx, "one", "removed")
+		result <- code
+		errs <- err
+	}()
+	waitForInventorySubscriber(t, inventory)
+	select {
+	case err := <-errs:
+		t.Fatalf("wait returned before removal: %v", err)
+	default:
+	}
+	removedExitCode := uint32(23)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		ExitCode:    &removedExitCode,
+		Timestamp:   time.Now().UTC(),
+	}
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/containers/delete",
+		Type:        "container-delete",
+		ContainerID: "one",
+		Timestamp:   time.Now().UTC(),
+	}
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("wait: %v", err)
+		}
+		if code := <-result; code != 23 {
+			t.Fatalf("exit code = %d, want 23", code)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for container removal")
+	}
+}
+
+func TestContainerInventoryRemovedWaitRejectsHistoricalDeletion(t *testing.T) {
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) {
+			return nil, errors.New("not used")
+		},
+		inventoryOptions{operationTimeout: 10 * time.Millisecond},
+	)
+	inventory.snapshot = ContainerSnapshot{
+		Available:  true,
+		Containers: []Container{},
+		Events: []ContainerLifecycleEvent{{
+			Sequence:    1,
+			Topic:       "/containers/delete",
+			Type:        "container-delete",
+			ContainerID: "missing",
+			Timestamp:   time.Now().UTC(),
+		}},
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := inventory.wait(ctx, "missing", "removed"); err == nil ||
+		!strings.Contains(err.Error(), "not found") {
+		t.Fatalf("historical deletion wait error = %v", err)
+	}
+}
+
 func TestManagerUsesContainerInventoryWithoutNerdctlPolling(t *testing.T) {
 	runtimeClient := newFakeContainerRuntime(
 		[]Container{{ID: "one", Name: "api", State: "running"}},

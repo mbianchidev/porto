@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"context"
 	"encoding/binary"
 	"encoding/json"
 	"errors"
@@ -26,6 +27,8 @@ type API struct {
 	manager    *Manager
 	socketPath string
 	mux        *http.ServeMux
+	attachMu   sync.Mutex
+	attaches   map[string]*containerAttachSession
 	execMu     sync.Mutex
 	execs      map[string]*execInstance
 }
@@ -33,7 +36,8 @@ type API struct {
 func NewAPI(manager *Manager, socketPath string) *API {
 	api := &API{
 		manager: manager, socketPath: socketPath, mux: http.NewServeMux(),
-		execs: make(map[string]*execInstance),
+		attaches: make(map[string]*containerAttachSession),
+		execs:    make(map[string]*execInstance),
 	}
 	api.routes()
 	return api
@@ -61,7 +65,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /containers/json", a.containers)
 	a.mux.HandleFunc("POST /containers/create", a.createContainer)
 	a.mux.HandleFunc("GET /containers/{id}/json", a.inspectContainer)
-	a.mux.HandleFunc("POST /containers/{id}/start", a.containerAction("start"))
+	a.mux.HandleFunc("POST /containers/{id}/start", a.startContainer)
 	a.mux.HandleFunc("POST /containers/{id}/stop", a.containerAction("stop"))
 	a.mux.HandleFunc("POST /containers/{id}/restart", a.containerAction("restart"))
 	a.mux.HandleFunc("POST /containers/{id}/update", a.updateContainer)
@@ -660,16 +664,72 @@ func (a *API) renameContainer(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 	condition := r.URL.Query().Get("condition")
-	if condition != "" && condition != "not-running" && condition != "next-exit" {
+	if condition != "" && condition != "not-running" && condition != "next-exit" && condition != "removed" {
 		writeDockerUnsupported(w, "container wait condition "+condition)
 		return
+	}
+	var attach *containerAttachSession
+	if condition == "removed" {
+		attach = a.containerAttach(r.Context(), r.PathValue("id"))
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	if flusher, ok := w.(http.Flusher); ok {
 		flusher.Flush()
 	}
-	code, err := a.manager.WaitContainer(r.Context(), r.PathValue("id"), condition)
+	var code int
+	var err error
+	if attach != nil {
+		type removalResult struct {
+			code int
+			err  error
+		}
+		removed := make(chan removalResult, 1)
+		go func() {
+			waitCode, waitErr := a.manager.WaitContainer(r.Context(), r.PathValue("id"), "removed")
+			removed <- removalResult{code: waitCode, err: waitErr}
+		}()
+		var attachedExitCode *int
+		attachDone := attach.done
+		for {
+			select {
+			case <-attachDone:
+				exitCode, authoritative, attachErr := attach.result()
+				attachDone = nil
+				if attachErr == nil && authoritative {
+					attachedExitCode = &exitCode
+				}
+			case result := <-removed:
+				code, err = result.code, result.err
+				if attachedExitCode != nil {
+					code = *attachedExitCode
+					if err != nil && containerRemovalComplete(err) {
+						err = nil
+					}
+				} else if a.containerAttachStartRequested(attach) {
+					select {
+					case <-attach.done:
+						exitCode, authoritative, attachErr := attach.result()
+						if attachErr == nil && authoritative {
+							code = exitCode
+							if err != nil && containerRemovalComplete(err) {
+								err = nil
+							}
+						}
+					case <-r.Context().Done():
+						err = context.Cause(r.Context())
+					}
+				}
+				goto waitComplete
+			case <-r.Context().Done():
+				err = context.Cause(r.Context())
+				goto waitComplete
+			}
+		}
+	} else {
+		code, err = a.manager.WaitContainer(r.Context(), r.PathValue("id"), condition)
+	}
+waitComplete:
 	response := map[string]any{"StatusCode": code, "Error": nil}
 	if err != nil {
 		response["Error"] = map[string]string{"Message": err.Error()}
