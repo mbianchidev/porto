@@ -878,6 +878,9 @@ func TestKubeconfigLockClosePreservesNewerReplacement(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		_ = lock.Close()
+	})
 	if err := os.Remove(lockPath); err != nil {
 		t.Fatal(err)
 	}
