@@ -166,9 +166,11 @@ inventory.
 
 ## Kubernetes
 
-Porto operates only contexts it created and stores under `PORTO_HOME`.
-It does not implicitly inherit the current global `kubectl` context. External
-contexts remain untouched.
+Porto operates only the private contexts it creates under `PORTO_HOME`; it does
+not inherit the user's current global `kubectl` context. Completed managed
+clusters are also registered in `~/.kube/config` so standard clients and
+dashboards such as Headlamp discover them automatically. Porto preserves the
+current context and all unrelated entries.
 
 ```sh
 porto kubernetes status
@@ -298,8 +300,9 @@ porto kubernetes terminal dev --readonly
 
 Inside k9s, press `?` for help, type `:ctx` to inspect contexts, `:ns` to
 switch namespaces, `:pods` to return to pods, `l` for logs, `s` for a pod
-shell, `Esc` to leave a view, and `Ctrl+C` to exit. Porto does not merge or
-replace the user's global kubeconfig for this terminal.
+shell, `Esc` to leave a view, and `Ctrl+C` to exit. The terminal remains
+explicitly scoped to Porto's private kubeconfig and never depends on the
+global current context.
 
 Source installations can install k9s on macOS with:
 
@@ -309,17 +312,27 @@ porto runtime install k9s
 
 Porto stores each generated kubeconfig under an opaque, fixed-length filename
 inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`
-to resolve its path. The context, cluster, and user entries are all named
-`porto-<cluster>` so multiple generated kubeconfigs can be merged safely.
+to resolve its path. kind and k0s context, cluster, and user entries use
+`porto-<cluster>`; k3s uses `porto-k3s-<cluster>`.
 
-Inspect or install the generated context into the default kubeconfig:
+Porto lifecycle-manages a flattened copy in `~/.kube/config`: creation and
+startup add or refresh the context, rename replaces it, deletion removes it,
+and daemon startup reconciles clusters created by older versions. A
+`porto.dev/managed` context extension distinguishes Porto-owned entries.
+Collisions with user-owned contexts fail without overwriting them. Writes use
+an advisory `<config>.lock`, mode `0600`, atomic replacement, and a one-time
+`~/.kube/config.porto-backup`.
+
+Inspect the private path or manually repair/install the generated context into
+the standard `~/.kube/config` file:
 
 ```sh
 porto kubernetes kubeconfig dev
 porto kubernetes context-install dev
 ```
 
-Context installation creates a one-time `.porto-backup` before replacing an existing kubeconfig.
+The manual command uses the same ownership and collision checks as automatic
+registration.
 
 Scale a worker group:
 
@@ -341,10 +354,13 @@ porto kubernetes cluster start dev
 porto kubernetes cluster delete dev
 ```
 
-Cluster deletion requires explicit confirmation through the daemon API and removes the matching Porto-managed node VMs and kubeconfig.
+Cluster deletion requires explicit confirmation through the daemon API and
+removes the matching Porto-managed node VMs, private kubeconfig, and registered
+global context.
 The dashboard can rename a managed cluster without renaming its existing
-containers or VMs. Porto updates the private kubeconfig context and saved
-service-route ownership while preserving the underlying runtime node identity.
+containers or VMs. Porto atomically updates the private and global kubeconfig
+contexts plus saved service-route ownership while preserving the underlying
+runtime node identity.
 The renamed cluster appears immediately in the dashboard, and its previous
 logical name can be reused at once; Porto allocates a distinct internal runtime
 name when the original containers or VMs still use that identity.

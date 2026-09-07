@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
@@ -254,7 +255,11 @@ func kubernetesCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		return writeOutput(map[string]string{"cluster": args[1], "context": "porto-" + args[1], "path": path})
+		contextName, err := kubernetes.KubeconfigContextName(path)
+		if err != nil {
+			return fmt.Errorf("read Kubernetes context: %w", err)
+		}
+		return writeOutput(map[string]string{"cluster": args[1], "context": contextName, "path": path})
 	case "context-install":
 		if len(args) != 2 {
 			return errors.New("usage: porto kubernetes context-install <cluster>")
@@ -321,27 +326,31 @@ func kubernetesTerminalCmd(args []string) error {
 	} else if !info.Mode().IsRegular() {
 		return errors.New("cluster kubeconfig is not a regular file")
 	}
+	contextName, err := kubernetes.KubeconfigContextName(kubeconfigPath)
+	if err != nil {
+		return fmt.Errorf("read Kubernetes context: %w", err)
+	}
 	k9sPath, err := exec.LookPath("k9s")
 	if err != nil {
 		return errors.New("k9s is not installed; install it with 'porto runtime install k9s'")
 	}
 	options := k9sTerminalOptions{Namespace: *namespace, Command: *resource, ReadOnly: *readOnly}
-	command := exec.Command(k9sPath, k9sTerminalArgs(cluster, kubeconfigPath, options)...)
+	command := exec.Command(k9sPath, k9sTerminalArgs(contextName, kubeconfigPath, options)...)
 	command.Env = process.WithEnvironment(os.Environ(), "KUBECONFIG="+kubeconfigPath)
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr
-	fmt.Fprintf(os.Stderr, "Opening %s with k9s. Press ? for help, :ctx for contexts, :ns for namespaces, and Ctrl+C to quit.\n", "porto-"+cluster)
+	fmt.Fprintf(os.Stderr, "Opening %s with k9s. Press ? for help, :ctx for contexts, :ns for namespaces, and Ctrl+C to quit.\n", contextName)
 	if err := command.Run(); err != nil {
 		return fmt.Errorf("run k9s for cluster %s: %w", cluster, err)
 	}
 	return nil
 }
 
-func k9sTerminalArgs(cluster, kubeconfigPath string, options k9sTerminalOptions) []string {
+func k9sTerminalArgs(contextName, kubeconfigPath string, options k9sTerminalOptions) []string {
 	args := []string{
 		"--kubeconfig", kubeconfigPath,
-		"--context", "porto-" + cluster,
+		"--context", contextName,
 	}
 	if options.Namespace != "" {
 		args = append(args, "--namespace", options.Namespace)
@@ -708,81 +717,64 @@ func installClusterContext(cluster string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(target), 0o700); err != nil {
-		return fmt.Errorf("create kubeconfig directory: %w", err)
-	}
-	if _, err := os.Stat(target); errors.Is(err, os.ErrNotExist) {
-		data, readErr := os.ReadFile(source)
-		if readErr != nil {
-			return readErr
-		}
-		if writeErr := atomicWrite(target, data, 0o600); writeErr != nil {
-			return writeErr
-		}
-		return writeOutput(map[string]string{"context": "porto-" + cluster, "path": target})
-	} else if err != nil {
-		return fmt.Errorf("inspect kubeconfig: %w", err)
-	}
-
-	command := exec.Command("kubectl", "config", "view", "--flatten", "--raw")
-	command.Env = append(os.Environ(), "KUBECONFIG="+target+string(os.PathListSeparator)+source)
-	output, err := command.CombinedOutput()
+	owner, err := clusterKubeconfigOwner(cluster)
 	if err != nil {
-		return fmt.Errorf("merge Kubernetes context: %w: %s", err, strings.TrimSpace(string(output)))
+		return err
 	}
-	if !strings.Contains(string(output), "apiVersion:") {
-		return errors.New("kubectl returned an invalid merged kubeconfig")
+	registration, err := kubernetes.NewKubeconfigRegistry(target).Register(
+		context.Background(),
+		source,
+		owner,
+	)
+	if err != nil {
+		return err
 	}
-	backup := target + ".porto-backup"
-	if _, err := os.Stat(backup); errors.Is(err, os.ErrNotExist) {
-		current, readErr := os.ReadFile(target)
-		if readErr != nil {
-			return fmt.Errorf("read kubeconfig backup source: %w", readErr)
-		}
-		if writeErr := atomicWrite(backup, current, 0o600); writeErr != nil {
-			return fmt.Errorf("backup kubeconfig: %w", writeErr)
-		}
+	output := map[string]string{"context": registration.Context, "path": registration.Path}
+	if registration.Backup != "" {
+		output["backup"] = registration.Backup
 	}
-	if err := atomicWrite(target, output, 0o600); err != nil {
-		return fmt.Errorf("install Kubernetes context: %w", err)
+	return writeOutput(output)
+}
+
+func clusterKubeconfigOwner(cluster string) (kubernetes.KubeconfigOwner, error) {
+	dir, err := config.KubernetesConfigDir()
+	if err != nil {
+		return kubernetes.KubeconfigOwner{}, err
 	}
-	return writeOutput(map[string]string{"context": "porto-" + cluster, "path": target, "backup": backup})
+	path := filepath.Join(dir, config.KubernetesClusterFileToken(cluster)+".json")
+	data, err := os.ReadFile(path)
+	if errors.Is(err, os.ErrNotExist) {
+		return kubernetes.KubeconfigOwner{}, nil
+	}
+	if err != nil {
+		return kubernetes.KubeconfigOwner{}, fmt.Errorf("read Kubernetes cluster metadata: %w", err)
+	}
+	var request kubernetes.ClusterRequest
+	if err := json.Unmarshal(data, &request); err != nil {
+		return kubernetes.KubeconfigOwner{}, fmt.Errorf("decode Kubernetes cluster metadata: %w", err)
+	}
+	if request.Name != cluster {
+		return kubernetes.KubeconfigOwner{}, errors.New("Kubernetes cluster metadata identity does not match")
+	}
+	provider := strings.ToLower(strings.TrimSpace(request.Provider))
+	if provider == "" {
+		provider = "k3s"
+	}
+	if provider != "kind" && provider != "k0s" && provider != "k3s" {
+		return kubernetes.KubeconfigOwner{}, fmt.Errorf("unsupported Kubernetes provider %q", request.Provider)
+	}
+	return kubernetes.KubeconfigOwner{
+		Cluster:  request.Name,
+		Provider: provider,
+	}, nil
 }
 
 func defaultKubeconfigPath() (string, error) {
-	if configured := strings.TrimSpace(os.Getenv("KUBECONFIG")); configured != "" {
-		return strings.Split(configured, string(os.PathListSeparator))[0], nil
-	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".kube", "config"), nil
-}
-
-func atomicWrite(path string, data []byte, mode os.FileMode) error {
-	temp, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".*")
-	if err != nil {
-		return err
-	}
-	tempPath := temp.Name()
-	defer os.Remove(tempPath)
-	if err := temp.Chmod(mode); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if _, err := temp.Write(data); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Sync(); err != nil {
-		_ = temp.Close()
-		return err
-	}
-	if err := temp.Close(); err != nil {
-		return err
-	}
-	return os.Rename(tempPath, path)
 }
 
 func parseInterspersed(fs *flag.FlagSet, args []string, booleanFlags map[string]bool) error {

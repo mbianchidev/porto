@@ -263,6 +263,24 @@ func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	}
 }
 
+func TestRunRejectsUnavailableKubernetesConfigDirectory(t *testing.T) {
+	portoHome := filepath.Join(t.TempDir(), "porto-home")
+	if err := os.WriteFile(portoHome, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PORTO_HOME", portoHome)
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	err = New(st, nil).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes config directory") {
+		t.Fatalf("Run error = %v", err)
+	}
+}
+
 func TestExpandScanRoot(t *testing.T) {
 	server := &Server{userHomeDir: func() (string, error) { return "/home/test", nil }}
 	for input, want := range map[string]string{

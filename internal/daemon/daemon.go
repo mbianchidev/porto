@@ -92,6 +92,7 @@ type Server struct {
 	runtimeActive   int
 	kubernetes      *kubernetes.Manager
 	clusters        *kubernetes.ClusterProvisioner
+	kubeconfigErr   error
 	vms             *vm.Manager
 	providers       *providers.Manager
 	dockerSocket    string
@@ -127,7 +128,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	runner := runtimes.ExecRunner{}
 	dockerSocket, _ := config.DockerSocketPath()
 	dockerEngineDir, _ := config.DockerEngineDir()
-	kubeconfigDir, _ := config.KubernetesConfigDir()
+	kubeconfigDir, kubeconfigErr := config.KubernetesConfigDir()
 	vmStateDir, _ := config.VMStateDir()
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
 	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
@@ -164,6 +165,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		docker:         dockerManager,
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
 		clusters:       clusterProvisioner,
+		kubeconfigErr:  kubeconfigErr,
 		vms:            vmManager,
 		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,
@@ -172,9 +174,25 @@ func New(st *store.Store, ui fs.FS) *Server {
 
 func (s *Server) Run(ctx context.Context) error {
 	s.runtimeContext = ctx
+	if s.kubeconfigErr != nil {
+		return fmt.Errorf("prepare Kubernetes config directory: %w", s.kubeconfigErr)
+	}
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
 		return fmt.Errorf("read runtime settings: %w", err)
+	}
+	home, err := s.userHomeDir()
+	if err != nil {
+		return fmt.Errorf("resolve home directory for Kubernetes context registration: %w", err)
+	}
+	if strings.TrimSpace(home) == "" {
+		return errors.New("resolve home directory for Kubernetes context registration: home directory is empty")
+	}
+	s.clusters.SetKubeconfigRegistry(
+		kubernetes.NewKubeconfigRegistry(filepath.Join(home, ".kube", "config")),
+	)
+	if err := s.clusters.ReconcileKubeconfigs(ctx); err != nil {
+		log.Printf("reconcile global Kubernetes contexts: %v", err)
 	}
 	if settings.DockerEnabled {
 		if err := s.startDockerAPI(ctx); err != nil {
