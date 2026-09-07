@@ -188,6 +188,10 @@ func (f *fakeContainerOperations) UpdateHealth(
 	))
 }
 
+func (f *fakeContainerOperations) Checkpoint(_ context.Context, id, parent string) ([]string, error) {
+	return []string{"checkpoint"}, f.record(fmt.Sprintf("checkpoint %s %s", id, parent))
+}
+
 func (f *fakeContainerOperations) Delete(_ context.Context, id string, force, volumes bool) error {
 	return f.record(fmt.Sprintf("delete %s %t %t", id, force, volumes))
 }
@@ -521,6 +525,24 @@ func TestManagerRoutesKillSignalAndWaitThroughContainerOperations(t *testing.T) 
 	}
 	want := []string{"kill demo 10", "close", "wait demo", "close"}
 	if !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerRoutesCheckpointThroughContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	descriptors, err := managerWithContainerOperations(operations).CheckpointContainer(
+		context.Background(),
+		"demo",
+		"parent",
+	)
+	if err != nil {
+		t.Fatalf("checkpoint container: %v", err)
+	}
+	if !reflect.DeepEqual(descriptors, []string{"checkpoint"}) {
+		t.Fatalf("checkpoint descriptors = %v", descriptors)
+	}
+	if want := []string{"checkpoint demo parent", "close"}; !reflect.DeepEqual(operations.calls, want) {
 		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
 	}
 }

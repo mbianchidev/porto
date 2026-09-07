@@ -243,6 +243,20 @@ func TestDockerAPICheckpointAndRestoreReturnTypedUnsupportedErrors(t *testing.T)
 	}
 }
 
+func TestDockerAPICheckpointUsesDirectContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	handler := NewAPI(managerWithContainerOperations(operations), "/tmp/porto.sock")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(
+		http.MethodPost,
+		"/v1.47/containers/demo/checkpoint?checkpoint=parent",
+		nil,
+	))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "checkpoint") {
+		t.Fatalf("checkpoint response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDockerAPIPullsDigestFromDockerTagParameter(t *testing.T) {
 	const digest = "sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 	runner := &fakeRunner{

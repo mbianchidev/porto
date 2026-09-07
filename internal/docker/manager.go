@@ -842,6 +842,23 @@ func (m *Manager) directContainerAction(
 	})
 }
 
+func (m *Manager) CheckpointContainer(ctx context.Context, id, parent string) ([]string, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	var descriptors []string
+	if handled, directErr, fallbackReason := m.attemptContainerOperation(ctx, func(operations containerOperations) error {
+		var err error
+		descriptors, err = operations.Checkpoint(ctx, id, parent)
+		return err
+	}); handled {
+		return descriptors, directErr
+	} else if fallbackReason != nil {
+		return nil, fallbackReason
+	}
+	return nil, fmt.Errorf("%w: container checkpoint", ErrUnsupported)
+}
+
 func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {
 	if err := validateObjectID(id); err != nil {
 		return err

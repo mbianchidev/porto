@@ -835,7 +835,16 @@ func (a *API) deleteContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) checkpointContainer(w http.ResponseWriter, r *http.Request) {
-	writeDockerUnsupported(w, "container checkpoint")
+	descriptors, err := a.manager.CheckpointContainer(
+		r.Context(),
+		r.PathValue("id"),
+		r.URL.Query().Get("checkpoint"),
+	)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	writeDockerJSON(w, http.StatusOK, map[string]any{"Descriptors": descriptors})
 }
 
 func (a *API) restoreContainer(w http.ResponseWriter, r *http.Request) {

@@ -41,6 +41,7 @@ type containerOperations interface {
 	UpdateLabels(context.Context, string, map[string]string) error
 	UpdateResources(context.Context, string, ContainerUpdate) error
 	UpdateHealth(context.Context, string, *ContainerHealthcheck) error
+	Checkpoint(context.Context, string, string) ([]string, error)
 	Delete(context.Context, string, bool, bool) error
 	Close() error
 }
@@ -585,6 +586,30 @@ func (r *grpcContainerRuntime) UpdateHealth(context.Context, string, *ContainerH
 		"%w: direct healthcheck updates cannot safely manage nerdctl scheduling and result logs",
 		ErrUnsupported,
 	)
+}
+
+func (r *grpcContainerRuntime) Checkpoint(ctx context.Context, id, parent string) ([]string, error) {
+	if r.tasks == nil {
+		return nil, fmt.Errorf("%w: task service is unavailable", ErrUnavailable)
+	}
+	response, err := r.tasks.Checkpoint(
+		withContainerdNamespace(ctx, r.namespace),
+		&tasksapi.CheckpointTaskRequest{
+			ContainerID:      id,
+			ParentCheckpoint: parent,
+		},
+	)
+	if err != nil {
+		return nil, containerdOperationError("checkpoint", id, err)
+	}
+	descriptors := response.GetDescriptors()
+	result := make([]string, 0, len(descriptors))
+	for _, descriptor := range descriptors {
+		if descriptor.GetMediaType() != "" {
+			result = append(result, descriptor.GetMediaType())
+		}
+	}
+	return result, nil
 }
 
 func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdate) {
