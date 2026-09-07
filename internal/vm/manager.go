@@ -203,6 +203,48 @@ func (m *Manager) ListAll(ctx context.Context) ([]Instance, error) {
 	if err != nil {
 		return nil, err
 	}
+	return decodeLimaInstances(output)
+}
+
+func (m *Manager) Existing(ctx context.Context, names []string) ([]Instance, error) {
+	if len(names) == 0 {
+		return []Instance{}, nil
+	}
+	args := []string{"list", "--json"}
+	requested := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if err := validateName(name); err != nil {
+			return nil, err
+		}
+		if _, exists := requested[name]; exists {
+			continue
+		}
+		requested[name] = struct{}{}
+		args = append(args, name)
+	}
+	commandContext, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
+	output, err := m.runner.Run(commandContext, m.limaCommand(args, nil))
+	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
+		return nil, errors.New("inspect existing Lima instances timed out after 20s")
+	}
+	instances, decodeErr := decodeLimaInstances(output)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
+	if err != nil && !limaListOnlyReportsMissing(output) {
+		return nil, runtimes.CommandError("inspect existing Lima instances", output, err)
+	}
+	existing := make([]Instance, 0, len(instances))
+	for _, instance := range instances {
+		if _, match := requested[instance.Name]; match {
+			existing = append(existing, instance)
+		}
+	}
+	return existing, nil
+}
+
+func decodeLimaInstances(output []byte) ([]Instance, error) {
 	instances := make([]Instance, 0)
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	scanner.Buffer(make([]byte, 64*1024), 4*1024*1024)
@@ -228,6 +270,24 @@ func (m *Manager) ListAll(ctx context.Context) ([]Instance, error) {
 		instances = append(instances, decodeInstance(raw))
 	}
 	return instances, scanner.Err()
+}
+
+func limaListOnlyReportsMissing(output []byte) bool {
+	foundDiagnostic := false
+	scanner := bufio.NewScanner(strings.NewReader(string(output)))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || line[0] == '{' || line[0] == '[' {
+			continue
+		}
+		foundDiagnostic = true
+		message := strings.ToLower(line)
+		if !strings.Contains(message, "no instance matching") &&
+			!strings.Contains(message, "unmatched instances") {
+			return false
+		}
+	}
+	return foundDiagnostic
 }
 
 func (m *Manager) Create(ctx context.Context, request CreateRequest) (Instance, error) {
@@ -297,8 +357,15 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		}
 		args = append(args, image.Template)
 	}
-	if _, err := m.run(ctx, 10*time.Minute, "create Lima instance", args...); err != nil {
+	output, err := m.run(ctx, 10*time.Minute, "create Lima instance", args...)
+	if err != nil {
 		return Instance{}, err
+	}
+	if limaCreateReusedInstance(output) {
+		return Instance{}, fmt.Errorf(
+			"Lima instance %q already exists and was not created by Porto",
+			request.Name,
+		)
 	}
 	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Owner: request.Owner, Image: request.Image, CreatedAt: time.Now().UTC()}); err != nil {
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
@@ -319,6 +386,12 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
 	}
 	return instance, nil
+}
+
+func limaCreateReusedInstance(output []byte) bool {
+	message := strings.ToLower(string(output))
+	return strings.Contains(message, "using the existing instance") ||
+		strings.Contains(message, "using existing instance")
 }
 
 func supportsArchitecture(image Image, architecture string) bool {

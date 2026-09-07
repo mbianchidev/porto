@@ -1033,18 +1033,12 @@ func (p *ClusterProvisioner) ensureKindRuntimeAbsent(ctx context.Context, reques
 }
 
 func (p *ClusterProvisioner) ensureVMRuntimeAbsent(ctx context.Context, request ClusterRequest) error {
-	instances, err := p.vms.ListAll(ctx)
+	instances, err := p.vms.Existing(ctx, clusterNodeNames(request))
 	if err != nil {
 		return fmt.Errorf("inspect existing Kubernetes node VMs: %w", err)
 	}
-	expected := make(map[string]struct{})
-	for _, name := range clusterNodeNames(request) {
-		expected[name] = struct{}{}
-	}
 	for _, instance := range instances {
-		if _, exists := expected[instance.Name]; exists {
-			return fmt.Errorf("Kubernetes node VM %s already exists", instance.Name)
-		}
+		return fmt.Errorf("Kubernetes node VM %s already exists", instance.Name)
 	}
 	return nil
 }

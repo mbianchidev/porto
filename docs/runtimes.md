@@ -237,6 +237,13 @@ Lima's `user-v2` network, the Kubernetes API is forwarded to an allocated
 loopback port, and persistent volumes remain on the cluster nodes across stop
 and start operations.
 
+Before provisioning, Porto asks Lima for every planned node name explicitly.
+It never adopts, starts, or deletes a pre-existing Lima instance just because
+the name matches. Rename or remove the conflicting Lima instance, or choose a
+different cluster name. If an earlier failed attempt remains in Porto with an
+`error` state after its VM was cleaned up, delete that failed cluster record
+before retrying creation.
+
 Porto continuously reconciles HTTP-capable Service ports in running managed
 clusters into Gateway API `HTTPRoute` resources. ClusterIP, NodePort, and
 LoadBalancer Services receive a stable hostname such as
