@@ -58,6 +58,21 @@ following bundled symbolic links:
 xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
 ```
 
+### Manual DMG installation
+
+Open the DMG, drag `Porto.app` to `/Applications`, and launch it from there.
+Then enable the CLI with:
+
+#### Enable the CLI
+
+```sh
+mkdir -p "$HOME/.local/bin"
+ln -sfn "/Applications/Porto.app/Contents/Resources/porto" "$HOME/.local/bin/porto"
+grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
+  echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zprofile"
+exec zsh -l
+```
+
 ### Manual archive installation
 
 Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/mbianchidev/porto/releases). Verify the download, then unpack it:
