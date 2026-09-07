@@ -112,7 +112,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Resource | Supported operations |
 | --- | --- |
 | System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove |
+| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove; checkpoint/restore return typed unsupported responses |
 | Images | list, inspect, pull, save, remove |
 | Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |

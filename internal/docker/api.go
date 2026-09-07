@@ -74,6 +74,8 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /containers/{id}/unpause", a.containerAction("unpause"))
 	a.mux.HandleFunc("POST /containers/{id}/rename", a.renameContainer)
 	a.mux.HandleFunc("POST /containers/{id}/wait", a.waitContainer)
+	a.mux.HandleFunc("POST /containers/{id}/checkpoint", a.checkpointContainer)
+	a.mux.HandleFunc("POST /containers/{id}/restore", a.restoreContainer)
 	a.mux.HandleFunc("GET /containers/{id}/logs", a.containerLogs)
 	a.mux.HandleFunc("POST /containers/{id}/attach", a.attachContainer)
 	a.mux.HandleFunc("POST /containers/{id}/exec", a.createExec)
@@ -817,6 +819,7 @@ func (a *API) deleteContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerUnsupported(w, "container link removal")
 		return
 	}
+
 	action := "remove"
 	if dockerBool(r, "force") {
 		action = "remove-force"
@@ -829,6 +832,14 @@ func (a *API) deleteContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (a *API) checkpointContainer(w http.ResponseWriter, r *http.Request) {
+	writeDockerUnsupported(w, "container checkpoint")
+}
+
+func (a *API) restoreContainer(w http.ResponseWriter, r *http.Request) {
+	writeDockerUnsupported(w, "container restore")
 }
 
 func (a *API) images(w http.ResponseWriter, r *http.Request) {

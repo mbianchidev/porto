@@ -228,6 +228,21 @@ func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	}
 }
 
+func TestDockerAPICheckpointAndRestoreReturnTypedUnsupportedErrors(t *testing.T) {
+	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
+	for _, path := range []string{
+		"/v1.47/containers/demo/checkpoint",
+		"/v1.47/containers/demo/restore",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNotImplemented ||
+			!strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
+			t.Fatalf("%s = %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestDockerAPIPullsDigestFromDockerTagParameter(t *testing.T) {
 	const digest = "sha256:a1ed56cfb0e7b93589bdf97c8cd566405a265939e3620fc4f5de89adff580ae5"
 	runner := &fakeRunner{
