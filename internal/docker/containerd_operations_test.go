@@ -339,6 +339,16 @@ func TestContainerCapabilitiesReportUnsupportedDirectExecLifecycle(t *testing.T)
 	}
 }
 
+func TestContainerCapabilitiesReportUnsupportedTaskRecreation(t *testing.T) {
+	capability := containerCapabilities().TaskRecreation
+	if capability.Supported ||
+		!strings.Contains(capability.Reason, "compatibility path") ||
+		!strings.Contains(capability.Reason, "OCI spec") ||
+		!strings.Contains(capability.Reason, "FIFO") {
+		t.Fatalf("task recreation capability = %+v", capability)
+	}
+}
+
 func TestManagerRoutesNetworkActionsThroughMockableOperations(t *testing.T) {
 	operations := &fakeNetworkOperations{errs: map[string]error{}}
 	manager := managerWithNetworkOperations(operations)
@@ -548,6 +558,34 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 	if len(runner.commands) != 1 || !reflect.DeepEqual(runner.commands[0].Args, []string{"restart", "demo"}) {
 		t.Fatalf("fallback commands = %+v", runner.commands)
+	}
+}
+
+func TestManagerReportsDirectRestartReasonWhenFallbackFails(t *testing.T) {
+	directErr := fmt.Errorf(
+		"%w: %w for container %q",
+		ErrUnsupported,
+		ErrTaskRecreationRequired,
+		"demo",
+	)
+	operations := &fakeContainerOperations{
+		errs: map[string]error{"restart demo 0": directErr},
+	}
+	fallbackErr := errors.New("nerdctl restart failed")
+	runner := &fakeRunner{
+		outputs: map[string][]byte{},
+		errors:  map[string]error{"nerdctl restart demo": fallbackErr},
+	}
+	manager := New(runner)
+	manager.operationsConnector = func(context.Context) (containerOperations, error) {
+		return operations, nil
+	}
+	err := manager.ContainerAction(context.Background(), "demo", "restart")
+	if !errors.Is(err, ErrTaskRecreationRequired) || !errors.Is(err, fallbackErr) {
+		t.Fatalf("restart error = %v, want direct and fallback causes", err)
+	}
+	if !strings.Contains(err.Error(), "direct container restart was unavailable") {
+		t.Fatalf("restart error did not report fallback reason: %v", err)
 	}
 }
 
@@ -1184,6 +1222,72 @@ func TestGRPCContainerOperationsDeleteStoppedTaskBeforeMetadata(t *testing.T) {
 	}
 	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+}
+
+func TestGRPCContainerOperationsStartDistinguishesMetadataWithoutTask(t *testing.T) {
+	tasks := &fakeTasksClient{getErr: status.Error(codes.NotFound, "task missing")}
+	containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err := runtimeClient.Start(context.Background(), "demo")
+	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrTaskRecreationRequired) {
+		t.Fatalf("start error = %v, want typed task recreation error", err)
+	}
+	if errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "metadata exists without a task") {
+		t.Fatalf("start error did not distinguish metadata from task: %v", err)
+	}
+}
+
+func TestGRPCContainerOperationsStartReportsMissingMetadata(t *testing.T) {
+	tasks := &fakeTasksClient{getErr: status.Error(codes.NotFound, "task missing")}
+	containers := &fakeContainersClient{getErr: status.Error(codes.NotFound, "container missing")}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err := runtimeClient.Start(context.Background(), "demo")
+	if !errors.Is(err, ErrNotFound) || errors.Is(err, ErrTaskRecreationRequired) {
+		t.Fatalf("start error = %v, want metadata not found", err)
+	}
+}
+
+func TestGRPCContainerOperationsRestartDistinguishesMetadataWithoutTask(t *testing.T) {
+	tasks := &fakeTasksClient{getErr: status.Error(codes.NotFound, "task missing")}
+	containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err := runtimeClient.Restart(context.Background(), "demo", 5)
+	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrTaskRecreationRequired) {
+		t.Fatalf("restart error = %v, want typed task recreation error", err)
+	}
+	if errors.Is(err, ErrNotFound) || !strings.Contains(err.Error(), "metadata exists without a task") {
+		t.Fatalf("restart error did not distinguish metadata from task: %v", err)
+	}
+}
+
+func TestGRPCContainerOperationsRestartLeavesStoppedTaskForFallback(t *testing.T) {
+	tasks := &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: "demo",
+		Status:      tasktypes.Status_STOPPED,
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace: "default",
+		tasks:     tasks,
+	}
+	err := runtimeClient.Restart(context.Background(), "demo", 5)
+	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrTaskRecreationRequired) {
+		t.Fatalf("restart error = %v, want typed task recreation error", err)
+	}
+	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
+		t.Fatalf("task calls = %q, want non-mutating fallback check %q", tasks.calls, want)
 	}
 }
 

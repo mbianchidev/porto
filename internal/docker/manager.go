@@ -30,10 +30,11 @@ const (
 )
 
 var (
-	ErrUnavailable = errors.New("Porto container runtime is unavailable")
-	ErrUnsupported = errors.New("Docker operation is not supported by Porto")
-	ErrNotFound    = errors.New("Docker object was not found")
-	ErrConflict    = errors.New("Docker operation conflicts with the current object state")
+	ErrUnavailable            = errors.New("Porto container runtime is unavailable")
+	ErrUnsupported            = errors.New("Docker operation is not supported by Porto")
+	ErrNotFound               = errors.New("Docker object was not found")
+	ErrConflict               = errors.New("Docker operation conflicts with the current object state")
+	ErrTaskRecreationRequired = errors.New("container task recreation is required")
 )
 
 type Manager struct {
@@ -751,11 +752,12 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
-	if handled, err := m.directContainerAction(ctx, id, action, timeout); handled {
-		if err == nil {
+	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
+	if handled {
+		if directErr == nil {
 			m.invalidateContainerInventory()
 		}
-		return err
+		return directErr
 	}
 	if action == "start" {
 		paused, err := m.containerPaused(ctx, id)
@@ -799,11 +801,22 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
+	if err != nil && action == "restart" && fallbackReason != nil {
+		return errors.Join(
+			fmt.Errorf("direct container restart was unavailable: %w", fallbackReason),
+			err,
+		)
+	}
 	return err
 }
 
-func (m *Manager) directContainerAction(ctx context.Context, id, action string, timeout int) (bool, error) {
-	return m.withContainerOperations(ctx, func(operations containerOperations) error {
+func (m *Manager) directContainerAction(
+	ctx context.Context,
+	id,
+	action string,
+	timeout int,
+) (bool, error, error) {
+	return m.attemptContainerOperation(ctx, func(operations containerOperations) error {
 		switch action {
 		case "start":
 			return operations.Start(ctx, id)

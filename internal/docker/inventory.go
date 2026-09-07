@@ -110,6 +110,10 @@ func containerCapabilities() ContainerCapabilities {
 	return ContainerCapabilities{
 		DirectInventory: RuntimeCapability{Supported: true},
 		LifecycleEvents: RuntimeCapability{Supported: true},
+		TaskRecreation: RuntimeCapability{
+			Supported: false,
+			Reason:    "start and restart use the nerdctl compatibility path because container metadata exposes the OCI spec and snapshot reference, but task creation also requires daemon-local logging and FIFO setup",
+		},
 		ExecLifecycle: RuntimeCapability{
 			Supported: false,
 			Reason:    "direct containerd exec cannot preserve attached streams because the task service requires daemon-local FIFO paths",

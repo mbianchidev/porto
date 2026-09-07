@@ -160,23 +160,31 @@ func (m *Manager) withContainerOperations(
 	ctx context.Context,
 	operation func(containerOperations) error,
 ) (bool, error) {
+	handled, operationErr, _ := m.attemptContainerOperation(ctx, operation)
+	return handled, operationErr
+}
+
+func (m *Manager) attemptContainerOperation(
+	ctx context.Context,
+	operation func(containerOperations) error,
+) (bool, error, error) {
 	connector := m.operationsConnector
 	if connector == nil {
-		return false, nil
+		return false, nil, nil
 	}
 	operations, err := connector(ctx)
 	if err != nil {
 		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
-			return false, nil
+			return false, nil, err
 		}
-		return true, err
+		return true, err, nil
 	}
 	operationErr := operation(operations)
 	closeErr := operations.Close()
 	if errors.Is(operationErr, ErrUnsupported) || errors.Is(operationErr, ErrUnavailable) {
-		return false, nil
+		return false, nil, errors.Join(operationErr, closeErr)
 	}
-	return true, errors.Join(operationErr, closeErr)
+	return true, errors.Join(operationErr, closeErr), nil
 }
 
 func (m *Manager) withNetworkOperations(
@@ -243,7 +251,7 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 			if containerErr := r.requireContainer(ctx, id); containerErr != nil {
 				return containerErr
 			}
-			return fmt.Errorf("%w: direct start requires creating the container task", ErrUnsupported)
+			return taskRecreationUnsupportedError(id, "container metadata exists without a task")
 		}
 		return containerdOperationError("inspect task for", id, err)
 	}
@@ -256,7 +264,7 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 	case tasktypes.Status_RUNNING:
 		return fmt.Errorf("%w: preserve existing handling for an already-running container", ErrUnsupported)
 	case tasktypes.Status_STOPPED:
-		return fmt.Errorf("%w: direct start requires recreating the stopped container task", ErrUnsupported)
+		return taskRecreationUnsupportedError(id, "the stopped task must be deleted and recreated")
 	default:
 		return fmt.Errorf("%w: container %q task is %s", ErrConflict, id, process.GetStatus())
 	}
@@ -342,8 +350,21 @@ func (r *grpcContainerRuntime) Resume(ctx context.Context, id string) error {
 	return containerdOperationError("resume", id, err)
 }
 
-func (r *grpcContainerRuntime) Restart(context.Context, string, int) error {
-	return fmt.Errorf("%w: direct restart requires recreating the container task", ErrUnsupported)
+func (r *grpcContainerRuntime) Restart(ctx context.Context, id string, _ int) error {
+	process, err := r.getTask(ctx, id)
+	if err != nil {
+		if status.Code(err) == codes.NotFound {
+			if containerErr := r.requireContainer(ctx, id); containerErr != nil {
+				return containerErr
+			}
+			return taskRecreationUnsupportedError(id, "container metadata exists without a task")
+		}
+		return containerdOperationError("inspect task for", id, err)
+	}
+	return taskRecreationUnsupportedError(
+		id,
+		fmt.Sprintf("the existing %s task must be stopped, deleted, and recreated", process.GetStatus()),
+	)
 }
 
 func (r *grpcContainerRuntime) Wait(ctx context.Context, id string) (int, error) {
@@ -673,6 +694,16 @@ func containerdTaskActive(state tasktypes.Status) bool {
 	default:
 		return false
 	}
+}
+
+func taskRecreationUnsupportedError(id, state string) error {
+	return fmt.Errorf(
+		"%w: %w for container %q because %s; containerd task creation also requires daemon-local nerdctl logging and FIFO setup",
+		ErrUnsupported,
+		ErrTaskRecreationRequired,
+		id,
+		state,
+	)
 }
 
 func containerdOperationError(operation, id string, err error) error {
