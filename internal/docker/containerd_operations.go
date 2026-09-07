@@ -42,6 +42,14 @@ type containerOperations interface {
 
 type containerOperationsConnector func(context.Context) (containerOperations, error)
 
+type networkOperations interface {
+	Connect(context.Context, string, string, []string) error
+	Disconnect(context.Context, string, string, bool) error
+	Close() error
+}
+
+type networkOperationsConnector func(context.Context) (networkOperations, error)
+
 func (m *Manager) connectContainerOperations(ctx context.Context) (containerOperations, error) {
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
@@ -55,6 +63,23 @@ func (m *Manager) connectContainerOperations(ctx context.Context) (containerOper
 	if !ok {
 		_ = runtimeClient.Close()
 		return nil, fmt.Errorf("%w: connected containerd client does not support lifecycle operations", ErrUnsupported)
+	}
+	return operations, nil
+}
+
+func (m *Manager) connectNetworkOperations(ctx context.Context) (networkOperations, error) {
+	runtimeClient, err := m.connectContainerRuntime(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: connect direct network operations: %v", ErrUnavailable, err)
+	}
+	operations, ok := runtimeClient.(networkOperations)
+	if !ok {
+		_ = runtimeClient.Close()
+		return nil, fmt.Errorf("%w: connected containerd client does not support network operations", ErrUnsupported)
 	}
 	return operations, nil
 }
@@ -80,6 +105,53 @@ func (m *Manager) withContainerOperations(
 		return false, nil
 	}
 	return true, errors.Join(operationErr, closeErr)
+}
+
+func (m *Manager) withNetworkOperations(
+	ctx context.Context,
+	operation func(networkOperations) error,
+) (bool, error) {
+	connector := m.networkConnector
+	if connector == nil {
+		return false, nil
+	}
+	operations, err := connector(ctx)
+	if err != nil {
+		if errors.Is(err, ErrUnavailable) {
+			return false, nil
+		}
+		return true, err
+	}
+	operationErr := operation(operations)
+	closeErr := operations.Close()
+	if errors.Is(operationErr, ErrUnavailable) {
+		return false, nil
+	}
+	return true, errors.Join(operationErr, closeErr)
+}
+
+func (r *grpcContainerRuntime) Connect(
+	context.Context,
+	string,
+	string,
+	[]string,
+) error {
+	return fmt.Errorf(
+		"%w: containerd cannot safely connect nerdctl CNI endpoints or represent Docker network aliases",
+		ErrUnsupported,
+	)
+}
+
+func (r *grpcContainerRuntime) Disconnect(
+	context.Context,
+	string,
+	string,
+	bool,
+) error {
+	return fmt.Errorf(
+		"%w: containerd cannot safely disconnect nerdctl CNI endpoints by changing container metadata alone",
+		ErrUnsupported,
+	)
 }
 
 func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {

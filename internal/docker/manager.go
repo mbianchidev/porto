@@ -51,6 +51,7 @@ type Manager struct {
 	inventoryDone       chan struct{}
 	runtimeConnector    containerRuntimeConnector
 	operationsConnector containerOperationsConnector
+	networkConnector    networkOperationsConnector
 }
 
 type engineState struct {
@@ -89,6 +90,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	manager.operationsConnector = manager.connectContainerOperations
+	manager.networkConnector = manager.connectNetworkOperations
 	return manager
 }
 

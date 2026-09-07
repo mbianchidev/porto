@@ -114,6 +114,10 @@ func containerCapabilities() ContainerCapabilities {
 			Supported: false,
 			Reason:    "containerd does not manage nerdctl healthcheck scheduling and result logs",
 		},
+		NetworkUpdates: RuntimeCapability{
+			Supported: false,
+			Reason:    "containerd does not expose nerdctl CNI endpoint connect and disconnect operations",
+		},
 		CheckpointRestore: RuntimeCapability{
 			Supported: false,
 			Reason:    "Porto does not expose container checkpoint and restore operations yet",

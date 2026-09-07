@@ -30,6 +30,38 @@ type fakeContainerOperations struct {
 	errs     map[string]error
 }
 
+type fakeNetworkOperations struct {
+	calls []string
+	errs  map[string]error
+}
+
+func (f *fakeNetworkOperations) record(call string) error {
+	f.calls = append(f.calls, call)
+	return f.errs[call]
+}
+
+func (f *fakeNetworkOperations) Connect(
+	_ context.Context,
+	network,
+	container string,
+	aliases []string,
+) error {
+	return f.record(fmt.Sprintf("connect %s %s %v", network, container, aliases))
+}
+
+func (f *fakeNetworkOperations) Disconnect(
+	_ context.Context,
+	network,
+	container string,
+	force bool,
+) error {
+	return f.record(fmt.Sprintf("disconnect %s %s %t", network, container, force))
+}
+
+func (f *fakeNetworkOperations) Close() error {
+	return f.record("close")
+}
+
 func (f *fakeContainerOperations) record(call string) error {
 	f.calls = append(f.calls, call)
 	return f.errs[call]
@@ -110,6 +142,137 @@ func managerWithContainerOperations(operations *fakeContainerOperations) *Manage
 		return operations, nil
 	}
 	return manager
+}
+
+func managerWithNetworkOperations(operations *fakeNetworkOperations) *Manager {
+	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
+	manager.networkConnector = func(context.Context) (networkOperations, error) {
+		return operations, nil
+	}
+	return manager
+}
+
+func TestManagerRoutesNetworkActionsThroughMockableOperations(t *testing.T) {
+	operations := &fakeNetworkOperations{errs: map[string]error{}}
+	manager := managerWithNetworkOperations(operations)
+	if err := manager.ConnectNetwork(
+		context.Background(),
+		"backend",
+		"demo",
+		[]string{"api", "api.internal"},
+	); err != nil {
+		t.Fatalf("connect network: %v", err)
+	}
+	if err := manager.DisconnectNetwork(context.Background(), "backend", "demo", true); err != nil {
+		t.Fatalf("disconnect network: %v", err)
+	}
+	want := []string{
+		"connect backend demo [api api.internal]", "close",
+		"disconnect backend demo true", "close",
+	}
+	if !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerNetworkActionsFallbackWhenDirectRuntimeIsUnavailable(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl network connect --alias api backend demo": nil,
+			"nerdctl network disconnect --force backend demo":  nil,
+		},
+		errors: map[string]error{},
+	}
+	manager := New(runner)
+	manager.networkConnector = func(context.Context) (networkOperations, error) {
+		return nil, ErrUnavailable
+	}
+	if err := manager.ConnectNetwork(
+		context.Background(),
+		"backend",
+		"demo",
+		[]string{"api"},
+	); err != nil {
+		t.Fatalf("connect network fallback: %v", err)
+	}
+	if err := manager.DisconnectNetwork(context.Background(), "backend", "demo", true); err != nil {
+		t.Fatalf("disconnect network fallback: %v", err)
+	}
+	if len(runner.commands) != 2 {
+		t.Fatalf("fallback commands = %+v, want two network commands", runner.commands)
+	}
+}
+
+func TestManagerNetworkActionsExposeUnsupportedWithoutPretendingDirectSupport(t *testing.T) {
+	call := "connect backend demo []"
+	operations := &fakeNetworkOperations{
+		errs: map[string]error{call: fmt.Errorf("%w: CNI endpoint lifecycle", ErrUnsupported)},
+	}
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl network connect backend demo": nil},
+		errors:  map[string]error{},
+	}
+	manager := New(runner)
+	manager.networkConnector = func(context.Context) (networkOperations, error) {
+		return operations, nil
+	}
+	err := manager.ConnectNetwork(context.Background(), "backend", "demo", nil)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("connect network error = %v, want ErrUnsupported", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported direct operation fell back to commands: %+v", runner.commands)
+	}
+	if want := []string{call, "close"}; !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
+	operations := &fakeNetworkOperations{
+		errs: map[string]error{
+			"disconnect backend demo false": fmt.Errorf(
+				"%w: CNI endpoint lifecycle",
+				ErrUnsupported,
+			),
+		},
+	}
+	response := httptest.NewRecorder()
+	NewAPI(managerWithNetworkOperations(operations), "").ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1.47/networks/backend/disconnect",
+			strings.NewReader(`{"Container":"demo"}`),
+		),
+	)
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("network disconnect response = %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
+		t.Fatalf("network response did not expose typed error: %s", response.Body.String())
+	}
+}
+
+func TestContainerdNetworkOperationsReturnTypedUnsupportedErrors(t *testing.T) {
+	runtimeClient := &grpcContainerRuntime{}
+	connectErr := runtimeClient.Connect(context.Background(), "backend", "demo", nil)
+	if !errors.Is(connectErr, ErrUnsupported) ||
+		!strings.Contains(connectErr.Error(), "CNI endpoints") {
+		t.Fatalf("containerd connect error = %v", connectErr)
+	}
+	disconnectErr := runtimeClient.Disconnect(context.Background(), "backend", "demo", false)
+	if !errors.Is(disconnectErr, ErrUnsupported) ||
+		!strings.Contains(disconnectErr.Error(), "metadata alone") {
+		t.Fatalf("containerd disconnect error = %v", disconnectErr)
+	}
+}
+
+func TestContainerCapabilitiesReportUnsupportedDirectNetworkUpdates(t *testing.T) {
+	capability := containerCapabilities().NetworkUpdates
+	if capability.Supported || !strings.Contains(capability.Reason, "CNI endpoint") {
+		t.Fatalf("network update capability = %+v", capability)
+	}
 }
 
 func TestManagerRoutesLifecycleActionsThroughContainerOperations(t *testing.T) {
