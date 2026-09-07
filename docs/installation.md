@@ -25,10 +25,11 @@ Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive.
 `PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
 install without opening it.
 
-The native-engine release advances Porto's daemon compatibility version. The
-installer and desktop app replace an older Porto daemon before launching the
-new version, so commands cannot accidentally continue through the removed
-upstream Docker proxy.
+The desktop app compares the SHA-256 identity cached by the running daemon with
+the daemon bundled in the installed app. It gracefully replaces a different
+daemon before opening the dashboard, even when the executable path, product
+version, and API compatibility version are unchanged. This prevents a newly
+installed Porto app from continuing to use code left running by an older build.
 
 Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
 Lima, and the supported `kind` binary for that platform. Windows ARM64 excludes

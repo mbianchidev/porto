@@ -160,13 +160,17 @@ func TestHealthReportsDashboardReadiness(t *testing.T) {
 			t.Fatalf("health status = %d: %s", response.Code, response.Body.String())
 		}
 		var health struct {
-			DashboardReady bool `json:"dashboardReady"`
+			DashboardReady bool   `json:"dashboardReady"`
+			DaemonIdentity string `json:"daemonIdentity"`
 		}
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health: %v", err)
 		}
 		if health.DashboardReady != want {
 			t.Fatalf("dashboardReady = %t, want %t", health.DashboardReady, want)
+		}
+		if health.DaemonIdentity == "" {
+			t.Fatal("daemonIdentity is empty")
 		}
 	}
 

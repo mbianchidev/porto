@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/tls"
 	"database/sql"
 	"encoding/json"
@@ -96,7 +97,15 @@ type Server struct {
 	vms             *vm.Manager
 	providers       *providers.Manager
 	dockerSocket    string
+	daemonIdentity  string
+	identityErr     error
 }
+
+var (
+	daemonIdentityOnce      sync.Once
+	cachedDaemonIdentity    string
+	cachedDaemonIdentityErr error
+)
 
 type projectProcess struct {
 	cmd      *exec.Cmd
@@ -133,6 +142,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
 	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
 	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
+	daemonIdentity, identityErr := currentDaemonIdentity()
 	return &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
@@ -169,11 +179,16 @@ func New(st *store.Store, ui fs.FS) *Server {
 		vms:            vmManager,
 		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,
+		daemonIdentity: daemonIdentity,
+		identityErr:    identityErr,
 	}
 }
 
 func (s *Server) Run(ctx context.Context) error {
 	s.runtimeContext = ctx
+	if s.identityErr != nil {
+		return fmt.Errorf("identify Porto daemon binary: %w", s.identityErr)
+	}
 	if s.kubeconfigErr != nil {
 		return fmt.Errorf("prepare Kubernetes config directory: %w", s.kubeconfigErr)
 	}
@@ -510,6 +525,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 			"version":        config.Version,
 			"apiVersion":     config.APIVersion,
 			"dashboardReady": s.ui != nil,
+			"daemonIdentity": s.daemonIdentity,
 		})
 	})
 	mux.HandleFunc("GET /api/projects", s.list)
@@ -541,6 +557,29 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
 	s.runtimeRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
+}
+
+func currentDaemonIdentity() (string, error) {
+	daemonIdentityOnce.Do(func() {
+		executable, err := os.Executable()
+		if err != nil {
+			cachedDaemonIdentityErr = err
+			return
+		}
+		file, err := os.Open(executable)
+		if err != nil {
+			cachedDaemonIdentityErr = err
+			return
+		}
+		defer file.Close()
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			cachedDaemonIdentityErr = err
+			return
+		}
+		cachedDaemonIdentity = fmt.Sprintf("%x", hash.Sum(nil))
+	})
+	return cachedDaemonIdentity, cachedDaemonIdentityErr
 }
 
 func (s *Server) tlsStatus(w http.ResponseWriter, _ *http.Request) {

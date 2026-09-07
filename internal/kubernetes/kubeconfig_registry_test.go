@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -113,7 +114,7 @@ users:
 	}
 }
 
-func TestKubeconfigRegistryInitializesEmptyTargetAndSelectsFirstContext(t *testing.T) {
+func TestKubeconfigRegistryInitializesEmptyTargetWithoutSelectingContext(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "config")
 	source := filepath.Join(dir, "porto.yaml")
@@ -140,8 +141,8 @@ users:
 		t.Fatalf("register into empty kubeconfig: %v", err)
 	}
 	document := readTestKubeconfig(t, target)
-	if got := document["current-context"]; got != "porto-dev" {
-		t.Fatalf("current context = %#v, want porto-dev", got)
+	if got := document["current-context"]; got != "" {
+		t.Fatalf("current context = %#v, want empty", got)
 	}
 }
 
@@ -702,7 +703,7 @@ func TestKubeconfigRegistryLockHonorsContextCancellation(t *testing.T) {
 	}
 }
 
-func TestKubeconfigRegistryUsesSharedLockFile(t *testing.T) {
+func TestKubeconfigRegistryReleasesSharedLockFile(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "config")
 	source := filepath.Join(dir, "porto.yaml")
@@ -727,12 +728,170 @@ users:
 	if _, err := NewKubeconfigRegistry(target).Register(context.Background(), source); err != nil {
 		t.Fatal(err)
 	}
-	info, err := os.Stat(target + ".lock")
-	if err != nil {
-		t.Fatalf("stat kubeconfig lock: %v", err)
+	lockPath := target + ".lock"
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("kubeconfig lock remains after registration: %v", err)
 	}
-	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
-		t.Fatalf("lock mode = %o, want 600", info.Mode().Perm())
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		t.Fatalf("external kubeconfig writer cannot acquire lock: %v", err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestKubeconfigRegistryReleasesLockAfterPanic(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "config")
+	registry := NewKubeconfigRegistry(target)
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Fatal("lock operation did not panic")
+			}
+		}()
+		_ = registry.withLock(context.Background(), func(string) error {
+			panic("test panic")
+		})
+	}()
+
+	if _, err := os.Stat(target + ".lock"); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("kubeconfig lock remains after panic: %v", err)
+	}
+}
+
+func TestKubeconfigRegistryRecoversDeadPortoLock(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config")
+	source := filepath.Join(dir, "porto.yaml")
+	writeTestKubeconfig(t, source, `apiVersion: v1
+kind: Config
+current-context: porto-dev
+clusters:
+  - name: porto-dev
+    cluster:
+      server: https://127.0.0.1:54321
+contexts:
+  - name: porto-dev
+    context:
+      cluster: porto-dev
+      user: porto-dev
+users:
+  - name: porto-dev
+    user:
+      token: porto-token
+`)
+	lockPath := target + ".lock"
+	owner, err := json.Marshal(kubeconfigLockOwner{
+		PID:       999999999,
+		CreatedAt: time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lockPath, owner, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	defer cancel()
+
+	if _, err := NewKubeconfigRegistry(target).Register(ctx, source); err != nil {
+		t.Fatalf("recover dead Porto lock: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovered lock remains: %v", err)
+	}
+}
+
+func TestKubeconfigRegistryRecoversOldExternalLock(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config")
+	source := filepath.Join(dir, "porto.yaml")
+	writeTestKubeconfig(t, source, `apiVersion: v1
+kind: Config
+current-context: porto-dev
+clusters:
+  - name: porto-dev
+    cluster:
+      server: https://127.0.0.1:54321
+contexts:
+  - name: porto-dev
+    context:
+      cluster: porto-dev
+      user: porto-dev
+users:
+  - name: porto-dev
+    user:
+      token: porto-token
+`)
+	lockPath := target + ".lock"
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	staleTime := time.Now().Add(-kubeconfigStaleLockAge - time.Second)
+	if err := os.Chtimes(lockPath, staleTime, staleTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := NewKubeconfigRegistry(target).Register(context.Background(), source); err != nil {
+		t.Fatalf("recover old external lock: %v", err)
+	}
+	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("recovered external lock remains: %v", err)
+	}
+}
+
+func TestKubeconfigRegistryWaitsForFreshKubectlLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "config.lock")
+	lock, err := os.OpenFile(lockPath, os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := lock.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	defer cancel()
+
+	_, err = acquireKubeconfigFileLock(ctx, lockPath)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("fresh kubectl lock error = %v, want deadline exceeded", err)
+	}
+	if _, err := os.Lstat(lockPath); err != nil {
+		t.Fatalf("fresh kubectl lock was removed: %v", err)
+	}
+}
+
+func TestKubeconfigLockClosePreservesNewerReplacement(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), "config.lock")
+	lock, err := acquireKubeconfigFileLock(context.Background(), lockPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte("new lock owner")
+	if err := os.WriteFile(lockPath, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := lock.Close(); err != nil {
+		t.Fatalf("close old lock: %v", err)
+	}
+	contents, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("newer lock was removed: %v", err)
+	}
+	if !bytes.Equal(contents, replacement) {
+		t.Fatalf("newer lock changed: %q", contents)
 	}
 }
 

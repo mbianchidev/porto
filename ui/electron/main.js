@@ -1,8 +1,9 @@
 // Secure Porto desktop shell.
 //
 // This process never talks to the daemon's data on its own: it only opens a
-// window pointed at the local daemon's web UI, and starts the daemon when it
-// finds it unreachable. contextIsolation stays on and nodeIntegration stays off so the
+// window pointed at the local daemon's web UI, and starts the bundled daemon when
+// the endpoint is unreachable or belongs to a different binary build.
+// contextIsolation stays on and nodeIntegration stays off so the
 // loaded page runs like any other web page with no access to Node or desktop runtime
 // internals; the preload script intentionally exposes nothing.
 const { app, BrowserWindow, dialog, shell } = require('electron')
@@ -12,6 +13,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 
 const {
+  daemonBinaryIdentity,
   daemonProcesses,
   dashboardLoadAction,
   dockerBootstrapCommand,
@@ -206,7 +208,20 @@ async function stopDaemonProcesses(daemons) {
 }
 
 async function ensureDaemonRunning() {
-  let existing = await inspectDaemon({ daemonURL: DAEMON_URL })
+  let expectedDaemonIdentity = ''
+  if (app.isPackaged) {
+    try {
+      expectedDaemonIdentity = daemonBinaryIdentity(portoBinary())
+    } catch (error) {
+      console.error('Unable to identify the bundled Porto daemon', error)
+      return false
+    }
+  }
+  const inspectExpectedDaemon = () => inspectDaemon({
+    daemonURL: DAEMON_URL,
+    expectedDaemonIdentity,
+  })
+  let existing = await inspectExpectedDaemon()
   if (existing.ready && !app.isPackaged) return true
   let processes
   try {
@@ -225,7 +240,7 @@ async function ensureDaemonRunning() {
     if (!existing.reachable) {
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await delay(300)
-        existing = await inspectDaemon({ daemonURL: DAEMON_URL })
+        existing = await inspectExpectedDaemon()
         if (existing.ready) {
           const bundledExecutable = normalizedExecutablePath(portoBinary())
           if (processes.some((process) => normalizedExecutablePath(process.executable) === bundledExecutable)) {
@@ -247,7 +262,7 @@ async function ensureDaemonRunning() {
     }
     for (let attempt = 0; attempt < 30; attempt += 1) {
       await delay(300)
-      if ((await inspectDaemon({ daemonURL: DAEMON_URL })).ready) return true
+      if ((await inspectExpectedDaemon()).ready) return true
     }
   }
   return false

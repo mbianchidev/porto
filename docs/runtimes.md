@@ -338,8 +338,12 @@ entries. Those aliases remain user-managed and keep their namespace or other
 context settings while Porto refreshes the underlying endpoint and credentials.
 Deleting the Porto cluster removes its owned context, but leaves cluster/user
 entries that an external context still references. Writes use an advisory
-`<config>.lock`, mode `0600`, atomic replacement, and a one-time
-`~/.kube/config.porto-backup`.
+kubectl-compatible exclusive `<config>.lock` that is removed after each
+mutation, mode `0600`, atomic replacement, and a one-time
+`~/.kube/config.porto-backup`. Fresh locks created by kubectl or another
+credential tool are respected; locks owned by a dead Porto process are
+recovered immediately, and unreadable external locks are recovered only after
+they have remained stale for two minutes.
 
 Provider-specific registration behavior:
 

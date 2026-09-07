@@ -267,9 +267,6 @@ func mergeKubeconfigBundle(
 	upsertKubeconfigEntry(target, "clusters", bundle.clusterName, bundle.cluster)
 	upsertKubeconfigEntry(target, "users", bundle.userName, bundle.user)
 	upsertKubeconfigEntry(target, "contexts", bundle.contextName, bundle.context)
-	if currentContext, _ := target["current-context"].(string); currentContext == "" {
-		target["current-context"] = bundle.contextName
-	}
 	return nil
 }
 
@@ -372,7 +369,10 @@ func (r *KubeconfigRegistry) removeUnlocked(
 	return err
 }
 
-func (r *KubeconfigRegistry) withLock(ctx context.Context, operation func(targetPath string) error) error {
+func (r *KubeconfigRegistry) withLock(
+	ctx context.Context,
+	operation func(targetPath string) error,
+) (resultErr error) {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -389,12 +389,16 @@ func (r *KubeconfigRegistry) withLock(ctx context.Context, operation func(target
 	if err != nil {
 		return fmt.Errorf("lock global kubeconfig: %w", err)
 	}
-	operationErr := operation(targetPath)
-	closeErr := lock.Close()
-	if closeErr != nil {
-		closeErr = fmt.Errorf("unlock global kubeconfig: %w", closeErr)
-	}
-	return errors.Join(operationErr, closeErr)
+	defer func() {
+		if closeErr := lock.Close(); closeErr != nil {
+			resultErr = errors.Join(
+				resultErr,
+				fmt.Errorf("unlock global kubeconfig: %w", closeErr),
+			)
+		}
+	}()
+	resultErr = operation(targetPath)
+	return resultErr
 }
 
 func removeKubeconfigBundle(document map[string]any, bundle kubeconfigBundle) {
