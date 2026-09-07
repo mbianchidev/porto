@@ -260,10 +260,7 @@ func (i *containerInventory) recordEvent(event ContainerLifecycleEvent) bool {
 func (i *containerInventory) recordEventLocked(event ContainerLifecycleEvent) bool {
 	for index := len(i.snapshot.Events) - 1; index >= 0; index-- {
 		existing := i.snapshot.Events[index]
-		if existing.Topic == event.Topic &&
-			existing.ContainerID == event.ContainerID &&
-			existing.ExecID == event.ExecID &&
-			existing.Timestamp.Equal(event.Timestamp) {
+		if lifecycleEventsEqual(existing, event) {
 			return false
 		}
 	}
@@ -275,6 +272,29 @@ func (i *containerInventory) recordEventLocked(event ContainerLifecycleEvent) bo
 	}
 	i.snapshot.LastEventAt = event.Timestamp
 	return true
+}
+
+func lifecycleEventsEqual(left, right ContainerLifecycleEvent) bool {
+	if left.Topic != right.Topic ||
+		left.ContainerID != right.ContainerID ||
+		left.ExecID != right.ExecID ||
+		!left.Timestamp.Equal(right.Timestamp) ||
+		left.OOM != right.OOM ||
+		left.Reason != right.Reason {
+		return false
+	}
+	if !equalUint32Pointers(left.ExitCode, right.ExitCode) ||
+		!equalUint32Pointers(left.ExitSignal, right.ExitSignal) {
+		return false
+	}
+	return true
+}
+
+func equalUint32Pointers(left, right *uint32) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func (i *containerInventory) publishContainers(

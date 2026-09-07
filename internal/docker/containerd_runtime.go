@@ -407,12 +407,9 @@ func (r *grpcContainerRuntime) Snapshot(ctx context.Context) ([]Container, error
 	for _, process := range taskResponse.GetTasks() {
 		taskByContainer[process.GetContainerID()] = process
 	}
-	enrichment, enrichmentErr := r.compatibilityMetadata(ctx, records)
 	containers := make([]Container, 0, len(records))
 	for _, record := range records {
 		mapped := containerFromContainerd(record, taskByContainer[record.GetID()])
-		mergeContainerCompatibilityMetadata(&mapped, enrichment[record.GetID()])
-		mapped.InventoryError = combineInventoryError(mapped.InventoryError, enrichmentErr)
 		containers = append(containers, mapped)
 	}
 	return containers, nil
