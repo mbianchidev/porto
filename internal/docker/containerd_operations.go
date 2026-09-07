@@ -11,7 +11,9 @@ import (
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
+	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
+	"github.com/containerd/containerd/api/types"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -249,10 +251,7 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 	process, err := r.getTask(ctx, id)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
-			if containerErr := r.requireContainer(ctx, id); containerErr != nil {
-				return containerErr
-			}
-			return taskRecreationUnsupportedError(id, "container metadata exists without a task")
+			return r.recreateAndStartTask(ctx, id)
 		}
 		return containerdOperationError("inspect task for", id, err)
 	}
@@ -265,7 +264,7 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 	case tasktypes.Status_RUNNING:
 		return fmt.Errorf("%w: preserve existing handling for an already-running container", ErrUnsupported)
 	case tasktypes.Status_STOPPED:
-		return taskRecreationUnsupportedError(id, "the stopped task must be deleted and recreated")
+		return r.recreateAndStartTask(ctx, id)
 	default:
 		return fmt.Errorf("%w: container %q task is %s", ErrConflict, id, process.GetStatus())
 	}
@@ -355,17 +354,90 @@ func (r *grpcContainerRuntime) Restart(ctx context.Context, id string, _ int) er
 	process, err := r.getTask(ctx, id)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
-			if containerErr := r.requireContainer(ctx, id); containerErr != nil {
-				return containerErr
-			}
-			return taskRecreationUnsupportedError(id, "container metadata exists without a task")
+			return r.recreateAndStartTask(ctx, id)
 		}
 		return containerdOperationError("inspect task for", id, err)
 	}
-	return taskRecreationUnsupportedError(
-		id,
-		fmt.Sprintf("the existing %s task must be stopped, deleted, and recreated", process.GetStatus()),
+	if containerdTaskActive(process.GetStatus()) {
+		if err := r.Stop(ctx, id, 0); err != nil {
+			return err
+		}
+	}
+	return r.recreateAndStartTask(ctx, id)
+}
+
+func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id string) error {
+	if r.containers == nil || r.tasks == nil {
+		return taskRecreationUnsupportedError(id, "containerd task recreation services are unavailable")
+	}
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	response, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
 	)
+	if err != nil {
+		return containerdOperationError("inspect metadata for", id, err)
+	}
+	record := response.GetContainer()
+	if record == nil || record.GetSpec() == nil {
+		return taskRecreationUnsupportedError(id, "container metadata exists without a task and does not include an OCI spec")
+	}
+
+	var rootfs []*types.Mount
+	if record.GetSnapshotKey() != "" || record.GetSnapshotter() != "" {
+		if record.GetSnapshotKey() == "" || record.GetSnapshotter() == "" || r.snapshots == nil {
+			return fmt.Errorf("%w: container %q has incomplete snapshot metadata", ErrUnsupported, id)
+		}
+		mounts, mountErr := r.snapshots.Mounts(namespacedContext, &snapshotsapi.MountsRequest{
+			Snapshotter: record.GetSnapshotter(),
+			Key:         record.GetSnapshotKey(),
+		})
+		if mountErr != nil {
+			return containerdOperationError("resolve rootfs for", id, mountErr)
+		}
+		rootfs = mounts.GetMounts()
+	}
+
+	if process, taskErr := r.getTask(ctx, id); taskErr == nil {
+		if process.GetStatus() != tasktypes.Status_STOPPED &&
+			process.GetStatus() != tasktypes.Status_CREATED {
+			return fmt.Errorf("%w: container %q task is %s", ErrConflict, id, process.GetStatus())
+		}
+		if _, deleteErr := r.tasks.Delete(namespacedContext, &tasksapi.DeleteTaskRequest{ContainerID: id}); deleteErr != nil {
+			return containerdOperationError("delete stopped task for", id, deleteErr)
+		}
+	} else if status.Code(taskErr) != codes.NotFound {
+		return containerdOperationError("inspect task for", id, taskErr)
+	}
+
+	var runtimeOptions *anypb.Any
+	if runtime := record.GetRuntime(); runtime != nil {
+		if runtime.GetOptions() != nil {
+			runtimeOptions = proto.Clone(runtime.GetOptions()).(*anypb.Any)
+		}
+	}
+	_, err = r.tasks.Create(namespacedContext, &tasksapi.CreateTaskRequest{
+		ContainerID: id,
+		Rootfs:      rootfs,
+		Terminal:    ociSpecTerminal(record.GetSpec().GetValue()),
+		Options:     runtimeOptions,
+	})
+	if err != nil {
+		return containerdOperationError("recreate task for", id, err)
+	}
+	if _, err = r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id}); err != nil {
+		_, _ = r.tasks.Delete(namespacedContext, &tasksapi.DeleteTaskRequest{ContainerID: id})
+		return containerdOperationError("start recreated task for", id, err)
+	}
+	return nil
+}
+
+func ociSpecTerminal(encoded []byte) bool {
+	var spec specs.Spec
+	if err := json.Unmarshal(encoded, &spec); err != nil || spec.Process == nil {
+		return false
+	}
+	return spec.Process.Terminal
 }
 
 func (r *grpcContainerRuntime) Wait(ctx context.Context, id string) (int, error) {

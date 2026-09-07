@@ -20,6 +20,7 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	eventsapi "github.com/containerd/containerd/api/services/events/v1"
 	namespacesapi "github.com/containerd/containerd/api/services/namespaces/v1"
+	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -72,6 +73,7 @@ type grpcContainerRuntime struct {
 	namespace  string
 	backend    string
 	containers containersapi.ContainersClient
+	snapshots  snapshotsapi.SnapshotsClient
 	tasks      tasksapi.TasksClient
 	events     eventsapi.EventsClient
 	enrich     func(context.Context) ([]Container, error)
@@ -155,6 +157,7 @@ func newGRPCContainerRuntime(
 		namespace:         namespace,
 		backend:           backend,
 		containers:        containersapi.NewContainersClient(connection),
+		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),
 		events:            eventsapi.NewEventsClient(connection),
 		enrich:            enrich,

@@ -339,12 +339,11 @@ func TestContainerCapabilitiesReportUnsupportedDirectExecLifecycle(t *testing.T)
 	}
 }
 
-func TestContainerCapabilitiesReportUnsupportedTaskRecreation(t *testing.T) {
+func TestContainerCapabilitiesReportDirectTaskRecreation(t *testing.T) {
 	capability := containerCapabilities().TaskRecreation
-	if capability.Supported ||
-		!strings.Contains(capability.Reason, "compatibility path") ||
+	if !capability.Supported ||
 		!strings.Contains(capability.Reason, "OCI spec") ||
-		!strings.Contains(capability.Reason, "FIFO") {
+		!strings.Contains(capability.Reason, "stream") {
 		t.Fatalf("task recreation capability = %+v", capability)
 	}
 }

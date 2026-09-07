@@ -64,6 +64,11 @@ shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 `limactl shell` processes. Container lifecycle events and inventory failures
 also flow into the desktop Activity log.
 
+Lifecycle actions use containerd task APIs. Starting or restarting a stopped
+container recreates its task from the stored OCI spec and snapshot mounts, then
+starts it directly; attached stream recreation remains on the compatibility
+path because containerd does not retain nerdctl's daemon-local FIFO setup.
+
 ## Install the Docker context
 
 Porto Desktop creates or updates the named context automatically. For CLI-only
