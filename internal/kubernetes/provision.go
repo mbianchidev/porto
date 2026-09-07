@@ -30,6 +30,8 @@ var errClusterRuntimeCollision = errors.New("Kubernetes runtime already exists")
 const (
 	envoyGatewayManifestURL = "https://github.com/envoyproxy/gateway/releases/download/v1.9.1/install.yaml"
 	localPathManifestURL    = "https://raw.githubusercontent.com/rancher/local-path-provisioner/v0.0.37/deploy/local-path-storage.yaml"
+	vmKubeconfigTimeout     = 2 * time.Minute
+	vmKubeconfigRetryDelay  = 250 * time.Millisecond
 	portoGatewayManifest    = `apiVersion: v1
 kind: Namespace
 metadata:
@@ -66,6 +68,7 @@ type ClusterProvisioner struct {
 	vms            *vm.Manager
 	runner         runtimes.Runner
 	kubeconfigRoot string
+	kubeconfigs    *KubeconfigRegistry
 	metricsMu      sync.Mutex
 	metricsRuns    map[string]*metricsServerRun
 	ownershipMu    sync.Mutex
@@ -73,6 +76,18 @@ type ClusterProvisioner struct {
 	clusterNames   map[string]string
 	apiPortMu      sync.Mutex
 	apiPorts       map[int]struct{}
+}
+
+type ClusterProvisionerOption func(*ClusterProvisioner)
+
+func WithKubeconfigRegistry(registry *KubeconfigRegistry) ClusterProvisionerOption {
+	return func(provisioner *ClusterProvisioner) {
+		provisioner.kubeconfigs = registry
+	}
+}
+
+func (p *ClusterProvisioner) SetKubeconfigRegistry(registry *KubeconfigRegistry) {
+	p.kubeconfigs = registry
 }
 
 func (p *ClusterProvisioner) runtimeNameReserved(runtimeName, owner string) bool {
@@ -206,14 +221,19 @@ type Cluster struct {
 	StateSince     string   `json:"stateSince,omitempty"`
 }
 
-func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRoot string) *ClusterProvisioner {
+func NewClusterProvisioner(
+	vms *vm.Manager,
+	runner runtimes.Runner,
+	kubeconfigRoot string,
+	options ...ClusterProvisionerOption,
+) *ClusterProvisioner {
 	if vms == nil {
 		vms = vm.New(runner)
 	}
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &ClusterProvisioner{
+	provisioner := &ClusterProvisioner{
 		vms:            vms,
 		runner:         runner,
 		kubeconfigRoot: kubeconfigRoot,
@@ -222,6 +242,10 @@ func NewClusterProvisioner(vms *vm.Manager, runner runtimes.Runner, kubeconfigRo
 		clusterNames:   make(map[string]string),
 		apiPorts:       make(map[int]struct{}),
 	}
+	for _, option := range options {
+		option(provisioner)
+	}
+	return provisioner
 }
 
 func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
@@ -236,6 +260,18 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	request.RunningAt = ""
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
+	}
+	if p.kubeconfigs != nil {
+		if err := p.kubeconfigs.CheckAvailable(
+			ctx,
+			clusterContextName(request),
+			clusterKubeconfigOwner(request),
+		); err != nil {
+			if errors.Is(err, errKubeconfigContextCollision) {
+				return Cluster{}, fmt.Errorf("prepare Kubernetes context registration: %w", err)
+			}
+			log.Printf("preflight Kubernetes context registration for %s: %v", request.Name, err)
+		}
 	}
 	releaseName, err := p.reserveClusterName(request.Name, request.Name)
 	if err != nil {
@@ -391,28 +427,8 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		}
 	}
 
-	kubeconfigOutput, err := p.clusterKubeconfig(ctx, request.Provider, serverName)
-	if err != nil {
-		return Cluster{}, fmt.Errorf("read Kubernetes kubeconfig: %w", err)
-	}
 	contextName := clusterContextName(request)
-	kubeconfig := strings.ReplaceAll(
-		string(kubeconfigOutput),
-		"https://127.0.0.1:6443",
-		"https://127.0.0.1:"+strconv.Itoa(request.APIPort),
-	)
-	kubeconfig = strings.ReplaceAll(
-		kubeconfig,
-		"https://"+serverIP+":6443",
-		"https://127.0.0.1:"+strconv.Itoa(request.APIPort),
-	)
-	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
-		return Cluster{}, fmt.Errorf("create kubeconfig directory: %w", err)
-	}
-	if err := os.WriteFile(kubeconfigPath, []byte(kubeconfig), 0o600); err != nil {
-		return Cluster{}, fmt.Errorf("write kubeconfig: %w", err)
-	}
-	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
 		return Cluster{}, err
 	}
 	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
@@ -433,7 +449,184 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
 	}
+	if _, registrationErr := p.registerKubeconfig(ctx, request.Name); registrationErr != nil {
+		warning, fatalErr := kubeconfigRegistrationResult(request.Name, registrationErr)
+		if fatalErr != nil {
+			err = fatalErr
+			return Cluster{}, err
+		}
+		cluster.Message = warning
+	}
 	return cluster, nil
+}
+
+func (p *ClusterProvisioner) refreshVMKubeconfig(
+	ctx context.Context,
+	request ClusterRequest,
+	serverName string,
+) error {
+	if request.APIPort <= 0 {
+		return fmt.Errorf("Kubernetes API port for cluster %s is unavailable", request.Name)
+	}
+	refreshContext, cancel := context.WithTimeout(ctx, vmKubeconfigTimeout)
+	defer cancel()
+	var kubeconfigOutput []byte
+	var err error
+	for {
+		kubeconfigOutput, err = p.clusterKubeconfig(refreshContext, request.Provider, serverName)
+		if err == nil {
+			break
+		}
+		select {
+		case <-refreshContext.Done():
+			return errors.Join(fmt.Errorf("read Kubernetes kubeconfig: %w", err), refreshContext.Err())
+		case <-time.After(vmKubeconfigRetryDelay):
+		}
+	}
+	server := "https://127.0.0.1:" + strconv.Itoa(request.APIPort)
+	kubeconfig, err := rewriteKubeconfigServer(kubeconfigOutput, server)
+	if err != nil {
+		return fmt.Errorf("set Kubernetes API endpoint: %w", err)
+	}
+	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
+	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
+		return fmt.Errorf("create kubeconfig directory: %w", err)
+	}
+	staged, err := os.CreateTemp(filepath.Dir(kubeconfigPath), ".porto-kubeconfig-refresh-*")
+	if err != nil {
+		return fmt.Errorf("create staged kubeconfig: %w", err)
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+	if err := staged.Chmod(0o600); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("secure staged kubeconfig: %w", err)
+	}
+	if _, err := staged.Write(kubeconfig); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("write staged kubeconfig: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("sync staged kubeconfig: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("close staged kubeconfig: %w", err)
+	}
+	if err := p.normalizeKubeconfig(
+		refreshContext,
+		stagedPath,
+		clusterContextName(request),
+	); err != nil {
+		return err
+	}
+	if err := os.Rename(stagedPath, kubeconfigPath); err != nil {
+		return fmt.Errorf("publish refreshed kubeconfig: %w", err)
+	}
+	return nil
+}
+
+func (p *ClusterProvisioner) registerKubeconfig(
+	ctx context.Context,
+	clusterName string,
+) (KubeconfigRegistration, error) {
+	if p.kubeconfigs == nil {
+		return KubeconfigRegistration{}, nil
+	}
+	request, err := p.readClusterMetadata(clusterName)
+	if err != nil {
+		return KubeconfigRegistration{}, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
+	}
+	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+	expectedContext := clusterContextName(request)
+	contextName, err := KubeconfigContextName(kubeconfigPath)
+	if err != nil {
+		return KubeconfigRegistration{}, fmt.Errorf("read private Kubernetes context: %w", err)
+	}
+	if contextName != expectedContext {
+		if err := p.normalizeKubeconfig(ctx, kubeconfigPath, expectedContext); err != nil {
+			return KubeconfigRegistration{}, fmt.Errorf("migrate private Kubernetes context: %w", err)
+		}
+	}
+	registration, err := p.kubeconfigs.Register(
+		ctx,
+		kubeconfigPath,
+		clusterKubeconfigOwner(request),
+	)
+	if err != nil {
+		return KubeconfigRegistration{}, fmt.Errorf("register Kubernetes context: %w", err)
+	}
+	return registration, nil
+}
+
+func clusterKubeconfigOwner(request ClusterRequest) KubeconfigOwner {
+	return KubeconfigOwner{
+		Cluster:  request.Name,
+		Provider: normalizeProvider(request.Provider),
+	}
+}
+
+func kubeconfigRegistrationResult(clusterName string, err error) (string, error) {
+	if err == nil {
+		return "", nil
+	}
+	if errors.Is(err, errKubeconfigContextCollision) {
+		return "", err
+	}
+	warning := fmt.Sprintf(
+		"Cluster is ready, but Porto could not update the global Kubernetes context: %v",
+		err,
+	)
+	log.Printf("register Kubernetes context for %s: %v", clusterName, err)
+	return warning, nil
+}
+
+func (p *ClusterProvisioner) ReconcileKubeconfigs(ctx context.Context) error {
+	if p.kubeconfigs == nil {
+		return nil
+	}
+	if strings.TrimSpace(p.kubeconfigRoot) == "" {
+		return errors.New("Porto Kubernetes kubeconfig directory is empty")
+	}
+	entries, err := os.ReadDir(p.kubeconfigRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return p.kubeconfigs.Prune(ctx, map[string]struct{}{})
+	}
+	if err != nil {
+		return fmt.Errorf("list Kubernetes cluster metadata: %w", err)
+	}
+	desiredContexts := make(map[string]struct{})
+	var reconcileErrors []error
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, readErr := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
+		if readErr != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("read Kubernetes cluster metadata %s: %w", entry.Name(), readErr))
+			continue
+		}
+		var request ClusterRequest
+		if decodeErr := json.Unmarshal(data, &request); decodeErr != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("decode Kubernetes cluster metadata %s: %w", entry.Name(), decodeErr))
+			continue
+		}
+		if request.Phase != "" || !clusterNamePattern.MatchString(request.Name) {
+			continue
+		}
+		registration, registerErr := p.registerKubeconfig(ctx, request.Name)
+		if registerErr != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("reconcile cluster %s: %w", request.Name, registerErr))
+			continue
+		}
+		desiredContexts[registration.Context] = struct{}{}
+	}
+	if len(reconcileErrors) == 0 {
+		if pruneErr := p.kubeconfigs.Prune(ctx, desiredContexts); pruneErr != nil {
+			reconcileErrors = append(reconcileErrors, fmt.Errorf("prune stale Kubernetes contexts: %w", pruneErr))
+		}
+	}
+	return errors.Join(reconcileErrors...)
 }
 
 func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequest) (cluster Cluster, err error) {
@@ -539,7 +732,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	if err != nil {
 		return Cluster{}, runtimes.CommandError("read kind API endpoint", serverOutput, err)
 	}
-	return Cluster{
+	cluster = Cluster{
 		Name:           request.Name,
 		Provider:       "kind",
 		State:          "running",
@@ -547,7 +740,16 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 		KubeconfigPath: kubeconfigPath,
 		Server:         strings.TrimSpace(string(serverOutput)),
 		Nodes:          nodes,
-	}, nil
+	}
+	if _, registrationErr := p.registerKubeconfig(ctx, request.Name); registrationErr != nil {
+		warning, fatalErr := kubeconfigRegistrationResult(request.Name, registrationErr)
+		if fatalErr != nil {
+			err = fatalErr
+			return Cluster{}, err
+		}
+		cluster.Message = warning
+	}
+	return cluster, nil
 }
 
 func writeKindConfig(request ClusterRequest) (string, error) {
@@ -694,6 +896,16 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 	}
 	if len(deleteErrors) == 0 {
 		kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+		if p.kubeconfigs != nil {
+			if err := p.kubeconfigs.Remove(
+				ctx,
+				clusterContextName(request),
+				kubeconfigPath,
+				clusterKubeconfigOwner(request),
+			); err != nil {
+				deleteErrors = append(deleteErrors, fmt.Errorf("remove registered Kubernetes context: %w", err))
+			}
+		}
 		if err := os.Remove(kubeconfigPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 			deleteErrors = append(deleteErrors, err)
 		}
@@ -821,18 +1033,12 @@ func (p *ClusterProvisioner) ensureKindRuntimeAbsent(ctx context.Context, reques
 }
 
 func (p *ClusterProvisioner) ensureVMRuntimeAbsent(ctx context.Context, request ClusterRequest) error {
-	instances, err := p.vms.ListAll(ctx)
+	instances, err := p.vms.Existing(ctx, clusterNodeNames(request))
 	if err != nil {
 		return fmt.Errorf("inspect existing Kubernetes node VMs: %w", err)
 	}
-	expected := make(map[string]struct{})
-	for _, name := range clusterNodeNames(request) {
-		expected[name] = struct{}{}
-	}
 	for _, instance := range instances {
-		if _, exists := expected[instance.Name]; exists {
-			return fmt.Errorf("Kubernetes node VM %s already exists", instance.Name)
-		}
+		return fmt.Errorf("Kubernetes node VM %s already exists", instance.Name)
 	}
 	return nil
 }
@@ -1300,7 +1506,7 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 	return nil
 }
 
-func (p *ClusterProvisioner) Rename(_ context.Context, clusterName, newName string) error {
+func (p *ClusterProvisioner) Rename(ctx context.Context, clusterName, newName string) error {
 	if !clusterNamePattern.MatchString(clusterName) || !clusterNamePattern.MatchString(newName) {
 		return fmt.Errorf("cluster names must match %s", clusterNamePattern)
 	}
@@ -1311,18 +1517,31 @@ func (p *ClusterProvisioner) Rename(_ context.Context, clusterName, newName stri
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(request), request.Name)
+	oldRequest := request
+	request.RuntimeName = clusterRuntimeName(request)
+	request.Name = newName
+	if p.kubeconfigs != nil {
+		if err := p.kubeconfigs.CheckAvailable(
+			ctx,
+			clusterContextName(request),
+			clusterKubeconfigOwner(request),
+		); err != nil {
+			return fmt.Errorf("prepare renamed Kubernetes context registration: %w", err)
+		}
+	}
+	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(oldRequest), oldRequest.Name)
 	if err != nil {
 		return err
 	}
 	defer releaseRuntime()
-	releaseName, err := p.reserveClusterName(newName, request.Name)
+	releaseName, err := p.reserveClusterName(newName, oldRequest.Name)
 	if err != nil {
 		return err
 	}
 	defer releaseName()
 	oldMetadataPath := p.clusterMetadataPath(clusterName)
 	oldKubeconfigPath := p.clusterKubeconfigPath(clusterName)
+	oldContextName := clusterContextName(oldRequest)
 	newMetadataPath := p.clusterMetadataPath(newName)
 	newKubeconfigPath := p.clusterKubeconfigPath(newName)
 	for _, path := range []string{newMetadataPath, newKubeconfigPath} {
@@ -1336,8 +1555,6 @@ func (p *ClusterProvisioner) Rename(_ context.Context, clusterName, newName stri
 	if err != nil {
 		return fmt.Errorf("read Kubernetes kubeconfig: %w", err)
 	}
-	request.RuntimeName = clusterRuntimeName(request)
-	request.Name = newName
 	normalized, err := normalizeKubeconfigJSON(oldKubeconfig, clusterContextName(request))
 	if err != nil {
 		return err
@@ -1374,6 +1591,36 @@ func (p *ClusterProvisioner) Rename(_ context.Context, clusterName, newName stri
 		_ = os.Remove(newKubeconfigPath)
 		_ = os.Remove(newMetadataPath)
 		return fmt.Errorf("remove old Kubernetes metadata: %w", err)
+	}
+	if p.kubeconfigs != nil {
+		if _, err := p.kubeconfigs.Rename(
+			ctx,
+			oldContextName,
+			newKubeconfigPath,
+			clusterKubeconfigOwner(oldRequest),
+			clusterKubeconfigOwner(request),
+		); err != nil {
+			var rollbackErrors []error
+			if ownerRenamed {
+				rollbackErrors = append(rollbackErrors, p.vms.RenameKubernetesOwner(newName, clusterName))
+			}
+			rollbackErrors = append(
+				rollbackErrors,
+				writeFileAtomic(oldKubeconfigPath, oldKubeconfig),
+				p.writeClusterMetadata(oldRequest),
+			)
+			if removeErr := os.Remove(newKubeconfigPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				rollbackErrors = append(rollbackErrors, removeErr)
+			}
+			if removeErr := os.Remove(newMetadataPath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+				rollbackErrors = append(rollbackErrors, removeErr)
+			}
+			rollbackErr := errors.Join(rollbackErrors...)
+			if rollbackErr != nil {
+				rollbackErr = fmt.Errorf("roll back cluster rename: %w", rollbackErr)
+			}
+			return errors.Join(fmt.Errorf("rename registered Kubernetes context: %w", err), rollbackErr)
+		}
 	}
 	return nil
 }
@@ -1568,7 +1815,14 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 	defer releaseRuntime()
 	request.Provider = normalizeProvider(request.Provider)
 	if request.Provider != "kind" {
-		return false, p.setRunning(ctx, clusterName, request, true)
+		if err := p.setRunning(ctx, clusterName, request, true); err != nil {
+			return false, err
+		}
+		if _, registrationErr := p.registerKubeconfig(ctx, clusterName); registrationErr != nil {
+			_, fatalErr := kubeconfigRegistrationResult(clusterName, registrationErr)
+			return false, fatalErr
+		}
+		return false, nil
 	}
 	nodes := kindNodeNames(request)
 	if len(nodes) == 0 {
@@ -1583,7 +1837,14 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 		return false, runtimes.CommandError("inspect kind cluster nodes", output, err)
 	}
 	if slices.Contains(strings.Fields(string(output)), nodes[0]) {
-		return false, p.setRunning(ctx, clusterName, request, true)
+		if err := p.setRunning(ctx, clusterName, request, true); err != nil {
+			return false, err
+		}
+		if _, registrationErr := p.registerKubeconfig(ctx, clusterName); registrationErr != nil {
+			_, fatalErr := kubeconfigRegistrationResult(clusterName, registrationErr)
+			return false, fatalErr
+		}
+		return false, nil
 	}
 	previousKubeconfig, kubeconfigErr := os.ReadFile(p.clusterKubeconfigPath(clusterName))
 	if kubeconfigErr != nil && !errors.Is(kubeconfigErr, os.ErrNotExist) {
@@ -1708,10 +1969,9 @@ func (p *ClusterProvisioner) setRunning(
 	}
 	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
 	contextName := clusterContextName(request)
-	if request.Provider == "k3s" {
-		if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
-			return err
-		}
+	serverName := clusterMachineName(clusterRuntimeName(request), "server", 1)
+	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
+		return err
 	}
 	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
 		return err
@@ -2202,7 +2462,7 @@ func (p *ClusterProvisioner) portoDockerEnv() []string {
 func (p *ClusterProvisioner) normalizeKubeconfig(ctx context.Context, kubeconfigPath, name string) error {
 	output, err := p.runner.Run(ctx, runtimes.Command{
 		Name: "kubectl",
-		Args: []string{"--kubeconfig", kubeconfigPath, "config", "view", "--raw", "-o", "json"},
+		Args: []string{"--kubeconfig", kubeconfigPath, "config", "view", "--raw", "-o", "json", "--flatten"},
 	})
 	if err != nil {
 		return runtimes.CommandError("normalize Kubernetes kubeconfig", output, err)

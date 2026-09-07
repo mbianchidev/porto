@@ -1,5 +1,7 @@
 const path = require('node:path')
+const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
+const fs = require('node:fs')
 const { promisify } = require('node:util')
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
@@ -10,6 +12,7 @@ const execFileAsync = promisify(execFile)
 
 async function inspectDaemon({
   daemonURL = DEFAULT_DAEMON_URL,
+  expectedDaemonIdentity = '',
   fetchImpl = globalThis.fetch,
   timeoutMs = DEFAULT_TIMEOUT_MS,
 } = {}) {
@@ -24,6 +27,7 @@ async function inspectDaemon({
     const ready = health.status === 'ok'
       && health.apiVersion === EXPECTED_API_VERSION
       && health.dashboardReady === true
+      && (expectedDaemonIdentity === '' || health.daemonIdentity === expectedDaemonIdentity)
     return { reachable: true, ready, health }
   } catch {
     return { reachable: false, ready: false, health: null }
@@ -34,6 +38,12 @@ async function inspectDaemon({
 
 async function isDaemonReady(options) {
   return (await inspectDaemon(options)).ready
+}
+
+function daemonBinaryIdentity(binary, {
+  readFileImpl = fs.readFileSync,
+} = {}) {
+  return crypto.createHash('sha256').update(readFileImpl(binary)).digest('hex')
 }
 
 async function inspectDockerStatus({
@@ -216,6 +226,7 @@ function resolvePortoBinary({
 }
 
 module.exports = {
+  daemonBinaryIdentity,
   daemonProcessIDs,
   daemonProcesses,
   dashboardLoadAction,

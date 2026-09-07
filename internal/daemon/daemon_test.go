@@ -160,13 +160,17 @@ func TestHealthReportsDashboardReadiness(t *testing.T) {
 			t.Fatalf("health status = %d: %s", response.Code, response.Body.String())
 		}
 		var health struct {
-			DashboardReady bool `json:"dashboardReady"`
+			DashboardReady bool   `json:"dashboardReady"`
+			DaemonIdentity string `json:"daemonIdentity"`
 		}
 		if err := json.NewDecoder(response.Body).Decode(&health); err != nil {
 			t.Fatalf("decode health: %v", err)
 		}
 		if health.DashboardReady != want {
 			t.Fatalf("dashboardReady = %t, want %t", health.DashboardReady, want)
+		}
+		if health.DaemonIdentity == "" {
+			t.Fatal("daemonIdentity is empty")
 		}
 	}
 
@@ -260,6 +264,24 @@ func TestRuntimeFeaturesDefaultDockerOnAndKubernetesEnable(t *testing.T) {
 	}
 	if !settings.KubernetesEnabled {
 		t.Fatal("Kubernetes feature was not persisted")
+	}
+}
+
+func TestRunRejectsUnavailableKubernetesConfigDirectory(t *testing.T) {
+	portoHome := filepath.Join(t.TempDir(), "porto-home")
+	if err := os.WriteFile(portoHome, []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PORTO_HOME", portoHome)
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+
+	err = New(st, nil).Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "Kubernetes config directory") {
+		t.Fatalf("Run error = %v", err)
 	}
 }
 

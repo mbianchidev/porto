@@ -1864,6 +1864,40 @@ func TestCreateVMClusterReusesRenamedClusterOldName(t *testing.T) {
 	}
 }
 
+func TestCreateVMClusterRejectsInstanceMissingFromGlobalLimaList(t *testing.T) {
+	baseRunner := newFakeRunner()
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch joined {
+		case "list --json":
+			return nil, nil
+		case "list --json porto-dev-server-1":
+			return []byte(`{"name":"porto-dev-server-1","status":"Broken","vmType":"vz"}` + "\n"), nil
+		default:
+			return baseRunner.Run(context.Background(), command)
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+
+	_, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name:         "dev",
+		Provider:     "k3s",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	})
+	if err == nil || !strings.Contains(err.Error(), "porto-dev-server-1") ||
+		!strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("create error = %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	for _, command := range runner.commands {
+		if command.Name == "limactl" && len(command.Args) > 0 && command.Args[0] == "create" {
+			t.Fatalf("Lima create ran after exact instance collision: %+v", runner.commands)
+		}
+	}
+}
+
 func TestRuntimeNameReservationSerializesClusterMutations(t *testing.T) {
 	provisioner := NewClusterProvisioner(vm.New(newFakeRunner()), newFakeRunner(), t.TempDir())
 	release, err := provisioner.reserveRuntimeName("dev", "dev")

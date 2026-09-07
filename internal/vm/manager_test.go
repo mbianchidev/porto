@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"runtime"
 	"strings"
@@ -38,9 +39,44 @@ type brokenInstanceRunner struct {
 
 type blockingResourceRunner struct{}
 
+type reusedInstanceRunner struct {
+	mu       sync.Mutex
+	commands []runtimes.Command
+	deleted  bool
+}
+
+type exactListRunner struct {
+	output []byte
+	err    error
+}
+
 func (blockingResourceRunner) Run(ctx context.Context, _ runtimes.Command) ([]byte, error) {
 	<-ctx.Done()
 	return nil, ctx.Err()
+}
+
+func (r *reusedInstanceRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, command)
+	joined := strings.Join(command.Args, " ")
+	switch {
+	case len(command.Args) > 0 && command.Args[0] == "create":
+		return []byte(`time="2026-09-04T18:56:25+02:00" level=info msg="Using the existing instance ` + "`test-vm`" + `"`), nil
+	case joined == "start test-vm":
+		return []byte("existing instance failed to start"), errors.New("exit status 1")
+	case joined == "list --json":
+		return []byte(`{"name":"test-vm","status":"Stopped","vmType":"vz"}` + "\n"), nil
+	case joined == "delete --force test-vm":
+		r.deleted = true
+		return nil, nil
+	default:
+		return nil, nil
+	}
+}
+
+func (r exactListRunner) Run(_ context.Context, _ runtimes.Command) ([]byte, error) {
+	return r.output, r.err
 }
 
 func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
@@ -180,6 +216,33 @@ func TestCreateUsesConfiguredResources(t *testing.T) {
 		if !strings.Contains(createCommand, expected) {
 			t.Errorf("create command %q missing %q", createCommand, expected)
 		}
+	}
+}
+
+func TestCreateDoesNotAdoptOrDeleteReusedLimaInstance(t *testing.T) {
+	runner := &reusedInstanceRunner{}
+	stateDir := t.TempDir()
+	manager := NewWithStateDir(runner, stateDir)
+
+	_, err := manager.CreateNode(context.Background(), CreateRequest{
+		Name: "test-vm", Owner: "dev", Image: "ubuntu-24.04",
+		CPUs: 2, MemoryMiB: 2048, DiskGiB: 20, Start: true,
+	})
+	if err == nil || !strings.Contains(err.Error(), "already exists") {
+		t.Fatalf("create error = %v", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.deleted {
+		t.Fatal("pre-existing Lima instance was deleted")
+	}
+	for _, command := range runner.commands {
+		if len(command.Args) > 0 && command.Args[0] == "start" {
+			t.Fatalf("pre-existing Lima instance was started: %+v", runner.commands)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "test-vm.json")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Porto ownership metadata was written for reused instance: %v", err)
 	}
 }
 
@@ -441,6 +504,33 @@ func TestListIgnoresLimaDiagnostics(t *testing.T) {
 	}
 	if len(instances) != 1 || instances[0].Name != "test-vm" {
 		t.Fatalf("instances = %+v", instances)
+	}
+}
+
+func TestExistingAcceptsMatchesAlongsideMissingInstanceDiagnostics(t *testing.T) {
+	output := []byte(
+		`{"name":"test-vm","status":"Broken","vmType":"vz"}` + "\n" +
+			`time="2026-09-07T15:38:13+02:00" level=warning msg="No instance matching missing-vm found."` + "\n" +
+			`time="2026-09-07T15:38:13+02:00" level=fatal msg="unmatched instances"` + "\n",
+	)
+	instances, err := New(exactListRunner{output: output, err: errors.New("exit status 1")}).
+		Existing(context.Background(), []string{"test-vm", "missing-vm"})
+	if err != nil {
+		t.Fatalf("inspect exact instances: %v", err)
+	}
+	if len(instances) != 1 || instances[0].Name != "test-vm" {
+		t.Fatalf("instances = %+v", instances)
+	}
+}
+
+func TestExistingSurfacesBrokenInstanceDiagnostics(t *testing.T) {
+	output := []byte(
+		`time="2026-09-07T15:38:13+02:00" level=fatal msg="failed to load instance configuration"` + "\n",
+	)
+	_, err := New(exactListRunner{output: output, err: errors.New("exit status 1")}).
+		Existing(context.Background(), []string{"test-vm"})
+	if err == nil || !strings.Contains(err.Error(), "failed to load instance configuration") {
+		t.Fatalf("inspect error = %v", err)
 	}
 }
 

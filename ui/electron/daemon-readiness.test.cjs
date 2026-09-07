@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict')
+const crypto = require('node:crypto')
 const test = require('node:test')
 
 const {
+  daemonBinaryIdentity,
   daemonProcessIDs,
   daemonProcesses,
   dashboardLoadAction,
@@ -33,6 +35,47 @@ test('accepts a compatible daemon with a dashboard', async () => {
   })
 
   assert.equal(ready, true)
+})
+
+test('requires the packaged daemon binary identity to match', async () => {
+  const matching = await isDaemonReady({
+    expectedDaemonIdentity: 'new-binary',
+    fetchImpl: async () => response({
+      status: 'ok',
+      apiVersion: 28,
+      dashboardReady: true,
+      daemonIdentity: 'new-binary',
+    }),
+  })
+  const stale = await isDaemonReady({
+    expectedDaemonIdentity: 'new-binary',
+    fetchImpl: async () => response({
+      status: 'ok',
+      apiVersion: 28,
+      dashboardReady: true,
+      daemonIdentity: 'old-binary',
+    }),
+  })
+  const legacy = await isDaemonReady({
+    expectedDaemonIdentity: 'new-binary',
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 28, dashboardReady: true }),
+  })
+
+  assert.equal(matching, true)
+  assert.equal(stale, false)
+  assert.equal(legacy, false)
+})
+
+test('hashes the bundled daemon binary for readiness matching', () => {
+  const contents = Buffer.from('porto-daemon')
+  const identity = daemonBinaryIdentity('/bundle/porto', {
+    readFileImpl: (file) => {
+      assert.equal(file, '/bundle/porto')
+      return contents
+    },
+  })
+
+  assert.equal(identity, crypto.createHash('sha256').update(contents).digest('hex'))
 })
 
 test('rejects an older daemon without dashboard readiness metadata', async () => {

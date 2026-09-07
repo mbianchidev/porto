@@ -55,10 +55,12 @@ bash scripts/package-desktop-installer.sh darwin arm64 1.0.0 dist
 # Use: windows amd64 1.0.0 dist on Windows.
 ```
 
-Packaged macOS and Linux apps replace incompatible older daemons and
-automatically provision the bundled Porto container runtime on first launch.
-Packaged apps always start the daemon executable embedded in their resources;
-they never require `PORTO_BINARY` or a separate `porto` executable on `PATH`.
+Packaged apps compare the bundled daemon's SHA-256 identity with the identity
+cached by the running process and replace it when they differ, including
+same-version rebuilds installed at the same path. They automatically provision
+the bundled Porto container runtime on first launch. Packaged apps always start
+the daemon executable embedded in their resources; they never require
+`PORTO_BINARY` or a separate `porto` executable on `PATH`.
 
 `scripts/bundle-desktop-runtime.sh` creates the runtime directory used by
 releases. Packaged apps resolve the bundled binary and tools from Porto's
