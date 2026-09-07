@@ -772,7 +772,17 @@ func mapContainerNetworks(container *Container, labels map[string]string) error 
 }
 
 func mapContainerHealth(container *Container, labels map[string]string) error {
-	if labels[nerdctlHealthcheckLabel] == "" {
+	encodedCheck := labels[nerdctlHealthcheckLabel]
+	if encodedCheck == "" {
+		container.Health.Status = "disabled"
+		return nil
+	}
+	var healthcheck ContainerHealthcheck
+	if err := json.Unmarshal([]byte(encodedCheck), &healthcheck); err != nil {
+		return fmt.Errorf("decode container healthcheck: %w", err)
+	}
+	container.Healthcheck = &healthcheck
+	if len(healthcheck.Test) == 0 || healthcheck.Test[0] == "" || healthcheck.Test[0] == "NONE" {
 		container.Health.Status = "disabled"
 		return nil
 	}
@@ -788,9 +798,15 @@ func mapContainerHealth(container *Container, labels map[string]string) error {
 	if err := json.Unmarshal([]byte(encoded), &state); err != nil {
 		return fmt.Errorf("decode container health state: %w", err)
 	}
-	container.Health.Status = firstNonEmpty(state.Status, "starting")
+	switch state.Status {
+	case "", "starting", "healthy", "unhealthy":
+		container.Health.Status = firstNonEmpty(state.Status, "starting")
+	case "none":
+		container.Health.Status = "disabled"
+	default:
+		return fmt.Errorf("decode container health state: unsupported status %q", state.Status)
+	}
 	container.Health.FailingStreak = state.FailingStreak
-	container.Health.UpdatedAt = container.UpdatedAt
 	return nil
 }
 

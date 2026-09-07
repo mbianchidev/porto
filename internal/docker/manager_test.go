@@ -3,7 +3,6 @@ package docker
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -367,23 +366,6 @@ func TestRunContainerCleansUpWithFreshContextAfterCanceledStart(t *testing.T) {
 	}
 	if !runner.removed {
 		t.Fatal("created container was not removed after start failure")
-	}
-}
-
-func TestHealthcheckDueUsesNewestResult(t *testing.T) {
-	document := json.RawMessage(`{
-		"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},
-		"State":{"Running":true,"Health":{"Log":[
-			{"End":"2026-09-01T12:00:50Z"},
-			{"End":"2026-09-01T12:00:00Z"}
-		]}}
-	}`)
-	due, _, err := healthcheckDue(document, time.Date(2026, 9, 1, 12, 1, 0, 0, time.UTC))
-	if err != nil {
-		t.Fatalf("healthcheckDue: %v", err)
-	}
-	if due {
-		t.Fatal("healthcheck was due before the newest result interval elapsed")
 	}
 }
 

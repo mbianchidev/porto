@@ -8,7 +8,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
+	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
@@ -76,6 +78,21 @@ func (f *fakeContainerOperations) UpdateResources(_ context.Context, id string, 
 		update.NanoCPUs,
 		update.Memory,
 		update.MemorySwap,
+	))
+}
+
+func (f *fakeContainerOperations) UpdateHealth(
+	_ context.Context,
+	id string,
+	healthcheck *ContainerHealthcheck,
+) error {
+	return f.record(fmt.Sprintf(
+		"update-health %s test=%v interval=%s timeout=%s retries=%d",
+		id,
+		healthcheck.Test,
+		healthcheck.Interval,
+		healthcheck.Timeout,
+		healthcheck.Retries,
 	))
 }
 
@@ -198,6 +215,99 @@ func TestManagerRoutesResourceUpdatesThroughContainerOperations(t *testing.T) {
 	want := []string{"update demo cpu=2000000000 memory=1024 swap=2048", "close"}
 	if !reflect.DeepEqual(operations.calls, want) {
 		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerRoutesHealthUpdatesThroughMockableContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	manager := managerWithContainerOperations(operations)
+	err := manager.UpdateContainer(context.Background(), "demo", ContainerUpdate{
+		Healthcheck: &ContainerHealthcheck{
+			Test:     []string{"CMD-SHELL", "true"},
+			Interval: 30 * time.Second,
+			Timeout:  5 * time.Second,
+			Retries:  3,
+		},
+	})
+	if err != nil {
+		t.Fatalf("update container health: %v", err)
+	}
+	want := []string{
+		"update-health demo test=[CMD-SHELL true] interval=30s timeout=5s retries=3",
+		"close",
+	}
+	if !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerDoesNotFallBackWhenDirectHealthUpdateIsUnsupported(t *testing.T) {
+	call := "update-health demo test=[CMD-SHELL true] interval=30s timeout=5s retries=3"
+	operations := &fakeContainerOperations{
+		errs: map[string]error{call: ErrUnsupported},
+	}
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl healthcheck demo": nil},
+		errors:  map[string]error{},
+	}
+	manager := New(runner)
+	manager.operationsConnector = func(context.Context) (containerOperations, error) {
+		return operations, nil
+	}
+	err := manager.UpdateContainer(context.Background(), "demo", ContainerUpdate{
+		Healthcheck: &ContainerHealthcheck{
+			Test:     []string{"CMD-SHELL", "true"},
+			Interval: 30 * time.Second,
+			Timeout:  5 * time.Second,
+			Retries:  3,
+		},
+	})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("health update error = %v, want ErrUnsupported", err)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported health update fell back to commands: %+v", runner.commands)
+	}
+}
+
+func TestDockerAPIReportsUnsupportedDirectHealthUpdate(t *testing.T) {
+	call := "update-health demo test=[CMD-SHELL true] interval=30s timeout=5s retries=3"
+	operations := &fakeContainerOperations{
+		errs: map[string]error{call: ErrUnsupported},
+	}
+	response := httptest.NewRecorder()
+	NewAPI(managerWithContainerOperations(operations), "").ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1.47/containers/demo/update",
+			strings.NewReader(`{
+				"Healthcheck":{
+					"Test":["CMD-SHELL","true"],
+					"Interval":30000000000,
+					"Timeout":5000000000,
+					"Retries":3
+				}
+			}`),
+		),
+	)
+	if response.Code != http.StatusNotImplemented {
+		t.Fatalf("health update response = %d: %s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
+		t.Fatalf("health update response did not expose typed error: %s", response.Body.String())
+	}
+}
+
+func TestContainerdHealthUpdateReturnsTypedUnsupportedError(t *testing.T) {
+	err := (&grpcContainerRuntime{}).UpdateHealth(
+		context.Background(),
+		"demo",
+		&ContainerHealthcheck{Test: []string{"CMD-SHELL", "true"}},
+	)
+	if !errors.Is(err, ErrUnsupported) ||
+		!strings.Contains(err.Error(), "scheduling and result logs") {
+		t.Fatalf("containerd health update error = %v", err)
 	}
 }
 

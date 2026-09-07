@@ -110,6 +110,10 @@ func containerCapabilities() ContainerCapabilities {
 	return ContainerCapabilities{
 		DirectInventory: RuntimeCapability{Supported: true},
 		LifecycleEvents: RuntimeCapability{Supported: true},
+		HealthUpdates: RuntimeCapability{
+			Supported: false,
+			Reason:    "containerd does not manage nerdctl healthcheck scheduling and result logs",
+		},
 		CheckpointRestore: RuntimeCapability{
 			Supported: false,
 			Reason:    "Porto does not expose container checkpoint and restore operations yet",
@@ -341,6 +345,7 @@ func (i *containerInventory) publishContainers(
 			containers[index].LastTransitionAt = last.Timestamp.Format(time.RFC3339Nano)
 			var latestOOM time.Time
 			var latestStart time.Time
+			var latestHealthTransition time.Time
 			for eventIndex := len(history) - 1; eventIndex >= 0; eventIndex-- {
 				event := history[eventIndex]
 				if latestOOM.IsZero() && event.OOM {
@@ -349,6 +354,12 @@ func (i *containerInventory) publishContainers(
 				if latestStart.IsZero() && event.Type == "task-start" {
 					latestStart = event.Timestamp
 				}
+				if latestHealthTransition.IsZero() && event.Type == "health-transition" {
+					latestHealthTransition = event.Timestamp
+				}
+			}
+			if !latestHealthTransition.IsZero() {
+				containers[index].Health.UpdatedAt = latestHealthTransition.Format(time.RFC3339Nano)
 			}
 			if !latestOOM.IsZero() && (latestStart.IsZero() || latestOOM.After(latestStart)) {
 				containers[index].OOMKilled = true
@@ -405,7 +416,19 @@ func (i *containerInventory) recordReconciledTransitionsLocked(old, current Cont
 		appendEvent("state-transition", old.State+"->"+current.State)
 	}
 	if old.Health.Status != current.Health.Status {
-		appendEvent("health-transition", old.Health.Status+"->"+current.Health.Status)
+		transitionAt := i.latestContainerEventTimestampLocked(
+			old,
+			current.ID,
+			map[string]bool{"container-update": true},
+			timestamp,
+		)
+		i.recordEventLocked(ContainerLifecycleEvent{
+			Topic:       "/porto/reconcile/health-transition",
+			Type:        "health-transition",
+			ContainerID: current.ID,
+			Timestamp:   transitionAt,
+			Reason:      old.Health.Status + "->" + current.Health.Status,
+		})
 	}
 	if current.RestartCount > old.RestartCount {
 		appendEvent("restart", fmt.Sprintf("count %d->%d", old.RestartCount, current.RestartCount))
@@ -447,6 +470,28 @@ func (i *containerInventory) hasStateTransitionEventLocked(old Container, state 
 		}
 	}
 	return false
+}
+
+func (i *containerInventory) latestContainerEventTimestampLocked(
+	old Container,
+	containerID string,
+	eventTypes map[string]bool,
+	fallback time.Time,
+) time.Time {
+	lastSequence := uint64(0)
+	if len(old.History) > 0 {
+		lastSequence = old.History[len(old.History)-1].Sequence
+	}
+	for index := len(i.snapshot.Events) - 1; index >= 0; index-- {
+		event := i.snapshot.Events[index]
+		if event.Sequence <= lastSequence {
+			break
+		}
+		if event.ContainerID == containerID && eventTypes[event.Type] && !event.Timestamp.IsZero() {
+			return event.Timestamp
+		}
+	}
+	return fallback
 }
 
 func (i *containerInventory) markUnavailable(err error) {
@@ -546,6 +591,11 @@ func cloneContainer(container Container) Container {
 	cloned := container
 	cloned.Labels = cloneStringMap(container.Labels)
 	cloned.Annotations = cloneStringMap(container.Annotations)
+	if container.Healthcheck != nil {
+		healthcheck := *container.Healthcheck
+		healthcheck.Test = append([]string(nil), container.Healthcheck.Test...)
+		cloned.Healthcheck = &healthcheck
+	}
 	cloned.NetworkDetails = append([]ContainerNetworkState(nil), container.NetworkDetails...)
 	cloned.MountDetails = make([]ContainerMount, len(container.MountDetails))
 	for index, mount := range container.MountDetails {

@@ -141,6 +141,11 @@ Container creation supports image, command, entrypoint, environment, labels, wor
 The nerdctl backend exposes a shell healthcheck command, so Docker `CMD`
 healthchecks are safely quoted and executed through the container shell; the
 create response includes a warning about that compatibility behavior.
+Porto observes health configuration and starting/healthy/unhealthy transitions
+from nerdctl's containerd labels and container metadata events. Inspect requests
+do not trigger health probes. Direct healthcheck updates return an explicit
+unsupported response because containerd cannot also manage nerdctl's scheduler
+and result log lifecycle.
 
 For example, run nginx with an explicit health check:
 

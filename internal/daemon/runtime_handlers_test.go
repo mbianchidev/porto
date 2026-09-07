@@ -27,7 +27,8 @@ func TestDockerContainerSnapshotReportsUnavailableInventory(t *testing.T) {
 	body := response.Body.String()
 	if !strings.Contains(body, `"available":false`) ||
 		!strings.Contains(body, `"containers":[]`) ||
-		!strings.Contains(body, `"directInventory":{"supported":true}`) {
+		!strings.Contains(body, `"directInventory":{"supported":true}`) ||
+		!strings.Contains(body, `"healthUpdates":{"supported":false`) {
 		t.Fatalf("unexpected snapshot response: %s", body)
 	}
 }

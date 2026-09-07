@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
@@ -43,7 +44,7 @@ func TestContainerFromContainerdMapsTypedLifecycleState(t *testing.T) {
 				nerdctlNameLabel:        "demo",
 				nerdctlNetworksLabel:    `["bridge"]`,
 				nerdctlPortsLabel:       `[{"hostIP":"127.0.0.1","hostPort":8080,"containerPort":80,"protocol":"tcp"}]`,
-				nerdctlHealthcheckLabel: `{"Test":["CMD","true"]}`,
+				nerdctlHealthcheckLabel: `{"Test":["CMD","true"],"Interval":30000000000,"Timeout":5000000000,"Retries":3}`,
 				nerdctlHealthStateLabel: `{"Status":"unhealthy","FailingStreak":2}`,
 				restartPolicyLabel:      "always",
 				restartCountLabel:       "3",
@@ -68,6 +69,16 @@ func TestContainerFromContainerdMapsTypedLifecycleState(t *testing.T) {
 	}
 	if container.Health.Status != "unhealthy" || container.Health.FailingStreak != 2 {
 		t.Fatalf("unexpected health metadata: %+v", container.Health)
+	}
+	if container.Healthcheck == nil ||
+		!reflect.DeepEqual(container.Healthcheck.Test, []string{"CMD", "true"}) ||
+		container.Healthcheck.Interval != 30*time.Second ||
+		container.Healthcheck.Timeout != 5*time.Second ||
+		container.Healthcheck.Retries != 3 {
+		t.Fatalf("unexpected healthcheck configuration: %+v", container.Healthcheck)
+	}
+	if container.Health.UpdatedAt != "" {
+		t.Fatalf("health update timestamp was inferred from unrelated metadata: %+v", container.Health)
 	}
 	if container.Resources.MemoryLimit != memoryLimit || container.Resources.CPUQuota != cpuQuota {
 		t.Fatalf("unexpected resource metadata: %+v", container.Resources)

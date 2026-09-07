@@ -35,6 +35,7 @@ type containerOperations interface {
 	Rename(context.Context, string, string) error
 	UpdateLabels(context.Context, string, map[string]string) error
 	UpdateResources(context.Context, string, ContainerUpdate) error
+	UpdateHealth(context.Context, string, *ContainerHealthcheck) error
 	Delete(context.Context, string, bool, bool) error
 	Close() error
 }
@@ -328,6 +329,13 @@ func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, u
 		id,
 		record,
 		containerdOperationError("update task resources for", id, err),
+	)
+}
+
+func (r *grpcContainerRuntime) UpdateHealth(context.Context, string, *ContainerHealthcheck) error {
+	return fmt.Errorf(
+		"%w: direct healthcheck updates cannot safely manage nerdctl scheduling and result logs",
+		ErrUnsupported,
 	)
 }
 

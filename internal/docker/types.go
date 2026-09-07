@@ -52,6 +52,7 @@ type Container struct {
 	RestartPolicy    string                    `json:"restartPolicy,omitempty"`
 	RestartCount     int                       `json:"restartCount"`
 	Health           ContainerHealth           `json:"health"`
+	Healthcheck      *ContainerHealthcheck     `json:"healthcheck,omitempty"`
 	Resources        ContainerResources        `json:"resources"`
 	NetworkDetails   []ContainerNetworkState   `json:"networkDetails,omitempty"`
 	MountDetails     []ContainerMount          `json:"mountDetails,omitempty"`
@@ -118,6 +119,7 @@ type RuntimeCapability struct {
 type ContainerCapabilities struct {
 	DirectInventory   RuntimeCapability `json:"directInventory"`
 	LifecycleEvents   RuntimeCapability `json:"lifecycleEvents"`
+	HealthUpdates     RuntimeCapability `json:"healthUpdates"`
 	CheckpointRestore RuntimeCapability `json:"checkpointRestore"`
 }
 
@@ -249,12 +251,12 @@ type CreateContainerRequest struct {
 }
 
 type ContainerHealthcheck struct {
-	Test          []string
-	Interval      time.Duration
-	Timeout       time.Duration
-	StartPeriod   time.Duration
-	StartInterval time.Duration
-	Retries       int
+	Test          []string      `json:"test,omitempty"`
+	Interval      time.Duration `json:"interval,omitempty"`
+	Timeout       time.Duration `json:"timeout,omitempty"`
+	StartPeriod   time.Duration `json:"startPeriod,omitempty"`
+	StartInterval time.Duration `json:"startInterval,omitempty"`
+	Retries       int           `json:"retries,omitempty"`
 }
 
 type ContainerNetwork struct {
@@ -269,9 +271,10 @@ type ContainerDevice struct {
 }
 
 type ContainerUpdate struct {
-	Memory     int64
-	MemorySwap int64
-	NanoCPUs   int64
+	Memory      int64
+	MemorySwap  int64
+	NanoCPUs    int64
+	Healthcheck *ContainerHealthcheck
 }
 
 type ExecRequest struct {

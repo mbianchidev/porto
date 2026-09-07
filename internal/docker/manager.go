@@ -45,7 +45,6 @@ type Manager struct {
 	directCLI           bool
 	dialBuildKit        func(context.Context) (net.Conn, error)
 	installMu           sync.Mutex
-	healthMu            sync.Mutex
 	inventoryMu         sync.Mutex
 	inventory           *containerInventory
 	inventoryCancel     context.CancelFunc
@@ -595,37 +594,17 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 	if healthcheck == nil {
 		return args, nil
 	}
-	if healthcheck.StartInterval != 0 {
-		return nil, fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
-	}
-	for name, value := range map[string]time.Duration{
-		"interval":     healthcheck.Interval,
-		"timeout":      healthcheck.Timeout,
-		"start period": healthcheck.StartPeriod,
-	} {
-		if value < 0 {
-			return nil, fmt.Errorf("healthcheck %s cannot be negative", name)
-		}
-	}
-	if healthcheck.Retries < 0 {
-		return nil, errors.New("healthcheck retries cannot be negative")
+	if err := validateHealthcheck(healthcheck); err != nil {
+		return nil, err
 	}
 	if len(healthcheck.Test) > 0 {
 		switch healthcheck.Test[0] {
 		case "NONE":
 			return append(args, "--no-healthcheck"), nil
 		case "CMD":
-			if len(healthcheck.Test) < 2 {
-				return nil, errors.New("healthcheck CMD requires a command")
-			}
 			args = append(args, "--health-cmd", shellJoin(healthcheck.Test[1:]))
 		case "CMD-SHELL":
-			if len(healthcheck.Test) < 2 {
-				return nil, errors.New("healthcheck CMD-SHELL requires a command")
-			}
 			args = append(args, "--health-cmd", strings.Join(healthcheck.Test[1:], " "))
-		default:
-			return nil, fmt.Errorf("%w: healthcheck test type %q", ErrUnsupported, healthcheck.Test[0])
 		}
 	}
 	if healthcheck.Interval > 0 {
@@ -641,6 +620,40 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 		args = append(args, "--health-retries", strconv.Itoa(healthcheck.Retries))
 	}
 	return args, nil
+}
+
+func validateHealthcheck(healthcheck *ContainerHealthcheck) error {
+	if healthcheck.StartInterval != 0 {
+		return fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
+	}
+	for name, value := range map[string]time.Duration{
+		"interval":     healthcheck.Interval,
+		"timeout":      healthcheck.Timeout,
+		"start period": healthcheck.StartPeriod,
+	} {
+		if value < 0 {
+			return fmt.Errorf("healthcheck %s cannot be negative", name)
+		}
+	}
+	if healthcheck.Retries < 0 {
+		return errors.New("healthcheck retries cannot be negative")
+	}
+	if len(healthcheck.Test) > 0 {
+		switch healthcheck.Test[0] {
+		case "NONE":
+		case "CMD":
+			if len(healthcheck.Test) < 2 {
+				return errors.New("healthcheck CMD requires a command")
+			}
+		case "CMD-SHELL":
+			if len(healthcheck.Test) < 2 {
+				return errors.New("healthcheck CMD-SHELL requires a command")
+			}
+		default:
+			return fmt.Errorf("%w: healthcheck test type %q", ErrUnsupported, healthcheck.Test[0])
+		}
+	}
+	return nil
 }
 
 func shellJoin(command []string) string {
@@ -1114,76 +1127,7 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
-	document, err := m.inspect(ctx, "container", id)
-	if err != nil {
-		return nil, err
-	}
-	due, timeout, err := healthcheckDue(document, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	if !due {
-		return document, nil
-	}
-	m.healthMu.Lock()
-	defer m.healthMu.Unlock()
-	document, err = m.inspect(ctx, "container", id)
-	if err != nil {
-		return nil, err
-	}
-	due, timeout, err = healthcheckDue(document, time.Now())
-	if err != nil || !due {
-		return document, err
-	}
-	if _, err := m.runWithTimeout(ctx, timeout+5*time.Second, "refresh Porto container health", nil, "healthcheck", id); err != nil {
-		return nil, err
-	}
 	return m.inspect(ctx, "container", id)
-}
-
-func healthcheckDue(document json.RawMessage, now time.Time) (bool, time.Duration, error) {
-	var inspected struct {
-		Config struct {
-			Healthcheck *struct {
-				Test     []string `json:"Test"`
-				Interval int64    `json:"Interval"`
-				Timeout  int64    `json:"Timeout"`
-			} `json:"Healthcheck"`
-		} `json:"Config"`
-		State struct {
-			Running bool `json:"Running"`
-			Health  *struct {
-				Log []struct {
-					End time.Time `json:"End"`
-				} `json:"Log"`
-			} `json:"Health"`
-		} `json:"State"`
-	}
-	if err := json.Unmarshal(document, &inspected); err != nil {
-		return false, 0, fmt.Errorf("decode container health settings: %w", err)
-	}
-	healthcheck := inspected.Config.Healthcheck
-	if !inspected.State.Running || healthcheck == nil || len(healthcheck.Test) == 0 || healthcheck.Test[0] == "NONE" {
-		return false, 0, nil
-	}
-	timeout := time.Duration(healthcheck.Timeout)
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	if inspected.State.Health == nil || len(inspected.State.Health.Log) == 0 {
-		return true, timeout, nil
-	}
-	interval := time.Duration(healthcheck.Interval)
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	var lastCheck time.Time
-	for _, result := range inspected.State.Health.Log {
-		if result.End.After(lastCheck) {
-			lastCheck = result.End
-		}
-	}
-	return lastCheck.IsZero() || !now.Before(lastCheck.Add(interval)), timeout, nil
 }
 
 func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {

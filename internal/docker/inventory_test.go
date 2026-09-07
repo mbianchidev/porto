@@ -122,6 +122,73 @@ func TestContainerInventorySubscribesBeforeSnapshotAndRefreshesOnEvent(t *testin
 	}
 }
 
+func TestContainerInventoryRecordsHealthTransitionFromMetadataEvent(t *testing.T) {
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{
+			ID:     "one",
+			Name:   "api",
+			State:  "running",
+			Health: ContainerHealth{Status: "starting"},
+		}},
+		[]Container{{
+			ID:     "one",
+			Name:   "api",
+			State:  "running",
+			Health: ContainerHealth{Status: "healthy"},
+		}},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	initial := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	eventAt := time.Date(2026, 9, 7, 16, 30, 0, 0, time.UTC)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/containers/update",
+		Type:        "container-update",
+		ContainerID: "one",
+		Timestamp:   eventAt,
+		Reason:      "metadata-updated",
+	}
+	updated := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Revision > initial.Revision &&
+			snapshot.Containers[0].Health.Status == "healthy"
+	})
+	if updated.Containers[0].Health.UpdatedAt != eventAt.Format(time.RFC3339Nano) {
+		t.Fatalf("health transition timestamp = %q, want %q",
+			updated.Containers[0].Health.UpdatedAt,
+			eventAt.Format(time.RFC3339Nano),
+		)
+	}
+	found := false
+	for _, event := range updated.Containers[0].History {
+		if event.Type == "health-transition" {
+			found = event.Reason == "starting->healthy" && event.Timestamp.Equal(eventAt)
+		}
+	}
+	if !found {
+		t.Fatalf("health transition was not derived from metadata event: %+v", updated.Containers[0].History)
+	}
+}
+
 func TestContainerInventoryCoalescesDuplicateEvents(t *testing.T) {
 	runtimeClient := newFakeContainerRuntime(
 		[]Container{{ID: "one", Name: "api", State: "running"}},

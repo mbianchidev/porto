@@ -117,31 +117,23 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	}
 }
 
-func TestInspectContainerRefreshesDueHealthcheck(t *testing.T) {
-	healthChecked := false
-	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
-	runner.handler = func(command runtimes.Command) ([]byte, error) {
-		switch strings.Join(command.Args, " ") {
-		case "container inspect demo":
-			health := ""
-			if healthChecked {
-				health = `,"Health":{"Status":"healthy","FailingStreak":0,"Log":[{"End":"2026-09-01T12:00:00Z","ExitCode":0,"Output":""}]}`
-			}
-			return []byte(`[{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true` + health + `}}]`), nil
-		case "healthcheck demo":
-			healthChecked = true
-			return nil, nil
-		default:
-			return nil, fmt.Errorf("unexpected command: %+v", command)
-		}
+func TestInspectContainerDoesNotPollOrMutateHealth(t *testing.T) {
+	document := []byte(`{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true,"Health":{"Status":"starting","FailingStreak":0}}}`)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl container inspect demo": append(append([]byte{'['}, document...), ']')},
+		errors:  map[string]error{},
 	}
 
-	document, err := New(runner).InspectContainer(context.Background(), "demo")
+	inspected, err := New(runner).InspectContainer(context.Background(), "demo")
 	if err != nil {
 		t.Fatalf("InspectContainer: %v", err)
 	}
-	if !healthChecked || !strings.Contains(string(document), `"Status":"healthy"`) {
-		t.Fatalf("healthcheck was not refreshed: checked=%t document=%s", healthChecked, document)
+	if !bytes.Equal(inspected, document) {
+		t.Fatalf("inspect document = %s, want %s", inspected, document)
+	}
+	if len(runner.commands) != 1 ||
+		!reflect.DeepEqual(runner.commands[0].Args, []string{"container", "inspect", "demo"}) {
+		t.Fatalf("inspect spawned health polling commands: %+v", runner.commands)
 	}
 }
 

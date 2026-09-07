@@ -2,6 +2,7 @@ package docker
 
 import (
 	"net/http"
+	"time"
 )
 
 func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
@@ -40,6 +41,14 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 			Name              string `json:"Name"`
 			MaximumRetryCount int    `json:"MaximumRetryCount"`
 		} `json:"RestartPolicy"`
+		Healthcheck *struct {
+			Test          []string `json:"Test"`
+			Interval      int64    `json:"Interval"`
+			Timeout       int64    `json:"Timeout"`
+			StartPeriod   int64    `json:"StartPeriod"`
+			StartInterval int64    `json:"StartInterval"`
+			Retries       int      `json:"Retries"`
+		} `json:"Healthcheck"`
 	}
 	if !decodeDockerJSON(w, r, &request) {
 		return
@@ -61,8 +70,22 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerUnsupported(w, "container update options beyond CPU and memory limits")
 		return
 	}
+	var healthcheck *ContainerHealthcheck
+	if request.Healthcheck != nil {
+		healthcheck = &ContainerHealthcheck{
+			Test:          request.Healthcheck.Test,
+			Interval:      time.Duration(request.Healthcheck.Interval),
+			Timeout:       time.Duration(request.Healthcheck.Timeout),
+			StartPeriod:   time.Duration(request.Healthcheck.StartPeriod),
+			StartInterval: time.Duration(request.Healthcheck.StartInterval),
+			Retries:       request.Healthcheck.Retries,
+		}
+	}
 	if err := a.manager.UpdateContainer(r.Context(), r.PathValue("id"), ContainerUpdate{
-		Memory: request.Memory, MemorySwap: request.MemorySwap, NanoCPUs: request.NanoCPUs,
+		Memory:      request.Memory,
+		MemorySwap:  request.MemorySwap,
+		NanoCPUs:    request.NanoCPUs,
+		Healthcheck: healthcheck,
 	}); err != nil {
 		writeDockerError(w, err)
 		return
