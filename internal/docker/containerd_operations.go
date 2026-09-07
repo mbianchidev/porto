@@ -12,12 +12,17 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
-const defaultContainerStopTimeout = 10 * time.Second
+const (
+	defaultContainerStopTimeout     = 10 * time.Second
+	containerdLinuxResourcesTypeURL = "types.containerd.io/opencontainers/runtime-spec/1/LinuxResources"
+)
 
 type containerOperations interface {
 	Start(context.Context, string) error
@@ -29,6 +34,7 @@ type containerOperations interface {
 	Wait(context.Context, string) (int, error)
 	Rename(context.Context, string, string) error
 	UpdateLabels(context.Context, string, map[string]string) error
+	UpdateResources(context.Context, string, ContainerUpdate) error
 	Delete(context.Context, string, bool, bool) error
 	Close() error
 }
@@ -239,6 +245,140 @@ func (r *grpcContainerRuntime) UpdateLabels(ctx context.Context, id string, upda
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
 	})
 	return containerdOperationError("update metadata for", id, err)
+}
+
+func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, update ContainerUpdate) error {
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	response, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return containerdOperationError("inspect resources for", id, err)
+	}
+	record := response.GetContainer()
+	if record == nil || record.GetSpec() == nil || len(record.GetSpec().GetValue()) == 0 {
+		return fmt.Errorf("%w: container %q does not have a directly updatable OCI spec", ErrUnsupported, id)
+	}
+
+	var spec specs.Spec
+	if err := json.Unmarshal(record.GetSpec().GetValue(), &spec); err != nil {
+		return fmt.Errorf("%w: decode OCI resources for container %q: %v", ErrUnsupported, id, err)
+	}
+	if spec.Windows != nil {
+		return fmt.Errorf("%w: direct Windows resource updates are not supported", ErrUnsupported)
+	}
+	if spec.Linux == nil {
+		spec.Linux = &specs.Linux{}
+	}
+	if spec.Linux.Resources == nil {
+		spec.Linux.Resources = &specs.LinuxResources{}
+	}
+	applyContainerUpdate(spec.Linux.Resources, update)
+
+	encodedSpec, err := json.Marshal(&spec)
+	if err != nil {
+		return fmt.Errorf("encode OCI resources for container %q: %w", id, err)
+	}
+	encodedResources, err := json.Marshal(spec.Linux.Resources)
+	if err != nil {
+		return fmt.Errorf("encode task resources for container %q: %w", id, err)
+	}
+
+	updatedRecord := *record
+	updatedRecord.Spec = &anypb.Any{
+		TypeUrl: record.GetSpec().GetTypeUrl(),
+		Value:   encodedSpec,
+	}
+	_, err = r.containers.Update(namespacedContext, &containersapi.UpdateContainerRequest{
+		Container:  &updatedRecord,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+	})
+	if err != nil {
+		return containerdOperationError("update resource metadata for", id, err)
+	}
+
+	process, err := r.getTask(ctx, id)
+	if status.Code(err) == codes.NotFound {
+		return nil
+	}
+	if err != nil {
+		return r.rollbackContainerSpec(
+			namespacedContext,
+			id,
+			record,
+			containerdOperationError("inspect task resources for", id, err),
+		)
+	}
+	if process == nil || !containerdTaskActive(process.GetStatus()) {
+		return nil
+	}
+	_, err = r.tasks.Update(namespacedContext, &tasksapi.UpdateTaskRequest{
+		ContainerID: id,
+		Resources: &anypb.Any{
+			TypeUrl: containerdLinuxResourcesTypeURL,
+			Value:   encodedResources,
+		},
+	})
+	if err == nil || status.Code(err) == codes.NotFound {
+		return nil
+	}
+	return r.rollbackContainerSpec(
+		namespacedContext,
+		id,
+		record,
+		containerdOperationError("update task resources for", id, err),
+	)
+}
+
+func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdate) {
+	if update.NanoCPUs > 0 {
+		if resources.CPU == nil {
+			resources.CPU = &specs.LinuxCPU{}
+		}
+		period := uint64(100_000)
+		quota := update.NanoCPUs / 10_000
+		resources.CPU.Period = &period
+		resources.CPU.Quota = &quota
+	}
+	if update.Memory > 0 || update.MemorySwap > 0 {
+		if resources.Memory == nil {
+			resources.Memory = &specs.LinuxMemory{}
+		}
+	}
+	if update.Memory > 0 {
+		memory := update.Memory
+		resources.Memory.Limit = &memory
+		if update.MemorySwap == 0 {
+			memorySwap := update.Memory * 2
+			resources.Memory.Swap = &memorySwap
+		}
+	}
+	if update.MemorySwap > 0 {
+		memorySwap := update.MemorySwap
+		resources.Memory.Swap = &memorySwap
+	}
+}
+
+func (r *grpcContainerRuntime) rollbackContainerSpec(
+	ctx context.Context,
+	id string,
+	record *containersapi.Container,
+	operationErr error,
+) error {
+	_, rollbackErr := r.containers.Update(ctx, &containersapi.UpdateContainerRequest{
+		Container:  record,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+	})
+	if rollbackErr == nil {
+		return operationErr
+	}
+	return fmt.Errorf(
+		"direct resource update failed after changing container %q metadata: %v; rollback failed: %v",
+		id,
+		operationErr,
+		rollbackErr,
+	)
 }
 
 func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, volumes bool) error {

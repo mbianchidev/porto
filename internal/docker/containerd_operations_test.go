@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,9 +13,11 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
@@ -64,6 +67,16 @@ func (f *fakeContainerOperations) Rename(_ context.Context, id, name string) err
 
 func (f *fakeContainerOperations) UpdateLabels(_ context.Context, id string, labels map[string]string) error {
 	return f.record(fmt.Sprintf("update-labels %s %v", id, labels))
+}
+
+func (f *fakeContainerOperations) UpdateResources(_ context.Context, id string, update ContainerUpdate) error {
+	return f.record(fmt.Sprintf(
+		"update %s cpu=%d memory=%d swap=%d",
+		id,
+		update.NanoCPUs,
+		update.Memory,
+		update.MemorySwap,
+	))
 }
 
 func (f *fakeContainerOperations) Delete(_ context.Context, id string, force, volumes bool) error {
@@ -171,6 +184,55 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesResourceUpdatesThroughContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	manager := managerWithContainerOperations(operations)
+	update := ContainerUpdate{
+		NanoCPUs:   2_000_000_000,
+		Memory:     1_024,
+		MemorySwap: 2_048,
+	}
+	if err := manager.UpdateContainer(context.Background(), "demo", update); err != nil {
+		t.Fatalf("update container: %v", err)
+	}
+	want := []string{"update demo cpu=2000000000 memory=1024 swap=2048", "close"}
+	if !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerFallsBackWhenDirectResourceUpdateIsUnsupported(t *testing.T) {
+	operations := &fakeContainerOperations{
+		errs: map[string]error{
+			"update demo cpu=2000000000 memory=1024 swap=2048": ErrUnsupported,
+		},
+	}
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl update --cpus 2 --memory 1024 --memory-swap 2048 demo": nil,
+		},
+		errors: map[string]error{},
+	}
+	manager := New(runner)
+	manager.operationsConnector = func(context.Context) (containerOperations, error) {
+		return operations, nil
+	}
+	err := manager.UpdateContainer(context.Background(), "demo", ContainerUpdate{
+		NanoCPUs:   2_000_000_000,
+		Memory:     1_024,
+		MemorySwap: 2_048,
+	})
+	if err != nil {
+		t.Fatalf("update container: %v", err)
+	}
+	if len(runner.commands) != 1 || !reflect.DeepEqual(
+		runner.commands[0].Args,
+		[]string{"update", "--cpus", "2", "--memory", "1024", "--memory-swap", "2048", "demo"},
+	) {
+		t.Fatalf("fallback commands = %+v", runner.commands)
+	}
+}
+
 func TestManagerRoutesMetadataActionsThroughContainerOperations(t *testing.T) {
 	operations := &fakeContainerOperations{errs: map[string]error{}}
 	manager := managerWithContainerOperations(operations)
@@ -260,12 +322,14 @@ func TestManagerRemoveFallsBackWhenDirectMetadataIsUnavailable(t *testing.T) {
 
 type fakeTasksClient struct {
 	tasksapi.TasksClient
-	process     *tasktypes.Process
-	calls       []string
-	killSignals []uint32
-	waitCode    uint32
-	getErr      error
-	deleteErr   error
+	process       *tasktypes.Process
+	calls         []string
+	killSignals   []uint32
+	updateRequest *tasksapi.UpdateTaskRequest
+	waitCode      uint32
+	getErr        error
+	updateErr     error
+	deleteErr     error
 }
 
 func (f *fakeTasksClient) Get(
@@ -308,6 +372,19 @@ func (f *fakeTasksClient) Wait(
 	return &tasksapi.WaitResponse{ExitStatus: f.waitCode}, nil
 }
 
+func (f *fakeTasksClient) Update(
+	_ context.Context,
+	request *tasksapi.UpdateTaskRequest,
+	_ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	f.calls = append(f.calls, "update "+request.GetContainerID())
+	f.updateRequest = request
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	return &emptypb.Empty{}, nil
+}
+
 func (f *fakeTasksClient) Delete(
 	_ context.Context,
 	request *tasksapi.DeleteTaskRequest,
@@ -322,12 +399,13 @@ func (f *fakeTasksClient) Delete(
 
 type fakeContainersClient struct {
 	containersapi.ContainersClient
-	container     *containersapi.Container
-	calls         []string
-	updateRequest *containersapi.UpdateContainerRequest
-	getErr        error
-	updateErr     error
-	deleteErr     error
+	container      *containersapi.Container
+	calls          []string
+	updateRequest  *containersapi.UpdateContainerRequest
+	updateRequests []*containersapi.UpdateContainerRequest
+	getErr         error
+	updateErr      error
+	deleteErr      error
 }
 
 func (f *fakeContainersClient) Get(
@@ -349,6 +427,7 @@ func (f *fakeContainersClient) Update(
 ) (*containersapi.UpdateContainerResponse, error) {
 	f.calls = append(f.calls, "update "+request.GetContainer().GetID())
 	f.updateRequest = request
+	f.updateRequests = append(f.updateRequests, request)
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
@@ -465,6 +544,164 @@ func TestGRPCContainerOperationsUpdateLabelsMergesExistingMetadata(t *testing.T)
 	want := map[string]string{"existing": "value", "added": "label"}
 	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("updated labels = %v, want %v", got, want)
+	}
+}
+
+func TestGRPCContainerOperationsUpdatesTaskAndPersistedResources(t *testing.T) {
+	shares := uint64(512)
+	reservation := int64(256)
+	specDocument, err := json.Marshal(specs.Spec{
+		Linux: &specs.Linux{Resources: &specs.LinuxResources{
+			CPU:    &specs.LinuxCPU{Shares: &shares},
+			Memory: &specs.LinuxMemory{Reservation: &reservation},
+		}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: "demo",
+		Status:      tasktypes.Status_RUNNING,
+	}}
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:   "demo",
+		Spec: &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: specDocument},
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err = runtimeClient.UpdateResources(context.Background(), "demo", ContainerUpdate{
+		NanoCPUs:   1_500_000_000,
+		Memory:     1_024,
+		MemorySwap: 2_048,
+	})
+	if err != nil {
+		t.Fatalf("update resources: %v", err)
+	}
+	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(tasks.calls, want) {
+		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
+	}
+	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+	if tasks.updateRequest.GetResources().GetTypeUrl() != containerdLinuxResourcesTypeURL {
+		t.Fatalf("resource type URL = %q", tasks.updateRequest.GetResources().GetTypeUrl())
+	}
+	var taskResources specs.LinuxResources
+	if err := json.Unmarshal(tasks.updateRequest.GetResources().GetValue(), &taskResources); err != nil {
+		t.Fatalf("decode task resources: %v", err)
+	}
+	if taskResources.CPU == nil || taskResources.CPU.Quota == nil ||
+		*taskResources.CPU.Quota != 150_000 || taskResources.CPU.Period == nil ||
+		*taskResources.CPU.Period != 100_000 || taskResources.CPU.Shares == nil ||
+		*taskResources.CPU.Shares != shares {
+		t.Fatalf("updated CPU resources = %+v", taskResources.CPU)
+	}
+	if taskResources.Memory == nil || taskResources.Memory.Limit == nil ||
+		*taskResources.Memory.Limit != 1_024 || taskResources.Memory.Swap == nil ||
+		*taskResources.Memory.Swap != 2_048 || taskResources.Memory.Reservation == nil ||
+		*taskResources.Memory.Reservation != reservation {
+		t.Fatalf("updated memory resources = %+v", taskResources.Memory)
+	}
+	var persistedSpec specs.Spec
+	if err := json.Unmarshal(
+		containers.updateRequest.GetContainer().GetSpec().GetValue(),
+		&persistedSpec,
+	); err != nil {
+		t.Fatalf("decode persisted spec: %v", err)
+	}
+	if persistedSpec.Linux == nil || !reflect.DeepEqual(persistedSpec.Linux.Resources, &taskResources) {
+		t.Fatalf("persisted resources = %+v, task resources = %+v", persistedSpec.Linux, taskResources)
+	}
+	wantMask := &fieldmaskpb.FieldMask{Paths: []string{"spec"}}
+	if !reflect.DeepEqual(
+		containers.updateRequest.GetUpdateMask(),
+		wantMask,
+	) {
+		t.Fatalf("update mask = %v, want %v", containers.updateRequest.GetUpdateMask(), wantMask)
+	}
+}
+
+func TestGRPCContainerOperationsRollsBackMetadataForUnsupportedTaskUpdate(t *testing.T) {
+	specDocument, err := json.Marshal(specs.Spec{
+		Linux: &specs.Linux{Resources: &specs.LinuxResources{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := &fakeTasksClient{
+		process:   &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING},
+		updateErr: status.Error(codes.Unimplemented, "task update unavailable"),
+	}
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:   "demo",
+		Spec: &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: specDocument},
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err = runtimeClient.UpdateResources(context.Background(), "demo", ContainerUpdate{Memory: 1_024})
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("update error = %v, want unsupported", err)
+	}
+	if want := []string{"get demo", "update demo", "update demo"}; !reflect.DeepEqual(
+		containers.calls,
+		want,
+	) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+	if len(containers.updateRequests) != 2 ||
+		!reflect.DeepEqual(
+			containers.updateRequests[1].GetContainer().GetSpec().GetValue(),
+			specDocument,
+		) {
+		t.Fatalf("container metadata was not rolled back: %+v", containers.updateRequests)
+	}
+}
+
+func TestGRPCContainerOperationsKeepsMetadataWhenTaskExitsDuringUpdate(t *testing.T) {
+	specDocument, err := json.Marshal(specs.Spec{
+		Linux: &specs.Linux{Resources: &specs.LinuxResources{}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	tasks := &fakeTasksClient{
+		process:   &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING},
+		updateErr: status.Error(codes.NotFound, "task exited"),
+	}
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:   "demo",
+		Spec: &anypb.Any{TypeUrl: "types.containerd.io/opencontainers/runtime-spec/1/Spec", Value: specDocument},
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	if err := runtimeClient.UpdateResources(
+		context.Background(),
+		"demo",
+		ContainerUpdate{Memory: 1_024},
+	); err != nil {
+		t.Fatalf("update resources after task exit: %v", err)
+	}
+	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+}
+
+func TestApplyContainerUpdateDefaultsSwapToTwiceMemory(t *testing.T) {
+	resources := &specs.LinuxResources{}
+	applyContainerUpdate(resources, ContainerUpdate{Memory: 1_024})
+	if resources.Memory == nil || resources.Memory.Limit == nil ||
+		*resources.Memory.Limit != 1_024 || resources.Memory.Swap == nil ||
+		*resources.Memory.Swap != 2_048 {
+		t.Fatalf("memory resources = %+v", resources.Memory)
 	}
 }
 

@@ -23,6 +23,14 @@ func (m *Manager) UpdateContainer(ctx context.Context, id string, update Contain
 	if len(args) == 1 {
 		return fmt.Errorf("container update requires at least one supported resource limit")
 	}
+	if handled, err := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.UpdateResources(ctx, id, update)
+	}); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
+	}
 	args = append(args, id)
 	_, err := m.run(ctx, "update Porto container", args...)
 	if err == nil {
