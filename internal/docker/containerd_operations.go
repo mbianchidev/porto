@@ -17,6 +17,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
@@ -461,13 +462,13 @@ func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, u
 		return fmt.Errorf("encode task resources for container %q: %w", id, err)
 	}
 
-	updatedRecord := *record
+	updatedRecord := proto.Clone(record).(*containersapi.Container)
 	updatedRecord.Spec = &anypb.Any{
 		TypeUrl: record.GetSpec().GetTypeUrl(),
 		Value:   encodedSpec,
 	}
 	_, err = r.containers.Update(namespacedContext, &containersapi.UpdateContainerRequest{
-		Container:  &updatedRecord,
+		Container:  updatedRecord,
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
 	})
 	if err != nil {
