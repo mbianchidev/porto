@@ -110,6 +110,10 @@ func containerCapabilities() ContainerCapabilities {
 	return ContainerCapabilities{
 		DirectInventory: RuntimeCapability{Supported: true},
 		LifecycleEvents: RuntimeCapability{Supported: true},
+		ExecLifecycle: RuntimeCapability{
+			Supported: false,
+			Reason:    "direct containerd exec cannot preserve attached streams because the task service requires daemon-local FIFO paths",
+		},
 		HealthUpdates: RuntimeCapability{
 			Supported: false,
 			Reason:    "containerd does not manage nerdctl healthcheck scheduling and result logs",

@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -41,6 +43,13 @@ type containerOperations interface {
 }
 
 type containerOperationsConnector func(context.Context) (containerOperations, error)
+
+type execOperations interface {
+	StartExec(context.Context, ExecRequest) (runtimes.Process, error)
+	Close() error
+}
+
+type execOperationsConnector func(context.Context) (execOperations, error)
 
 type networkOperations interface {
 	Connect(context.Context, string, string, []string) error
@@ -82,6 +91,69 @@ func (m *Manager) connectNetworkOperations(ctx context.Context) (networkOperatio
 		return nil, fmt.Errorf("%w: connected containerd client does not support network operations", ErrUnsupported)
 	}
 	return operations, nil
+}
+
+func (m *Manager) connectExecOperations(ctx context.Context) (execOperations, error) {
+	runtimeClient, err := m.connectContainerRuntime(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: connect direct exec operations: %v", ErrUnavailable, err)
+	}
+	operations, ok := runtimeClient.(execOperations)
+	if !ok {
+		_ = runtimeClient.Close()
+		return nil, fmt.Errorf("%w: connected containerd client does not support exec operations", ErrUnsupported)
+	}
+	return operations, nil
+}
+
+func (m *Manager) startExecDirect(
+	ctx context.Context,
+	request ExecRequest,
+) (runtimes.Process, bool, error) {
+	connector := m.execConnector
+	if connector == nil {
+		return nil, false, nil
+	}
+	operations, err := connector(ctx)
+	if err != nil {
+		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	process, startErr := operations.StartExec(ctx, request)
+	if errors.Is(startErr, ErrUnsupported) || errors.Is(startErr, ErrUnavailable) {
+		_ = operations.Close()
+		return nil, false, nil
+	}
+	if startErr != nil {
+		return nil, true, errors.Join(startErr, operations.Close())
+	}
+	if process == nil {
+		return nil, true, errors.Join(
+			errors.New("direct exec returned an empty process"),
+			operations.Close(),
+		)
+	}
+	return &managedExecProcess{Process: process, close: operations.Close}, true, nil
+}
+
+type managedExecProcess struct {
+	runtimes.Process
+	close    func() error
+	waitOnce sync.Once
+	waitErr  error
+}
+
+func (p *managedExecProcess) Wait() error {
+	p.waitOnce.Do(func() {
+		p.waitErr = errors.Join(p.Process.Wait(), p.close())
+	})
+	return p.waitErr
 }
 
 func (m *Manager) withContainerOperations(
@@ -128,6 +200,16 @@ func (m *Manager) withNetworkOperations(
 		return false, nil
 	}
 	return true, errors.Join(operationErr, closeErr)
+}
+
+func (r *grpcContainerRuntime) StartExec(
+	context.Context,
+	ExecRequest,
+) (runtimes.Process, error) {
+	return nil, fmt.Errorf(
+		"%w: direct containerd exec cannot preserve attached I/O because the task service requires daemon-local FIFO paths",
+		ErrUnsupported,
+	)
 }
 
 func (r *grpcContainerRuntime) Connect(

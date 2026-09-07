@@ -5,16 +5,19 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -33,6 +36,63 @@ type fakeContainerOperations struct {
 type fakeNetworkOperations struct {
 	calls []string
 	errs  map[string]error
+}
+
+type fakeExecOperations struct {
+	process    runtimes.Process
+	startErr   error
+	startCalls atomic.Int32
+	closeCalls atomic.Int32
+}
+
+func (f *fakeExecOperations) StartExec(
+	_ context.Context,
+	_ ExecRequest,
+) (runtimes.Process, error) {
+	f.startCalls.Add(1)
+	return f.process, f.startErr
+}
+
+func (f *fakeExecOperations) Close() error {
+	f.closeCalls.Add(1)
+	return nil
+}
+
+type concurrentWaitProcess struct {
+	waitCalls atomic.Int32
+}
+
+func (p *concurrentWaitProcess) Stdin() io.WriteCloser {
+	return nopWriteCloser{Writer: io.Discard}
+}
+
+func (p *concurrentWaitProcess) Stdout() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(""))
+}
+
+func (p *concurrentWaitProcess) Stderr() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(""))
+}
+
+func (p *concurrentWaitProcess) Wait() error {
+	p.waitCalls.Add(1)
+	return nil
+}
+
+func (p *concurrentWaitProcess) Kill() error {
+	return nil
+}
+
+func (p *concurrentWaitProcess) PID() int {
+	return 42
+}
+
+type nopWriteCloser struct {
+	io.Writer
+}
+
+func (nopWriteCloser) Close() error {
+	return nil
 }
 
 func (f *fakeNetworkOperations) record(call string) error {
@@ -150,6 +210,133 @@ func managerWithNetworkOperations(operations *fakeNetworkOperations) *Manager {
 		return operations, nil
 	}
 	return manager
+}
+
+func managerWithExecOperations(operations *fakeExecOperations) *Manager {
+	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
+	manager.execConnector = func(context.Context) (execOperations, error) {
+		return operations, nil
+	}
+	return manager
+}
+
+func TestManagerRoutesExecThroughMockableOperations(t *testing.T) {
+	underlying := &concurrentWaitProcess{}
+	operations := &fakeExecOperations{process: underlying}
+	process, err := managerWithExecOperations(operations).StartExec(
+		context.Background(),
+		ExecRequest{ContainerID: "demo", Command: []string{"true"}},
+	)
+	if err != nil {
+		t.Fatalf("start exec: %v", err)
+	}
+	if process.PID() != 42 {
+		t.Fatalf("exec PID = %d, want 42", process.PID())
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatalf("wait exec: %v", err)
+	}
+	if operations.startCalls.Load() != 1 || operations.closeCalls.Load() != 1 {
+		t.Fatalf(
+			"exec calls = start %d close %d, want one each",
+			operations.startCalls.Load(),
+			operations.closeCalls.Load(),
+		)
+	}
+}
+
+func TestManagedExecProcessConcurrentWaitCleansUpOnce(t *testing.T) {
+	underlying := &concurrentWaitProcess{}
+	operations := &fakeExecOperations{process: underlying}
+	process, err := managerWithExecOperations(operations).StartExec(
+		context.Background(),
+		ExecRequest{ContainerID: "demo", Command: []string{"true"}},
+	)
+	if err != nil {
+		t.Fatalf("start exec: %v", err)
+	}
+
+	results := make(chan error, 32)
+	for range 32 {
+		go func() {
+			results <- process.Wait()
+		}()
+	}
+	for range 32 {
+		if err := <-results; err != nil {
+			t.Fatalf("wait exec: %v", err)
+		}
+	}
+	if underlying.waitCalls.Load() != 1 {
+		t.Fatalf("underlying waits = %d, want 1", underlying.waitCalls.Load())
+	}
+	if operations.closeCalls.Load() != 1 {
+		t.Fatalf("operation cleanup calls = %d, want 1", operations.closeCalls.Load())
+	}
+}
+
+func TestManagerExecFallsBackWhenDirectStreamingIsUnsupported(t *testing.T) {
+	operations := &fakeExecOperations{
+		startErr: fmt.Errorf("%w: attached FIFO transport", ErrUnsupported),
+	}
+	fallback := &concurrentWaitProcess{}
+	runner := &fakeRunner{
+		outputs: map[string][]byte{},
+		errors:  map[string]error{},
+		starter: func(command runtimes.Command) (runtimes.Process, error) {
+			if !reflect.DeepEqual(command.Args, []string{"exec", "demo", "true"}) {
+				return nil, fmt.Errorf("fallback args = %v", command.Args)
+			}
+			return fallback, nil
+		},
+	}
+	manager := New(runner)
+	manager.execConnector = func(context.Context) (execOperations, error) {
+		return operations, nil
+	}
+	process, err := manager.StartExec(
+		context.Background(),
+		ExecRequest{ContainerID: "demo", Command: []string{"true"}},
+	)
+	if err != nil {
+		t.Fatalf("start fallback exec: %v", err)
+	}
+	if err := process.Wait(); err != nil {
+		t.Fatalf("wait fallback exec: %v", err)
+	}
+	if operations.startCalls.Load() != 1 || operations.closeCalls.Load() != 1 {
+		t.Fatalf(
+			"direct calls = start %d close %d, want one each",
+			operations.startCalls.Load(),
+			operations.closeCalls.Load(),
+		)
+	}
+	if fallback.waitCalls.Load() != 1 || len(runner.commands) != 1 {
+		t.Fatalf("fallback process was not used: waits=%d commands=%+v", fallback.waitCalls.Load(), runner.commands)
+	}
+}
+
+func TestContainerdExecReturnsTypedUnsupportedForAttachedIO(t *testing.T) {
+	_, err := (&grpcContainerRuntime{}).StartExec(
+		context.Background(),
+		ExecRequest{
+			ContainerID:  "demo",
+			Command:      []string{"cat"},
+			AttachStdin:  true,
+			AttachStdout: true,
+			AttachStderr: true,
+		},
+	)
+	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "FIFO") {
+		t.Fatalf("containerd exec error = %v", err)
+	}
+}
+
+func TestContainerCapabilitiesReportUnsupportedDirectExecLifecycle(t *testing.T) {
+	capability := containerCapabilities().ExecLifecycle
+	if capability.Supported || !strings.Contains(capability.Reason, "FIFO") {
+		t.Fatalf("exec lifecycle capability = %+v", capability)
+	}
 }
 
 func TestManagerRoutesNetworkActionsThroughMockableOperations(t *testing.T) {

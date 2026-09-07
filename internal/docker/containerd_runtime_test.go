@@ -12,6 +12,7 @@ import (
 	eventsapi "github.com/containerd/containerd/api/services/events/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
@@ -125,6 +126,60 @@ func TestContainerLifecycleEventDecodesExecExitAndOOM(t *testing.T) {
 	})
 	if !relevant || !oomEvent.OOM || oomEvent.ContainerID != "abc" || oomEvent.Reason != "oom" {
 		t.Fatalf("unexpected OOM event: %+v", oomEvent)
+	}
+}
+
+func TestContainerLifecycleEventDecodesExecCreateStartAndCleanup(t *testing.T) {
+	tests := []struct {
+		name      string
+		topic     string
+		payload   proto.Message
+		wantType  string
+		wantCause string
+		wantCode  *uint32
+	}{
+		{
+			name:      "create",
+			topic:     "/tasks/exec-added",
+			payload:   &eventtypes.TaskExecAdded{ContainerID: "abc", ExecID: "exec-1"},
+			wantType:  "task-exec-added",
+			wantCause: "exec-created",
+		},
+		{
+			name:      "start",
+			topic:     "/tasks/exec-started",
+			payload:   &eventtypes.TaskExecStarted{ContainerID: "abc", ExecID: "exec-1"},
+			wantType:  "task-exec-started",
+			wantCause: "exec-started",
+		},
+		{
+			name:      "cleanup",
+			topic:     "/tasks/delete",
+			payload:   &eventtypes.TaskDelete{ContainerID: "abc", ID: "exec-1", ExitStatus: 7},
+			wantType:  "exec-delete",
+			wantCause: "error",
+			wantCode:  uint32Pointer(7),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			payload, err := anypb.New(test.payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, relevant := containerLifecycleEvent(&eventsapi.Envelope{
+				Topic: test.topic,
+				Event: payload,
+			})
+			if !relevant || event.Type != test.wantType ||
+				event.ContainerID != "abc" || event.ExecID != "exec-1" ||
+				event.Reason != test.wantCause {
+				t.Fatalf("unexpected exec lifecycle event: %+v", event)
+			}
+			if !reflect.DeepEqual(event.ExitCode, test.wantCode) {
+				t.Fatalf("exec lifecycle exit code = %v, want %v", event.ExitCode, test.wantCode)
+			}
+		})
 	}
 }
 

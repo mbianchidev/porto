@@ -119,6 +119,7 @@ type RuntimeCapability struct {
 type ContainerCapabilities struct {
 	DirectInventory   RuntimeCapability `json:"directInventory"`
 	LifecycleEvents   RuntimeCapability `json:"lifecycleEvents"`
+	ExecLifecycle     RuntimeCapability `json:"execLifecycle"`
 	HealthUpdates     RuntimeCapability `json:"healthUpdates"`
 	NetworkUpdates    RuntimeCapability `json:"networkUpdates"`
 	CheckpointRestore RuntimeCapability `json:"checkpointRestore"`
