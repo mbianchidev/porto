@@ -870,6 +870,9 @@ func TestKubeconfigRegistryWaitsForFreshKubectlLock(t *testing.T) {
 }
 
 func TestKubeconfigLockClosePreservesNewerReplacement(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows does not allow replacing an open lock file")
+	}
 	lockPath := filepath.Join(t.TempDir(), "config.lock")
 	lock, err := acquireKubeconfigFileLock(context.Background(), lockPath)
 	if err != nil {
