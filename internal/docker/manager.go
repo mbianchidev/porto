@@ -798,6 +798,14 @@ func (m *Manager) directContainerAction(ctx context.Context, id, action string, 
 			return operations.Pause(ctx, id)
 		case "unpause":
 			return operations.Resume(ctx, id)
+		case "remove":
+			return operations.Delete(ctx, id, false, false)
+		case "remove-force":
+			return operations.Delete(ctx, id, true, false)
+		case "remove-volumes":
+			return operations.Delete(ctx, id, false, true)
+		case "remove-force-volumes":
+			return operations.Delete(ctx, id, true, true)
 		default:
 			return ErrUnsupported
 		}
@@ -938,6 +946,14 @@ func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
 	}
 	if err := validateObjectID(name); err != nil {
 		return err
+	}
+	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.Rename(ctx, id, name)
+	}); handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
 	}
 	_, err := m.run(ctx, "rename Porto container", "rename", id, name)
 	if err == nil {

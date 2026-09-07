@@ -16,6 +16,7 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 type fakeContainerOperations struct {
@@ -55,6 +56,18 @@ func (f *fakeContainerOperations) Restart(_ context.Context, id string, timeout 
 
 func (f *fakeContainerOperations) Wait(_ context.Context, id string) (int, error) {
 	return f.waitCode, f.record("wait " + id)
+}
+
+func (f *fakeContainerOperations) Rename(_ context.Context, id, name string) error {
+	return f.record("rename " + id + " " + name)
+}
+
+func (f *fakeContainerOperations) UpdateLabels(_ context.Context, id string, labels map[string]string) error {
+	return f.record(fmt.Sprintf("update-labels %s %v", id, labels))
+}
+
+func (f *fakeContainerOperations) Delete(_ context.Context, id string, force, volumes bool) error {
+	return f.record(fmt.Sprintf("delete %s %t %t", id, force, volumes))
 }
 
 func (f *fakeContainerOperations) Close() error {
@@ -158,12 +171,101 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestManagerRoutesMetadataActionsThroughContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	manager := managerWithContainerOperations(operations)
+	if err := manager.RenameContainer(context.Background(), "demo", "renamed"); err != nil {
+		t.Fatalf("rename container: %v", err)
+	}
+	for _, action := range []string{"remove", "remove-force", "remove-volumes", "remove-force-volumes"} {
+		if err := manager.ContainerAction(context.Background(), "demo", action); err != nil {
+			t.Fatalf("%s container: %v", action, err)
+		}
+	}
+	want := []string{
+		"rename demo renamed", "close",
+		"delete demo false false", "close",
+		"delete demo true false", "close",
+		"delete demo false true", "close",
+		"delete demo true true", "close",
+	}
+	if !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
+	}
+}
+
+func TestManagerMetadataActionsFallbackOnlyForUnavailableOrUnsupported(t *testing.T) {
+	tests := []struct {
+		name         string
+		directErr    error
+		wantFallback bool
+	}{
+		{name: "unsupported", directErr: ErrUnsupported, wantFallback: true},
+		{name: "unavailable", directErr: ErrUnavailable, wantFallback: true},
+		{name: "other error", directErr: errors.New("metadata update failed")},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &fakeContainerOperations{
+				errs: map[string]error{"rename demo renamed": test.directErr},
+			}
+			runner := &fakeRunner{
+				outputs: map[string][]byte{"nerdctl rename demo renamed": nil},
+				errors:  map[string]error{},
+			}
+			manager := New(runner)
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return operations, nil
+			}
+			err := manager.RenameContainer(context.Background(), "demo", "renamed")
+			if test.wantFallback {
+				if err != nil {
+					t.Fatalf("rename container: %v", err)
+				}
+				if len(runner.commands) != 1 {
+					t.Fatalf("fallback commands = %+v, want one rename", runner.commands)
+				}
+			} else {
+				if !errors.Is(err, test.directErr) {
+					t.Fatalf("rename error = %v, want %v", err, test.directErr)
+				}
+				if len(runner.commands) != 0 {
+					t.Fatalf("unexpected fallback commands = %+v", runner.commands)
+				}
+			}
+		})
+	}
+}
+
+func TestManagerRemoveFallsBackWhenDirectMetadataIsUnavailable(t *testing.T) {
+	operations := &fakeContainerOperations{
+		errs: map[string]error{"delete demo false false": ErrUnavailable},
+	}
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl rm demo": nil},
+		errors:  map[string]error{},
+	}
+	manager := New(runner)
+	manager.operationsConnector = func(context.Context) (containerOperations, error) {
+		return operations, nil
+	}
+	if err := manager.ContainerAction(context.Background(), "demo", "remove"); err != nil {
+		t.Fatalf("remove container: %v", err)
+	}
+	if len(runner.commands) != 1 ||
+		!reflect.DeepEqual(runner.commands[0].Args, []string{"rm", "demo"}) {
+		t.Fatalf("fallback commands = %+v, want nerdctl rm demo", runner.commands)
+	}
+}
+
 type fakeTasksClient struct {
 	tasksapi.TasksClient
 	process     *tasktypes.Process
 	calls       []string
 	killSignals []uint32
 	waitCode    uint32
+	getErr      error
+	deleteErr   error
 }
 
 func (f *fakeTasksClient) Get(
@@ -172,6 +274,9 @@ func (f *fakeTasksClient) Get(
 	_ ...grpc.CallOption,
 ) (*tasksapi.GetResponse, error) {
 	f.calls = append(f.calls, "get "+request.GetContainerID())
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return &tasksapi.GetResponse{Process: f.process}, nil
 }
 
@@ -203,17 +308,63 @@ func (f *fakeTasksClient) Wait(
 	return &tasksapi.WaitResponse{ExitStatus: f.waitCode}, nil
 }
 
+func (f *fakeTasksClient) Delete(
+	_ context.Context,
+	request *tasksapi.DeleteTaskRequest,
+	_ ...grpc.CallOption,
+) (*tasksapi.DeleteResponse, error) {
+	f.calls = append(f.calls, "delete "+request.GetContainerID())
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
+	return &tasksapi.DeleteResponse{}, nil
+}
+
 type fakeContainersClient struct {
 	containersapi.ContainersClient
-	container *containersapi.Container
+	container     *containersapi.Container
+	calls         []string
+	updateRequest *containersapi.UpdateContainerRequest
+	getErr        error
+	updateErr     error
+	deleteErr     error
 }
 
 func (f *fakeContainersClient) Get(
-	context.Context,
-	*containersapi.GetContainerRequest,
-	...grpc.CallOption,
+	_ context.Context,
+	request *containersapi.GetContainerRequest,
+	_ ...grpc.CallOption,
 ) (*containersapi.GetContainerResponse, error) {
+	f.calls = append(f.calls, "get "+request.GetID())
+	if f.getErr != nil {
+		return nil, f.getErr
+	}
 	return &containersapi.GetContainerResponse{Container: f.container}, nil
+}
+
+func (f *fakeContainersClient) Update(
+	_ context.Context,
+	request *containersapi.UpdateContainerRequest,
+	_ ...grpc.CallOption,
+) (*containersapi.UpdateContainerResponse, error) {
+	f.calls = append(f.calls, "update "+request.GetContainer().GetID())
+	f.updateRequest = request
+	if f.updateErr != nil {
+		return nil, f.updateErr
+	}
+	return &containersapi.UpdateContainerResponse{Container: request.GetContainer()}, nil
+}
+
+func (f *fakeContainersClient) Delete(
+	_ context.Context,
+	request *containersapi.DeleteContainerRequest,
+	_ ...grpc.CallOption,
+) (*emptypb.Empty, error) {
+	f.calls = append(f.calls, "delete "+request.GetID())
+	if f.deleteErr != nil {
+		return nil, f.deleteErr
+	}
+	return &emptypb.Empty{}, nil
 }
 
 func TestGRPCContainerOperationsResumePausedStart(t *testing.T) {
@@ -266,6 +417,122 @@ func TestGRPCContainerOperationsWaitReturnsCreatedTaskImmediately(t *testing.T) 
 	}
 	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
+	}
+}
+
+func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID: "demo",
+		Labels: map[string]string{
+			"app":            "porto",
+			nerdctlNameLabel: "old-name",
+		},
+	}}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	if err := runtimeClient.Rename(context.Background(), "demo", "new-name"); err != nil {
+		t.Fatalf("rename container: %v", err)
+	}
+	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, map[string]string{
+		"app":            "porto",
+		nerdctlNameLabel: "new-name",
+	}) {
+		t.Fatalf("updated labels = %v", got)
+	}
+	if !reflect.DeepEqual(
+		containers.updateRequest.GetUpdateMask(),
+		&fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	) {
+		t.Fatalf("update mask = %v, want labels", containers.updateRequest.GetUpdateMask())
+	}
+}
+
+func TestGRPCContainerOperationsUpdateLabelsMergesExistingMetadata(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:     "demo",
+		Labels: map[string]string{"existing": "value"},
+	}}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	if err := runtimeClient.UpdateLabels(
+		context.Background(),
+		"demo",
+		map[string]string{"added": "label"},
+	); err != nil {
+		t.Fatalf("update labels: %v", err)
+	}
+	want := map[string]string{"existing": "value", "added": "label"}
+	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("updated labels = %v, want %v", got, want)
+	}
+}
+
+func TestGRPCContainerOperationsDeleteStoppedTaskBeforeMetadata(t *testing.T) {
+	tasks := &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: "demo",
+		Status:      tasktypes.Status_STOPPED,
+	}}
+	containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	if err := runtimeClient.Delete(context.Background(), "demo", false, false); err != nil {
+		t.Fatalf("delete container: %v", err)
+	}
+	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(tasks.calls, want) {
+		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
+	}
+	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+}
+
+func TestGRPCContainerOperationsDeleteMetadataWithoutTask(t *testing.T) {
+	tasks := &fakeTasksClient{getErr: status.Error(codes.NotFound, "task missing")}
+	containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	if err := runtimeClient.Delete(context.Background(), "demo", false, false); err != nil {
+		t.Fatalf("delete container metadata: %v", err)
+	}
+	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
+		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
+	}
+	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
+	}
+}
+
+func TestGRPCContainerOperationsDeleteFallsBackBeforeManagedCleanup(t *testing.T) {
+	tasks := &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: "demo",
+		Status:      tasktypes.Status_STOPPED,
+	}}
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:          "demo",
+		Snapshotter: "overlayfs",
+		SnapshotKey: "demo",
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		tasks:      tasks,
+		containers: containers,
+	}
+	err := runtimeClient.Delete(context.Background(), "demo", false, false)
+	if !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("delete error = %v, want unsupported", err)
+	}
+	if len(tasks.calls) != 0 {
+		t.Fatalf("task was changed before fallback: %q", tasks.calls)
+	}
+	if want := []string{"get demo"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
 

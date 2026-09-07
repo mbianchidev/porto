@@ -14,6 +14,7 @@ import (
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 const defaultContainerStopTimeout = 10 * time.Second
@@ -26,6 +27,9 @@ type containerOperations interface {
 	Resume(context.Context, string) error
 	Restart(context.Context, string, int) error
 	Wait(context.Context, string) (int, error)
+	Rename(context.Context, string, string) error
+	UpdateLabels(context.Context, string, map[string]string) error
+	Delete(context.Context, string, bool, bool) error
 	Close() error
 }
 
@@ -34,7 +38,11 @@ type containerOperationsConnector func(context.Context) (containerOperations, er
 func (m *Manager) connectContainerOperations(ctx context.Context) (containerOperations, error) {
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
-		return nil, err
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: connect direct container operations: %v", ErrUnavailable, err)
 	}
 	operations, ok := runtimeClient.(containerOperations)
 	if !ok {
@@ -54,11 +62,14 @@ func (m *Manager) withContainerOperations(
 	}
 	operations, err := connector(ctx)
 	if err != nil {
-		return false, nil
+		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return false, nil
+		}
+		return true, err
 	}
 	operationErr := operation(operations)
 	closeErr := operations.Close()
-	if errors.Is(operationErr, ErrUnsupported) {
+	if errors.Is(operationErr, ErrUnsupported) || errors.Is(operationErr, ErrUnavailable) {
 		return false, nil
 	}
 	return true, errors.Join(operationErr, closeErr)
@@ -196,6 +207,111 @@ func (r *grpcContainerRuntime) Wait(ctx context.Context, id string) (int, error)
 		return 0, containerdOperationError("wait for", id, err)
 	}
 	return int(response.GetExitStatus()), nil
+}
+
+func (r *grpcContainerRuntime) Rename(ctx context.Context, id, name string) error {
+	return r.UpdateLabels(ctx, id, map[string]string{nerdctlNameLabel: name})
+}
+
+func (r *grpcContainerRuntime) UpdateLabels(ctx context.Context, id string, updates map[string]string) error {
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	response, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return containerdOperationError("inspect metadata for", id, err)
+	}
+	record := response.GetContainer()
+	if record == nil {
+		return fmt.Errorf("inspect metadata for container %q returned an empty record", id)
+	}
+	labels := cloneStringMap(record.GetLabels())
+	if labels == nil {
+		labels = map[string]string{}
+	}
+	for key, value := range updates {
+		labels[key] = value
+	}
+	record.Labels = labels
+	_, err = r.containers.Update(namespacedContext, &containersapi.UpdateContainerRequest{
+		Container:  record,
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+	})
+	return containerdOperationError("update metadata for", id, err)
+}
+
+func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, volumes bool) error {
+	if volumes {
+		return fmt.Errorf("%w: direct removal does not clean up container volumes", ErrUnsupported)
+	}
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	response, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return containerdOperationError("inspect metadata for", id, err)
+	}
+	record := response.GetContainer()
+	if record == nil {
+		return fmt.Errorf("inspect metadata for container %q returned an empty record", id)
+	}
+	if record.GetSnapshotKey() != "" || record.GetSnapshotter() != "" ||
+		record.GetLabels()[nerdctlNetworksLabel] != "" ||
+		record.GetLabels()[nerdctlPortsLabel] != "" {
+		return fmt.Errorf("%w: direct removal cannot safely clean up container snapshots or networking", ErrUnsupported)
+	}
+
+	process, err := r.getTask(ctx, id)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return containerdOperationError("inspect task for", id, err)
+	}
+	if err == nil {
+		switch process.GetStatus() {
+		case tasktypes.Status_CREATED, tasktypes.Status_STOPPED:
+		case tasktypes.Status_PAUSED:
+			if !force {
+				return fmt.Errorf("%w: container %q task is paused", ErrConflict, id)
+			}
+			if _, err := r.tasks.Resume(
+				namespacedContext,
+				&tasksapi.ResumeTaskRequest{ContainerID: id},
+			); err != nil {
+				return containerdOperationError("resume before removing", id, err)
+			}
+			fallthrough
+		case tasktypes.Status_RUNNING, tasktypes.Status_PAUSING:
+			if !force {
+				return fmt.Errorf("%w: container %q task is running", ErrConflict, id)
+			}
+			if _, err := r.tasks.Kill(
+				namespacedContext,
+				&tasksapi.KillRequest{ContainerID: id, Signal: 9},
+			); err != nil {
+				return containerdOperationError("kill before removing", id, err)
+			}
+			if _, err := r.tasks.Wait(
+				namespacedContext,
+				&tasksapi.WaitRequest{ContainerID: id},
+			); err != nil {
+				return containerdOperationError("wait before removing", id, err)
+			}
+		default:
+			return fmt.Errorf("%w: container %q task is %s", ErrConflict, id, process.GetStatus())
+		}
+		if _, err := r.tasks.Delete(
+			namespacedContext,
+			&tasksapi.DeleteTaskRequest{ContainerID: id},
+		); err != nil {
+			return containerdOperationError("delete task for", id, err)
+		}
+	}
+	_, err = r.containers.Delete(
+		namespacedContext,
+		&containersapi.DeleteContainerRequest{ID: id},
+	)
+	return containerdOperationError("delete metadata for", id, err)
 }
 
 func (r *grpcContainerRuntime) getTask(ctx context.Context, id string) (*tasktypes.Process, error) {
