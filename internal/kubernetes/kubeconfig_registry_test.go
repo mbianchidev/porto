@@ -880,6 +880,64 @@ users:
 	}
 }
 
+func TestRefreshVMKubeconfigKeepsPreviousFileWhenNormalizationFails(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "limactl" && strings.Contains(joined, "/etc/rancher/k3s/k3s.yaml"):
+			return []byte(`apiVersion: v1
+kind: Config
+current-context: default
+clusters:
+  - name: default
+    cluster:
+      server: https://127.0.0.1:6443
+contexts:
+  - name: default
+    context:
+      cluster: default
+      user: default
+users:
+  - name: default
+    user:
+      token: refreshed-token
+`), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config view --raw -o json"):
+			return []byte("normalization failed"), errors.New("exit status 1")
+		default:
+			return nil, nil
+		}
+	}
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+	path := provisioner.clusterKubeconfigPath("dev")
+	original := `{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "current-context": "porto-k3s-dev",
+  "clusters": [{"name": "porto-k3s-dev", "cluster": {"server": "https://127.0.0.1:54321"}}],
+  "contexts": [{"name": "porto-k3s-dev", "context": {"cluster": "porto-k3s-dev", "user": "porto-k3s-dev"}}],
+  "users": [{"name": "porto-k3s-dev", "user": {"token": "old-token"}}]
+}`
+	writeTestKubeconfig(t, path, original)
+
+	err := provisioner.refreshVMKubeconfig(
+		context.Background(),
+		ClusterRequest{Name: "dev", Provider: "k3s", APIPort: 54321},
+		"porto-dev-server-1",
+	)
+	if err == nil {
+		t.Fatal("normalization failure returned success")
+	}
+	contents, readErr := os.ReadFile(path)
+	if readErr != nil {
+		t.Fatal(readErr)
+	}
+	if string(contents) != original {
+		t.Fatalf("previous kubeconfig was replaced after normalization failure:\n%s", contents)
+	}
+}
+
 func TestClusterRenameUpdatesGlobalKubeconfig(t *testing.T) {
 	runner := newFakeRunner()
 	root := t.TempDir()
@@ -1362,6 +1420,40 @@ func TestClusterKubeconfigReconciliationDoesNotPruneAfterMetadataError(t *testin
 	document := readTestKubeconfig(t, target)
 	if testNamedEntry(t, document, "contexts", "porto-old") == nil {
 		t.Fatal("managed context was pruned after incomplete reconciliation")
+	}
+}
+
+func TestClusterKubeconfigReconciliationMigratesLegacyK3sContext(t *testing.T) {
+	runner := newFakeRunner()
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), ".kube", "config")
+	provisioner := NewClusterProvisioner(
+		vm.New(runner),
+		runner,
+		root,
+		WithKubeconfigRegistry(NewKubeconfigRegistry(target)),
+	)
+	if err := provisioner.writeClusterMetadata(ClusterRequest{Name: "dev", Provider: "k3s"}); err != nil {
+		t.Fatal(err)
+	}
+	writeTestKubeconfig(t, provisioner.clusterKubeconfigPath("dev"), `{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "current-context": "porto-dev",
+  "clusters": [{"name": "porto-dev", "cluster": {"server": "https://127.0.0.1:54321"}}],
+  "contexts": [{"name": "porto-dev", "context": {"cluster": "porto-dev", "user": "porto-dev"}}],
+  "users": [{"name": "porto-dev", "user": {"token": "legacy-token"}}]
+}`)
+
+	if err := provisioner.ReconcileKubeconfigs(context.Background()); err != nil {
+		t.Fatalf("reconcile legacy k3s context: %v", err)
+	}
+	document := readTestKubeconfig(t, target)
+	if testNamedEntry(t, document, "contexts", "porto-k3s-dev") == nil {
+		t.Fatal("migrated k3s context was not registered")
+	}
+	if testNamedEntry(t, document, "contexts", "porto-dev") != nil {
+		t.Fatal("legacy k3s context was registered")
 	}
 }
 

@@ -489,11 +489,39 @@ func (p *ClusterProvisioner) refreshVMKubeconfig(
 		return fmt.Errorf("set Kubernetes API endpoint: %w", err)
 	}
 	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
-	if err := writeFileAtomic(kubeconfigPath, kubeconfig); err != nil {
-		return fmt.Errorf("write kubeconfig: %w", err)
+	if err := os.MkdirAll(filepath.Dir(kubeconfigPath), 0o700); err != nil {
+		return fmt.Errorf("create kubeconfig directory: %w", err)
 	}
-	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, clusterContextName(request)); err != nil {
+	staged, err := os.CreateTemp(filepath.Dir(kubeconfigPath), ".porto-kubeconfig-refresh-*")
+	if err != nil {
+		return fmt.Errorf("create staged kubeconfig: %w", err)
+	}
+	stagedPath := staged.Name()
+	defer os.Remove(stagedPath)
+	if err := staged.Chmod(0o600); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("secure staged kubeconfig: %w", err)
+	}
+	if _, err := staged.Write(kubeconfig); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("write staged kubeconfig: %w", err)
+	}
+	if err := staged.Sync(); err != nil {
+		_ = staged.Close()
+		return fmt.Errorf("sync staged kubeconfig: %w", err)
+	}
+	if err := staged.Close(); err != nil {
+		return fmt.Errorf("close staged kubeconfig: %w", err)
+	}
+	if err := p.normalizeKubeconfig(
+		refreshContext,
+		stagedPath,
+		clusterContextName(request),
+	); err != nil {
 		return err
+	}
+	if err := os.Rename(stagedPath, kubeconfigPath); err != nil {
+		return fmt.Errorf("publish refreshed kubeconfig: %w", err)
 	}
 	return nil
 }
@@ -509,9 +537,20 @@ func (p *ClusterProvisioner) registerKubeconfig(
 	if err != nil {
 		return KubeconfigRegistration{}, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	kubeconfigPath := p.clusterKubeconfigPath(clusterName)
+	expectedContext := clusterContextName(request)
+	contextName, err := KubeconfigContextName(kubeconfigPath)
+	if err != nil {
+		return KubeconfigRegistration{}, fmt.Errorf("read private Kubernetes context: %w", err)
+	}
+	if contextName != expectedContext {
+		if err := p.normalizeKubeconfig(ctx, kubeconfigPath, expectedContext); err != nil {
+			return KubeconfigRegistration{}, fmt.Errorf("migrate private Kubernetes context: %w", err)
+		}
+	}
 	registration, err := p.kubeconfigs.Register(
 		ctx,
-		p.clusterKubeconfigPath(clusterName),
+		kubeconfigPath,
 		clusterKubeconfigOwner(request),
 	)
 	if err != nil {
@@ -575,11 +614,12 @@ func (p *ClusterProvisioner) ReconcileKubeconfigs(ctx context.Context) error {
 		if request.Phase != "" || !clusterNamePattern.MatchString(request.Name) {
 			continue
 		}
-		contextName := clusterContextName(request)
-		desiredContexts[contextName] = struct{}{}
-		if _, registerErr := p.registerKubeconfig(ctx, request.Name); registerErr != nil {
+		registration, registerErr := p.registerKubeconfig(ctx, request.Name)
+		if registerErr != nil {
 			reconcileErrors = append(reconcileErrors, fmt.Errorf("reconcile cluster %s: %w", request.Name, registerErr))
+			continue
 		}
+		desiredContexts[registration.Context] = struct{}{}
 	}
 	if len(reconcileErrors) == 0 {
 		if pruneErr := p.kubeconfigs.Prune(ctx, desiredContexts); pruneErr != nil {
