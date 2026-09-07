@@ -68,6 +68,10 @@ Lifecycle actions use containerd task APIs. Starting or restarting a stopped
 container recreates its task from the stored OCI spec and snapshot mounts, then
 starts it directly; attached stream recreation remains on the compatibility
 path because containerd does not retain nerdctl's daemon-local FIFO setup.
+Container checkpoints use the containerd task checkpoint RPC and return the
+runtime's descriptor media types. Docker-compatible restore remains explicitly
+unsupported because containerd's generic task service does not provide the
+runtime-specific task and CRIU restoration inputs required by Docker's API.
 
 ## Install the Docker context
 
@@ -112,7 +116,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Resource | Supported operations |
 | --- | --- |
 | System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove; checkpoint/restore return typed unsupported responses |
+| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove, checkpoint; restore returns a typed unsupported response |
 | Images | list, inspect, pull, save, remove |
 | Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |
