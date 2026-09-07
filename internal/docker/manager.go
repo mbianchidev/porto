@@ -32,23 +32,26 @@ const (
 var (
 	ErrUnavailable = errors.New("Porto container runtime is unavailable")
 	ErrUnsupported = errors.New("Docker operation is not supported by Porto")
+	ErrNotFound    = errors.New("Docker object was not found")
+	ErrConflict    = errors.New("Docker operation conflicts with the current object state")
 )
 
 type Manager struct {
-	runner           runtimes.Runner
-	timeout          time.Duration
-	stateDir         string
-	lookPath         func(string) (string, error)
-	goos             string
-	directCLI        bool
-	dialBuildKit     func(context.Context) (net.Conn, error)
-	installMu        sync.Mutex
-	healthMu         sync.Mutex
-	inventoryMu      sync.Mutex
-	inventory        *containerInventory
-	inventoryCancel  context.CancelFunc
-	inventoryDone    chan struct{}
-	runtimeConnector containerRuntimeConnector
+	runner              runtimes.Runner
+	timeout             time.Duration
+	stateDir            string
+	lookPath            func(string) (string, error)
+	goos                string
+	directCLI           bool
+	dialBuildKit        func(context.Context) (net.Conn, error)
+	installMu           sync.Mutex
+	healthMu            sync.Mutex
+	inventoryMu         sync.Mutex
+	inventory           *containerInventory
+	inventoryCancel     context.CancelFunc
+	inventoryDone       chan struct{}
+	runtimeConnector    containerRuntimeConnector
+	operationsConnector containerOperationsConnector
 }
 
 type engineState struct {
@@ -86,6 +89,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		goos:     runtime.GOOS,
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
+	manager.operationsConnector = manager.connectContainerOperations
 	return manager
 }
 
@@ -730,6 +734,12 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	if handled, err := m.directContainerAction(ctx, id, action, timeout); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
+	}
 	if action == "start" {
 		paused, err := m.containerPaused(ctx, id)
 		if err != nil {
@@ -769,6 +779,48 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	_, err := m.run(ctx, action+" Porto container", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
+	return err
+}
+
+func (m *Manager) directContainerAction(ctx context.Context, id, action string, timeout int) (bool, error) {
+	return m.withContainerOperations(ctx, func(operations containerOperations) error {
+		switch action {
+		case "start":
+			return operations.Start(ctx, id)
+		case "stop":
+			return operations.Stop(ctx, id, timeout)
+		case "restart":
+			return operations.Restart(ctx, id, timeout)
+		case "pause":
+			return operations.Pause(ctx, id)
+		case "unpause":
+			return operations.Resume(ctx, id)
+		default:
+			return ErrUnsupported
+		}
+	})
+}
+
+func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {
+	if err := validateObjectID(id); err != nil {
+		return err
+	}
+	signalNumber, err := parseContainerSignal(signal)
+	if err != nil {
+		return err
+	}
+	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.Kill(ctx, id, signalNumber)
+	}); handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
+	}
+	_, err = m.run(ctx, "kill Porto container", "kill", "--signal", strconv.FormatUint(uint64(signalNumber), 10), id)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -906,6 +958,11 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		return inventory.wait(waitContext, id, condition)
 	}
+	if condition == "" || condition == "not-running" {
+		if handled, code, directErr := m.waitContainerDirect(waitContext, id); handled {
+			return code, directErr
+		}
+	}
 	if condition == "removed" {
 		return m.waitForContainerRemoval(waitContext, id)
 	}
@@ -928,6 +985,23 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 		return 0, fmt.Errorf("decode container exit code: %w", err)
 	}
 	return code, nil
+}
+
+func (m *Manager) waitContainerDirect(ctx context.Context, id string) (bool, int, error) {
+	connector := m.operationsConnector
+	if connector == nil {
+		return false, 0, nil
+	}
+	operations, err := connector(ctx)
+	if err != nil {
+		return false, 0, nil
+	}
+	code, waitErr := operations.Wait(ctx, id)
+	closeErr := operations.Close()
+	if errors.Is(waitErr, ErrUnsupported) {
+		return false, 0, nil
+	}
+	return true, code, errors.Join(waitErr, closeErr)
 }
 
 func (m *Manager) waitForContainerRemoval(ctx context.Context, id string) (int, error) {

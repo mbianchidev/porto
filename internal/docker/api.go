@@ -67,6 +67,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /containers/{id}/json", a.inspectContainer)
 	a.mux.HandleFunc("POST /containers/{id}/start", a.startContainer)
 	a.mux.HandleFunc("POST /containers/{id}/stop", a.containerAction("stop"))
+	a.mux.HandleFunc("POST /containers/{id}/kill", a.killContainer)
 	a.mux.HandleFunc("POST /containers/{id}/restart", a.containerAction("restart"))
 	a.mux.HandleFunc("POST /containers/{id}/update", a.updateContainer)
 	a.mux.HandleFunc("POST /containers/{id}/pause", a.containerAction("pause"))
@@ -654,6 +655,14 @@ func (a *API) containerAction(action string) http.HandlerFunc {
 	}
 }
 
+func (a *API) killContainer(w http.ResponseWriter, r *http.Request) {
+	if err := a.manager.KillContainer(r.Context(), r.PathValue("id"), r.URL.Query().Get("signal")); err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (a *API) renameContainer(w http.ResponseWriter, r *http.Request) {
 	if err := a.manager.RenameContainer(r.Context(), r.PathValue("id"), r.URL.Query().Get("name")); err != nil {
 		writeDockerError(w, err)
@@ -989,9 +998,9 @@ func writeDockerError(w http.ResponseWriter, err error) {
 		status = http.StatusNotImplemented
 	case errors.Is(err, ErrUnavailable), strings.Contains(message, "unavailable"):
 		status = http.StatusServiceUnavailable
-	case strings.Contains(message, "not found"), strings.Contains(message, "no such"):
+	case errors.Is(err, ErrNotFound), strings.Contains(message, "not found"), strings.Contains(message, "no such"):
 		status = http.StatusNotFound
-	case strings.Contains(message, "already exists"), strings.Contains(message, "conflict"):
+	case errors.Is(err, ErrConflict), strings.Contains(message, "already exists"), strings.Contains(message, "conflict"):
 		status = http.StatusConflict
 	case strings.Contains(message, "required"), strings.Contains(message, "invalid"):
 		status = http.StatusBadRequest
