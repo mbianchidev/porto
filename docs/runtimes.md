@@ -318,10 +318,34 @@ to resolve its path. kind and k0s context, cluster, and user entries use
 Porto lifecycle-manages a flattened copy in `~/.kube/config`: creation and
 startup add or refresh the context, rename replaces it, deletion removes it,
 and daemon startup reconciles clusters created by older versions. A
-`porto.dev/managed` context extension distinguishes Porto-owned entries.
-Collisions with user-owned contexts fail without overwriting them. Writes use
-an advisory `<config>.lock`, mode `0600`, atomic replacement, and a one-time
+`porto.dev/managed` context extension records the owning Porto cluster and
+provider. Porto changes only that owned context and its named cluster/user
+entries. It preserves every unrelated context, cluster, user, preference,
+extension, and non-Porto `current-context`; collisions with user-owned entries
+fail without overwriting them. If the current context is the Porto context being
+renamed, Porto follows the rename; deletion clears it rather than selecting a
+different cluster.
+
+Users can create additional contexts that reference Porto's cluster and user
+entries. Those aliases remain user-managed and keep their namespace or other
+context settings while Porto refreshes the underlying endpoint and credentials.
+Deleting the Porto cluster removes its owned context, but leaves cluster/user
+entries that an external context still references. Writes use an advisory
+`<config>.lock`, mode `0600`, atomic replacement, and a one-time
 `~/.kube/config.porto-backup`.
+
+Provider-specific registration behavior:
+
+- **kind:** cluster recreation refreshes the copied API endpoint and client
+  certificates. Stopping its containers intentionally leaves the context
+  registered, so clients can still list it while the API is unreachable.
+- **k0s:** Porto fetches full admin credentials with `k0s kubeconfig admin` and
+  replaces the guest address with the allocated `127.0.0.1` API forwarding
+  endpoint before registration.
+- **k3s:** Porto consistently uses `porto-k3s-<cluster>` in the CLI, k9s, and
+  global kubeconfig. Every successful start re-fetches
+  `/etc/rancher/k3s/k3s.yaml`, rewrites its host endpoint, and refreshes rotated
+  credentials before updating the global entry.
 
 Inspect the private path or manually repair/install the generated context into
 the standard `~/.kube/config` file:

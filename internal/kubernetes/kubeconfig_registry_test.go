@@ -24,6 +24,12 @@ func TestKubeconfigRegistryRegistersWithoutChangingCurrentContext(t *testing.T) 
 	writeTestKubeconfig(t, target, `apiVersion: v1
 kind: Config
 current-context: existing
+preferences:
+  colors: true
+extensions:
+  - name: external.example/settings
+    extension:
+      enabled: true
 clusters:
   - name: existing
     cluster:
@@ -83,6 +89,18 @@ users:
 	}
 	if testNamedEntry(t, document, "users", "porto-dev") == nil {
 		t.Fatal("Porto user was not registered")
+	}
+	preferences := testMap(t, document["preferences"])
+	if preferences["colors"] != true {
+		t.Fatalf("global preferences changed: %#v", preferences)
+	}
+	extensions, ok := document["extensions"].([]any)
+	if !ok || len(extensions) != 1 {
+		t.Fatalf("global extensions changed: %#v", document["extensions"])
+	}
+	externalExtension := testMap(t, extensions[0])
+	if externalExtension["name"] != "external.example/settings" {
+		t.Fatalf("global extension changed: %#v", externalExtension)
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Stat(target)
@@ -264,6 +282,88 @@ users:
 	}
 }
 
+func TestKubeconfigRegistryRefreshesManagedBundleReferencedByExternalAlias(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config")
+	source := filepath.Join(dir, "porto.yaml")
+	writeTestKubeconfig(t, source, `apiVersion: v1
+kind: Config
+current-context: porto-dev
+clusters:
+  - name: porto-dev
+    cluster:
+      server: https://127.0.0.1:54321
+contexts:
+  - name: porto-dev
+    context:
+      cluster: porto-dev
+      user: porto-dev
+users:
+  - name: porto-dev
+    user:
+      token: old-token
+`)
+	registry := NewKubeconfigRegistry(target)
+	owner := KubeconfigOwner{Cluster: "dev", Provider: "kind"}
+	if _, err := registry.Register(context.Background(), source, owner); err != nil {
+		t.Fatal(err)
+	}
+	document := readTestKubeconfig(t, target)
+	document["current-context"] = "dev-alias"
+	document["contexts"] = append(document["contexts"].([]any), map[string]any{
+		"name": "dev-alias",
+		"context": map[string]any{
+			"cluster":   "porto-dev",
+			"user":      "porto-dev",
+			"namespace": "external",
+		},
+	})
+	contents, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeTestKubeconfig(t, source, `apiVersion: v1
+kind: Config
+current-context: porto-dev
+clusters:
+  - name: porto-dev
+    cluster:
+      server: https://127.0.0.1:65432
+contexts:
+  - name: porto-dev
+    context:
+      cluster: porto-dev
+      user: porto-dev
+users:
+  - name: porto-dev
+    user:
+      token: refreshed-token
+`)
+
+	if _, err := registry.Register(context.Background(), source, owner); err != nil {
+		t.Fatalf("refresh managed bundle: %v", err)
+	}
+	document = readTestKubeconfig(t, target)
+	if got := document["current-context"]; got != "dev-alias" {
+		t.Fatalf("current context = %#v, want dev-alias", got)
+	}
+	alias := testMap(t, testNamedEntry(t, document, "contexts", "dev-alias")["context"])
+	if alias["namespace"] != "external" || alias["cluster"] != "porto-dev" || alias["user"] != "porto-dev" {
+		t.Fatalf("external alias changed: %#v", alias)
+	}
+	cluster := testMap(t, testNamedEntry(t, document, "clusters", "porto-dev")["cluster"])
+	if cluster["server"] != "https://127.0.0.1:65432" {
+		t.Fatalf("managed server = %#v", cluster["server"])
+	}
+	user := testMap(t, testNamedEntry(t, document, "users", "porto-dev")["user"])
+	if user["token"] != "refreshed-token" {
+		t.Fatalf("managed token = %#v", user["token"])
+	}
+}
+
 func TestKubeconfigRegistryRejectsManagedContextOwnedByAnotherCluster(t *testing.T) {
 	dir := t.TempDir()
 	target := filepath.Join(dir, "config")
@@ -359,6 +459,70 @@ users:
 		if entry := testNamedEntry(t, document, field, "porto-dev"); entry != nil {
 			t.Fatalf("%s entry was not removed: %#v", field, entry)
 		}
+	}
+}
+
+func TestKubeconfigRegistryRemovalPreservesExternalAlias(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "config")
+	source := filepath.Join(dir, "porto.yaml")
+	writeTestKubeconfig(t, source, `apiVersion: v1
+kind: Config
+current-context: porto-dev
+clusters:
+  - name: porto-dev
+    cluster:
+      server: https://127.0.0.1:54321
+contexts:
+  - name: porto-dev
+    context:
+      cluster: porto-dev
+      user: porto-dev
+users:
+  - name: porto-dev
+    user:
+      token: porto-token
+`)
+	registry := NewKubeconfigRegistry(target)
+	owner := KubeconfigOwner{Cluster: "dev", Provider: "kind"}
+	if _, err := registry.Register(context.Background(), source, owner); err != nil {
+		t.Fatal(err)
+	}
+	document := readTestKubeconfig(t, target)
+	document["current-context"] = "dev-alias"
+	document["contexts"] = append(document["contexts"].([]any), map[string]any{
+		"name": "dev-alias",
+		"context": map[string]any{
+			"cluster": "porto-dev",
+			"user":    "porto-dev",
+		},
+	})
+	contents, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := registry.Remove(context.Background(), "porto-dev", source, owner); err != nil {
+		t.Fatalf("remove managed context: %v", err)
+	}
+	document = readTestKubeconfig(t, target)
+	if got := document["current-context"]; got != "dev-alias" {
+		t.Fatalf("current context = %#v, want dev-alias", got)
+	}
+	if testNamedEntry(t, document, "contexts", "porto-dev") != nil {
+		t.Fatal("Porto context was not removed")
+	}
+	if testNamedEntry(t, document, "contexts", "dev-alias") == nil {
+		t.Fatal("external alias was removed")
+	}
+	if testNamedEntry(t, document, "clusters", "porto-dev") == nil {
+		t.Fatal("externally referenced cluster entry was removed")
+	}
+	if testNamedEntry(t, document, "users", "porto-dev") == nil {
+		t.Fatal("externally referenced user entry was removed")
 	}
 }
 
@@ -725,6 +889,140 @@ users:
 	}
 }
 
+func TestKindRecreationRefreshesGlobalBundleAndPreservesExternalAlias(t *testing.T) {
+	baseRunner := newFakeRunner()
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "kind" && joined == "get nodes --name porto-dev":
+			return []byte("porto-dev-worker\n"), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config view --raw -o json"):
+			return []byte(`{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "current-context": "kind-porto-dev",
+  "clusters": [{"name": "kind-porto-dev", "cluster": {"server": "https://127.0.0.1:65432"}}],
+  "contexts": [{"name": "kind-porto-dev", "context": {"cluster": "kind-porto-dev", "user": "kind-porto-dev"}}],
+  "users": [{"name": "kind-porto-dev", "user": {"client-certificate-data": "bmV3LWNlcnQ=", "client-key-data": "bmV3LWtleQ=="}}]
+}`), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config view --minify"):
+			return []byte("https://127.0.0.1:65432"), nil
+		default:
+			return baseRunner.Run(context.Background(), command)
+		}
+	}
+	root := t.TempDir()
+	target := filepath.Join(t.TempDir(), ".kube", "config")
+	registry := NewKubeconfigRegistry(target)
+	provisioner := NewClusterProvisioner(
+		vm.New(runner),
+		runner,
+		root,
+		WithKubeconfigRegistry(registry),
+	)
+	request := ClusterRequest{
+		Name:       "dev",
+		Provider:   "kind",
+		NodeGroups: []NodeGroupSpec{{Name: "workers", Count: 1}},
+	}
+	if err := provisioner.writeClusterMetadata(request); err != nil {
+		t.Fatal(err)
+	}
+	source := provisioner.clusterKubeconfigPath("dev")
+	writeTestKubeconfig(t, source, `{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "current-context": "porto-dev",
+  "clusters": [{"name": "porto-dev", "cluster": {"server": "https://127.0.0.1:54321"}}],
+  "contexts": [{"name": "porto-dev", "context": {"cluster": "porto-dev", "user": "porto-dev"}}],
+  "users": [{"name": "porto-dev", "user": {"client-certificate-data": "b2xkLWNlcnQ=", "client-key-data": "b2xkLWtleQ=="}}]
+}`)
+	owner := clusterKubeconfigOwner(request)
+	if _, err := registry.Register(context.Background(), source, owner); err != nil {
+		t.Fatal(err)
+	}
+	document := readTestKubeconfig(t, target)
+	document["current-context"] = "dev-alias"
+	document["contexts"] = append(document["contexts"].([]any), map[string]any{
+		"name": "dev-alias",
+		"context": map[string]any{
+			"cluster": "porto-dev",
+			"user":    "porto-dev",
+		},
+	})
+	contents, err := yaml.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, contents, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	recreated, err := provisioner.Start(context.Background(), "dev")
+	if err != nil {
+		t.Fatalf("recreate kind cluster: %v", err)
+	}
+	if !recreated {
+		t.Fatal("missing kind control plane was not recreated")
+	}
+	document = readTestKubeconfig(t, target)
+	if got := document["current-context"]; got != "dev-alias" {
+		t.Fatalf("current context = %#v, want dev-alias", got)
+	}
+	if testNamedEntry(t, document, "contexts", "dev-alias") == nil {
+		t.Fatal("external alias was removed")
+	}
+	cluster := testMap(t, testNamedEntry(t, document, "clusters", "porto-dev")["cluster"])
+	if cluster["server"] != "https://127.0.0.1:65432" {
+		t.Fatalf("recreated kind server = %#v", cluster["server"])
+	}
+	user := testMap(t, testNamedEntry(t, document, "users", "porto-dev")["user"])
+	if user["client-certificate-data"] != "bmV3LWNlcnQ=" ||
+		user["client-key-data"] != "bmV3LWtleQ==" {
+		t.Fatalf("recreated kind credentials = %#v", user)
+	}
+}
+
+func TestStoppingKindClusterKeepsRegisteredContext(t *testing.T) {
+	runner := newFakeRunner()
+	target := filepath.Join(t.TempDir(), ".kube", "config")
+	provisioner := NewClusterProvisioner(
+		vm.New(runner),
+		runner,
+		t.TempDir(),
+		WithKubeconfigRegistry(NewKubeconfigRegistry(target)),
+	)
+	request := ClusterRequest{Name: "dev", Provider: "kind"}
+	if err := provisioner.writeClusterMetadata(request); err != nil {
+		t.Fatal(err)
+	}
+	source := provisioner.clusterKubeconfigPath("dev")
+	writeTestKubeconfig(t, source, `{
+  "apiVersion": "v1",
+  "kind": "Config",
+  "current-context": "porto-dev",
+  "clusters": [{"name": "porto-dev", "cluster": {"server": "https://127.0.0.1:54321"}}],
+  "contexts": [{"name": "porto-dev", "context": {"cluster": "porto-dev", "user": "porto-dev"}}],
+  "users": [{"name": "porto-dev", "user": {"client-certificate-data": "Y2VydA==", "client-key-data": "a2V5"}}]
+}`)
+	if _, err := provisioner.registerKubeconfig(context.Background(), "dev"); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := provisioner.SetRunning(context.Background(), "dev", false); err != nil {
+		t.Fatalf("stop kind cluster: %v", err)
+	}
+	document := readTestKubeconfig(t, target)
+	if testNamedEntry(t, document, "contexts", "porto-dev") == nil {
+		t.Fatal("stopped kind cluster was removed from the global kubeconfig")
+	}
+	cluster := testMap(t, testNamedEntry(t, document, "clusters", "porto-dev")["cluster"])
+	if cluster["server"] != "https://127.0.0.1:54321" {
+		t.Fatalf("stopped kind server changed: %#v", cluster["server"])
+	}
+}
+
 func TestVMClusterStartRefetchesGlobalKubeconfigCredentials(t *testing.T) {
 	baseRunner := newFakeRunner()
 	runner := newFakeRunner()
@@ -804,6 +1102,81 @@ users:
 	cluster := testMap(t, testNamedEntry(t, document, "clusters", "porto-k3s-dev")["cluster"])
 	if cluster["server"] != "https://127.0.0.1:54321" {
 		t.Fatalf("registered server = %#v", cluster["server"])
+	}
+}
+
+func TestK0sRegistrationUsesHostEndpointAndAdminCredentials(t *testing.T) {
+	baseRunner := newFakeRunner()
+	runner := newFakeRunner()
+	fetchedAdminConfig := false
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "limactl" && strings.Contains(joined, "k0s kubeconfig admin"):
+			fetchedAdminConfig = true
+			return []byte(`apiVersion: v1
+kind: Config
+current-context: default
+clusters:
+  - name: default
+    cluster:
+      server: https://192.168.105.2:6443
+contexts:
+  - name: default
+    context:
+      cluster: default
+      user: default
+users:
+  - name: default
+    user:
+      token: k0s-admin-token
+`), nil
+		case command.Name == "kubectl" && strings.Contains(joined, "config view --raw -o json"):
+			path := ""
+			for index, arg := range command.Args {
+				if arg == "--kubeconfig" && index+1 < len(command.Args) {
+					path = command.Args[index+1]
+				}
+			}
+			return json.Marshal(readTestKubeconfig(t, path))
+		default:
+			return baseRunner.Run(context.Background(), command)
+		}
+	}
+	target := filepath.Join(t.TempDir(), ".kube", "config")
+	provisioner := NewClusterProvisioner(
+		vm.New(runner),
+		runner,
+		t.TempDir(),
+		WithKubeconfigRegistry(NewKubeconfigRegistry(target)),
+	)
+
+	cluster, err := provisioner.Create(context.Background(), ClusterRequest{
+		Name:         "dev",
+		Provider:     "k0s",
+		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048, DiskGiB: 20},
+	})
+	if err != nil {
+		t.Fatalf("create k0s cluster: %v", err)
+	}
+	if !fetchedAdminConfig {
+		t.Fatal("k0s admin kubeconfig was not fetched")
+	}
+	document := readTestKubeconfig(t, target)
+	contextEntry := testNamedEntry(t, document, "contexts", "porto-dev")
+	if contextEntry == nil {
+		t.Fatal("k0s context was not registered")
+	}
+	clusterEntry := testMap(t, testNamedEntry(t, document, "clusters", "porto-dev")["cluster"])
+	if clusterEntry["server"] != cluster.Server {
+		t.Fatalf("registered k0s server = %#v, want %q", clusterEntry["server"], cluster.Server)
+	}
+	if clusterEntry["server"] == "https://192.168.105.2:6443" {
+		t.Fatal("k0s registration retained the VM-local API endpoint")
+	}
+	user := testMap(t, testNamedEntry(t, document, "users", "porto-dev")["user"])
+	if user["token"] != "k0s-admin-token" {
+		t.Fatalf("registered k0s credentials = %#v", user)
 	}
 }
 

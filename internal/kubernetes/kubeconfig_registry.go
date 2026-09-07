@@ -250,8 +250,6 @@ func mergeKubeconfigBundle(
 		"clusters",
 		bundle.clusterName,
 		bundle.cluster,
-		"cluster",
-		bundle.contextName,
 		replaceExisting,
 	); err != nil {
 		return err
@@ -261,8 +259,6 @@ func mergeKubeconfigBundle(
 		"users",
 		bundle.userName,
 		bundle.user,
-		"user",
-		bundle.contextName,
 		replaceExisting,
 	); err != nil {
 		return err
@@ -592,15 +588,13 @@ func validateKubeconfigEntryReplacement(
 	field string,
 	name string,
 	replacement map[string]any,
-	contextField string,
-	contextName string,
 	replaceExisting bool,
 ) error {
 	existing, found := findKubeconfigNamedEntry(document, field, name)
 	if !found || reflect.DeepEqual(existing, replacement) {
 		return nil
 	}
-	if replaceExisting && !kubeconfigEntryReferencedByOtherContext(document, contextField, name, contextName) {
+	if replaceExisting {
 		return nil
 	}
 	return fmt.Errorf(
