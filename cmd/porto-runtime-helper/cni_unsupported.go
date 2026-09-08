@@ -23,3 +23,7 @@ func connectCNI(context.Context, cniRequest) (any, error) {
 func disconnectCNI(context.Context, cniRequest) error {
 	return errLinuxRequired
 }
+
+func checkCNI(context.Context, cniRequest) error {
+	return errLinuxRequired
+}

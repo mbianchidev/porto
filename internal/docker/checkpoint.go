@@ -13,6 +13,7 @@ import (
 const (
 	checkpointSourceIDLabel     = "io.porto.checkpoint.source-id"
 	checkpointSourceLabelsLabel = "io.porto.checkpoint.source-labels"
+	checkpointRuntimeLabel      = "io.porto.checkpoint.runtime"
 )
 
 func (r *grpcContainerRuntime) checkpointContainer(
@@ -53,6 +54,11 @@ func (r *grpcContainerRuntime) checkpointContainer(
 	}
 	metadata.Labels[checkpointSourceIDLabel] = id
 	metadata.Labels[checkpointSourceLabelsLabel] = string(encodedLabels)
+	info, err := container.Info(namespacedContext)
+	if err != nil {
+		return nil, fmt.Errorf("read source runtime for checkpoint %q: %w", name, err)
+	}
+	metadata.Labels[checkpointRuntimeLabel] = info.Runtime.Name
 	if _, err := r.client.ImageService().Update(namespacedContext, metadata, "labels"); err != nil {
 		return nil, fmt.Errorf("persist checkpoint %q metadata: %w", name, err)
 	}

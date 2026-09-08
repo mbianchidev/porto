@@ -44,12 +44,18 @@ type healthSchedule struct {
 }
 
 type healthSchedulerState struct {
-	mu        sync.Mutex
-	schedules map[string]*healthSchedule
+	mu             sync.Mutex
+	schedules      map[string]*healthSchedule
+	networkNext    map[string]time.Time
+	networkRunning map[string]bool
 }
 
 func (m *Manager) runHealthScheduler(ctx context.Context) {
-	state := &healthSchedulerState{schedules: make(map[string]*healthSchedule)}
+	state := &healthSchedulerState{
+		schedules:      make(map[string]*healthSchedule),
+		networkNext:    make(map[string]time.Time),
+		networkRunning: make(map[string]bool),
+	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -68,6 +74,7 @@ func (m *Manager) scheduleHealthChecks(
 	now time.Time,
 ) {
 	snapshot := m.ContainerSnapshot()
+	m.scheduleNetworkReconciliation(ctx, state, snapshot, now)
 	active := make(map[string]struct{})
 	for _, container := range snapshot.Containers {
 		if container.Labels[portoManagedLabel] != portoRuntimeVersion ||
@@ -80,7 +87,11 @@ func (m *Manager) scheduleHealthChecks(
 		state.mu.Lock()
 		schedule := state.schedules[container.ID]
 		if schedule == nil {
-			schedule = &healthSchedule{startedAt: now, nextRun: now}
+			starting := container.Healthcheck.StartPeriod > 0
+			schedule = &healthSchedule{
+				startedAt: now,
+				nextRun:   now.Add(healthInterval(container.Healthcheck, starting)),
+			}
 			state.schedules[container.ID] = schedule
 		}
 		if schedule.running || now.Before(schedule.nextRun) {
@@ -108,6 +119,72 @@ func (m *Manager) scheduleHealthChecks(
 		}
 	}
 	state.mu.Unlock()
+}
+
+func (m *Manager) scheduleNetworkReconciliation(
+	ctx context.Context,
+	state *healthSchedulerState,
+	snapshot ContainerSnapshot,
+	now time.Time,
+) {
+	active := make(map[string]struct{})
+	for _, container := range snapshot.Containers {
+		if container.Labels[portoManagedLabel] != portoRuntimeVersion ||
+			container.Labels[portoNetworkStateLabel] == "" {
+			continue
+		}
+		active[container.ID] = struct{}{}
+		state.mu.Lock()
+		next := state.networkNext[container.ID]
+		persistedPID := uint32(parsePositiveInt(container.Labels[portoNetworkPIDLabel]))
+		pidChanged := persistedPID != container.PID
+		if state.networkRunning[container.ID] ||
+			(!pidChanged && !next.IsZero() && now.Before(next)) {
+			state.mu.Unlock()
+			continue
+		}
+		state.networkNext[container.ID] = now.Add(defaultInventoryReconcileInterval)
+		state.networkRunning[container.ID] = true
+		state.mu.Unlock()
+		go func(id string, force bool) {
+			defer func() {
+				state.mu.Lock()
+				state.networkRunning[id] = false
+				state.mu.Unlock()
+			}()
+			if err := m.reconcileContainerNetworks(ctx, id, force); err != nil && ctx.Err() == nil {
+				log.Printf("reconcile networks for container %s: %v", id, err)
+			}
+		}(container.ID, pidChanged)
+	}
+	state.mu.Lock()
+	for id := range state.networkNext {
+		if _, ok := active[id]; !ok {
+			delete(state.networkNext, id)
+			delete(state.networkRunning, id)
+		}
+	}
+	state.mu.Unlock()
+}
+
+type containerNetworkReconciler interface {
+	ReconcileNetworks(context.Context, string, bool) error
+}
+
+func (m *Manager) reconcileContainerNetworks(ctx context.Context, id string, force bool) error {
+	if m.runtimeConnector == nil {
+		return fmt.Errorf("%w: container runtime connector is unavailable", ErrUnavailable)
+	}
+	runtimeClient, err := m.runtimeConnector(ctx)
+	if err != nil {
+		return err
+	}
+	defer runtimeClient.Close()
+	reconciler, ok := runtimeClient.(containerNetworkReconciler)
+	if !ok {
+		return fmt.Errorf("%w: direct network reconciliation", ErrUnsupported)
+	}
+	return reconciler.ReconcileNetworks(ctx, id, force)
 }
 
 func (m *Manager) executeScheduledHealthCheck(
@@ -229,7 +306,18 @@ func (m *Manager) runHealthCheck(
 		defer copies.Done()
 		_, _ = io.Copy(output, process.Stderr())
 	}()
-	waitErr := process.Wait()
+	waitDone := make(chan error, 1)
+	go func() {
+		waitDone <- process.Wait()
+	}()
+	var waitErr error
+	select {
+	case waitErr = <-waitDone:
+	case <-probeContext.Done():
+		killErr := process.Kill()
+		waitErr = errors.Join(<-waitDone, killErr)
+		_, _ = output.Write([]byte("healthcheck timed out"))
+	}
 	copies.Wait()
 	exitCode := 0
 	if waitErr != nil {
@@ -239,7 +327,6 @@ func (m *Manager) runHealthCheck(
 			exitCode = exited.ExitCode()
 		} else if errors.Is(probeContext.Err(), context.DeadlineExceeded) {
 			exitCode = -1
-			_, _ = output.Write([]byte("healthcheck timed out"))
 		} else {
 			_, _ = output.Write([]byte(waitErr.Error()))
 		}

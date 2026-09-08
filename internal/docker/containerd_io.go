@@ -7,15 +7,16 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
 	"time"
 
+	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
+	"github.com/containerd/errdefs"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -66,18 +67,21 @@ wait
 `
 
 type directProcessIO struct {
-	creator cio.Creator
-	stdin   io.WriteCloser
-	stdout  io.ReadCloser
-	stderr  io.ReadCloser
-	bridge  runtimes.Process
-	cleanup func() error
+	creator      cio.Creator
+	stdin        io.WriteCloser
+	stdout       io.ReadCloser
+	stderr       io.ReadCloser
+	bridge       runtimes.Process
+	cleanup      func() error
+	finishOutput func()
 }
 
 type directContainerProcess struct {
-	process containerd.Process
-	wait    <-chan containerd.ExitStatus
-	io      directProcessIO
+	process      containerd.Process
+	wait         <-chan containerd.ExitStatus
+	io           directProcessIO
+	deleteOnWait bool
+	namespace    string
 
 	waitOnce sync.Once
 	waitErr  error
@@ -126,27 +130,36 @@ func (p *directContainerProcess) Wait() error {
 }
 
 func (p *directContainerProcess) Kill() error {
-	return p.process.Kill(context.Background(), syscall.SIGKILL)
+	return p.process.Kill(withContainerdNamespace(context.Background(), p.namespace), syscall.SIGKILL)
 }
 
 func (p *directContainerProcess) PID() int {
 	return int(p.process.Pid())
 }
 
+func (p *directContainerProcess) KillOnDisconnect() bool {
+	return p.deleteOnWait
+}
+
 func (p *directContainerProcess) Resize(ctx context.Context, width, height uint32) error {
-	return p.process.Resize(ctx, width, height)
+	return p.process.Resize(withContainerdNamespace(ctx, p.namespace), width, height)
 }
 
 func (p *directContainerProcess) cleanup() error {
-	cleanupContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	cleanupContext, cancel := context.WithTimeout(
+		withContainerdNamespace(context.Background(), p.namespace),
+		10*time.Second,
+	)
 	defer cancel()
 	if ioSet := p.process.IO(); ioSet != nil {
 		ioSet.Cancel()
 		ioSet.Wait()
 	}
 	var cleanupErr error
-	if _, err := p.process.Delete(cleanupContext); err != nil {
-		cleanupErr = errors.Join(cleanupErr, err)
+	if p.deleteOnWait {
+		if _, err := p.process.Delete(cleanupContext); err != nil {
+			cleanupErr = errors.Join(cleanupErr, err)
+		}
 	}
 	if p.io.cleanup != nil {
 		cleanupErr = errors.Join(cleanupErr, p.io.cleanup())
@@ -158,6 +171,36 @@ func (p *directContainerProcess) cleanup() error {
 	return cleanupErr
 }
 
+func newDirectContainerProcess(
+	process containerd.Process,
+	wait <-chan containerd.ExitStatus,
+	processIO directProcessIO,
+	deleteOnWait bool,
+	namespace string,
+) *directContainerProcess {
+	exit := make(chan containerd.ExitStatus, 1)
+	go func() {
+		status, ok := <-wait
+		if ioSet := process.IO(); ioSet != nil {
+			ioSet.Wait()
+		}
+		if processIO.finishOutput != nil {
+			processIO.finishOutput()
+		}
+		if ok {
+			exit <- status
+		}
+		close(exit)
+	}()
+	return &directContainerProcess{
+		process:      process,
+		wait:         exit,
+		io:           processIO,
+		deleteOnWait: deleteOnWait,
+		namespace:    namespace,
+	}
+}
+
 func (r *grpcContainerRuntime) StartExec(
 	ctx context.Context,
 	request ExecRequest,
@@ -165,6 +208,11 @@ func (r *grpcContainerRuntime) StartExec(
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
+	resolvedID, err := r.resolveContainerID(ctx, request.ContainerID)
+	if err != nil {
+		return nil, err
+	}
+	request.ContainerID = resolvedID
 	namespacedContext := withContainerdNamespace(ctx, r.namespace)
 	container, err := r.client.LoadContainer(namespacedContext, request.ContainerID)
 	if err != nil {
@@ -191,18 +239,18 @@ func (r *grpcContainerRuntime) StartExec(
 		_ = processIO.cleanup()
 		return nil, containerdOperationError("create exec in", request.ContainerID, err)
 	}
-	wait, err := process.Wait(namespacedContext)
+	wait, err := process.Wait(withContainerdNamespace(context.Background(), r.namespace))
 	if err != nil {
-		_, _ = process.Delete(context.Background())
+		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
 		_ = processIO.cleanup()
 		return nil, containerdOperationError("wait for exec in", request.ContainerID, err)
 	}
 	if err := process.Start(namespacedContext); err != nil {
-		_, _ = process.Delete(context.Background())
+		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
 		_ = processIO.cleanup()
 		return nil, containerdOperationError("start exec in", request.ContainerID, err)
 	}
-	return &directContainerProcess{process: process, wait: wait, io: processIO}, nil
+	return newDirectContainerProcess(process, wait, processIO, true, r.namespace), nil
 }
 
 func (r *grpcContainerRuntime) StartAttached(
@@ -213,6 +261,13 @@ func (r *grpcContainerRuntime) StartAttached(
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
+	resolvedID, err := r.resolveContainerID(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	id = resolvedID
+	unlock := r.networkLocks.lock(id)
+	defer unlock()
 	namespacedContext := withContainerdNamespace(ctx, r.namespace)
 	container, err := r.client.LoadContainer(namespacedContext, id)
 	if err != nil {
@@ -225,6 +280,13 @@ func (r *grpcContainerRuntime) StartAttached(
 	if labels[portoManagedLabel] != portoRuntimeVersion {
 		return nil, fmt.Errorf("%w: container %q attached I/O is owned by its compatibility runtime", ErrUnsupported, id)
 	}
+	networkResponse, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return nil, containerdOperationError("read network metadata for attached start of", id, err)
+	}
 	spec, err := container.Spec(namespacedContext)
 	if err != nil {
 		return nil, containerdOperationError("read spec for attached start of", id, err)
@@ -234,6 +296,7 @@ func (r *grpcContainerRuntime) StartAttached(
 	if err != nil {
 		return nil, err
 	}
+	taskFound := false
 	if existing, taskErr := container.Task(namespacedContext, nil); taskErr == nil {
 		status, statusErr := existing.Status(namespacedContext)
 		if statusErr != nil {
@@ -246,9 +309,23 @@ func (r *grpcContainerRuntime) StartAttached(
 			_ = processIO.cleanup()
 			return nil, fmt.Errorf("%w: container %q is already running", ErrConflict, id)
 		}
+		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
+			_ = processIO.cleanup()
+			return nil, err
+		}
+		taskFound = true
 		if _, deleteErr := existing.Delete(namespacedContext); deleteErr != nil {
 			_ = processIO.cleanup()
 			return nil, containerdOperationError("delete stopped task for attached start of", id, deleteErr)
+		}
+	} else if !errdefs.IsNotFound(taskErr) {
+		_ = processIO.cleanup()
+		return nil, containerdOperationError("inspect task for attached start of", id, taskErr)
+	}
+	if !taskFound {
+		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
+			_ = processIO.cleanup()
+			return nil, err
 		}
 	}
 	task, err := container.NewTask(namespacedContext, processIO.creator)
@@ -256,18 +333,46 @@ func (r *grpcContainerRuntime) StartAttached(
 		_ = processIO.cleanup()
 		return nil, containerdOperationError("create attached task for", id, err)
 	}
-	wait, err := task.Wait(namespacedContext)
-	if err != nil {
-		_, _ = task.Delete(context.Background())
+	netns := ""
+	if task.Pid() > 0 {
+		netns = fmt.Sprintf("/proc/%d/ns/net", task.Pid())
+	}
+	if err := r.reconcileNetworkRecord(ctx, networkResponse.GetContainer(), netns, true); err != nil {
+		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
+		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
 		_ = processIO.cleanup()
-		return nil, containerdOperationError("wait for attached task", id, err)
+		return nil, errors.Join(err, networkCleanupErr)
+	}
+	if err := r.setRestartDesired(ctx, id, true); err != nil {
+		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
+		_, deleteErr := task.Delete(withContainerdNamespace(context.Background(), r.namespace))
+		_ = processIO.cleanup()
+		return nil, errors.Join(err, networkCleanupErr, deleteErr)
+	}
+	wait, err := task.Wait(withContainerdNamespace(context.Background(), r.namespace))
+	if err != nil {
+		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
+		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
+		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
+		_ = processIO.cleanup()
+		return nil, errors.Join(
+			containerdOperationError("wait for attached task", id, err),
+			restartRollbackErr,
+			networkCleanupErr,
+		)
 	}
 	if err := task.Start(namespacedContext); err != nil {
-		_, _ = task.Delete(context.Background())
+		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
+		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
+		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
 		_ = processIO.cleanup()
-		return nil, containerdOperationError("start attached task", id, err)
+		return nil, errors.Join(
+			containerdOperationError("start attached task", id, err),
+			restartRollbackErr,
+			networkCleanupErr,
+		)
 	}
-	return &directContainerProcess{process: task, wait: wait, io: processIO}, nil
+	return newDirectContainerProcess(task, wait, processIO, false, r.namespace), nil
 }
 
 func (r *grpcContainerRuntime) execProcessSpec(
@@ -292,33 +397,27 @@ func (r *grpcContainerRuntime) execProcessSpec(
 		process.Cwd = request.WorkingDir
 	}
 	if request.User != "" {
-		uid, gid, ok := numericContainerUser(request.User)
-		if !ok {
-			if r.lima != "" {
-				return nil, fmt.Errorf(
-					"%w: named exec users require rootfs resolution beside Lima containerd",
-					ErrUnsupported,
-				)
-			}
-			info, infoErr := container.Info(ctx)
-			if infoErr != nil {
-				return nil, containerdOperationError("read metadata for exec in", request.ContainerID, infoErr)
-			}
-			specCopy := *taskSpec
-			specCopy.Process = &process
-			if userErr := oci.WithUser(request.User)(
-				ctx,
-				r.client,
-				&info,
-				&specCopy,
-			); userErr != nil {
-				return nil, fmt.Errorf("resolve exec user %q: %w", request.User, userErr)
-			}
-			process = *specCopy.Process
-		} else {
-			process.User.UID = uid
-			process.User.GID = gid
+		if r.lima != "" {
+			return nil, fmt.Errorf(
+				"%w: exec user overrides require backend-local rootfs resolution",
+				ErrUnsupported,
+			)
 		}
+		info, infoErr := container.Info(ctx)
+		if infoErr != nil {
+			return nil, containerdOperationError("read metadata for exec in", request.ContainerID, infoErr)
+		}
+		specCopy := *taskSpec
+		specCopy.Process = &process
+		if userErr := oci.WithUser(request.User)(
+			ctx,
+			r.client,
+			&info,
+			&specCopy,
+		); userErr != nil {
+			return nil, fmt.Errorf("resolve exec user %q: %w", request.User, userErr)
+		}
+		process = *specCopy.Process
 	}
 	return &process, nil
 }
@@ -342,23 +441,6 @@ func mergeExecEnvironment(base, overrides []string) []string {
 	return result
 }
 
-func numericContainerUser(value string) (uint32, uint32, bool) {
-	uidText, gidText, hasGID := strings.Cut(value, ":")
-	uid, err := strconv.ParseUint(uidText, 10, 32)
-	if err != nil {
-		return 0, 0, false
-	}
-	gid := uid
-	if hasGID {
-		parsed, err := strconv.ParseUint(gidText, 10, 32)
-		if err != nil {
-			return 0, 0, false
-		}
-		gid = parsed
-	}
-	return uint32(uid), uint32(gid), true
-}
-
 func (r *grpcContainerRuntime) newDirectProcessIO(
 	ctx context.Context,
 	id string,
@@ -378,6 +460,13 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
+	var finishOnce sync.Once
+	finishOutput := func() {
+		finishOnce.Do(func() {
+			_ = stdoutWriter.Close()
+			_ = stderrWriter.Close()
+		})
+	}
 	stdoutTarget := io.Writer(stdoutWriter)
 	stderrTarget := io.Writer(stderrWriter)
 	var logFile *os.File
@@ -401,11 +490,13 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 		options = append(options, cio.WithTerminal)
 	}
 	return directProcessIO{
-		creator: cio.NewCreator(options...),
-		stdin:   stdinWriter,
-		stdout:  stdoutReader,
-		stderr:  stderrReader,
+		creator:      cio.NewCreator(options...),
+		stdin:        stdinWriter,
+		stdout:       stdoutReader,
+		stderr:       stderrReader,
+		finishOutput: finishOutput,
 		cleanup: func() error {
+			finishOutput()
 			return errors.Join(
 				stdinReader.Close(),
 				stdinWriter.Close(),
@@ -467,6 +558,7 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 		Stderr:   fields[3],
 		Terminal: terminal,
 	}
+	var finishOnce sync.Once
 	return directProcessIO{
 		creator: func(string) (cio.IO, error) {
 			return &staticContainerIO{config: config}, nil
@@ -475,6 +567,14 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 		stdout: &bufferedReadCloser{Reader: reader, closer: stdout},
 		stderr: bridge.Stderr(),
 		bridge: bridge,
+		finishOutput: func() {
+			finishOnce.Do(func() {
+				_ = bridge.Stdin().Close()
+				time.AfterFunc(2*time.Second, func() {
+					_ = bridge.Kill()
+				})
+			})
+		},
 		cleanup: func() error {
 			return nil
 		},

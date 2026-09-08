@@ -13,11 +13,14 @@ import (
 
 const helperVersion = "1"
 
+var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
+
 type cniRequest struct {
-	Network   string
-	Container string
-	NetNS     string
-	Aliases   []string
+	Network         string
+	Container       string
+	NetNS           string
+	Aliases         []string
+	InterfacePrefix string
 }
 
 type runtimeProbe struct {
@@ -45,7 +48,7 @@ func main() {
 		if err := json.NewEncoder(os.Stdout).Encode(probeRuntime()); err != nil {
 			fail(err)
 		}
-	case "cni-connect", "cni-disconnect":
+	case "cni-connect", "cni-check", "cni-disconnect":
 		request, err := parseCNIRequest(os.Args[1], os.Args[2:])
 		if err != nil {
 			fail(err)
@@ -53,9 +56,18 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cancel()
 		var result any
-		if os.Args[1] == "cni-connect" {
+		switch os.Args[1] {
+		case "cni-connect":
 			result, err = connectCNI(ctx, request)
-		} else {
+		case "cni-check":
+			err = checkCNI(ctx, request)
+			if errors.Is(err, errCNICheckUnsupported) {
+				err = nil
+				result = map[string]bool{"valid": false, "supported": false}
+			} else {
+				result = map[string]bool{"valid": err == nil, "supported": true}
+			}
+		default:
 			err = disconnectCNI(ctx, request)
 			result = map[string]bool{"removed": err == nil}
 		}
@@ -77,13 +89,15 @@ func parseCNIRequest(command string, args []string) (cniRequest, error) {
 	container := flags.String("container", "", "container ID")
 	netns := flags.String("netns", "", "network namespace path")
 	aliases := flags.String("aliases", "", "comma-separated network aliases")
+	interfacePrefix := flags.String("interface-prefix", "eth", "CNI interface prefix")
 	if err := flags.Parse(args); err != nil {
 		return cniRequest{}, err
 	}
 	request := cniRequest{
-		Network:   strings.TrimSpace(*network),
-		Container: strings.TrimSpace(*container),
-		NetNS:     strings.TrimSpace(*netns),
+		Network:         strings.TrimSpace(*network),
+		Container:       strings.TrimSpace(*container),
+		NetNS:           strings.TrimSpace(*netns),
+		InterfacePrefix: strings.TrimSpace(*interfacePrefix),
 	}
 	for _, alias := range strings.Split(*aliases, ",") {
 		if alias = strings.TrimSpace(alias); alias != "" {
@@ -93,11 +107,14 @@ func parseCNIRequest(command string, args []string) (cniRequest, error) {
 	if request.Network == "" || request.Container == "" {
 		return cniRequest{}, errors.New("network and container are required")
 	}
-	if command == "cni-connect" && request.NetNS == "" {
+	if (command == "cni-connect" || command == "cni-check") && request.NetNS == "" {
 		return cniRequest{}, errors.New("network namespace is required for CNI connect")
 	}
 	if len(request.Aliases) > 1 {
 		return cniRequest{}, errors.New("the active CNI integration supports one DNS alias per endpoint")
+	}
+	if request.InterfacePrefix == "" || strings.ContainsAny(request.InterfacePrefix, "/\x00\r\n") {
+		return cniRequest{}, errors.New("valid interface prefix is required")
 	}
 	return request, nil
 }

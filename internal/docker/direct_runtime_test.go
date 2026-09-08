@@ -4,18 +4,27 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"net"
 	"reflect"
 	"strings"
+	"sync"
+	"syscall"
 	"testing"
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
+	corecontainers "github.com/containerd/containerd/v2/core/containers"
 	coreimages "github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"google.golang.org/grpc/metadata"
 )
 
 func TestDirectCreateValidationSupportsHostAndNoneNetworks(t *testing.T) {
@@ -40,6 +49,30 @@ func TestDirectCreateValidationRejectsUnownedResourcesBeforeMutation(t *testing.
 		Volumes:  []string{"data:/data"},
 	})
 	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "volume lifecycle") {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestDirectCreateValidationFallsBackForAutoRemove(t *testing.T) {
+	_, err := (&grpcContainerRuntime{}).validateDirectCreateRequest(CreateContainerRequest{
+		Name:     "demo",
+		Image:    "alpine:latest",
+		Networks: []ContainerNetwork{{Name: directNetworkNone}},
+		Remove:   true,
+	})
+	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "auto-remove") {
+		t.Fatalf("validation error = %v", err)
+	}
+}
+
+func TestDirectCreateValidationFallsBackForOpenStdin(t *testing.T) {
+	_, err := (&grpcContainerRuntime{}).validateDirectCreateRequest(CreateContainerRequest{
+		Name:        "demo",
+		Image:       "alpine:latest",
+		Networks:    []ContainerNetwork{{Name: directNetworkNone}},
+		Interactive: true,
+	})
+	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "OpenStdin") {
 		t.Fatalf("validation error = %v", err)
 	}
 }
@@ -77,9 +110,27 @@ func TestDirectContainerLabelsPersistOwnedRuntimeState(t *testing.T) {
 	}
 }
 
+func TestResolveContainerIDUsesDockerNameLabel(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID:     "porto-1234567890",
+		Labels: map[string]string{nerdctlNameLabel: "demo"},
+	}}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	resolved, err := runtimeClient.resolveContainerID(context.Background(), "demo")
+	if err != nil {
+		t.Fatalf("resolve container name: %v", err)
+	}
+	if resolved != "porto-1234567890" {
+		t.Fatalf("resolved ID = %q", resolved)
+	}
+	if want := []string{"get demo", "list"}; !reflect.DeepEqual(containers.calls, want) {
+		t.Fatalf("resolution calls = %q, want %q", containers.calls, want)
+	}
+}
+
 func TestDirectCNIConnectAndDisconnectPersistStructuredState(t *testing.T) {
-	connectKey := "/helper cni-connect --network backend --container demo --netns /proc/42/ns/net --aliases api"
-	disconnectKey := "/helper cni-disconnect --network backend --container demo --netns /proc/42/ns/net --aliases api"
+	connectKey := "/helper cni-connect --network backend --container demo --netns /proc/42/ns/net --aliases api --interface-prefix porto1"
+	disconnectKey := "/helper cni-disconnect --network backend --container demo --netns /proc/42/ns/net --aliases api --interface-prefix porto1"
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
 			connectKey:    []byte(`{"interface":"eth1","mac":"02:00:00:00:00:01","addresses":["10.10.0.2"],"gateways":["10.10.0.1"]}`),
@@ -128,6 +179,48 @@ func TestDirectCNIConnectAndDisconnectPersistStructuredState(t *testing.T) {
 	}
 }
 
+func TestForcedNetworkReconciliationRestoresNewTaskNamespace(t *testing.T) {
+	connectKey := "/helper cni-connect --network backend --container demo --netns /proc/42/ns/net --aliases api --interface-prefix porto1"
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			connectKey: []byte(`{"interface":"porto10","addresses":["10.10.0.3"]}`),
+		},
+		errors: map[string]error{},
+	}
+	state, _ := json.Marshal(map[string]ContainerNetworkState{
+		"backend": {Name: "backend", Interface: "porto10", Aliases: []string{"api"}},
+	})
+	aliases, _ := json.Marshal(map[string][]string{"backend": {"api"}})
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID: "demo",
+		Labels: map[string]string{
+			portoNetworkStateLabel: string(state),
+			portoNetworkAliasLabel: string(aliases),
+			portoNetworkPIDLabel:   "41",
+		},
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		runner:     runner,
+		helperPath: "/helper",
+		containers: containers,
+		tasks: &fakeTasksClient{process: &tasktypes.Process{
+			ContainerID: "demo",
+			Pid:         42,
+			Status:      tasktypes.Status_RUNNING,
+		}},
+	}
+	if err := runtimeClient.ReconcileNetworks(context.Background(), "demo", true); err != nil {
+		t.Fatalf("force reconcile networks: %v", err)
+	}
+	if got := containers.container.GetLabels()[portoNetworkPIDLabel]; got != "42" {
+		t.Fatalf("network PID label = %q, want 42", got)
+	}
+	if len(runner.commands) != 1 || runner.commands[0].Args[0] != "cni-connect" {
+		t.Fatalf("helper commands = %+v", runner.commands)
+	}
+}
+
 func TestHealthSchedulingHelpersUseDockerTiming(t *testing.T) {
 	check := &ContainerHealthcheck{
 		Test:          []string{"CMD-SHELL", "test -f /tmp/ready"},
@@ -147,6 +240,53 @@ func TestHealthSchedulingHelpersUseDockerTiming(t *testing.T) {
 	}
 	if got := healthRetries(check); got != 4 {
 		t.Fatalf("health retries = %d", got)
+	}
+}
+
+func TestBackendLocalSpecPreservesImageCommandWithEntrypointOverride(t *testing.T) {
+	options := directContainerSpecOptions(
+		CreateContainerRequest{
+			Entrypoint:  []string{"/entrypoint"},
+			Environment: []string{"PORTO=1"},
+			Networks:    []ContainerNetwork{{Name: directNetworkNone}},
+		},
+		nil,
+		"",
+		"linux/arm64",
+		ocispec.ImageConfig{
+			Cmd:        []string{"serve"},
+			Env:        []string{"PATH=/bin"},
+			WorkingDir: "/work",
+			StopSignal: "SIGQUIT",
+		},
+		true,
+	)
+	spec := &oci.Spec{}
+	container := &corecontainers.Container{ID: "demo"}
+	for _, option := range options {
+		if err := option(namespaces.WithNamespace(context.Background(), "default"), nil, container, spec); err != nil {
+			t.Fatalf("apply spec option: %v", err)
+		}
+	}
+	if !reflect.DeepEqual(spec.Process.Args, []string{"/entrypoint", "serve"}) {
+		t.Fatalf("process args = %q", spec.Process.Args)
+	}
+	if spec.Process.Cwd != "/work" ||
+		!reflect.DeepEqual(spec.Process.Env, []string{"PATH=/bin", "PORTO=1"}) {
+		t.Fatalf("process config = %+v", spec.Process)
+	}
+	if spec.Annotations["org.opencontainers.image.stopSignal"] != "SIGQUIT" {
+		t.Fatalf("stop signal annotations = %v", spec.Annotations)
+	}
+}
+
+func TestLimaDefaultContainerPlatformIsLinux(t *testing.T) {
+	platform, err := directContainerPlatform("", true)
+	if err != nil {
+		t.Fatalf("default platform: %v", err)
+	}
+	if !strings.HasPrefix(platform, "linux/") {
+		t.Fatalf("default Lima platform = %q", platform)
 	}
 }
 
@@ -199,10 +339,301 @@ func TestContainerdRestartPolicyDisableRemovesRuntimeLabels(t *testing.T) {
 	}
 	labels := containers.updateRequest.GetContainer().GetLabels()
 	for _, key := range []string{restartPolicyLabel, restartCountLabel, restartStatusLabel} {
-		if _, ok := labels[key]; ok {
-			t.Fatalf("restart label %s remains in %v", key, labels)
+		if labels[key] != "" {
+			t.Fatalf("restart label %s = %q in %v", key, labels[key], labels)
 		}
 	}
+}
+
+func TestDirectProcessClosesOutputBeforeWaitConsumerRuns(t *testing.T) {
+	reader, writer := io.Pipe()
+	wait := make(chan containerd.ExitStatus, 1)
+	process := &fakeContainerdProcess{}
+	direct := newDirectContainerProcess(
+		process,
+		wait,
+		directProcessIO{
+			stdin:  nopWriteCloser{Writer: io.Discard},
+			stdout: reader,
+			stderr: io.NopCloser(strings.NewReader("")),
+			finishOutput: func() {
+				_ = writer.Close()
+			},
+		},
+		true,
+		"default",
+	)
+	if err := direct.Kill(); err != nil {
+		t.Fatalf("kill process: %v", err)
+	}
+	if err := direct.Resize(context.Background(), 80, 24); err != nil {
+		t.Fatalf("resize process: %v", err)
+	}
+	status := containerd.NewExitStatus(0, time.Now(), nil)
+	wait <- *status
+	close(wait)
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := io.ReadAll(direct.Stdout())
+		readDone <- err
+	}()
+	select {
+	case err := <-readDone:
+		if err != nil {
+			t.Fatalf("read output: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("output did not close after process exit")
+	}
+	if err := direct.Wait(); err != nil {
+		t.Fatalf("wait process: %v", err)
+	}
+	if process.deleteCalls != 1 {
+		t.Fatalf("exec delete calls = %d, want 1", process.deleteCalls)
+	}
+	if process.deleteNamespace != "default" {
+		t.Fatalf("delete namespace = %q", process.deleteNamespace)
+	}
+	if process.killNamespace != "default" || process.resizeNamespace != "default" {
+		t.Fatalf("process namespaces = kill %q resize %q", process.killNamespace, process.resizeNamespace)
+	}
+}
+
+func TestDirectAttachedTaskRetainsStoppedTask(t *testing.T) {
+	wait := make(chan containerd.ExitStatus, 1)
+	process := &fakeContainerdProcess{}
+	direct := newDirectContainerProcess(
+		process,
+		wait,
+		directProcessIO{
+			stdin:  nopWriteCloser{Writer: io.Discard},
+			stdout: io.NopCloser(strings.NewReader("")),
+			stderr: io.NopCloser(strings.NewReader("")),
+		},
+		false,
+		"default",
+	)
+	status := containerd.NewExitStatus(0, time.Now(), nil)
+	wait <- *status
+	close(wait)
+	if err := direct.Wait(); err != nil {
+		t.Fatalf("wait attached task: %v", err)
+	}
+	if process.deleteCalls != 0 {
+		t.Fatalf("attached task delete calls = %d, want 0", process.deleteCalls)
+	}
+}
+
+func TestHealthTimeoutKillsExecBeforeReturning(t *testing.T) {
+	process := newBlockingHealthProcess()
+	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
+	manager.execConnector = func(context.Context) (execOperations, error) {
+		return &fakeExecOperations{process: process}, nil
+	}
+	result := manager.runHealthCheck(context.Background(), "demo", &ContainerHealthcheck{
+		Test:    []string{"CMD", "sleep", "60"},
+		Timeout: 10 * time.Millisecond,
+	})
+	if result == nil || result.ExitCode == 0 || !strings.Contains(result.Output, "timed out") {
+		t.Fatalf("health result = %+v", result)
+	}
+	if !process.killed {
+		t.Fatal("timed-out health process was not killed")
+	}
+}
+
+func TestFirstHealthCheckWaitsForConfiguredInterval(t *testing.T) {
+	inventory := newContainerInventory(nil, defaultInventoryOptions())
+	inventory.snapshot.Containers = []Container{{
+		ID:     "demo",
+		State:  "running",
+		Labels: map[string]string{portoManagedLabel: portoRuntimeVersion},
+		Health: ContainerHealth{Status: "starting"},
+		Healthcheck: &ContainerHealthcheck{
+			Test:     []string{"CMD", "true"},
+			Interval: 10 * time.Second,
+		},
+	}}
+	manager := &Manager{inventory: inventory}
+	state := &healthSchedulerState{
+		schedules:      make(map[string]*healthSchedule),
+		networkNext:    make(map[string]time.Time),
+		networkRunning: make(map[string]bool),
+	}
+	now := time.Now()
+	manager.scheduleHealthChecks(context.Background(), state, now)
+	schedule := state.schedules["demo"]
+	if schedule == nil || !schedule.nextRun.Equal(now.Add(10*time.Second)) {
+		t.Fatalf("initial health schedule = %+v", schedule)
+	}
+}
+
+func TestProcessWaitExitCodeUsesDirectContainerExit(t *testing.T) {
+	if got := processWaitExitCode(&containerExitError{code: 23}); got != 23 {
+		t.Fatalf("exit code = %d, want 23", got)
+	}
+}
+
+func TestFailedStreamUpgradeCollectsExecResources(t *testing.T) {
+	process := newBlockingHealthProcess()
+	if code := stopAndCollectProcess(process); code != 137 {
+		t.Fatalf("collected exit code = %d", code)
+	}
+	if !process.killed {
+		t.Fatal("failed stream upgrade did not kill the exec")
+	}
+}
+
+func TestAttachedDisconnectDoesNotKillContainerTask(t *testing.T) {
+	process := newDetachableProcess()
+	server, client := net.Pipe()
+	defer server.Close()
+	defer client.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan processStreamResult, 1)
+	go func() {
+		result <- serveProcessStreamResult(ctx, server, process, false, false, true, true)
+	}()
+	cancel()
+	select {
+	case streamResult := <-result:
+		if streamResult.authoritative {
+			t.Fatalf("disconnect result = %+v", streamResult)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("attached stream did not detach after cancellation")
+	}
+	if process.killed {
+		t.Fatal("attached container task was killed on disconnect")
+	}
+	process.finish()
+}
+
+type fakeContainerdProcess struct {
+	deleteCalls     int
+	deleteNamespace string
+	killNamespace   string
+	resizeNamespace string
+}
+
+func (p *fakeContainerdProcess) ID() string                  { return "process" }
+func (p *fakeContainerdProcess) Pid() uint32                 { return 42 }
+func (p *fakeContainerdProcess) Start(context.Context) error { return nil }
+func (p *fakeContainerdProcess) Delete(ctx context.Context, _ ...containerd.ProcessDeleteOpts) (*containerd.ExitStatus, error) {
+	p.deleteCalls++
+	if outgoing, ok := metadata.FromOutgoingContext(ctx); ok {
+		values := outgoing.Get(containerdNamespaceHeader)
+		if len(values) > 0 {
+			p.deleteNamespace = values[len(values)-1]
+		}
+	}
+	return containerd.NewExitStatus(0, time.Now(), nil), nil
+}
+func (p *fakeContainerdProcess) Kill(ctx context.Context, _ syscall.Signal, _ ...containerd.KillOpts) error {
+	if outgoing, ok := metadata.FromOutgoingContext(ctx); ok {
+		values := outgoing.Get(containerdNamespaceHeader)
+		if len(values) > 0 {
+			p.killNamespace = values[len(values)-1]
+		}
+	}
+	return nil
+}
+func (p *fakeContainerdProcess) Wait(context.Context) (<-chan containerd.ExitStatus, error) {
+	return nil, errors.New("unused")
+}
+func (p *fakeContainerdProcess) CloseIO(context.Context, ...containerd.IOCloserOpts) error {
+	return nil
+}
+func (p *fakeContainerdProcess) Resize(ctx context.Context, _ uint32, _ uint32) error {
+	if outgoing, ok := metadata.FromOutgoingContext(ctx); ok {
+		values := outgoing.Get(containerdNamespaceHeader)
+		if len(values) > 0 {
+			p.resizeNamespace = values[len(values)-1]
+		}
+	}
+	return nil
+}
+func (p *fakeContainerdProcess) IO() cio.IO { return nil }
+func (p *fakeContainerdProcess) Status(context.Context) (containerd.Status, error) {
+	return containerd.Status{Status: containerd.Stopped}, nil
+}
+
+type blockingHealthProcess struct {
+	once   sync.Once
+	done   chan struct{}
+	killed bool
+}
+
+func newBlockingHealthProcess() *blockingHealthProcess {
+	return &blockingHealthProcess{done: make(chan struct{})}
+}
+
+func (p *blockingHealthProcess) Stdin() io.WriteCloser {
+	return nopWriteCloser{Writer: io.Discard}
+}
+func (p *blockingHealthProcess) Stdout() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(""))
+}
+func (p *blockingHealthProcess) Stderr() io.ReadCloser {
+	return io.NopCloser(strings.NewReader(""))
+}
+func (p *blockingHealthProcess) Wait() error {
+	<-p.done
+	return &containerExitError{code: 137}
+}
+func (p *blockingHealthProcess) Kill() error {
+	p.once.Do(func() {
+		p.killed = true
+		close(p.done)
+	})
+	return nil
+}
+func (p *blockingHealthProcess) PID() int { return 42 }
+
+type detachableProcess struct {
+	stdoutReader *io.PipeReader
+	stdoutWriter *io.PipeWriter
+	stderrReader *io.PipeReader
+	stderrWriter *io.PipeWriter
+	done         chan struct{}
+	once         sync.Once
+	killed       bool
+}
+
+func newDetachableProcess() *detachableProcess {
+	stdoutReader, stdoutWriter := io.Pipe()
+	stderrReader, stderrWriter := io.Pipe()
+	return &detachableProcess{
+		stdoutReader: stdoutReader,
+		stdoutWriter: stdoutWriter,
+		stderrReader: stderrReader,
+		stderrWriter: stderrWriter,
+		done:         make(chan struct{}),
+	}
+}
+
+func (p *detachableProcess) Stdin() io.WriteCloser {
+	return nopWriteCloser{Writer: io.Discard}
+}
+func (p *detachableProcess) Stdout() io.ReadCloser { return p.stdoutReader }
+func (p *detachableProcess) Stderr() io.ReadCloser { return p.stderrReader }
+func (p *detachableProcess) Wait() error {
+	<-p.done
+	return nil
+}
+func (p *detachableProcess) Kill() error {
+	p.killed = true
+	p.finish()
+	return nil
+}
+func (p *detachableProcess) PID() int               { return 42 }
+func (p *detachableProcess) KillOnDisconnect() bool { return false }
+func (p *detachableProcess) finish() {
+	p.once.Do(func() {
+		_ = p.stdoutWriter.Close()
+		_ = p.stderrWriter.Close()
+		close(p.done)
+	})
 }
 
 var _ runtimes.Runner = (*fakeRunner)(nil)

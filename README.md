@@ -5,7 +5,7 @@
 
 Porto is an open-source desktop (and optionally web) control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
 
-It's a drop-in (as long as you use the porto cli) replacement for Docker Desktop (for any OS) and/or Orbstack (if you are on MacOS).
+It provides a portable, open-source alternative to proprietary desktop container managers while keeping standard Docker clients and Compose workflows.
 
 ![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/30783f51-f44e-48fa-b91a-5e57ca222130)
 
@@ -43,7 +43,8 @@ The one-liners detect the OS and architecture, verify the published SHA-256
 checksum, install the native macOS DMG or Windows EXE package for the current
 user, expose the `porto` CLI, and launch the desktop app. Linux uses the
 portable desktop archive. Every desktop package bundles the daemon, dashboard,
-`kubectl`, `k9s`, Lima, and the supported `kind` binary.
+`kubectl`, `k9s`, Lima, the supported `kind` binary, and Porto's Linux runtime
+helper for direct container I/O, CNI, and checkpoint capability discovery.
 
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the

@@ -11,6 +11,7 @@ func TestParseCNIRequest(t *testing.T) {
 		"--container", "demo",
 		"--netns", "/proc/42/ns/net",
 		"--aliases", "api",
+		"--interface-prefix", "porto1",
 	})
 	if err != nil {
 		t.Fatalf("parse request: %v", err)
@@ -19,6 +20,9 @@ func TestParseCNIRequest(t *testing.T) {
 		request.NetNS != "/proc/42/ns/net" || len(request.Aliases) != 1 ||
 		request.Aliases[0] != "api" {
 		t.Fatalf("request = %+v", request)
+	}
+	if request.InterfacePrefix != "porto1" {
+		t.Fatalf("interface prefix = %q", request.InterfacePrefix)
 	}
 }
 

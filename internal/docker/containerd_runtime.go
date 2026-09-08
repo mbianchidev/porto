@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -71,21 +72,22 @@ exit 1
 `
 
 type grpcContainerRuntime struct {
-	connection *grpc.ClientConn
-	client     *containerd.Client
-	namespace  string
-	backend    string
-	stateDir   string
-	logDir     string
-	fifoDir    string
-	runner     runtimes.Runner
-	lima       string
-	helperPath string
-	containers containersapi.ContainersClient
-	snapshots  snapshotsapi.SnapshotsClient
-	tasks      tasksapi.TasksClient
-	events     eventsapi.EventsClient
-	enrich     func(context.Context) ([]Container, error)
+	connection   *grpc.ClientConn
+	client       *containerd.Client
+	namespace    string
+	backend      string
+	stateDir     string
+	logDir       string
+	fifoDir      string
+	runner       runtimes.Runner
+	lima         string
+	helperPath   string
+	networkLocks *containerMutexes
+	containers   containersapi.ContainersClient
+	snapshots    snapshotsapi.SnapshotsClient
+	tasks        tasksapi.TasksClient
+	events       eventsapi.EventsClient
+	enrich       func(context.Context) ([]Container, error)
 
 	enrichMu          sync.Mutex
 	enrichmentReady   bool
@@ -104,8 +106,11 @@ type runtimeHelperProbe struct {
 func (r *grpcContainerRuntime) Capabilities(ctx context.Context) ContainerCapabilities {
 	capabilities := containerCapabilities()
 	capabilities.DirectCreation = RuntimeCapability{
-		Supported: r.client != nil,
+		Supported: r.client != nil && (runtime.GOOS != "windows" || r.lima != ""),
 		Reason:    "direct image, snapshot, OCI metadata, and task creation is available for capability-supported requests",
+	}
+	if !capabilities.DirectCreation.Supported && runtime.GOOS == "windows" && r.lima == "" {
+		capabilities.DirectCreation.Reason = "native Windows direct creation requires a Windows runtime implementation"
 	}
 	capabilities.ExecLifecycle = RuntimeCapability{
 		Supported: r.client != nil,
@@ -183,6 +188,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			m.runner,
 			instance,
 			helperPath,
+			m.networkLocks,
 		)
 	}
 
@@ -201,6 +207,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			m.runner,
 			"",
 			helperPath,
+			m.networkLocks,
 		)
 		if err == nil {
 			return runtimeClient, nil
@@ -220,6 +227,7 @@ func newGRPCContainerRuntime(
 	runner runtimes.Runner,
 	limaInstance string,
 	helperPath string,
+	networkLocks *containerMutexes,
 ) (*grpcContainerRuntime, error) {
 	connection, err := grpc.NewClient(
 		"passthrough:///porto-containerd",
@@ -245,6 +253,7 @@ func newGRPCContainerRuntime(
 		runner:            runner,
 		lima:              limaInstance,
 		helperPath:        helperPath,
+		networkLocks:      networkLocks,
 		containers:        containersapi.NewContainersClient(connection),
 		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),

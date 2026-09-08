@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -425,7 +426,7 @@ func TestManagerNetworkActionsFallbackWhenDirectRuntimeIsUnavailable(t *testing.
 	}
 }
 
-func TestManagerNetworkActionsExposeUnsupportedWithoutPretendingDirectSupport(t *testing.T) {
+func TestManagerNetworkActionsFallbackBeforeUnsupportedDirectMutation(t *testing.T) {
 	call := "connect backend demo []"
 	operations := &fakeNetworkOperations{
 		errs: map[string]error{call: fmt.Errorf("%w: CNI endpoint lifecycle", ErrUnsupported)},
@@ -439,18 +440,18 @@ func TestManagerNetworkActionsExposeUnsupportedWithoutPretendingDirectSupport(t 
 		return operations, nil
 	}
 	err := manager.ConnectNetwork(context.Background(), "backend", "demo", nil)
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("connect network error = %v, want ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("connect network fallback: %v", err)
 	}
-	if len(runner.commands) != 0 {
-		t.Fatalf("unsupported direct operation fell back to commands: %+v", runner.commands)
+	if len(runner.commands) != 1 {
+		t.Fatalf("unsupported direct operation did not use compatibility command: %+v", runner.commands)
 	}
 	if want := []string{call, "close"}; !reflect.DeepEqual(operations.calls, want) {
 		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
 	}
 }
 
-func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
+func TestDockerAPIFallsBackForUnsupportedDirectNetworkOperation(t *testing.T) {
 	operations := &fakeNetworkOperations{
 		errs: map[string]error{
 			"disconnect backend demo false": fmt.Errorf(
@@ -468,11 +469,8 @@ func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
 			strings.NewReader(`{"Container":"demo"}`),
 		),
 	)
-	if response.Code != http.StatusNotImplemented {
+	if response.Code != http.StatusOK {
 		t.Fatalf("network disconnect response = %d: %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
-		t.Fatalf("network response did not expose typed error: %s", response.Body.String())
 	}
 }
 
@@ -1007,7 +1005,31 @@ func (f *fakeContainersClient) Get(
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return &containersapi.GetContainerResponse{Container: f.container}, nil
+	if f.container == nil {
+		return &containersapi.GetContainerResponse{}, nil
+	}
+	if request.GetID() != f.container.GetID() {
+		return nil, status.Error(codes.NotFound, "container not found")
+	}
+	return &containersapi.GetContainerResponse{
+		Container: proto.Clone(f.container).(*containersapi.Container),
+	}, nil
+}
+
+func (f *fakeContainersClient) List(
+	_ context.Context,
+	_ *containersapi.ListContainersRequest,
+	_ ...grpc.CallOption,
+) (*containersapi.ListContainersResponse, error) {
+	f.calls = append(f.calls, "list")
+	if f.container == nil {
+		return &containersapi.ListContainersResponse{}, nil
+	}
+	return &containersapi.ListContainersResponse{
+		Containers: []*containersapi.Container{
+			proto.Clone(f.container).(*containersapi.Container),
+		},
+	}, nil
 }
 
 func (f *fakeContainersClient) Update(
@@ -1021,7 +1043,26 @@ func (f *fakeContainersClient) Update(
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
-	return &containersapi.UpdateContainerResponse{Container: request.GetContainer()}, nil
+	if f.container == nil {
+		f.container = proto.Clone(request.GetContainer()).(*containersapi.Container)
+	} else {
+		for _, path := range request.GetUpdateMask().GetPaths() {
+			if strings.HasPrefix(path, "labels.") {
+				if f.container.Labels == nil {
+					f.container.Labels = make(map[string]string)
+				}
+				key := strings.TrimPrefix(path, "labels.")
+				f.container.Labels[key] = request.GetContainer().GetLabels()[key]
+			}
+			if path == "labels" {
+				f.container.Labels = cloneStringMap(request.GetContainer().GetLabels())
+			}
+			if path == "spec" {
+				f.container.Spec = request.GetContainer().GetSpec()
+			}
+		}
+	}
+	return &containersapi.UpdateContainerResponse{Container: f.container}, nil
 }
 
 func (f *fakeContainersClient) Delete(
@@ -1104,7 +1145,7 @@ func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
 	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
-	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, map[string]string{
+	if got := containers.container.GetLabels(); !reflect.DeepEqual(got, map[string]string{
 		"app":            "porto",
 		nerdctlNameLabel: "new-name",
 	}) {
@@ -1112,7 +1153,7 @@ func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
 	}
 	if !reflect.DeepEqual(
 		containers.updateRequest.GetUpdateMask(),
-		&fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		&fieldmaskpb.FieldMask{Paths: []string{"labels." + nerdctlNameLabel}},
 	) {
 		t.Fatalf("update mask = %v, want labels", containers.updateRequest.GetUpdateMask())
 	}
@@ -1132,7 +1173,7 @@ func TestGRPCContainerOperationsUpdateLabelsMergesExistingMetadata(t *testing.T)
 		t.Fatalf("update labels: %v", err)
 	}
 	want := map[string]string{"existing": "value", "added": "label"}
-	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, want) {
+	if got := containers.container.GetLabels(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("updated labels = %v, want %v", got, want)
 	}
 }
@@ -1173,7 +1214,7 @@ func TestGRPCContainerOperationsUpdatesTaskAndPersistedResources(t *testing.T) {
 	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 	if tasks.updateRequest.GetResources().GetTypeUrl() != containerdLinuxResourcesTypeURL {
@@ -1238,7 +1279,7 @@ func TestGRPCContainerOperationsRollsBackMetadataForUnsupportedTaskUpdate(t *tes
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("update error = %v, want unsupported", err)
 	}
-	if want := []string{"get demo", "update demo", "update demo"}; !reflect.DeepEqual(
+	if want := []string{"get demo", "get demo", "update demo", "update demo"}; !reflect.DeepEqual(
 		containers.calls,
 		want,
 	) {
@@ -1280,7 +1321,7 @@ func TestGRPCContainerOperationsKeepsMetadataWhenTaskExitsDuringUpdate(t *testin
 	); err != nil {
 		t.Fatalf("update resources after task exit: %v", err)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1312,7 +1353,7 @@ func TestGRPCContainerOperationsDeleteStoppedTaskBeforeMetadata(t *testing.T) {
 	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1397,7 +1438,7 @@ func TestGRPCContainerOperationsDeleteMetadataWithoutTask(t *testing.T) {
 	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1424,7 +1465,7 @@ func TestGRPCContainerOperationsDeleteFallsBackBeforeManagedCleanup(t *testing.T
 	if len(tasks.calls) != 0 {
 		t.Fatalf("task was changed before fallback: %q", tasks.calls)
 	}
-	if want := []string{"get demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }

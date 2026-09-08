@@ -120,6 +120,11 @@ func (r *grpcContainerRuntime) StreamLogs(
 	options LogOptions,
 	emit func(runtimes.OutputChunk) error,
 ) error {
+	resolvedID, err := r.resolveContainerID(ctx, id)
+	if err != nil {
+		return err
+	}
+	id = resolvedID
 	response, err := r.containers.Get(
 		withContainerdNamespace(ctx, r.namespace),
 		&containersapi.GetContainerRequest{ID: id},

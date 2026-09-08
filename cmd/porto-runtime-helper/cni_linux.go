@@ -92,6 +92,22 @@ func disconnectCNI(ctx context.Context, request cniRequest) error {
 	return nil
 }
 
+func checkCNI(ctx context.Context, request cniRequest) error {
+	plugin, labels, err := loadCNI(request)
+	if err != nil {
+		return err
+	}
+	if err := plugin.Check(ctx, request.Container, request.NetNS, gocni.WithLabels(labels)); err != nil {
+		message := strings.ToLower(err.Error())
+		if strings.Contains(message, "check is not supported") ||
+			strings.Contains(message, "does not support check") {
+			return errCNICheckUnsupported
+		}
+		return fmt.Errorf("check CNI network %q: %w", request.Network, err)
+	}
+	return nil
+}
+
 func loadCNI(request cniRequest) (gocni.CNI, map[string]string, error) {
 	configPath, list, err := findCNIConfig(cniConfigDirectory(), request.Network)
 	if err != nil {
@@ -110,6 +126,7 @@ func loadCNI(request cniRequest) (gocni.CNI, map[string]string, error) {
 		gocni.WithMinNetworkCount(1),
 		gocni.WithPluginConfDir(filepath.Dir(configPath)),
 		gocni.WithPluginDir(pluginDirectories),
+		gocni.WithInterfacePrefix(request.InterfacePrefix),
 	)
 	if err != nil {
 		return nil, nil, fmt.Errorf("initialize CNI: %w", err)

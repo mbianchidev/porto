@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -15,7 +16,9 @@ import (
 	corecontainers "github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -27,8 +30,11 @@ const (
 	portoAutoRemoveLabel   = "io.porto.container.auto-remove"
 	portoNetworkAliasLabel = "io.porto.container.network-aliases"
 	portoNetworkStateLabel = "io.porto.container.network-state"
+	portoNetworkPIDLabel   = "io.porto.container.network-pid"
 	portoRuntimeVersion    = "1"
 	portoRuntimeName       = "io.containerd.runc.v2"
+	restartLogURILabel     = "containerd.io/restart.loguri"
+	restartStoppedLabel    = "containerd.io/restart.explicitly-stopped"
 	directNetworkNone      = "none"
 	directNetworkHost      = "host"
 )
@@ -48,15 +54,43 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 	if err != nil {
 		return "", err
 	}
-	image, err := r.resolveContainerImage(ctx, request.Image, request.Platform)
+	platform, err := directContainerPlatform(request.Platform, r.lima != "")
 	if err != nil {
 		return "", err
+	}
+	parsedPlatform, err := platforms.Parse(platform)
+	if err != nil {
+		return "", fmt.Errorf("parse direct container platform %q: %w", platform, err)
+	}
+	if parsedPlatform.OS != "linux" {
+		return "", fmt.Errorf("%w: direct container creation currently supports Linux targets", ErrUnsupported)
+	}
+	image, err := r.resolveContainerImage(ctx, request.Image, platform)
+	if err != nil {
+		return "", err
+	}
+	imageSpec, err := image.Spec(withContainerdNamespace(ctx, r.namespace))
+	if err != nil {
+		return "", fmt.Errorf("read container image configuration: %w", err)
+	}
+	if r.lima != "" && firstNonEmpty(request.User, imageSpec.Config.User) != "" {
+		return "", fmt.Errorf(
+			"%w: direct Lima creation requires backend-local image user resolution",
+			ErrUnsupported,
+		)
 	}
 	labels, err := r.directContainerLabels(request, image, hostname, id)
 	if err != nil {
 		return "", err
 	}
-	specOptions := directContainerSpecOptions(request, image, hostname)
+	specOptions := directContainerSpecOptions(
+		request,
+		image,
+		hostname,
+		platform,
+		imageSpec.Config,
+		r.lima != "",
+	)
 	snapshotKey := "porto-" + id
 	container, err := r.client.NewContainer(
 		withContainerdNamespace(ctx, r.namespace),
@@ -64,8 +98,8 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 		containerd.WithImage(image),
 		containerd.WithContainerLabels(labels),
 		containerd.WithRuntime(portoRuntimeName, nil),
-		containerd.WithNewSpec(specOptions...),
 		containerd.WithNewSnapshot(snapshotKey, image),
+		containerd.WithNewSpec(specOptions...),
 	)
 	if err != nil {
 		cleanupErr := r.cleanupDirectSnapshot(ctx, snapshotKey)
@@ -111,6 +145,15 @@ func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContain
 	}
 	if request.Init {
 		return "", fmt.Errorf("%w: direct init binary injection is unavailable", ErrUnsupported)
+	}
+	if request.Remove {
+		return "", fmt.Errorf("%w: direct auto-remove lifecycle is not available", ErrUnsupported)
+	}
+	if request.Interactive {
+		return "", fmt.Errorf("%w: direct detached OpenStdin lifecycle is not available", ErrUnsupported)
+	}
+	if runtime.GOOS == "windows" && r.lima == "" {
+		return "", fmt.Errorf("%w: native Windows direct creation requires a Windows runtime implementation", ErrUnsupported)
 	}
 	if request.Privileged && (runtime.GOOS != "linux" || r.lima != "") {
 		return "", fmt.Errorf("%w: privileged direct creation requires local Linux containerd", ErrUnsupported)
@@ -174,15 +217,24 @@ func (r *grpcContainerRuntime) resolveContainerImage(
 	namespacedContext := withContainerdNamespace(ctx, r.namespace)
 	image, err := r.client.GetImage(namespacedContext, imageReference)
 	if errdefs.IsNotFound(err) {
-		options := []containerd.RemoteOpt{containerd.WithPullUnpack}
-		if platform != "" {
-			options = append(options, containerd.WithPlatform(platform))
+		options := []containerd.RemoteOpt{
+			containerd.WithPullUnpack,
+			containerd.WithPlatform(platform),
 		}
 		image, err = r.client.Pull(namespacedContext, imageReference, options...)
 	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve container image %q: %w", requestedReference, err)
 	}
+	parsedPlatform, err := platforms.Parse(platform)
+	if err != nil {
+		return nil, fmt.Errorf("parse container platform %q: %w", platform, err)
+	}
+	image = containerd.NewImageWithPlatform(
+		r.client,
+		image.Metadata(),
+		platforms.OnlyStrict(parsedPlatform),
+	)
 	unpacked, err := image.IsUnpacked(namespacedContext, "")
 	if err != nil {
 		return nil, fmt.Errorf("inspect image unpack state %q: %w", imageReference, err)
@@ -235,6 +287,14 @@ func (r *grpcContainerRuntime) directContainerLabels(
 		return nil, err
 	}
 	labels[portoLogPathLabel] = logPath
+	if request.Restart != "" && request.Restart != "no" {
+		labels[restartStatusLabel] = "stopped"
+		labels[restartStoppedLabel] = "true"
+		labels[restartLogURILabel] = (&url.URL{
+			Scheme: "file",
+			Path:   filepath.ToSlash(logPath),
+		}).String()
+	}
 	if hostname != "" {
 		labels["io.porto.container.hostname"] = hostname
 	}
@@ -244,21 +304,54 @@ func (r *grpcContainerRuntime) directContainerLabels(
 func directContainerSpecOptions(
 	request CreateContainerRequest,
 	image containerd.Image,
-	hostname string,
+	hostname,
+	platform string,
+	imageConfig ocispec.ImageConfig,
+	backendLocalRootFS bool,
 ) []oci.SpecOpts {
-	options := []oci.SpecOpts{oci.WithImageConfigArgs(image, request.Command)}
-	if len(request.Entrypoint) > 0 {
-		args := append(append([]string(nil), request.Entrypoint...), request.Command...)
-		options = append(options, oci.WithProcessArgs(args...))
-	}
-	if len(request.Environment) > 0 {
-		options = append(options, oci.WithEnv(request.Environment))
-	}
-	if request.WorkingDir != "" {
-		options = append(options, oci.WithProcessCwd(request.WorkingDir))
-	}
-	if request.User != "" {
-		options = append(options, oci.WithUser(request.User))
+	options := []oci.SpecOpts{oci.WithDefaultSpecForPlatform(platform)}
+	if backendLocalRootFS {
+		options = append(options, func(
+			_ context.Context,
+			_ oci.Client,
+			_ *corecontainers.Container,
+			spec *oci.Spec,
+		) error {
+			if spec.Process == nil {
+				spec.Process = &specs.Process{}
+			}
+			entrypoint := imageConfig.Entrypoint
+			if len(request.Entrypoint) > 0 {
+				entrypoint = request.Entrypoint
+			}
+			command := imageConfig.Cmd
+			if len(request.Command) > 0 {
+				command = request.Command
+			}
+			spec.Process.Args = append(append([]string(nil), entrypoint...), command...)
+			spec.Process.Env = mergeExecEnvironment(imageConfig.Env, request.Environment)
+			spec.Process.Cwd = firstNonEmpty(request.WorkingDir, imageConfig.WorkingDir, "/")
+			return nil
+		})
+	} else {
+		options = append(options, oci.WithImageConfigArgs(image, request.Command))
+		if len(request.Entrypoint) > 0 {
+			command := request.Command
+			if len(command) == 0 {
+				command = imageConfig.Cmd
+			}
+			args := append(append([]string(nil), request.Entrypoint...), command...)
+			options = append(options, oci.WithProcessArgs(args...))
+		}
+		if len(request.Environment) > 0 {
+			options = append(options, oci.WithEnv(request.Environment))
+		}
+		if request.WorkingDir != "" {
+			options = append(options, oci.WithProcessCwd(request.WorkingDir))
+		}
+		if request.User != "" {
+			options = append(options, oci.WithUser(request.User))
+		}
 	}
 	if hostname != "" {
 		options = append(options, oci.WithHostname(hostname))
@@ -291,7 +384,8 @@ func directContainerSpecOptions(
 		}
 		options = append(options, oci.WithMounts(mounts))
 	}
-	if len(request.Sysctls) > 0 || request.TTY || request.StopSignal != "" {
+	stopSignal := firstNonEmpty(request.StopSignal, imageConfig.StopSignal)
+	if len(request.Sysctls) > 0 || request.TTY || stopSignal != "" {
 		options = append(options, func(
 			_ context.Context,
 			_ oci.Client,
@@ -313,16 +407,35 @@ func directContainerSpecOptions(
 					spec.Linux.Sysctl[key] = value
 				}
 			}
-			if request.StopSignal != "" {
+			if stopSignal != "" {
 				if spec.Annotations == nil {
 					spec.Annotations = make(map[string]string)
 				}
-				spec.Annotations["org.opencontainers.image.stopSignal"] = request.StopSignal
+				spec.Annotations["org.opencontainers.image.stopSignal"] = stopSignal
 			}
 			return nil
 		})
 	}
 	return options
+}
+
+func directContainerPlatform(requested string, lima bool) (string, error) {
+	requested = strings.TrimSpace(requested)
+	if requested == "" {
+		osName := runtime.GOOS
+		if lima || osName == "darwin" {
+			osName = "linux"
+		}
+		return platforms.Format(ocispec.Platform{
+			OS:           osName,
+			Architecture: runtime.GOARCH,
+		}), nil
+	}
+	platform, err := platforms.Parse(requested)
+	if err != nil {
+		return "", fmt.Errorf("invalid container platform %q: %w", requested, err)
+	}
+	return platforms.Format(platform), nil
 }
 
 func (r *grpcContainerRuntime) directContainerLogPath(id string) (string, error) {
