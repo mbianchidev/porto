@@ -48,6 +48,13 @@ type containerOperations interface {
 
 type containerOperationsConnector func(context.Context) (containerOperations, error)
 
+type containerCreation interface {
+	Create(context.Context, CreateContainerRequest) (string, error)
+	Close() error
+}
+
+type containerCreationConnector func(context.Context) (containerCreation, error)
+
 type execOperations interface {
 	StartExec(context.Context, ExecRequest) (runtimes.Process, error)
 	Close() error
@@ -62,6 +69,46 @@ type networkOperations interface {
 }
 
 type networkOperationsConnector func(context.Context) (networkOperations, error)
+
+func (m *Manager) connectContainerCreation(ctx context.Context) (containerCreation, error) {
+	runtimeClient, err := m.connectContainerRuntime(ctx)
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+			errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("%w: connect direct container creation: %v", ErrUnavailable, err)
+	}
+	creation, ok := runtimeClient.(containerCreation)
+	if !ok {
+		_ = runtimeClient.Close()
+		return nil, fmt.Errorf("%w: connected containerd client does not support container creation", ErrUnsupported)
+	}
+	return creation, nil
+}
+
+func (m *Manager) createContainerDirect(
+	ctx context.Context,
+	request CreateContainerRequest,
+) (string, bool, error) {
+	connector := m.creationConnector
+	if connector == nil {
+		return "", false, nil
+	}
+	creation, err := connector(ctx)
+	if err != nil {
+		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return "", false, nil
+		}
+		return "", true, err
+	}
+	id, createErr := creation.Create(ctx, request)
+	closeErr := creation.Close()
+	if errors.Is(createErr, ErrUnsupported) {
+		return "", false, errors.Join(createErr, closeErr)
+	}
+	return id, true, errors.Join(createErr, closeErr)
+}
 
 func (m *Manager) connectContainerOperations(ctx context.Context) (containerOperations, error) {
 	runtimeClient, err := m.connectContainerRuntime(ctx)
@@ -212,16 +259,6 @@ func (m *Manager) withNetworkOperations(
 		return false, nil
 	}
 	return true, errors.Join(operationErr, closeErr)
-}
-
-func (r *grpcContainerRuntime) StartExec(
-	context.Context,
-	ExecRequest,
-) (runtimes.Process, error) {
-	return nil, fmt.Errorf(
-		"%w: direct containerd exec cannot preserve attached I/O because the task service requires daemon-local FIFO paths",
-		ErrUnsupported,
-	)
 }
 
 func (r *grpcContainerRuntime) Connect(

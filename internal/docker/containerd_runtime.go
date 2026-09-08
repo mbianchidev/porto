@@ -23,6 +23,8 @@ import (
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -70,8 +72,14 @@ exit 1
 
 type grpcContainerRuntime struct {
 	connection *grpc.ClientConn
+	client     *containerd.Client
 	namespace  string
 	backend    string
+	stateDir   string
+	logDir     string
+	fifoDir    string
+	runner     runtimes.Runner
+	lima       string
 	containers containersapi.ContainersClient
 	snapshots  snapshotsapi.SnapshotsClient
 	tasks      tasksapi.TasksClient
@@ -115,6 +123,9 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 				return dialLimaContainerd(dialContext, instance, sshConfig, socket)
 			},
 			m.containerInventoryEnricher(backend),
+			m.stateDir,
+			m.runner,
+			instance,
 		)
 	}
 
@@ -128,6 +139,9 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 				return dialLocalContainerd(dialContext, address)
 			},
 			m.containerInventoryEnricher(backend),
+			m.stateDir,
+			m.runner,
+			"",
 		)
 		if err == nil {
 			return runtimeClient, nil
@@ -143,6 +157,9 @@ func newGRPCContainerRuntime(
 	backend string,
 	dialer func(context.Context, string) (net.Conn, error),
 	enrich func(context.Context) ([]Container, error),
+	stateDir string,
+	runner runtimes.Runner,
+	limaInstance string,
 ) (*grpcContainerRuntime, error) {
 	connection, err := grpc.NewClient(
 		"passthrough:///porto-containerd",
@@ -152,10 +169,21 @@ func newGRPCContainerRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("create containerd client: %w", err)
 	}
+	client, err := containerd.NewWithConn(connection, containerd.WithDefaultNamespace(namespace))
+	if err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("create high-level containerd client: %w", err)
+	}
 	runtimeClient := &grpcContainerRuntime{
 		connection:        connection,
+		client:            client,
 		namespace:         namespace,
 		backend:           backend,
+		stateDir:          stateDir,
+		logDir:            filepath.Join(stateDir, "container-logs"),
+		fifoDir:           filepath.Join(stateDir, "container-fifos"),
+		runner:            runner,
+		lima:              limaInstance,
 		containers:        containersapi.NewContainersClient(connection),
 		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),

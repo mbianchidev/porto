@@ -51,6 +51,7 @@ type Manager struct {
 	inventoryCancel     context.CancelFunc
 	inventoryDone       chan struct{}
 	runtimeConnector    containerRuntimeConnector
+	creationConnector   containerCreationConnector
 	operationsConnector containerOperationsConnector
 	execConnector       execOperationsConnector
 	networkConnector    networkOperationsConnector
@@ -91,6 +92,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		goos:     runtime.GOOS,
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
+	manager.creationConnector = manager.connectContainerCreation
 	manager.operationsConnector = manager.connectContainerOperations
 	manager.execConnector = manager.connectExecOperations
 	manager.networkConnector = manager.connectNetworkOperations
@@ -420,6 +422,12 @@ func normalizeNerdctlContainerState(value string) string {
 func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
+	}
+	if id, handled, err := m.createContainerDirect(ctx, request); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return id, err
 	}
 	hostname, err := containerHostname(request)
 	if err != nil {

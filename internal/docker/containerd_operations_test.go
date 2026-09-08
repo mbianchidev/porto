@@ -320,7 +320,7 @@ func TestManagerExecFallsBackWhenDirectStreamingIsUnsupported(t *testing.T) {
 	}
 }
 
-func TestContainerdExecReturnsTypedUnsupportedForAttachedIO(t *testing.T) {
+func TestContainerdExecRequiresHighLevelClient(t *testing.T) {
 	_, err := (&grpcContainerRuntime{}).StartExec(
 		context.Background(),
 		ExecRequest{
@@ -331,14 +331,14 @@ func TestContainerdExecReturnsTypedUnsupportedForAttachedIO(t *testing.T) {
 			AttachStderr: true,
 		},
 	)
-	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "FIFO") {
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "high-level") {
 		t.Fatalf("containerd exec error = %v", err)
 	}
 }
 
-func TestContainerCapabilitiesReportUnsupportedDirectExecLifecycle(t *testing.T) {
+func TestContainerCapabilitiesReportDirectExecLifecycle(t *testing.T) {
 	capability := containerCapabilities().ExecLifecycle
-	if capability.Supported || !strings.Contains(capability.Reason, "FIFO") {
+	if !capability.Supported || !strings.Contains(capability.Reason, "FIFO") {
 		t.Fatalf("exec lifecycle capability = %+v", capability)
 	}
 }

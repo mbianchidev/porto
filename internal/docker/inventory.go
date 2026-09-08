@@ -115,8 +115,8 @@ func containerCapabilities() ContainerCapabilities {
 			Reason:    "stopped tasks are recreated from the containerd OCI spec and snapshot mounts; attached stream recreation remains on the compatibility path",
 		},
 		ExecLifecycle: RuntimeCapability{
-			Supported: false,
-			Reason:    "direct containerd exec cannot preserve attached streams because the task service requires daemon-local FIFO paths",
+			Supported: true,
+			Reason:    "Porto creates and bridges containerd FIFO and TTY streams for direct exec processes",
 		},
 		HealthUpdates: RuntimeCapability{
 			Supported: false,
