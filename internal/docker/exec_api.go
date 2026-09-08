@@ -9,7 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"os/exec"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -31,6 +31,7 @@ type execInstance struct {
 	running     bool
 	exitCode    int
 	pid         int
+	process     runtimes.Process
 }
 
 type containerAttachSession struct {
@@ -90,10 +91,6 @@ func (a *API) createExec(w http.ResponseWriter, r *http.Request) {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "exec command is required"})
 		return
 	}
-	if request.TTY {
-		writeDockerUnsupported(w, "TTY exec")
-		return
-	}
 	if request.Privileged && !container.HostConfig.Privileged {
 		writeDockerUnsupported(w, "privileged exec in a non-privileged container")
 		return
@@ -145,10 +142,6 @@ func (a *API) startExec(w http.ResponseWriter, r *http.Request) {
 	if !decodeDockerJSON(w, r, &request) {
 		return
 	}
-	if request.Detach {
-		writeDockerUnsupported(w, "detached exec")
-		return
-	}
 	instance.mu.Lock()
 	if instance.started {
 		instance.mu.Unlock()
@@ -164,9 +157,9 @@ func (a *API) startExec(w http.ResponseWriter, r *http.Request) {
 	instance.mu.Unlock()
 
 	processContext, cancel := context.WithCancel(dockerServerContext(r.Context()))
-	defer cancel()
 	process, err := a.manager.StartExec(processContext, instance.request)
 	if err != nil {
+		cancel()
 		instance.complete(-1)
 		a.retainExec(instance)
 		writeDockerError(w, err)
@@ -175,11 +168,34 @@ func (a *API) startExec(w http.ResponseWriter, r *http.Request) {
 	instance.mu.Lock()
 	instance.running = true
 	instance.pid = process.PID()
+	instance.process = process
 	instance.mu.Unlock()
+	if request.Detach {
+		go func() {
+			defer cancel()
+			_ = process.Stdin().Close()
+			var copies sync.WaitGroup
+			copies.Add(2)
+			go func() {
+				defer copies.Done()
+				_, _ = io.Copy(io.Discard, process.Stdout())
+			}()
+			go func() {
+				defer copies.Done()
+				_, _ = io.Copy(io.Discard, process.Stderr())
+			}()
+			waitErr := process.Wait()
+			copies.Wait()
+			instance.complete(processWaitExitCode(waitErr))
+			a.retainExec(instance)
+		}()
+		writeDockerJSON(w, http.StatusOK, map[string]any{})
+		return
+	}
+	defer cancel()
 	connection, err := hijackDockerStream(w, r)
 	if err != nil {
-		_ = process.Kill()
-		instance.complete(-1)
+		instance.complete(stopAndCollectProcess(process))
 		a.retainExec(instance)
 		return
 	}
@@ -195,6 +211,69 @@ func (a *API) startExec(w http.ResponseWriter, r *http.Request) {
 	instance.complete(exitCode)
 	_ = connection.Close()
 	a.retainExec(instance)
+}
+
+type resizableProcess interface {
+	Resize(context.Context, uint32, uint32) error
+}
+
+func (a *API) resizeExec(w http.ResponseWriter, r *http.Request) {
+	instance := a.execInstance(r.PathValue("id"))
+	if instance == nil {
+		writeDockerJSON(w, http.StatusNotFound, map[string]string{"message": "no such exec instance"})
+		return
+	}
+	width, err := strconv.ParseUint(r.URL.Query().Get("w"), 10, 32)
+	if err != nil || width == 0 {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "valid terminal width is required"})
+		return
+	}
+	height, err := strconv.ParseUint(r.URL.Query().Get("h"), 10, 32)
+	if err != nil || height == 0 {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "valid terminal height is required"})
+		return
+	}
+	instance.mu.Lock()
+	process := instance.process
+	running := instance.running
+	tty := instance.request.TTY
+	instance.mu.Unlock()
+	if !running || process == nil {
+		writeDockerJSON(w, http.StatusConflict, map[string]string{"message": "exec instance is not running"})
+		return
+	}
+	if !tty {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "exec instance does not use a TTY"})
+		return
+	}
+	resizable, ok := process.(resizableProcess)
+	if !ok {
+		writeDockerUnsupported(w, "exec terminal resize")
+		return
+	}
+	if err := resizable.Resize(r.Context(), uint32(width), uint32(height)); err != nil {
+		writeDockerError(w, fmt.Errorf("resize exec terminal: %w", err))
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func stopAndCollectProcess(process runtimes.Process) int {
+	_ = process.Stdin().Close()
+	var copies sync.WaitGroup
+	copies.Add(2)
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(io.Discard, process.Stdout())
+	}()
+	go func() {
+		defer copies.Done()
+		_, _ = io.Copy(io.Discard, process.Stderr())
+	}()
+	_ = process.Kill()
+	waitErr := process.Wait()
+	copies.Wait()
+	return processWaitExitCode(waitErr)
 }
 
 func (a *API) inspectExec(w http.ResponseWriter, r *http.Request) {
@@ -609,7 +688,19 @@ func (e *execInstance) complete(exitCode int) {
 	e.running = false
 	e.exitCode = exitCode
 	e.pid = 0
+	e.process = nil
 	e.mu.Unlock()
+}
+
+func processWaitExitCode(waitErr error) int {
+	if waitErr == nil {
+		return 0
+	}
+	var exited interface{ ExitCode() int }
+	if errors.As(waitErr, &exited) {
+		return exited.ExitCode()
+	}
+	return -1
 }
 
 func (a *API) retainExec(instance *execInstance) {
@@ -700,6 +791,12 @@ func serveProcessStreamResult(
 ) processStreamResult {
 	var writeMu sync.Mutex
 	var interrupted atomic.Bool
+	var streamBrokenOnce sync.Once
+	streamBroken := make(chan struct{})
+	killOnDisconnect := true
+	if policy, ok := process.(interface{ KillOnDisconnect() bool }); ok {
+		killOnDisconnect = policy.KillOnDisconnect()
+	}
 	copyOutput := func(stream byte, enabled bool, output io.Reader, done chan<- struct{}) {
 		defer func() { done <- struct{}{} }()
 		if !enabled {
@@ -709,7 +806,10 @@ func serveProcessStreamResult(
 		writer := &dockerProcessWriter{connection: connection, stream: stream, tty: tty, mu: &writeMu}
 		if _, err := io.Copy(writer, output); err != nil {
 			interrupted.Store(true)
-			_ = process.Kill()
+			streamBrokenOnce.Do(func() { close(streamBroken) })
+			if killOnDisconnect {
+				_ = process.Kill()
+			}
 			_, _ = io.Copy(io.Discard, output)
 		}
 	}
@@ -730,8 +830,20 @@ func serveProcessStreamResult(
 		select {
 		case <-outputDone:
 			remainingOutputs--
+		case <-streamBroken:
+			if !killOnDisconnect {
+				_ = process.Stdin().Close()
+				go finishDetachedProcessStream(process, outputDone, remainingOutputs)
+				return processStreamResult{exitCode: -1, authoritative: false}
+			}
+			streamBroken = nil
 		case <-contextDone:
 			interrupted.Store(true)
+			if !killOnDisconnect {
+				_ = process.Stdin().Close()
+				go finishDetachedProcessStream(process, outputDone, remainingOutputs)
+				return processStreamResult{exitCode: -1, authoritative: false}
+			}
 			_ = process.Kill()
 			contextDone = nil
 		}
@@ -741,14 +853,22 @@ func serveProcessStreamResult(
 	if waitErr == nil {
 		return processStreamResult{exitCode: 0, authoritative: !interrupted.Load()}
 	}
-	var exitError *exec.ExitError
-	if errors.As(waitErr, &exitError) {
-		return processStreamResult{
-			exitCode:      exitError.ExitCode(),
-			authoritative: !interrupted.Load(),
-		}
+	return processStreamResult{
+		exitCode:      processWaitExitCode(waitErr),
+		authoritative: !interrupted.Load(),
 	}
-	return processStreamResult{exitCode: -1}
+}
+
+func finishDetachedProcessStream(
+	process runtimes.Process,
+	outputDone <-chan struct{},
+	remainingOutputs int,
+) {
+	for range remainingOutputs {
+		<-outputDone
+	}
+	_ = process.Stdin().Close()
+	_ = process.Wait()
 }
 
 type dockerProcessWriter struct {

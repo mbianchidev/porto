@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,11 +18,13 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 	"google.golang.org/protobuf/types/known/emptypb"
 	"google.golang.org/protobuf/types/known/fieldmaskpb"
@@ -48,6 +51,15 @@ type fakeExecOperations struct {
 func (f *fakeExecOperations) StartExec(
 	_ context.Context,
 	_ ExecRequest,
+) (runtimes.Process, error) {
+	f.startCalls.Add(1)
+	return f.process, f.startErr
+}
+
+func (f *fakeExecOperations) StartAttached(
+	_ context.Context,
+	_ string,
+	_ bool,
 ) (runtimes.Process, error) {
 	f.startCalls.Add(1)
 	return f.process, f.startErr
@@ -173,6 +185,14 @@ func (f *fakeContainerOperations) UpdateResources(_ context.Context, id string, 
 	))
 }
 
+func (f *fakeContainerOperations) UpdateRestartPolicy(
+	_ context.Context,
+	id,
+	policy string,
+) error {
+	return f.record("update-restart " + id + " " + policy)
+}
+
 func (f *fakeContainerOperations) UpdateHealth(
 	_ context.Context,
 	id string,
@@ -190,6 +210,10 @@ func (f *fakeContainerOperations) UpdateHealth(
 
 func (f *fakeContainerOperations) Checkpoint(_ context.Context, id, parent string) ([]string, error) {
 	return []string{"checkpoint"}, f.record(fmt.Sprintf("checkpoint %s %s", id, parent))
+}
+
+func (f *fakeContainerOperations) Restore(_ context.Context, id, checkpoint string) error {
+	return f.record(fmt.Sprintf("restore %s %s", id, checkpoint))
 }
 
 func (f *fakeContainerOperations) Delete(_ context.Context, id string, force, volumes bool) error {
@@ -320,7 +344,7 @@ func TestManagerExecFallsBackWhenDirectStreamingIsUnsupported(t *testing.T) {
 	}
 }
 
-func TestContainerdExecReturnsTypedUnsupportedForAttachedIO(t *testing.T) {
+func TestContainerdExecRequiresHighLevelClient(t *testing.T) {
 	_, err := (&grpcContainerRuntime{}).StartExec(
 		context.Background(),
 		ExecRequest{
@@ -331,14 +355,14 @@ func TestContainerdExecReturnsTypedUnsupportedForAttachedIO(t *testing.T) {
 			AttachStderr: true,
 		},
 	)
-	if !errors.Is(err, ErrUnsupported) || !strings.Contains(err.Error(), "FIFO") {
+	if !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "high-level") {
 		t.Fatalf("containerd exec error = %v", err)
 	}
 }
 
-func TestContainerCapabilitiesReportUnsupportedDirectExecLifecycle(t *testing.T) {
+func TestContainerCapabilitiesRequireActiveExecConnection(t *testing.T) {
 	capability := containerCapabilities().ExecLifecycle
-	if capability.Supported || !strings.Contains(capability.Reason, "FIFO") {
+	if capability.Supported || !strings.Contains(capability.Reason, "active") {
 		t.Fatalf("exec lifecycle capability = %+v", capability)
 	}
 }
@@ -347,7 +371,7 @@ func TestContainerCapabilitiesReportDirectTaskRecreation(t *testing.T) {
 	capability := containerCapabilities().TaskRecreation
 	if !capability.Supported ||
 		!strings.Contains(capability.Reason, "OCI spec") ||
-		!strings.Contains(capability.Reason, "stream") {
+		!strings.Contains(capability.Reason, "legacy") {
 		t.Fatalf("task recreation capability = %+v", capability)
 	}
 }
@@ -403,7 +427,7 @@ func TestManagerNetworkActionsFallbackWhenDirectRuntimeIsUnavailable(t *testing.
 	}
 }
 
-func TestManagerNetworkActionsExposeUnsupportedWithoutPretendingDirectSupport(t *testing.T) {
+func TestManagerNetworkActionsFallbackBeforeUnsupportedDirectMutation(t *testing.T) {
 	call := "connect backend demo []"
 	operations := &fakeNetworkOperations{
 		errs: map[string]error{call: fmt.Errorf("%w: CNI endpoint lifecycle", ErrUnsupported)},
@@ -417,18 +441,18 @@ func TestManagerNetworkActionsExposeUnsupportedWithoutPretendingDirectSupport(t 
 		return operations, nil
 	}
 	err := manager.ConnectNetwork(context.Background(), "backend", "demo", nil)
-	if !errors.Is(err, ErrUnsupported) {
-		t.Fatalf("connect network error = %v, want ErrUnsupported", err)
+	if err != nil {
+		t.Fatalf("connect network fallback: %v", err)
 	}
-	if len(runner.commands) != 0 {
-		t.Fatalf("unsupported direct operation fell back to commands: %+v", runner.commands)
+	if len(runner.commands) != 1 {
+		t.Fatalf("unsupported direct operation did not use compatibility command: %+v", runner.commands)
 	}
 	if want := []string{call, "close"}; !reflect.DeepEqual(operations.calls, want) {
 		t.Fatalf("operation calls = %q, want %q", operations.calls, want)
 	}
 }
 
-func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
+func TestDockerAPIFallsBackForUnsupportedDirectNetworkOperation(t *testing.T) {
 	operations := &fakeNetworkOperations{
 		errs: map[string]error{
 			"disconnect backend demo false": fmt.Errorf(
@@ -446,32 +470,52 @@ func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
 			strings.NewReader(`{"Container":"demo"}`),
 		),
 	)
-	if response.Code != http.StatusNotImplemented {
+	if response.Code != http.StatusOK {
 		t.Fatalf("network disconnect response = %d: %s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
-		t.Fatalf("network response did not expose typed error: %s", response.Body.String())
 	}
 }
 
-func TestContainerdNetworkOperationsReturnTypedUnsupportedErrors(t *testing.T) {
+func TestContainerdNetworkOperationsRequireRuntimeServices(t *testing.T) {
 	runtimeClient := &grpcContainerRuntime{}
 	connectErr := runtimeClient.Connect(context.Background(), "backend", "demo", nil)
-	if !errors.Is(connectErr, ErrUnsupported) ||
-		!strings.Contains(connectErr.Error(), "CNI endpoints") {
+	if !errors.Is(connectErr, ErrUnavailable) ||
+		!strings.Contains(connectErr.Error(), "container and task services") {
 		t.Fatalf("containerd connect error = %v", connectErr)
 	}
 	disconnectErr := runtimeClient.Disconnect(context.Background(), "backend", "demo", false)
-	if !errors.Is(disconnectErr, ErrUnsupported) ||
-		!strings.Contains(disconnectErr.Error(), "metadata alone") {
+	if !errors.Is(disconnectErr, ErrUnavailable) ||
+		!strings.Contains(disconnectErr.Error(), "container and task services") {
 		t.Fatalf("containerd disconnect error = %v", disconnectErr)
 	}
 }
 
-func TestContainerCapabilitiesReportUnsupportedDirectNetworkUpdates(t *testing.T) {
+func TestContainerCapabilitiesRequireCNIProbe(t *testing.T) {
 	capability := containerCapabilities().NetworkUpdates
-	if capability.Supported || !strings.Contains(capability.Reason, "CNI endpoint") {
+	if capability.Supported || !strings.Contains(capability.Reason, "probe") {
 		t.Fatalf("network update capability = %+v", capability)
+	}
+}
+
+func TestGRPCRuntimeCapabilitiesUseBackendHelperProbe(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"/helper probe": []byte(`{"cni":true,"criu":true}`),
+		},
+		errors: map[string]error{},
+	}
+	runtimeClient := &grpcContainerRuntime{
+		client:     new(containerd.Client),
+		runner:     runner,
+		helperPath: "/helper",
+	}
+	capabilities := runtimeClient.Capabilities(context.Background())
+	if (runtime.GOOS != "windows" && !capabilities.DirectCreation.Supported) ||
+		(runtime.GOOS == "windows" && capabilities.DirectCreation.Supported) ||
+		!capabilities.ExecLifecycle.Supported ||
+		!capabilities.HealthUpdates.Supported ||
+		!capabilities.NetworkUpdates.Supported ||
+		!capabilities.CheckpointRestore.Supported {
+		t.Fatalf("runtime capabilities = %+v", capabilities)
 	}
 }
 
@@ -708,15 +752,42 @@ func TestDockerAPIReportsUnsupportedDirectHealthUpdate(t *testing.T) {
 	}
 }
 
-func TestContainerdHealthUpdateReturnsTypedUnsupportedError(t *testing.T) {
+func TestContainerdHealthUpdateRequiresMetadataService(t *testing.T) {
 	err := (&grpcContainerRuntime{}).UpdateHealth(
 		context.Background(),
 		"demo",
 		&ContainerHealthcheck{Test: []string{"CMD-SHELL", "true"}},
 	)
-	if !errors.Is(err, ErrUnsupported) ||
-		!strings.Contains(err.Error(), "scheduling and result logs") {
+	if !errors.Is(err, ErrUnavailable) ||
+		!strings.Contains(err.Error(), "metadata service") {
 		t.Fatalf("containerd health update error = %v", err)
+	}
+}
+
+func TestContainerdHealthUpdatePersistsPortoOwnedConfiguration(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID: "demo",
+		Labels: map[string]string{
+			portoManagedLabel: portoRuntimeVersion,
+		},
+	}}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	err := runtimeClient.UpdateHealth(
+		context.Background(),
+		"demo",
+		&ContainerHealthcheck{
+			Test:     []string{"CMD", "true"},
+			Interval: time.Second,
+			Retries:  2,
+		},
+	)
+	if err != nil {
+		t.Fatalf("update health: %v", err)
+	}
+	labels := containers.updateRequest.GetContainer().GetLabels()
+	if !strings.Contains(labels[nerdctlHealthcheckLabel], `"CMD"`) ||
+		!strings.Contains(labels[nerdctlHealthStateLabel], `"starting"`) {
+		t.Fatalf("health labels = %v", labels)
 	}
 }
 
@@ -919,6 +990,7 @@ func (f *fakeTasksClient) Delete(
 type fakeContainersClient struct {
 	containersapi.ContainersClient
 	container      *containersapi.Container
+	listContainers []*containersapi.Container
 	calls          []string
 	updateRequest  *containersapi.UpdateContainerRequest
 	updateRequests []*containersapi.UpdateContainerRequest
@@ -936,7 +1008,38 @@ func (f *fakeContainersClient) Get(
 	if f.getErr != nil {
 		return nil, f.getErr
 	}
-	return &containersapi.GetContainerResponse{Container: f.container}, nil
+	if f.container == nil {
+		return &containersapi.GetContainerResponse{}, nil
+	}
+	if request.GetID() != f.container.GetID() {
+		return nil, status.Error(codes.NotFound, "container not found")
+	}
+	return &containersapi.GetContainerResponse{
+		Container: proto.Clone(f.container).(*containersapi.Container),
+	}, nil
+}
+
+func (f *fakeContainersClient) List(
+	_ context.Context,
+	_ *containersapi.ListContainersRequest,
+	_ ...grpc.CallOption,
+) (*containersapi.ListContainersResponse, error) {
+	f.calls = append(f.calls, "list")
+	if len(f.listContainers) > 0 {
+		containers := make([]*containersapi.Container, 0, len(f.listContainers))
+		for _, container := range f.listContainers {
+			containers = append(containers, proto.Clone(container).(*containersapi.Container))
+		}
+		return &containersapi.ListContainersResponse{Containers: containers}, nil
+	}
+	if f.container == nil {
+		return &containersapi.ListContainersResponse{}, nil
+	}
+	return &containersapi.ListContainersResponse{
+		Containers: []*containersapi.Container{
+			proto.Clone(f.container).(*containersapi.Container),
+		},
+	}, nil
 }
 
 func (f *fakeContainersClient) Update(
@@ -950,7 +1053,26 @@ func (f *fakeContainersClient) Update(
 	if f.updateErr != nil {
 		return nil, f.updateErr
 	}
-	return &containersapi.UpdateContainerResponse{Container: request.GetContainer()}, nil
+	if f.container == nil {
+		f.container = proto.Clone(request.GetContainer()).(*containersapi.Container)
+	} else {
+		for _, path := range request.GetUpdateMask().GetPaths() {
+			if strings.HasPrefix(path, "labels.") {
+				if f.container.Labels == nil {
+					f.container.Labels = make(map[string]string)
+				}
+				key := strings.TrimPrefix(path, "labels.")
+				f.container.Labels[key] = request.GetContainer().GetLabels()[key]
+			}
+			if path == "labels" {
+				f.container.Labels = cloneStringMap(request.GetContainer().GetLabels())
+			}
+			if path == "spec" {
+				f.container.Spec = request.GetContainer().GetSpec()
+			}
+		}
+	}
+	return &containersapi.UpdateContainerResponse{Container: f.container}, nil
 }
 
 func (f *fakeContainersClient) Delete(
@@ -1030,10 +1152,10 @@ func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
 	if err := runtimeClient.Rename(context.Background(), "demo", "new-name"); err != nil {
 		t.Fatalf("rename container: %v", err)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "list", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
-	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, map[string]string{
+	if got := containers.container.GetLabels(); !reflect.DeepEqual(got, map[string]string{
 		"app":            "porto",
 		nerdctlNameLabel: "new-name",
 	}) {
@@ -1041,7 +1163,7 @@ func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
 	}
 	if !reflect.DeepEqual(
 		containers.updateRequest.GetUpdateMask(),
-		&fieldmaskpb.FieldMask{Paths: []string{"labels"}},
+		&fieldmaskpb.FieldMask{Paths: []string{"labels." + nerdctlNameLabel}},
 	) {
 		t.Fatalf("update mask = %v, want labels", containers.updateRequest.GetUpdateMask())
 	}
@@ -1061,7 +1183,7 @@ func TestGRPCContainerOperationsUpdateLabelsMergesExistingMetadata(t *testing.T)
 		t.Fatalf("update labels: %v", err)
 	}
 	want := map[string]string{"existing": "value", "added": "label"}
-	if got := containers.updateRequest.GetContainer().GetLabels(); !reflect.DeepEqual(got, want) {
+	if got := containers.container.GetLabels(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("updated labels = %v, want %v", got, want)
 	}
 }
@@ -1102,7 +1224,7 @@ func TestGRPCContainerOperationsUpdatesTaskAndPersistedResources(t *testing.T) {
 	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 	if tasks.updateRequest.GetResources().GetTypeUrl() != containerdLinuxResourcesTypeURL {
@@ -1167,7 +1289,7 @@ func TestGRPCContainerOperationsRollsBackMetadataForUnsupportedTaskUpdate(t *tes
 	if !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("update error = %v, want unsupported", err)
 	}
-	if want := []string{"get demo", "update demo", "update demo"}; !reflect.DeepEqual(
+	if want := []string{"get demo", "get demo", "update demo", "update demo"}; !reflect.DeepEqual(
 		containers.calls,
 		want,
 	) {
@@ -1209,7 +1331,7 @@ func TestGRPCContainerOperationsKeepsMetadataWhenTaskExitsDuringUpdate(t *testin
 	); err != nil {
 		t.Fatalf("update resources after task exit: %v", err)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1241,7 +1363,7 @@ func TestGRPCContainerOperationsDeleteStoppedTaskBeforeMetadata(t *testing.T) {
 	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1326,7 +1448,7 @@ func TestGRPCContainerOperationsDeleteMetadataWithoutTask(t *testing.T) {
 	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1353,7 +1475,7 @@ func TestGRPCContainerOperationsDeleteFallsBackBeforeManagedCleanup(t *testing.T
 	if len(tasks.calls) != 0 {
 		t.Fatalf("task was changed before fallback: %q", tasks.calls)
 	}
-	if want := []string{"get demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -23,6 +24,8 @@ import (
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -69,20 +72,86 @@ exit 1
 `
 
 type grpcContainerRuntime struct {
-	connection *grpc.ClientConn
-	namespace  string
-	backend    string
-	containers containersapi.ContainersClient
-	snapshots  snapshotsapi.SnapshotsClient
-	tasks      tasksapi.TasksClient
-	events     eventsapi.EventsClient
-	enrich     func(context.Context) ([]Container, error)
+	connection      *grpc.ClientConn
+	client          *containerd.Client
+	namespace       string
+	backend         string
+	stateDir        string
+	logDir          string
+	fifoDir         string
+	runner          runtimes.Runner
+	lima            string
+	helperPath      string
+	networkLocks    *containerMutexes
+	containerNameMu *sync.Mutex
+	containers      containersapi.ContainersClient
+	snapshots       snapshotsapi.SnapshotsClient
+	tasks           tasksapi.TasksClient
+	events          eventsapi.EventsClient
+	enrich          func(context.Context) ([]Container, error)
 
 	enrichMu          sync.Mutex
 	enrichmentReady   bool
 	enrichmentVersion map[string]string
 	enrichment        map[string]Container
 	enrichmentError   error
+}
+
+type runtimeHelperProbe struct {
+	CNI        bool   `json:"cni"`
+	CNIReason  string `json:"cniReason,omitempty"`
+	CRIU       bool   `json:"criu"`
+	CRIUReason string `json:"criuReason,omitempty"`
+}
+
+func (r *grpcContainerRuntime) Capabilities(ctx context.Context) ContainerCapabilities {
+	capabilities := containerCapabilities()
+	capabilities.DirectCreation = RuntimeCapability{
+		Supported: r.client != nil && (runtime.GOOS != "windows" || r.lima != ""),
+		Reason:    "direct image, snapshot, OCI metadata, and task creation is available for capability-supported requests",
+	}
+	if !capabilities.DirectCreation.Supported && runtime.GOOS == "windows" && r.lima == "" {
+		capabilities.DirectCreation.Reason = "native Windows direct creation requires a Windows runtime implementation"
+	}
+	capabilities.ExecLifecycle = RuntimeCapability{
+		Supported: r.client != nil,
+		Reason:    "Porto creates and bridges containerd FIFO and TTY streams for direct exec processes",
+	}
+	capabilities.HealthUpdates = RuntimeCapability{
+		Supported: capabilities.ExecLifecycle.Supported,
+		Reason:    "Porto schedules direct exec probes and persists bounded Docker-compatible health results in container metadata",
+	}
+	output, err := r.runRuntimeHelper(ctx, "probe")
+	if err != nil {
+		capabilities.NetworkUpdates = RuntimeCapability{Reason: err.Error()}
+		capabilities.CheckpointRestore = RuntimeCapability{
+			Reason: "checkpoint creation is available; restore capability probe failed: " + err.Error(),
+		}
+		return capabilities
+	}
+	var probe runtimeHelperProbe
+	if err := json.Unmarshal(output, &probe); err != nil {
+		capabilities.NetworkUpdates = RuntimeCapability{Reason: "decode runtime helper probe: " + err.Error()}
+		capabilities.CheckpointRestore = RuntimeCapability{
+			Reason: "checkpoint creation is available; decode restore capability probe: " + err.Error(),
+		}
+		return capabilities
+	}
+	capabilities.NetworkUpdates = RuntimeCapability{
+		Supported: probe.CNI,
+		Reason: firstNonEmpty(
+			probe.CNIReason,
+			"Porto manages CNI endpoints through its backend-local runtime helper",
+		),
+	}
+	capabilities.CheckpointRestore = RuntimeCapability{
+		Supported: probe.CRIU,
+		Reason: firstNonEmpty(
+			probe.CRIUReason,
+			"containerd runc checkpoint restore is available through the backend-local CRIU runtime",
+		),
+	}
+	return capabilities
 }
 
 func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime, error) {
@@ -107,6 +176,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		if err != nil {
 			return nil, err
 		}
+		helperPath, _ := m.lookPath("porto-runtime-helper")
 		return newGRPCContainerRuntime(
 			ctx,
 			namespace,
@@ -115,9 +185,16 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 				return dialLimaContainerd(dialContext, instance, sshConfig, socket)
 			},
 			m.containerInventoryEnricher(backend),
+			m.stateDir,
+			m.runner,
+			instance,
+			helperPath,
+			m.networkLocks,
+			m.containerNameMu,
 		)
 	}
 
+	helperPath, _ := m.lookPath("porto-runtime-helper")
 	var dialErrors []error
 	for _, address := range localContainerdAddresses() {
 		runtimeClient, err := newGRPCContainerRuntime(
@@ -128,6 +205,12 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 				return dialLocalContainerd(dialContext, address)
 			},
 			m.containerInventoryEnricher(backend),
+			m.stateDir,
+			m.runner,
+			"",
+			helperPath,
+			m.networkLocks,
+			m.containerNameMu,
 		)
 		if err == nil {
 			return runtimeClient, nil
@@ -143,6 +226,12 @@ func newGRPCContainerRuntime(
 	backend string,
 	dialer func(context.Context, string) (net.Conn, error),
 	enrich func(context.Context) ([]Container, error),
+	stateDir string,
+	runner runtimes.Runner,
+	limaInstance string,
+	helperPath string,
+	networkLocks *containerMutexes,
+	containerNameMu *sync.Mutex,
 ) (*grpcContainerRuntime, error) {
 	connection, err := grpc.NewClient(
 		"passthrough:///porto-containerd",
@@ -152,10 +241,24 @@ func newGRPCContainerRuntime(
 	if err != nil {
 		return nil, fmt.Errorf("create containerd client: %w", err)
 	}
+	client, err := containerd.NewWithConn(connection, containerd.WithDefaultNamespace(namespace))
+	if err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("create high-level containerd client: %w", err)
+	}
 	runtimeClient := &grpcContainerRuntime{
 		connection:        connection,
+		client:            client,
 		namespace:         namespace,
 		backend:           backend,
+		stateDir:          stateDir,
+		logDir:            filepath.Join(stateDir, "container-logs"),
+		fifoDir:           filepath.Join(stateDir, "container-fifos"),
+		runner:            runner,
+		lima:              limaInstance,
+		helperPath:        helperPath,
+		networkLocks:      networkLocks,
+		containerNameMu:   containerNameMu,
 		containers:        containersapi.NewContainersClient(connection),
 		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),
@@ -735,8 +838,18 @@ func mapContainerNetworks(container *Container, labels map[string]string) error 
 	}
 	sort.Strings(networks)
 	container.Networks = strings.Join(networks, ", ")
+	stateMap := directNetworkStateMap(labels[portoNetworkStateLabel])
+	aliasMap := make(map[string][]string)
+	if encoded := labels[portoNetworkAliasLabel]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &aliasMap); err != nil {
+			return fmt.Errorf("decode container network aliases: %w", err)
+		}
+	}
 	for _, network := range networks {
-		container.NetworkDetails = append(container.NetworkDetails, ContainerNetworkState{Name: network})
+		state := stateMap[network]
+		state.Name = network
+		state.Aliases = append([]string(nil), aliasMap[network]...)
+		container.NetworkDetails = append(container.NetworkDetails, state)
 	}
 	if encoded := labels[nerdctlPortsLabel]; encoded != "" {
 		var ports []struct {
@@ -794,10 +907,7 @@ func mapContainerHealth(container *Container, labels map[string]string) error {
 	if encoded == "" {
 		return nil
 	}
-	var state struct {
-		Status        string
-		FailingStreak int
-	}
+	var state containerHealthState
 	if err := json.Unmarshal([]byte(encoded), &state); err != nil {
 		return fmt.Errorf("decode container health state: %w", err)
 	}
@@ -810,6 +920,11 @@ func mapContainerHealth(container *Container, labels map[string]string) error {
 		return fmt.Errorf("decode container health state: unsupported status %q", state.Status)
 	}
 	container.Health.FailingStreak = state.FailingStreak
+	if len(state.Log) > 0 {
+		latest := state.Log[len(state.Log)-1]
+		container.Health.Output = latest.Output
+		container.Health.UpdatedAt = latest.End.Format(time.RFC3339Nano)
+	}
 	return nil
 }
 

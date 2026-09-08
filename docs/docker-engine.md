@@ -20,9 +20,11 @@ Porto runtime manager
         |
         +-- persistent containerd gRPC inventory + lifecycle subscription
         |
-        +-- local nerdctl -> local containerd
+        +-- containerd v2 client -> images, snapshots, OCI specs, tasks, exec
         |
-        `-- limactl shell porto-engine -> nerdctl / containerd socket tunnel
+        +-- backend-local runtime helper -> FIFO/TTY, CNI, CRIU probes
+        |
+        `-- compatibility CLI for preflight-unsupported or legacy resources
 
 Buildx / Compose Bake
         |
@@ -35,8 +37,8 @@ BuildKit socket or Lima `buildctl dial-stdio`
 
 The API server is part of the Porto daemon and starts whenever the Docker runtime is enabled. Docker is enabled by default for new Porto installations and can be toggled with `porto runtime enable docker` or `porto runtime disable docker`. The execution backend is independent:
 
-- If `nerdctl` and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation.
-- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch. CLI-only installations can run `porto docker engine-install`.
+- If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
+- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch. Porto installs its bundled Linux runtime helper only in that owned VM. CLI-only installations can run `porto docker engine-install`.
 - Windows exposes the Docker-compatible named pipe, but automatic backend installation is not implemented. Install nerdctl, containerd, and BuildKit manually.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
@@ -65,13 +67,35 @@ shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 also flow into the desktop Activity log.
 
 Lifecycle actions use containerd task APIs. Starting or restarting a stopped
-container recreates its task from the stored OCI spec and snapshot mounts, then
-starts it directly; attached stream recreation remains on the compatibility
-path because containerd does not retain nerdctl's daemon-local FIFO setup.
-Container checkpoints use the containerd task checkpoint RPC and return the
-runtime's descriptor media types. Docker-compatible restore remains explicitly
-unsupported because containerd's generic task service does not provide the
-runtime-specific task and CRIU restoration inputs required by Docker's API.
+Porto-owned container recreates its task from the stored OCI spec, snapshot
+mounts, network endpoints, and I/O metadata. Legacy containers whose task
+lifecycle is owned by the compatibility runtime remain on that path.
+Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
+bridges, including attached start and direct exec over a Lima guest connection.
+
+Container creation uses the containerd v2 client for image resolution and
+unpack, writable snapshot allocation, OCI spec generation, metadata creation,
+and ordered cleanup. Porto selects this path only after preflight confirms that
+the request can be represented directly. Requests that still need legacy-owned
+volume, initial CNI, device, init, or security-option behavior use the
+compatibility path before any direct resource is mutated.
+
+Porto-owned healthchecks are scheduled by the daemon and executed through
+direct containerd exec. Timing, retries, start periods, start intervals, bounded
+result logs, and starting/healthy/unhealthy transitions are persisted in
+container metadata so they recover after a daemon restart.
+
+Network connect and disconnect use CNI `ADD` and `DEL` through the backend-local
+runtime helper. The inventory exposes endpoint interface, MAC, address, gateway,
+aliases, and port mapping state. A missing helper, CNI configuration, plugin, or
+reachable network namespace is reported through the runtime capability matrix
+instead of being treated as direct support.
+
+Checkpoints are stored as named containerd checkpoint images with source
+metadata. Restore is advertised only when the backend helper discovers CRIU;
+it creates a new, unused target container ID, restores image/spec/runtime/RW
+state, recreates the task with the checkpoint descriptor, and starts it.
+Backends without the required runtime support return a typed unsupported error.
 
 ## Install the Docker context
 
@@ -116,7 +140,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Resource | Supported operations |
 | --- | --- |
 | System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove, checkpoint; restore returns a typed unsupported response |
+| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, resource and restart-policy update, remove, named checkpoint, capability-gated restore |
 | Images | list, inspect, pull, save, remove |
 | Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |
@@ -146,15 +170,18 @@ The Containers dashboard can also create and start a container from either a
 local image name or a remote image reference. It supports an optional
 loopback-only published port and an optional shell health command.
 
-Container creation supports image, command, entrypoint, environment, labels, working directory, user, hostname, stop behavior, healthchecks, `--volume` bind/volume mappings, published ports, network mode, restart policy, TTY, stdin, and automatic removal.
-The nerdctl backend exposes a shell healthcheck command, so Docker `CMD`
-healthchecks are safely quoted and executed through the container shell; the
-create response includes a warning about that compatibility behavior.
-Porto observes health configuration and starting/healthy/unhealthy transitions
-from nerdctl's containerd labels and container metadata events. Inspect requests
-do not trigger health probes. Direct healthcheck updates return an explicit
-unsupported response because containerd cannot also manage nerdctl's scheduler
-and result log lifecycle.
+Container creation supports image, command, entrypoint, environment, labels,
+working directory, user, hostname, stop behavior, healthchecks, `--volume`
+bind/volume mappings, published ports, network mode, restart policy, TTY,
+stdin, and automatic removal. Requests that contain only directly supported
+resources use containerd without invoking `nerdctl`; other accepted requests
+preflight to the compatibility path.
+
+For Porto-owned containers, `CMD` healthchecks remain argument arrays rather
+than being converted into shell commands. `CMD-SHELL` explicitly uses the
+container shell. Inspect requests do not trigger probes; the daemon scheduler
+owns execution and result retention. Legacy containers keep their existing
+runtime-owned health behavior.
 
 For example, run nginx with an explicit health check:
 
@@ -207,16 +234,19 @@ Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupporte
 Not implemented:
 
 - selecting only one log output stream and structured `--mount` requests; these return 501 instead of changing semantics
-- log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort
-- TTY Docker exec, detached exec, attach with historical logs, and streaming stats through Docker clients
+- log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort, and Porto-owned raw log files cannot synthesize per-line timestamps
+- attach with historical logs and streaming stats through Docker clients
 - build history, commit, import, export, load, and save through the legacy Docker API
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
 - the Docker Engine-compatible `/events` endpoint, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint; the dashboard uses Porto's internal revisioned SSE endpoint instead
-- capability changes, namespace overrides beyond KinD's host/private modes, and resource limits beyond CPU/memory container updates
+- namespace overrides beyond KinD's host/private modes, combined resource and restart-policy updates, and resource limits beyond CPU/memory container updates
 - remote TCP/TLS exposure and Windows containers
 
-The Porto dashboard's existing container exec endpoint is separate from the Docker exec protocol and continues to invoke nerdctl directly.
+The Porto dashboard's existing container exec endpoint is separate from the
+Docker exec protocol and remains a compatibility path. Standard Docker exec,
+including TTY, detach, and resize, uses direct containerd process APIs when the
+capability matrix reports support.
 
 The native API supports the privileged containers, exec stdin/stdout hijacking,
 followed logs, archive transfer, image save, IPv6 network, and resource-update

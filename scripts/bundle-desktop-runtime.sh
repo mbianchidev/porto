@@ -183,7 +183,10 @@ if [ "$docker_bundled" = "true" ]; then
 fi
 
 if [ "$goos" != "windows" ]; then
+  CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
+    go build -trimpath -ldflags '-s -w' -o "$destination/bin/porto-runtime-helper" ./cmd/porto-runtime-helper
   chmod 0755 "$destination/bin/kubectl"
+  chmod 0755 "$destination/bin/porto-runtime-helper"
   [ "$docker_bundled" = "true" ] && chmod 0755 "$destination/bin/docker"
   [ "$kind_bundled" = "true" ] && chmod 0755 "$destination/bin/kind"
   chmod 0755 "$destination/bin/k9s"
@@ -196,6 +199,7 @@ docker $([ "$docker_bundled" = "true" ] && printf '%s' "$docker_version" || prin
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_version}
+porto-runtime-helper $([ "$goos" != "windows" ] && printf '%s' "1" || printf 'not available for %s/%s' "$goos" "$goarch")
 EOF
 
 node "$(dirname "$0")/desktop-runtime-symlinks.cjs" --validate "$destination"

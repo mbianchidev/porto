@@ -85,6 +85,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("DELETE /containers/{id}", a.deleteContainer)
 	a.mux.HandleFunc("POST /exec/{id}/start", a.startExec)
 	a.mux.HandleFunc("GET /exec/{id}/json", a.inspectExec)
+	a.mux.HandleFunc("POST /exec/{id}/resize", a.resizeExec)
 
 	a.mux.HandleFunc("GET /images/json", a.images)
 	a.mux.HandleFunc("GET /images/get", a.getImages)
@@ -577,7 +578,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	var healthcheck *ContainerHealthcheck
-	warnings := make([]string, 0)
 	if request.Healthcheck != nil {
 		healthcheck = &ContainerHealthcheck{
 			Test:          request.Healthcheck.Test,
@@ -586,9 +586,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 			StartPeriod:   time.Duration(request.Healthcheck.StartPeriod),
 			StartInterval: time.Duration(request.Healthcheck.StartInterval),
 			Retries:       request.Healthcheck.Retries,
-		}
-		if len(request.Healthcheck.Test) > 0 && request.Healthcheck.Test[0] == "CMD" {
-			warnings = append(warnings, "Porto's nerdctl backend executes CMD healthchecks through the container shell")
 		}
 	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
@@ -626,7 +623,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": warnings})
+	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": []string{}})
 }
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
@@ -848,7 +845,15 @@ func (a *API) checkpointContainer(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) restoreContainer(w http.ResponseWriter, r *http.Request) {
-	writeDockerUnsupported(w, "container restore")
+	if err := a.manager.RestoreContainer(
+		r.Context(),
+		r.PathValue("id"),
+		r.URL.Query().Get("checkpoint"),
+	); err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (a *API) images(w http.ResponseWriter, r *http.Request) {

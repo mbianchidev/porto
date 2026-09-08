@@ -144,6 +144,8 @@ export type DockerContainer = {
   oomKilled: boolean
   restartPolicy?: string
   restartCount: number
+  lastRestartReason?: string
+  lastRestartAt?: string
   health: DockerContainerHealth
   resources: DockerContainerResources
   networkDetails?: DockerContainerNetworkState[]
@@ -177,6 +179,11 @@ export type DockerContainerResources = {
 
 export type DockerContainerNetworkState = {
   name: string
+  interface?: string
+  mac?: string
+  ipAddress?: string
+  gateway?: string
+  aliases?: string[]
   hostIp?: string
   hostPort?: number
   containerPort?: number
@@ -224,6 +231,11 @@ export type DockerContainerSnapshot = {
   capabilities: {
     directInventory: DockerRuntimeCapability
     lifecycleEvents: DockerRuntimeCapability
+    directCreation: DockerRuntimeCapability
+    taskRecreation: DockerRuntimeCapability
+    execLifecycle: DockerRuntimeCapability
+    healthUpdates: DockerRuntimeCapability
+    networkUpdates: DockerRuntimeCapability
     checkpointRestore: DockerRuntimeCapability
   }
 }

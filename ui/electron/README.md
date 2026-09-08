@@ -64,4 +64,7 @@ the daemon executable embedded in their resources; they never require
 
 `scripts/bundle-desktop-runtime.sh` creates the runtime directory used by
 releases. Packaged apps resolve the bundled binary and tools from Porto's
-resources directory before falling back to `PORTO_BINARY` or `PATH`.
+resources directory before falling back to `PORTO_BINARY` or `PATH`. Non-Windows
+packages also contain a statically linked Linux `porto-runtime-helper`; Porto
+installs it only inside the Porto-owned Lima instance and uses it for guest-local
+CNI operations and runtime capability probes.

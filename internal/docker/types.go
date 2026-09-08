@@ -28,42 +28,44 @@ type Status struct {
 }
 
 type Container struct {
-	ID               string                    `json:"id"`
-	Name             string                    `json:"name"`
-	Image            string                    `json:"image"`
-	ImageID          string                    `json:"imageId,omitempty"`
-	Command          string                    `json:"command,omitempty"`
-	State            string                    `json:"state"`
-	Status           string                    `json:"status"`
-	Ports            string                    `json:"ports"`
-	Networks         string                    `json:"networks"`
-	Mounts           string                    `json:"mounts"`
-	CreatedAt        string                    `json:"createdAt"`
-	Labels           map[string]string         `json:"labels,omitempty"`
-	ComposeProject   string                    `json:"composeProject,omitempty"`
-	ComposeService   string                    `json:"composeService,omitempty"`
-	TaskPresent      bool                      `json:"taskPresent"`
-	PID              uint32                    `json:"pid,omitempty"`
-	ExitCode         *uint32                   `json:"exitCode,omitempty"`
-	ExitSignal       *uint32                   `json:"exitSignal,omitempty"`
-	ExitAt           string                    `json:"exitAt,omitempty"`
-	ExitReason       string                    `json:"exitReason,omitempty"`
-	OOMKilled        bool                      `json:"oomKilled"`
-	RestartPolicy    string                    `json:"restartPolicy,omitempty"`
-	RestartCount     int                       `json:"restartCount"`
-	Health           ContainerHealth           `json:"health"`
-	Healthcheck      *ContainerHealthcheck     `json:"healthcheck,omitempty"`
-	Resources        ContainerResources        `json:"resources"`
-	NetworkDetails   []ContainerNetworkState   `json:"networkDetails,omitempty"`
-	MountDetails     []ContainerMount          `json:"mountDetails,omitempty"`
-	Annotations      map[string]string         `json:"annotations,omitempty"`
-	StopSignal       string                    `json:"stopSignal,omitempty"`
-	StopTimeout      int                       `json:"stopTimeout,omitempty"`
-	UpdatedAt        string                    `json:"updatedAt,omitempty"`
-	LastTransition   string                    `json:"lastTransition,omitempty"`
-	LastTransitionAt string                    `json:"lastTransitionAt,omitempty"`
-	History          []ContainerLifecycleEvent `json:"history,omitempty"`
-	InventoryError   string                    `json:"inventoryError,omitempty"`
+	ID                string                    `json:"id"`
+	Name              string                    `json:"name"`
+	Image             string                    `json:"image"`
+	ImageID           string                    `json:"imageId,omitempty"`
+	Command           string                    `json:"command,omitempty"`
+	State             string                    `json:"state"`
+	Status            string                    `json:"status"`
+	Ports             string                    `json:"ports"`
+	Networks          string                    `json:"networks"`
+	Mounts            string                    `json:"mounts"`
+	CreatedAt         string                    `json:"createdAt"`
+	Labels            map[string]string         `json:"labels,omitempty"`
+	ComposeProject    string                    `json:"composeProject,omitempty"`
+	ComposeService    string                    `json:"composeService,omitempty"`
+	TaskPresent       bool                      `json:"taskPresent"`
+	PID               uint32                    `json:"pid,omitempty"`
+	ExitCode          *uint32                   `json:"exitCode,omitempty"`
+	ExitSignal        *uint32                   `json:"exitSignal,omitempty"`
+	ExitAt            string                    `json:"exitAt,omitempty"`
+	ExitReason        string                    `json:"exitReason,omitempty"`
+	OOMKilled         bool                      `json:"oomKilled"`
+	RestartPolicy     string                    `json:"restartPolicy,omitempty"`
+	RestartCount      int                       `json:"restartCount"`
+	LastRestartReason string                    `json:"lastRestartReason,omitempty"`
+	LastRestartAt     string                    `json:"lastRestartAt,omitempty"`
+	Health            ContainerHealth           `json:"health"`
+	Healthcheck       *ContainerHealthcheck     `json:"healthcheck,omitempty"`
+	Resources         ContainerResources        `json:"resources"`
+	NetworkDetails    []ContainerNetworkState   `json:"networkDetails,omitempty"`
+	MountDetails      []ContainerMount          `json:"mountDetails,omitempty"`
+	Annotations       map[string]string         `json:"annotations,omitempty"`
+	StopSignal        string                    `json:"stopSignal,omitempty"`
+	StopTimeout       int                       `json:"stopTimeout,omitempty"`
+	UpdatedAt         string                    `json:"updatedAt,omitempty"`
+	LastTransition    string                    `json:"lastTransition,omitempty"`
+	LastTransitionAt  string                    `json:"lastTransitionAt,omitempty"`
+	History           []ContainerLifecycleEvent `json:"history,omitempty"`
+	InventoryError    string                    `json:"inventoryError,omitempty"`
 }
 
 type ContainerHealth struct {
@@ -84,11 +86,16 @@ type ContainerResources struct {
 }
 
 type ContainerNetworkState struct {
-	Name          string `json:"name"`
-	HostIP        string `json:"hostIp,omitempty"`
-	HostPort      int32  `json:"hostPort,omitempty"`
-	ContainerPort int32  `json:"containerPort,omitempty"`
-	Protocol      string `json:"protocol,omitempty"`
+	Name          string   `json:"name"`
+	Interface     string   `json:"interface,omitempty"`
+	MAC           string   `json:"mac,omitempty"`
+	IPAddress     string   `json:"ipAddress,omitempty"`
+	Gateway       string   `json:"gateway,omitempty"`
+	Aliases       []string `json:"aliases,omitempty"`
+	HostIP        string   `json:"hostIp,omitempty"`
+	HostPort      int32    `json:"hostPort,omitempty"`
+	ContainerPort int32    `json:"containerPort,omitempty"`
+	Protocol      string   `json:"protocol,omitempty"`
 }
 
 type ContainerMount struct {
@@ -119,6 +126,7 @@ type RuntimeCapability struct {
 type ContainerCapabilities struct {
 	DirectInventory   RuntimeCapability `json:"directInventory"`
 	LifecycleEvents   RuntimeCapability `json:"lifecycleEvents"`
+	DirectCreation    RuntimeCapability `json:"directCreation"`
 	TaskRecreation    RuntimeCapability `json:"taskRecreation"`
 	ExecLifecycle     RuntimeCapability `json:"execLifecycle"`
 	HealthUpdates     RuntimeCapability `json:"healthUpdates"`
@@ -277,6 +285,7 @@ type ContainerUpdate struct {
 	Memory      int64
 	MemorySwap  int64
 	NanoCPUs    int64
+	Restart     string
 	Healthcheck *ContainerHealthcheck
 }
 

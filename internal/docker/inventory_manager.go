@@ -25,9 +25,17 @@ func (m *Manager) StartContainerInventory(ctx context.Context) error {
 	m.inventory = inventory
 	m.inventoryCancel = cancel
 	m.inventoryDone = done
+	healthDone := make(chan struct{})
+	healthContext, healthCancel := context.WithCancel(inventoryContext)
+	m.healthCancel = healthCancel
+	m.healthDone = healthDone
 	go func() {
 		defer close(done)
 		inventory.run(inventoryContext)
+	}()
+	go func() {
+		defer close(healthDone)
+		m.runHealthScheduler(healthContext)
 	}()
 	return nil
 }
@@ -37,15 +45,29 @@ func (m *Manager) StopContainerInventory(ctx context.Context) error {
 	cancel := m.inventoryCancel
 	done := m.inventoryDone
 	inventory := m.inventory
+	healthCancel := m.healthCancel
+	healthDone := m.healthDone
 	m.inventoryCancel = nil
 	m.inventoryDone = nil
+	m.healthCancel = nil
+	m.healthDone = nil
 	m.inventoryMu.Unlock()
 	if cancel == nil {
 		return nil
 	}
 	cancel()
+	if healthCancel != nil {
+		healthCancel()
+	}
 	select {
 	case <-done:
+		if healthDone != nil {
+			select {
+			case <-healthDone:
+			case <-ctx.Done():
+				return context.Cause(ctx)
+			}
+		}
 		m.inventoryMu.Lock()
 		if m.inventory == inventory {
 			m.inventory = nil
