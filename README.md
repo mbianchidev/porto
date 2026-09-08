@@ -1,19 +1,21 @@
-# Porto - Self-hosted App Orchestrator
+# Porto - Docker Desktop but better
 
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
 
-Porto is an open-source desktop and web control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
+Porto is an open-source desktop (and optionally web) control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
 
-![Porto dashboard showing discovered projects and runtime controls](https://github.com/user-attachments/assets/d7554461-5ae0-40b2-9bab-2e780007c886)
+It's a drop-in (as long as you use the porto cli) replacement for Docker Desktop (for any OS) and/or Orbstack (if you are on MacOS).
+
+![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/30783f51-f44e-48fa-b91a-5e57ca222130)
 
 ## Why Porto
 
-- **One place for every project.** Scan roots once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
+- **One place for every project.** Scan your workspace(s) root once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
 - **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
-- **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster>`.
+- **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster-name>`.
 - **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
