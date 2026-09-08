@@ -31,6 +31,9 @@ func (m *Manager) StartExec(ctx context.Context, request ExecRequest) (runtimes.
 	if len(request.Command) == 0 || strings.TrimSpace(request.Command[0]) == "" {
 		return nil, errors.New("exec command is required")
 	}
+	if process, handled, err := m.startExecDirect(ctx, request); handled {
+		return process, err
+	}
 	args := []string{"exec"}
 	if request.Privileged {
 		args = append(args, "--privileged")

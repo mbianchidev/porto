@@ -60,6 +60,14 @@ func (m *Manager) ConnectNetwork(ctx context.Context, network, container string,
 		}
 		args = append(args, "--alias", alias)
 	}
+	if handled, err := m.withNetworkOperations(ctx, func(operations networkOperations) error {
+		return operations.Connect(ctx, network, container, aliases)
+	}); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
+	}
 	args = append(args, network, container)
 	_, err := m.run(ctx, "connect Porto container network", args...)
 	if err == nil {
@@ -78,6 +86,14 @@ func (m *Manager) DisconnectNetwork(ctx context.Context, network, container stri
 	args := []string{"network", "disconnect"}
 	if force {
 		args = append(args, "--force")
+	}
+	if handled, err := m.withNetworkOperations(ctx, func(operations networkOperations) error {
+		return operations.Disconnect(ctx, network, container, force)
+	}); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
 	}
 	args = append(args, network, container)
 	_, err := m.run(ctx, "disconnect Porto container network", args...)

@@ -20,6 +20,7 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	eventsapi "github.com/containerd/containerd/api/services/events/v1"
 	namespacesapi "github.com/containerd/containerd/api/services/namespaces/v1"
+	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -72,6 +73,7 @@ type grpcContainerRuntime struct {
 	namespace  string
 	backend    string
 	containers containersapi.ContainersClient
+	snapshots  snapshotsapi.SnapshotsClient
 	tasks      tasksapi.TasksClient
 	events     eventsapi.EventsClient
 	enrich     func(context.Context) ([]Container, error)
@@ -155,6 +157,7 @@ func newGRPCContainerRuntime(
 		namespace:         namespace,
 		backend:           backend,
 		containers:        containersapi.NewContainersClient(connection),
+		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),
 		events:            eventsapi.NewEventsClient(connection),
 		enrich:            enrich,
@@ -407,12 +410,9 @@ func (r *grpcContainerRuntime) Snapshot(ctx context.Context) ([]Container, error
 	for _, process := range taskResponse.GetTasks() {
 		taskByContainer[process.GetContainerID()] = process
 	}
-	enrichment, enrichmentErr := r.compatibilityMetadata(ctx, records)
 	containers := make([]Container, 0, len(records))
 	for _, record := range records {
 		mapped := containerFromContainerd(record, taskByContainer[record.GetID()])
-		mergeContainerCompatibilityMetadata(&mapped, enrichment[record.GetID()])
-		mapped.InventoryError = combineInventoryError(mapped.InventoryError, enrichmentErr)
 		containers = append(containers, mapped)
 	}
 	return containers, nil
@@ -775,7 +775,17 @@ func mapContainerNetworks(container *Container, labels map[string]string) error 
 }
 
 func mapContainerHealth(container *Container, labels map[string]string) error {
-	if labels[nerdctlHealthcheckLabel] == "" {
+	encodedCheck := labels[nerdctlHealthcheckLabel]
+	if encodedCheck == "" {
+		container.Health.Status = "disabled"
+		return nil
+	}
+	var healthcheck ContainerHealthcheck
+	if err := json.Unmarshal([]byte(encodedCheck), &healthcheck); err != nil {
+		return fmt.Errorf("decode container healthcheck: %w", err)
+	}
+	container.Healthcheck = &healthcheck
+	if len(healthcheck.Test) == 0 || healthcheck.Test[0] == "" || healthcheck.Test[0] == "NONE" {
 		container.Health.Status = "disabled"
 		return nil
 	}
@@ -791,9 +801,15 @@ func mapContainerHealth(container *Container, labels map[string]string) error {
 	if err := json.Unmarshal([]byte(encoded), &state); err != nil {
 		return fmt.Errorf("decode container health state: %w", err)
 	}
-	container.Health.Status = firstNonEmpty(state.Status, "starting")
+	switch state.Status {
+	case "", "starting", "healthy", "unhealthy":
+		container.Health.Status = firstNonEmpty(state.Status, "starting")
+	case "none":
+		container.Health.Status = "disabled"
+	default:
+		return fmt.Errorf("decode container health state: unsupported status %q", state.Status)
+	}
 	container.Health.FailingStreak = state.FailingStreak
-	container.Health.UpdatedAt = container.UpdatedAt
 	return nil
 }
 

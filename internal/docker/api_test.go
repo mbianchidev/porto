@@ -117,31 +117,23 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	}
 }
 
-func TestInspectContainerRefreshesDueHealthcheck(t *testing.T) {
-	healthChecked := false
-	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
-	runner.handler = func(command runtimes.Command) ([]byte, error) {
-		switch strings.Join(command.Args, " ") {
-		case "container inspect demo":
-			health := ""
-			if healthChecked {
-				health = `,"Health":{"Status":"healthy","FailingStreak":0,"Log":[{"End":"2026-09-01T12:00:00Z","ExitCode":0,"Output":""}]}`
-			}
-			return []byte(`[{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true` + health + `}}]`), nil
-		case "healthcheck demo":
-			healthChecked = true
-			return nil, nil
-		default:
-			return nil, fmt.Errorf("unexpected command: %+v", command)
-		}
+func TestInspectContainerDoesNotPollOrMutateHealth(t *testing.T) {
+	document := []byte(`{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true,"Health":{"Status":"starting","FailingStreak":0}}}`)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{"nerdctl container inspect demo": append(append([]byte{'['}, document...), ']')},
+		errors:  map[string]error{},
 	}
 
-	document, err := New(runner).InspectContainer(context.Background(), "demo")
+	inspected, err := New(runner).InspectContainer(context.Background(), "demo")
 	if err != nil {
 		t.Fatalf("InspectContainer: %v", err)
 	}
-	if !healthChecked || !strings.Contains(string(document), `"Status":"healthy"`) {
-		t.Fatalf("healthcheck was not refreshed: checked=%t document=%s", healthChecked, document)
+	if !bytes.Equal(inspected, document) {
+		t.Fatalf("inspect document = %s, want %s", inspected, document)
+	}
+	if len(runner.commands) != 1 ||
+		!reflect.DeepEqual(runner.commands[0].Args, []string{"container", "inspect", "demo"}) {
+		t.Fatalf("inspect spawned health polling commands: %+v", runner.commands)
 	}
 }
 
@@ -233,6 +225,35 @@ func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/events", nil))
 	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "does not support") {
 		t.Fatalf("unsupported = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPICheckpointAndRestoreReturnTypedUnsupportedErrors(t *testing.T) {
+	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
+	for _, path := range []string{
+		"/v1.47/containers/demo/checkpoint",
+		"/v1.47/containers/demo/restore",
+	} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
+		if response.Code != http.StatusNotImplemented ||
+			!strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
+			t.Fatalf("%s = %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDockerAPICheckpointUsesDirectContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	handler := NewAPI(managerWithContainerOperations(operations), "/tmp/porto.sock")
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(
+		http.MethodPost,
+		"/v1.47/containers/demo/checkpoint?checkpoint=parent",
+		nil,
+	))
+	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "checkpoint") {
+		t.Fatalf("checkpoint response = %d: %s", response.Code, response.Body.String())
 	}
 }
 

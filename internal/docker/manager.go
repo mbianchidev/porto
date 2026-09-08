@@ -30,25 +30,30 @@ const (
 )
 
 var (
-	ErrUnavailable = errors.New("Porto container runtime is unavailable")
-	ErrUnsupported = errors.New("Docker operation is not supported by Porto")
+	ErrUnavailable            = errors.New("Porto container runtime is unavailable")
+	ErrUnsupported            = errors.New("Docker operation is not supported by Porto")
+	ErrNotFound               = errors.New("Docker object was not found")
+	ErrConflict               = errors.New("Docker operation conflicts with the current object state")
+	ErrTaskRecreationRequired = errors.New("container task recreation is required")
 )
 
 type Manager struct {
-	runner           runtimes.Runner
-	timeout          time.Duration
-	stateDir         string
-	lookPath         func(string) (string, error)
-	goos             string
-	directCLI        bool
-	dialBuildKit     func(context.Context) (net.Conn, error)
-	installMu        sync.Mutex
-	healthMu         sync.Mutex
-	inventoryMu      sync.Mutex
-	inventory        *containerInventory
-	inventoryCancel  context.CancelFunc
-	inventoryDone    chan struct{}
-	runtimeConnector containerRuntimeConnector
+	runner              runtimes.Runner
+	timeout             time.Duration
+	stateDir            string
+	lookPath            func(string) (string, error)
+	goos                string
+	directCLI           bool
+	dialBuildKit        func(context.Context) (net.Conn, error)
+	installMu           sync.Mutex
+	inventoryMu         sync.Mutex
+	inventory           *containerInventory
+	inventoryCancel     context.CancelFunc
+	inventoryDone       chan struct{}
+	runtimeConnector    containerRuntimeConnector
+	operationsConnector containerOperationsConnector
+	execConnector       execOperationsConnector
+	networkConnector    networkOperationsConnector
 }
 
 type engineState struct {
@@ -86,6 +91,9 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		goos:     runtime.GOOS,
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
+	manager.operationsConnector = manager.connectContainerOperations
+	manager.execConnector = manager.connectExecOperations
+	manager.networkConnector = manager.connectNetworkOperations
 	return manager
 }
 
@@ -591,37 +599,17 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 	if healthcheck == nil {
 		return args, nil
 	}
-	if healthcheck.StartInterval != 0 {
-		return nil, fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
-	}
-	for name, value := range map[string]time.Duration{
-		"interval":     healthcheck.Interval,
-		"timeout":      healthcheck.Timeout,
-		"start period": healthcheck.StartPeriod,
-	} {
-		if value < 0 {
-			return nil, fmt.Errorf("healthcheck %s cannot be negative", name)
-		}
-	}
-	if healthcheck.Retries < 0 {
-		return nil, errors.New("healthcheck retries cannot be negative")
+	if err := validateHealthcheck(healthcheck); err != nil {
+		return nil, err
 	}
 	if len(healthcheck.Test) > 0 {
 		switch healthcheck.Test[0] {
 		case "NONE":
 			return append(args, "--no-healthcheck"), nil
 		case "CMD":
-			if len(healthcheck.Test) < 2 {
-				return nil, errors.New("healthcheck CMD requires a command")
-			}
 			args = append(args, "--health-cmd", shellJoin(healthcheck.Test[1:]))
 		case "CMD-SHELL":
-			if len(healthcheck.Test) < 2 {
-				return nil, errors.New("healthcheck CMD-SHELL requires a command")
-			}
 			args = append(args, "--health-cmd", strings.Join(healthcheck.Test[1:], " "))
-		default:
-			return nil, fmt.Errorf("%w: healthcheck test type %q", ErrUnsupported, healthcheck.Test[0])
 		}
 	}
 	if healthcheck.Interval > 0 {
@@ -637,6 +625,40 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 		args = append(args, "--health-retries", strconv.Itoa(healthcheck.Retries))
 	}
 	return args, nil
+}
+
+func validateHealthcheck(healthcheck *ContainerHealthcheck) error {
+	if healthcheck.StartInterval != 0 {
+		return fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
+	}
+	for name, value := range map[string]time.Duration{
+		"interval":     healthcheck.Interval,
+		"timeout":      healthcheck.Timeout,
+		"start period": healthcheck.StartPeriod,
+	} {
+		if value < 0 {
+			return fmt.Errorf("healthcheck %s cannot be negative", name)
+		}
+	}
+	if healthcheck.Retries < 0 {
+		return errors.New("healthcheck retries cannot be negative")
+	}
+	if len(healthcheck.Test) > 0 {
+		switch healthcheck.Test[0] {
+		case "NONE":
+		case "CMD":
+			if len(healthcheck.Test) < 2 {
+				return errors.New("healthcheck CMD requires a command")
+			}
+		case "CMD-SHELL":
+			if len(healthcheck.Test) < 2 {
+				return errors.New("healthcheck CMD-SHELL requires a command")
+			}
+		default:
+			return fmt.Errorf("%w: healthcheck test type %q", ErrUnsupported, healthcheck.Test[0])
+		}
+	}
+	return nil
 }
 
 func shellJoin(command []string) string {
@@ -730,6 +752,13 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
+	if handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
+	}
 	if action == "start" {
 		paused, err := m.containerPaused(ctx, id)
 		if err != nil {
@@ -769,6 +798,84 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	_, err := m.run(ctx, action+" Porto container", args...)
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
+	if err != nil && action == "restart" && fallbackReason != nil {
+		return errors.Join(
+			fmt.Errorf("direct container restart was unavailable: %w", fallbackReason),
+			err,
+		)
+	}
+	return err
+}
+
+func (m *Manager) directContainerAction(
+	ctx context.Context,
+	id,
+	action string,
+	timeout int,
+) (bool, error, error) {
+	return m.attemptContainerOperation(ctx, func(operations containerOperations) error {
+		switch action {
+		case "start":
+			return operations.Start(ctx, id)
+		case "stop":
+			return operations.Stop(ctx, id, timeout)
+		case "restart":
+			return operations.Restart(ctx, id, timeout)
+		case "pause":
+			return operations.Pause(ctx, id)
+		case "unpause":
+			return operations.Resume(ctx, id)
+		case "remove":
+			return operations.Delete(ctx, id, false, false)
+		case "remove-force":
+			return operations.Delete(ctx, id, true, false)
+		case "remove-volumes":
+			return operations.Delete(ctx, id, false, true)
+		case "remove-force-volumes":
+			return operations.Delete(ctx, id, true, true)
+		default:
+			return ErrUnsupported
+		}
+	})
+}
+
+func (m *Manager) CheckpointContainer(ctx context.Context, id, parent string) ([]string, error) {
+	if err := validateObjectID(id); err != nil {
+		return nil, err
+	}
+	var descriptors []string
+	if handled, directErr, fallbackReason := m.attemptContainerOperation(ctx, func(operations containerOperations) error {
+		var err error
+		descriptors, err = operations.Checkpoint(ctx, id, parent)
+		return err
+	}); handled {
+		return descriptors, directErr
+	} else if fallbackReason != nil {
+		return nil, fallbackReason
+	}
+	return nil, fmt.Errorf("%w: container checkpoint", ErrUnsupported)
+}
+
+func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {
+	if err := validateObjectID(id); err != nil {
+		return err
+	}
+	signalNumber, err := parseContainerSignal(signal)
+	if err != nil {
+		return err
+	}
+	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.Kill(ctx, id, signalNumber)
+	}); handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
+	}
+	_, err = m.run(ctx, "kill Porto container", "kill", "--signal", strconv.FormatUint(uint64(signalNumber), 10), id)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -887,6 +994,14 @@ func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
 	if err := validateObjectID(name); err != nil {
 		return err
 	}
+	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.Rename(ctx, id, name)
+	}); handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
+	}
 	_, err := m.run(ctx, "rename Porto container", "rename", id, name)
 	if err == nil {
 		m.invalidateContainerInventory()
@@ -905,6 +1020,11 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	defer cancel()
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		return inventory.wait(waitContext, id, condition)
+	}
+	if condition == "" || condition == "not-running" {
+		if handled, code, directErr := m.waitContainerDirect(waitContext, id); handled {
+			return code, directErr
+		}
 	}
 	if condition == "removed" {
 		return m.waitForContainerRemoval(waitContext, id)
@@ -928,6 +1048,23 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 		return 0, fmt.Errorf("decode container exit code: %w", err)
 	}
 	return code, nil
+}
+
+func (m *Manager) waitContainerDirect(ctx context.Context, id string) (bool, int, error) {
+	connector := m.operationsConnector
+	if connector == nil {
+		return false, 0, nil
+	}
+	operations, err := connector(ctx)
+	if err != nil {
+		return false, 0, nil
+	}
+	code, waitErr := operations.Wait(ctx, id)
+	closeErr := operations.Close()
+	if errors.Is(waitErr, ErrUnsupported) {
+		return false, 0, nil
+	}
+	return true, code, errors.Join(waitErr, closeErr)
 }
 
 func (m *Manager) waitForContainerRemoval(ctx context.Context, id string) (int, error) {
@@ -1024,76 +1161,7 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
-	document, err := m.inspect(ctx, "container", id)
-	if err != nil {
-		return nil, err
-	}
-	due, timeout, err := healthcheckDue(document, time.Now())
-	if err != nil {
-		return nil, err
-	}
-	if !due {
-		return document, nil
-	}
-	m.healthMu.Lock()
-	defer m.healthMu.Unlock()
-	document, err = m.inspect(ctx, "container", id)
-	if err != nil {
-		return nil, err
-	}
-	due, timeout, err = healthcheckDue(document, time.Now())
-	if err != nil || !due {
-		return document, err
-	}
-	if _, err := m.runWithTimeout(ctx, timeout+5*time.Second, "refresh Porto container health", nil, "healthcheck", id); err != nil {
-		return nil, err
-	}
 	return m.inspect(ctx, "container", id)
-}
-
-func healthcheckDue(document json.RawMessage, now time.Time) (bool, time.Duration, error) {
-	var inspected struct {
-		Config struct {
-			Healthcheck *struct {
-				Test     []string `json:"Test"`
-				Interval int64    `json:"Interval"`
-				Timeout  int64    `json:"Timeout"`
-			} `json:"Healthcheck"`
-		} `json:"Config"`
-		State struct {
-			Running bool `json:"Running"`
-			Health  *struct {
-				Log []struct {
-					End time.Time `json:"End"`
-				} `json:"Log"`
-			} `json:"Health"`
-		} `json:"State"`
-	}
-	if err := json.Unmarshal(document, &inspected); err != nil {
-		return false, 0, fmt.Errorf("decode container health settings: %w", err)
-	}
-	healthcheck := inspected.Config.Healthcheck
-	if !inspected.State.Running || healthcheck == nil || len(healthcheck.Test) == 0 || healthcheck.Test[0] == "NONE" {
-		return false, 0, nil
-	}
-	timeout := time.Duration(healthcheck.Timeout)
-	if timeout <= 0 {
-		timeout = 30 * time.Second
-	}
-	if inspected.State.Health == nil || len(inspected.State.Health.Log) == 0 {
-		return true, timeout, nil
-	}
-	interval := time.Duration(healthcheck.Interval)
-	if interval <= 0 {
-		interval = 30 * time.Second
-	}
-	var lastCheck time.Time
-	for _, result := range inspected.State.Health.Log {
-		if result.End.After(lastCheck) {
-			lastCheck = result.End
-		}
-	}
-	return lastCheck.IsZero() || !now.Before(lastCheck.Add(interval)), timeout, nil
 }
 
 func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {

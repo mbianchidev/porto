@@ -122,6 +122,73 @@ func TestContainerInventorySubscribesBeforeSnapshotAndRefreshesOnEvent(t *testin
 	}
 }
 
+func TestContainerInventoryRecordsHealthTransitionFromMetadataEvent(t *testing.T) {
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{
+			ID:     "one",
+			Name:   "api",
+			State:  "running",
+			Health: ContainerHealth{Status: "starting"},
+		}},
+		[]Container{{
+			ID:     "one",
+			Name:   "api",
+			State:  "running",
+			Health: ContainerHealth{Status: "healthy"},
+		}},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	initial := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	eventAt := time.Date(2026, 9, 7, 16, 30, 0, 0, time.UTC)
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/containers/update",
+		Type:        "container-update",
+		ContainerID: "one",
+		Timestamp:   eventAt,
+		Reason:      "metadata-updated",
+	}
+	updated := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Revision > initial.Revision &&
+			snapshot.Containers[0].Health.Status == "healthy"
+	})
+	if updated.Containers[0].Health.UpdatedAt != eventAt.Format(time.RFC3339Nano) {
+		t.Fatalf("health transition timestamp = %q, want %q",
+			updated.Containers[0].Health.UpdatedAt,
+			eventAt.Format(time.RFC3339Nano),
+		)
+	}
+	found := false
+	for _, event := range updated.Containers[0].History {
+		if event.Type == "health-transition" {
+			found = event.Reason == "starting->healthy" && event.Timestamp.Equal(eventAt)
+		}
+	}
+	if !found {
+		t.Fatalf("health transition was not derived from metadata event: %+v", updated.Containers[0].History)
+	}
+}
+
 func TestContainerInventoryCoalescesDuplicateEvents(t *testing.T) {
 	runtimeClient := newFakeContainerRuntime(
 		[]Container{{ID: "one", Name: "api", State: "running"}},
@@ -171,6 +238,60 @@ func TestContainerInventoryCoalescesDuplicateEvents(t *testing.T) {
 	}
 	if updated.Containers[0].ExitSignal == nil || *updated.Containers[0].ExitSignal != 9 {
 		t.Fatalf("unexpected exit signal: %+v", updated.Containers[0].ExitSignal)
+	}
+}
+
+func TestContainerInventoryKeepsDistinctEventsWithSameTimestamp(t *testing.T) {
+	runtimeClient := newFakeContainerRuntime(
+		[]Container{{ID: "one", Name: "api", State: "running"}},
+	)
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return runtimeClient, nil },
+		inventoryOptions{
+			debounce:          5 * time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+
+	timestamp := time.Now().UTC()
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		Timestamp:   timestamp,
+		ExitCode:    uint32Pointer(137),
+		Reason:      "signal",
+	}
+	runtimeClient.events <- ContainerLifecycleEvent{
+		Topic:       "/tasks/exit",
+		Type:        "task-exit",
+		ContainerID: "one",
+		Timestamp:   timestamp,
+		ExitCode:    uint32Pointer(143),
+		Reason:      "signal",
+	}
+	updated := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return len(snapshot.Events) == 2
+	})
+	if updated.Events[0].ExitCode == nil || *updated.Events[0].ExitCode != 137 ||
+		updated.Events[1].ExitCode == nil || *updated.Events[1].ExitCode != 143 {
+		t.Fatalf("unexpected events: %+v", updated.Events)
 	}
 }
 

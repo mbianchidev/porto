@@ -64,6 +64,15 @@ shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 `limactl shell` processes. Container lifecycle events and inventory failures
 also flow into the desktop Activity log.
 
+Lifecycle actions use containerd task APIs. Starting or restarting a stopped
+container recreates its task from the stored OCI spec and snapshot mounts, then
+starts it directly; attached stream recreation remains on the compatibility
+path because containerd does not retain nerdctl's daemon-local FIFO setup.
+Container checkpoints use the containerd task checkpoint RPC and return the
+runtime's descriptor media types. Docker-compatible restore remains explicitly
+unsupported because containerd's generic task service does not provide the
+runtime-specific task and CRIU restoration inputs required by Docker's API.
+
 ## Install the Docker context
 
 Porto Desktop creates or updates the named context automatically. For CLI-only
@@ -107,7 +116,7 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Resource | Supported operations |
 | --- | --- |
 | System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove |
+| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, exec, archive copy, resource update, remove, checkpoint; restore returns a typed unsupported response |
 | Images | list, inspect, pull, save, remove |
 | Networks | list, create, inspect, connect, disconnect, remove |
 | Volumes | list, create, inspect, remove |
@@ -141,6 +150,11 @@ Container creation supports image, command, entrypoint, environment, labels, wor
 The nerdctl backend exposes a shell healthcheck command, so Docker `CMD`
 healthchecks are safely quoted and executed through the container shell; the
 create response includes a warning about that compatibility behavior.
+Porto observes health configuration and starting/healthy/unhealthy transitions
+from nerdctl's containerd labels and container metadata events. Inspect requests
+do not trigger health probes. Direct healthcheck updates return an explicit
+unsupported response because containerd cannot also manage nerdctl's scheduler
+and result log lifecycle.
 
 For example, run nginx with an explicit health check:
 
