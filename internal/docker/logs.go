@@ -25,6 +25,8 @@ type LogOptions struct {
 	Follow     bool
 }
 
+const allLogLines = -1
+
 func (m *Manager) ContainerLogs(ctx context.Context, id string, tail int) ([]byte, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
@@ -155,7 +157,7 @@ func (r *grpcContainerRuntime) StreamLogs(
 func parseLogTail(value string) (int, error) {
 	switch strings.TrimSpace(value) {
 	case "", "all":
-		return 0, nil
+		return allLogLines, nil
 	default:
 		tail, err := strconv.Atoi(value)
 		if err != nil || tail < 0 {
@@ -182,6 +184,8 @@ func (r *grpcContainerRuntime) streamLimaLog(
 	}
 	if tail > 0 {
 		args = append(args, "-n", strconv.Itoa(tail))
+	} else if tail == 0 {
+		args = append(args, "-n", "0")
 	} else {
 		args = append(args, "-n", "+1")
 	}
@@ -238,12 +242,15 @@ func streamLocalLog(
 }
 
 func logTailOffset(file *os.File, tail int) (int64, error) {
-	if tail == 0 {
+	if tail < 0 {
 		return 0, nil
 	}
 	info, err := file.Stat()
 	if err != nil {
 		return 0, fmt.Errorf("inspect direct container log: %w", err)
+	}
+	if tail == 0 {
+		return info.Size(), nil
 	}
 	position := info.Size()
 	buffer := make([]byte, 4096)

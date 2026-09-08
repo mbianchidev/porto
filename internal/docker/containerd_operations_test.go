@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -370,7 +371,7 @@ func TestContainerCapabilitiesReportDirectTaskRecreation(t *testing.T) {
 	capability := containerCapabilities().TaskRecreation
 	if !capability.Supported ||
 		!strings.Contains(capability.Reason, "OCI spec") ||
-		!strings.Contains(capability.Reason, "stream") {
+		!strings.Contains(capability.Reason, "legacy") {
 		t.Fatalf("task recreation capability = %+v", capability)
 	}
 }
@@ -508,7 +509,8 @@ func TestGRPCRuntimeCapabilitiesUseBackendHelperProbe(t *testing.T) {
 		helperPath: "/helper",
 	}
 	capabilities := runtimeClient.Capabilities(context.Background())
-	if !capabilities.DirectCreation.Supported ||
+	if (runtime.GOOS != "windows" && !capabilities.DirectCreation.Supported) ||
+		(runtime.GOOS == "windows" && capabilities.DirectCreation.Supported) ||
 		!capabilities.ExecLifecycle.Supported ||
 		!capabilities.HealthUpdates.Supported ||
 		!capabilities.NetworkUpdates.Supported ||
@@ -988,6 +990,7 @@ func (f *fakeTasksClient) Delete(
 type fakeContainersClient struct {
 	containersapi.ContainersClient
 	container      *containersapi.Container
+	listContainers []*containersapi.Container
 	calls          []string
 	updateRequest  *containersapi.UpdateContainerRequest
 	updateRequests []*containersapi.UpdateContainerRequest
@@ -1022,6 +1025,13 @@ func (f *fakeContainersClient) List(
 	_ ...grpc.CallOption,
 ) (*containersapi.ListContainersResponse, error) {
 	f.calls = append(f.calls, "list")
+	if len(f.listContainers) > 0 {
+		containers := make([]*containersapi.Container, 0, len(f.listContainers))
+		for _, container := range f.listContainers {
+			containers = append(containers, proto.Clone(container).(*containersapi.Container))
+		}
+		return &containersapi.ListContainersResponse{Containers: containers}, nil
+	}
 	if f.container == nil {
 		return &containersapi.ListContainersResponse{}, nil
 	}
@@ -1142,7 +1152,7 @@ func TestGRPCContainerOperationsRenamePreservesLabels(t *testing.T) {
 	if err := runtimeClient.Rename(context.Background(), "demo", "new-name"); err != nil {
 		t.Fatalf("rename container: %v", err)
 	}
-	if want := []string{"get demo", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "list", "update demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 	if got := containers.container.GetLabels(); !reflect.DeepEqual(got, map[string]string{
@@ -1353,7 +1363,7 @@ func TestGRPCContainerOperationsDeleteStoppedTaskBeforeMetadata(t *testing.T) {
 	if want := []string{"get demo", "delete demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }
@@ -1438,7 +1448,7 @@ func TestGRPCContainerOperationsDeleteMetadataWithoutTask(t *testing.T) {
 	if want := []string{"get demo"}; !reflect.DeepEqual(tasks.calls, want) {
 		t.Fatalf("task calls = %q, want %q", tasks.calls, want)
 	}
-	if want := []string{"get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
+	if want := []string{"get demo", "get demo", "get demo", "delete demo"}; !reflect.DeepEqual(containers.calls, want) {
 		t.Fatalf("container calls = %q, want %q", containers.calls, want)
 	}
 }

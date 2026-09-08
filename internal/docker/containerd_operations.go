@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -347,10 +348,13 @@ func (r *grpcContainerRuntime) Connect(
 		return err
 	}
 	containerID = record.GetID()
+	if slices.Contains(networks, directNetworkHost) {
+		return fmt.Errorf("%w: host-network containers cannot accept CNI endpoints", ErrUnsupported)
+	}
 	if slices.Contains(networks, network) {
 		return fmt.Errorf("%w: container %q is already connected to network %q", ErrConflict, containerID, network)
 	}
-	if process == nil || process.GetPid() == 0 {
+	if process == nil || !containerdTaskActive(process.GetStatus()) || process.GetPid() == 0 {
 		return fmt.Errorf("%w: container %q has no running network namespace", ErrConflict, containerID)
 	}
 	netns := fmt.Sprintf("/proc/%d/ns/net", process.GetPid())
@@ -537,6 +541,10 @@ func (r *grpcContainerRuntime) CleanupNetworks(ctx context.Context, containerID 
 	containerID = resolvedID
 	unlock := r.networkLocks.lock(containerID)
 	defer unlock()
+	return r.cleanupNetworksResolved(ctx, containerID)
+}
+
+func (r *grpcContainerRuntime) cleanupNetworksResolved(ctx context.Context, containerID string) error {
 	response, err := r.containers.Get(
 		withContainerdNamespace(ctx, r.namespace),
 		&containersapi.GetContainerRequest{ID: containerID},
@@ -775,12 +783,19 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 		return containerdOperationError("inspect task for", id, err)
 	}
 	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	resetHealth := false
+	var startedPID uint32
 	switch process.GetStatus() {
 	case tasktypes.Status_CREATED:
 		if err := r.setRestartDesired(ctx, id, true); err != nil {
 			return err
 		}
-		_, err = r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id})
+		var response *tasksapi.StartResponse
+		response, err = r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id})
+		if response != nil {
+			startedPID = response.GetPid()
+		}
+		resetHealth = true
 	case tasktypes.Status_PAUSED:
 		if err := r.setRestartDesired(ctx, id, true); err != nil {
 			return err
@@ -796,6 +811,11 @@ func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
 	if operationErr := containerdOperationError("start", id, err); operationErr != nil {
 		return errors.Join(operationErr, r.setRestartDesired(ctx, id, false))
 	}
+	if resetHealth {
+		if err := r.resetHealthState(ctx, id, startedPID); err != nil {
+			log.Printf("reset health state after starting container %s: %v", id, err)
+		}
+	}
 	return nil
 }
 
@@ -805,13 +825,18 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		return err
 	}
 	id = resolvedID
+	unlock := r.networkLocks.lock(id)
+	defer unlock()
 	process, err := r.getTask(ctx, id)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {
 			if err := r.requireContainer(ctx, id); err != nil {
 				return err
 			}
-			return r.setRestartDesired(ctx, id, false)
+			return errors.Join(
+				r.setRestartDesired(ctx, id, false),
+				r.cleanupNetworksResolved(ctx, id),
+			)
 		}
 		return containerdOperationError("inspect task for", id, err)
 	}
@@ -847,7 +872,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	)
 	cancel()
 	if waitErr == nil {
-		return r.CleanupNetworks(ctx, id)
+		return r.cleanupNetworksResolved(ctx, id)
 	}
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
@@ -865,7 +890,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if err := containerdOperationError("wait for force-stopped", id, err); err != nil {
 		return err
 	}
-	return r.CleanupNetworks(ctx, id)
+	return r.cleanupNetworksResolved(ctx, id)
 }
 
 func (r *grpcContainerRuntime) Kill(ctx context.Context, id string, signal uint32) error {
@@ -945,6 +970,9 @@ func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id stri
 	record := response.GetContainer()
 	if record == nil || record.GetSpec() == nil {
 		return taskRecreationUnsupportedError(id, "container metadata exists without a task and does not include an OCI spec")
+	}
+	if record.GetLabels()[portoManagedLabel] != portoRuntimeVersion {
+		return taskRecreationUnsupportedError(id, "container task I/O and networking are owned by the compatibility runtime")
 	}
 
 	var rootfs []*types.Mount
@@ -1035,7 +1063,8 @@ func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id stri
 			containerdOperationError("delete task after restart-policy failure for", id, deleteErr),
 		)
 	}
-	if _, err = r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id}); err != nil {
+	startResponse, err := r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id})
+	if err != nil {
 		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), record, networkNetNS)
 		_, deleteErr := r.tasks.Delete(namespacedContext, &tasksapi.DeleteTaskRequest{ContainerID: id})
@@ -1045,6 +1074,9 @@ func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id stri
 			networkCleanupErr,
 			containerdOperationError("delete failed recreated task for", id, deleteErr),
 		)
+	}
+	if err := r.resetHealthState(ctx, id, startResponse.GetPid()); err != nil {
+		log.Printf("reset health state after recreating container %s: %v", id, err)
 	}
 	return nil
 }
@@ -1117,7 +1149,18 @@ func (r *grpcContainerRuntime) Wait(ctx context.Context, id string) (int, error)
 }
 
 func (r *grpcContainerRuntime) Rename(ctx context.Context, id, name string) error {
-	return r.UpdateLabels(ctx, id, map[string]string{nerdctlNameLabel: name})
+	resolvedID, err := r.resolveContainerID(ctx, id)
+	if err != nil {
+		return err
+	}
+	if r.containerNameMu != nil {
+		r.containerNameMu.Lock()
+		defer r.containerNameMu.Unlock()
+	}
+	if err := r.ensureContainerNameAvailable(ctx, name, resolvedID); err != nil {
+		return err
+	}
+	return r.updateLabelsResolved(ctx, resolvedID, map[string]string{nerdctlNameLabel: name})
 }
 
 func (r *grpcContainerRuntime) UpdateLabels(ctx context.Context, id string, updates map[string]string) error {
@@ -1223,6 +1266,39 @@ func (r *grpcContainerRuntime) setRestartDesired(ctx context.Context, id string,
 	return r.updateLabelsResolved(ctx, id, map[string]string{
 		restartStatusLabel:  statusValue,
 		restartStoppedLabel: strconv.FormatBool(!running),
+	})
+}
+
+func (r *grpcContainerRuntime) resetHealthState(ctx context.Context, id string, pid uint32) error {
+	response, err := r.containers.Get(
+		withContainerdNamespace(ctx, r.namespace),
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return containerdOperationError("inspect health generation for", id, err)
+	}
+	config := response.GetContainer().GetLabels()[nerdctlHealthcheckLabel]
+	if config == "" {
+		return nil
+	}
+	var healthcheck ContainerHealthcheck
+	if err := json.Unmarshal([]byte(config), &healthcheck); err != nil {
+		return fmt.Errorf("decode healthcheck for container %q: %w", id, err)
+	}
+	statusValue := "starting"
+	if !healthcheckEnabled(&healthcheck) {
+		statusValue = "none"
+	}
+	state, err := json.Marshal(containerHealthState{
+		Status: statusValue,
+		PID:    pid,
+		Config: config,
+	})
+	if err != nil {
+		return fmt.Errorf("encode reset health state for container %q: %w", id, err)
+	}
+	return r.updateLabelsResolved(ctx, id, map[string]string{
+		nerdctlHealthStateLabel: string(state),
 	})
 }
 
@@ -1406,6 +1482,13 @@ func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint strin
 	}
 	unlock := r.networkLocks.lock(id)
 	defer unlock()
+	if r.containerNameMu != nil {
+		r.containerNameMu.Lock()
+		defer r.containerNameMu.Unlock()
+	}
+	if err := r.ensureContainerNameAvailable(ctx, id, ""); err != nil {
+		return err
+	}
 	capability := r.Capabilities(ctx).CheckpointRestore
 	if !capability.Supported {
 		return fmt.Errorf("%w: container restore: %s", ErrUnsupported, capability.Reason)
@@ -1527,6 +1610,9 @@ func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint strin
 			deleteErr,
 		))
 	}
+	if err := r.resetHealthState(ctx, id, task.Pid()); err != nil {
+		log.Printf("reset health state after restoring container %s: %v", id, err)
+	}
 	return nil
 }
 
@@ -1608,6 +1694,9 @@ func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, vol
 		record.GetLabels()[nerdctlNetworksLabel] != "" ||
 		record.GetLabels()[nerdctlPortsLabel] != "") {
 		return fmt.Errorf("%w: direct removal cannot safely clean up container snapshots or networking", ErrUnsupported)
+	}
+	if err := r.setRestartDesired(ctx, id, false); err != nil {
+		return err
 	}
 
 	process, err := r.getTask(ctx, id)

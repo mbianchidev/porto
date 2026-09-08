@@ -67,7 +67,9 @@ shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 also flow into the desktop Activity log.
 
 Lifecycle actions use containerd task APIs. Starting or restarting a stopped
-container recreates its task from the stored OCI spec and snapshot mounts.
+Porto-owned container recreates its task from the stored OCI spec, snapshot
+mounts, network endpoints, and I/O metadata. Legacy containers whose task
+lifecycle is owned by the compatibility runtime remain on that path.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
 

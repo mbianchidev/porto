@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -35,26 +36,32 @@ type containerHealthState struct {
 	Status        string               `json:"Status"`
 	FailingStreak int                  `json:"FailingStreak"`
 	Log           []containerHealthLog `json:"Log,omitempty"`
+	PID           uint32               `json:"PID,omitempty"`
+	Config        string               `json:"Config,omitempty"`
 }
 
 type healthSchedule struct {
 	startedAt time.Time
 	nextRun   time.Time
 	running   bool
+	pid       uint32
+	config    string
 }
 
 type healthSchedulerState struct {
-	mu             sync.Mutex
-	schedules      map[string]*healthSchedule
-	networkNext    map[string]time.Time
-	networkRunning map[string]bool
+	mu                 sync.Mutex
+	schedules          map[string]*healthSchedule
+	networkNext        map[string]time.Time
+	networkRunning     map[string]bool
+	networkObservedPID map[string]uint32
 }
 
 func (m *Manager) runHealthScheduler(ctx context.Context) {
 	state := &healthSchedulerState{
-		schedules:      make(map[string]*healthSchedule),
-		networkNext:    make(map[string]time.Time),
-		networkRunning: make(map[string]bool),
+		schedules:          make(map[string]*healthSchedule),
+		networkNext:        make(map[string]time.Time),
+		networkRunning:     make(map[string]bool),
+		networkObservedPID: make(map[string]uint32),
 	}
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -86,13 +93,21 @@ func (m *Manager) scheduleHealthChecks(
 		active[container.ID] = struct{}{}
 		state.mu.Lock()
 		schedule := state.schedules[container.ID]
-		if schedule == nil {
+		config := container.Labels[nerdctlHealthcheckLabel]
+		if schedule == nil || schedule.pid != container.PID || schedule.config != config {
 			starting := container.Healthcheck.StartPeriod > 0
 			schedule = &healthSchedule{
 				startedAt: now,
 				nextRun:   now.Add(healthInterval(container.Healthcheck, starting)),
+				pid:       container.PID,
+				config:    config,
 			}
 			state.schedules[container.ID] = schedule
+			var persisted containerHealthState
+			_ = json.Unmarshal([]byte(container.Labels[nerdctlHealthStateLabel]), &persisted)
+			if persisted.PID != container.PID || persisted.Config != config {
+				go m.resetHealthGeneration(ctx, container.ID, container.PID, config)
+			}
 		}
 		if schedule.running || now.Before(schedule.nextRun) {
 			state.mu.Unlock()
@@ -110,6 +125,8 @@ func (m *Manager) scheduleHealthChecks(
 			healthcheck,
 			currentHealth,
 			startedAt,
+			container.PID,
+			config,
 		)
 	}
 	state.mu.Lock()
@@ -136,10 +153,14 @@ func (m *Manager) scheduleNetworkReconciliation(
 		active[container.ID] = struct{}{}
 		state.mu.Lock()
 		next := state.networkNext[container.ID]
-		persistedPID := uint32(parsePositiveInt(container.Labels[portoNetworkPIDLabel]))
+		previousPID, observed := state.networkObservedPID[container.ID]
+		if observed && previousPID != container.PID {
+			next = time.Time{}
+		}
+		state.networkObservedPID[container.ID] = container.PID
+		persistedPID := parseUint32Label(container.Labels[portoNetworkPIDLabel])
 		pidChanged := persistedPID != container.PID
-		if state.networkRunning[container.ID] ||
-			(!pidChanged && !next.IsZero() && now.Before(next)) {
+		if state.networkRunning[container.ID] || (!next.IsZero() && now.Before(next)) {
 			state.mu.Unlock()
 			continue
 		}
@@ -162,9 +183,18 @@ func (m *Manager) scheduleNetworkReconciliation(
 		if _, ok := active[id]; !ok {
 			delete(state.networkNext, id)
 			delete(state.networkRunning, id)
+			delete(state.networkObservedPID, id)
 		}
 	}
 	state.mu.Unlock()
+}
+
+func parseUint32Label(value string) uint32 {
+	parsed, err := strconv.ParseUint(strings.TrimSpace(value), 10, 32)
+	if err != nil {
+		return 0
+	}
+	return uint32(parsed)
 }
 
 type containerNetworkReconciler interface {
@@ -194,6 +224,8 @@ func (m *Manager) executeScheduledHealthCheck(
 	healthcheck *ContainerHealthcheck,
 	current ContainerHealth,
 	startedAt time.Time,
+	pid uint32,
+	config string,
 ) {
 	result := m.runHealthCheck(ctx, id, healthcheck)
 	now := time.Now()
@@ -208,14 +240,20 @@ func (m *Manager) executeScheduledHealthCheck(
 	if result == nil {
 		return
 	}
+	if !m.healthGenerationCurrent(id, pid, config) {
+		return
+	}
 	healthState := containerHealthState{
 		Status:        current.Status,
 		FailingStreak: current.FailingStreak,
 		Log:           []containerHealthLog{*result},
+		PID:           pid,
+		Config:        config,
 	}
 	if encoded := m.currentHealthState(id); encoded != "" {
 		var persisted containerHealthState
-		if err := json.Unmarshal([]byte(encoded), &persisted); err == nil {
+		if err := json.Unmarshal([]byte(encoded), &persisted); err == nil &&
+			persisted.PID == pid && persisted.Config == config {
 			healthState = persisted
 			healthState.Log = append(healthState.Log, *result)
 		}
@@ -252,6 +290,44 @@ func (m *Manager) executeScheduledHealthCheck(
 		return
 	}
 	m.invalidateContainerInventory()
+}
+
+func (m *Manager) resetHealthGeneration(ctx context.Context, id string, pid uint32, config string) {
+	if !m.healthGenerationCurrent(id, pid, config) {
+		return
+	}
+	state, err := json.Marshal(containerHealthState{
+		Status: "starting",
+		PID:    pid,
+		Config: config,
+	})
+	if err != nil {
+		log.Printf("encode reset health state for container %s: %v", id, err)
+		return
+	}
+	handled, updateErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.UpdateLabels(ctx, id, map[string]string{
+			nerdctlHealthStateLabel: string(state),
+		})
+	})
+	if !handled {
+		updateErr = fmt.Errorf("%w: direct health reset", ErrUnavailable)
+	}
+	if updateErr != nil && ctx.Err() == nil {
+		log.Printf("reset health state for container %s: %v", id, updateErr)
+		return
+	}
+	m.invalidateContainerInventory()
+}
+
+func (m *Manager) healthGenerationCurrent(id string, pid uint32, config string) bool {
+	snapshot := m.ContainerSnapshot()
+	for _, container := range snapshot.Containers {
+		if container.ID == id {
+			return container.PID == pid && container.Labels[nerdctlHealthcheckLabel] == config
+		}
+	}
+	return false
 }
 
 func (m *Manager) currentHealthState(id string) string {

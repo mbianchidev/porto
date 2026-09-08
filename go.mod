@@ -8,6 +8,8 @@ require (
 	github.com/containerd/containerd/api v1.11.1
 	github.com/containerd/containerd/v2 v2.3.4
 	github.com/containerd/errdefs v1.0.0
+	github.com/containerd/go-cni v1.1.13
+	github.com/containerd/platforms v1.0.0-rc.5
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
 	github.com/moby/buildkit v0.33.0
@@ -29,9 +31,7 @@ require (
 	github.com/containerd/continuity v0.5.0 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/fifo v1.1.0 // indirect
-	github.com/containerd/go-cni v1.1.13 // indirect
 	github.com/containerd/log v0.1.0 // indirect
-	github.com/containerd/platforms v1.0.0-rc.5 // indirect
 	github.com/containerd/plugin v1.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.9 // indirect
 	github.com/containerd/typeurl/v2 v2.3.0 // indirect

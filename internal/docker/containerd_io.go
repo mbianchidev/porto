@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strings"
 	"sync"
@@ -371,6 +372,9 @@ func (r *grpcContainerRuntime) StartAttached(
 			restartRollbackErr,
 			networkCleanupErr,
 		)
+	}
+	if err := r.resetHealthState(ctx, id, task.Pid()); err != nil {
+		log.Printf("reset health state after attached start of container %s: %v", id, err)
 	}
 	return newDirectContainerProcess(task, wait, processIO, false, r.namespace), nil
 }

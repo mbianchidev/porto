@@ -72,22 +72,23 @@ exit 1
 `
 
 type grpcContainerRuntime struct {
-	connection   *grpc.ClientConn
-	client       *containerd.Client
-	namespace    string
-	backend      string
-	stateDir     string
-	logDir       string
-	fifoDir      string
-	runner       runtimes.Runner
-	lima         string
-	helperPath   string
-	networkLocks *containerMutexes
-	containers   containersapi.ContainersClient
-	snapshots    snapshotsapi.SnapshotsClient
-	tasks        tasksapi.TasksClient
-	events       eventsapi.EventsClient
-	enrich       func(context.Context) ([]Container, error)
+	connection      *grpc.ClientConn
+	client          *containerd.Client
+	namespace       string
+	backend         string
+	stateDir        string
+	logDir          string
+	fifoDir         string
+	runner          runtimes.Runner
+	lima            string
+	helperPath      string
+	networkLocks    *containerMutexes
+	containerNameMu *sync.Mutex
+	containers      containersapi.ContainersClient
+	snapshots       snapshotsapi.SnapshotsClient
+	tasks           tasksapi.TasksClient
+	events          eventsapi.EventsClient
+	enrich          func(context.Context) ([]Container, error)
 
 	enrichMu          sync.Mutex
 	enrichmentReady   bool
@@ -189,6 +190,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			instance,
 			helperPath,
 			m.networkLocks,
+			m.containerNameMu,
 		)
 	}
 
@@ -208,6 +210,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			"",
 			helperPath,
 			m.networkLocks,
+			m.containerNameMu,
 		)
 		if err == nil {
 			return runtimeClient, nil
@@ -228,6 +231,7 @@ func newGRPCContainerRuntime(
 	limaInstance string,
 	helperPath string,
 	networkLocks *containerMutexes,
+	containerNameMu *sync.Mutex,
 ) (*grpcContainerRuntime, error) {
 	connection, err := grpc.NewClient(
 		"passthrough:///porto-containerd",
@@ -254,6 +258,7 @@ func newGRPCContainerRuntime(
 		lima:              limaInstance,
 		helperPath:        helperPath,
 		networkLocks:      networkLocks,
+		containerNameMu:   containerNameMu,
 		containers:        containersapi.NewContainersClient(connection),
 		snapshots:         snapshotsapi.NewSnapshotsClient(connection),
 		tasks:             tasksapi.NewTasksClient(connection),

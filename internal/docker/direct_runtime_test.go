@@ -6,7 +6,10 @@ import (
 	"errors"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"sync"
 	"syscall"
@@ -24,10 +27,16 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
+	"google.golang.org/protobuf/types/known/anypb"
 )
 
 func TestDirectCreateValidationSupportsHostAndNoneNetworks(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("native Windows direct creation is capability-gated")
+	}
 	runtimeClient := &grpcContainerRuntime{}
 	for _, network := range []string{directNetworkNone, directNetworkHost} {
 		hostname, err := runtimeClient.validateDirectCreateRequest(CreateContainerRequest{
@@ -484,6 +493,28 @@ func TestFailedStreamUpgradeCollectsExecResources(t *testing.T) {
 	}
 }
 
+func TestDirectLogTailZeroStartsAtEnd(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "container.log")
+	if err := os.WriteFile(path, []byte("old\nlines\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	offset, err := logTailOffset(file, 0)
+	if err != nil {
+		t.Fatalf("tail offset: %v", err)
+	}
+	if offset != int64(len("old\nlines\n")) {
+		t.Fatalf("tail=0 offset = %d", offset)
+	}
+	if all, err := parseLogTail("all"); err != nil || all != allLogLines {
+		t.Fatalf("tail=all = %d, %v", all, err)
+	}
+}
+
 func TestAttachedDisconnectDoesNotKillContainerTask(t *testing.T) {
 	process := newDetachableProcess()
 	server, client := net.Pipe()
@@ -507,6 +538,139 @@ func TestAttachedDisconnectDoesNotKillContainerTask(t *testing.T) {
 		t.Fatal("attached container task was killed on disconnect")
 	}
 	process.finish()
+}
+
+func TestDirectCNIRejectsHostAndStoppedNamespaces(t *testing.T) {
+	tests := []struct {
+		name     string
+		networks string
+		status   tasktypes.Status
+		want     error
+	}{
+		{name: "host", networks: `["host"]`, status: tasktypes.Status_RUNNING, want: ErrUnsupported},
+		{name: "stopped", networks: `["none"]`, status: tasktypes.Status_STOPPED, want: ErrConflict},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "default",
+				runner:    &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}},
+				containers: &fakeContainersClient{container: &containersapi.Container{
+					ID:     "demo",
+					Labels: map[string]string{nerdctlNetworksLabel: test.networks},
+				}},
+				tasks: &fakeTasksClient{process: &tasktypes.Process{
+					ContainerID: "demo",
+					Pid:         42,
+					Status:      test.status,
+				}},
+			}
+			err := runtimeClient.Connect(context.Background(), "backend", "demo", nil)
+			if !errors.Is(err, test.want) {
+				t.Fatalf("connect error = %v, want %v", err, test.want)
+			}
+		})
+	}
+}
+
+func TestUnmanagedStoppedTaskUsesCompatibilityRecreation(t *testing.T) {
+	tasks := &fakeTasksClient{getErr: status.Error(codes.NotFound, "missing")}
+	runtimeClient := &grpcContainerRuntime{
+		namespace: "default",
+		containers: &fakeContainersClient{container: &containersapi.Container{
+			ID:   "demo",
+			Spec: &anypb.Any{Value: []byte(`{"process":{"args":["true"]}}`)},
+		}},
+		tasks: tasks,
+	}
+	err := runtimeClient.recreateAndStartTask(context.Background(), "demo")
+	if !errors.Is(err, ErrUnsupported) || len(tasks.calls) != 0 {
+		t.Fatalf("recreate unmanaged task = %v, calls %v", err, tasks.calls)
+	}
+}
+
+func TestForceDeleteDisablesRestartBeforeKillingTask(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID: "demo",
+		Labels: map[string]string{
+			portoManagedLabel:  portoRuntimeVersion,
+			restartPolicyLabel: "always",
+			restartStatusLabel: "running",
+		},
+	}}
+	tasks := &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: "demo",
+		Status:      tasktypes.Status_RUNNING,
+	}}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "default",
+		containers: containers,
+		tasks:      tasks,
+	}
+	if err := runtimeClient.Delete(context.Background(), "demo", true, false); err != nil {
+		t.Fatalf("force delete: %v", err)
+	}
+	if containers.updateRequests[0].GetContainer().GetLabels()[restartStatusLabel] != "stopped" ||
+		containers.updateRequests[0].GetContainer().GetLabels()[restartStoppedLabel] != "true" {
+		t.Fatalf("restart disable update = %v", containers.updateRequests[0].GetContainer().GetLabels())
+	}
+}
+
+func TestRenameRejectsDuplicateDockerName(t *testing.T) {
+	current := &containersapi.Container{
+		ID:     "one",
+		Labels: map[string]string{nerdctlNameLabel: "current"},
+	}
+	containers := &fakeContainersClient{
+		container: current,
+		listContainers: []*containersapi.Container{
+			current,
+			{ID: "two", Labels: map[string]string{nerdctlNameLabel: "taken"}},
+		},
+	}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	err := runtimeClient.Rename(context.Background(), "one", "taken")
+	if !errors.Is(err, ErrConflict) || containers.updateRequest != nil {
+		t.Fatalf("rename duplicate = %v, update %v", err, containers.updateRequest)
+	}
+}
+
+func TestNetworkReconciliationHonorsRetryDeadlineAfterPIDChange(t *testing.T) {
+	inventory := newContainerInventory(nil, defaultInventoryOptions())
+	inventory.snapshot.Containers = []Container{{
+		ID:  "demo",
+		PID: 42,
+		Labels: map[string]string{
+			portoManagedLabel:      portoRuntimeVersion,
+			portoNetworkStateLabel: `{"backend":{"name":"backend"}}`,
+			portoNetworkPIDLabel:   "41",
+		},
+	}}
+	manager := &Manager{inventory: inventory}
+	now := time.Now()
+	state := &healthSchedulerState{
+		schedules:          make(map[string]*healthSchedule),
+		networkNext:        map[string]time.Time{"demo": now.Add(time.Minute)},
+		networkRunning:     make(map[string]bool),
+		networkObservedPID: map[string]uint32{"demo": 42},
+	}
+	manager.scheduleNetworkReconciliation(context.Background(), state, inventory.snapshotValue(), now)
+	if state.networkRunning["demo"] {
+		t.Fatal("network reconciliation ignored retry deadline")
+	}
+}
+
+func TestHealthGenerationRejectsPreviousTaskResult(t *testing.T) {
+	inventory := newContainerInventory(nil, defaultInventoryOptions())
+	inventory.snapshot.Containers = []Container{{
+		ID:     "demo",
+		PID:    42,
+		Labels: map[string]string{nerdctlHealthcheckLabel: "new"},
+	}}
+	manager := &Manager{inventory: inventory}
+	if manager.healthGenerationCurrent("demo", 41, "old") {
+		t.Fatal("previous task health generation was accepted")
+	}
 }
 
 type fakeContainerdProcess struct {

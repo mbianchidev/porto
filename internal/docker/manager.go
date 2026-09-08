@@ -58,6 +58,7 @@ type Manager struct {
 	execConnector       execOperationsConnector
 	networkConnector    networkOperationsConnector
 	networkLocks        *containerMutexes
+	containerNameMu     *sync.Mutex
 }
 
 type engineState struct {
@@ -70,12 +71,13 @@ type engineState struct {
 func New(runner runtimes.Runner) *Manager {
 	if runner != nil {
 		manager := &Manager{
-			runner:       runner,
-			timeout:      defaultTimeout,
-			lookPath:     exec.LookPath,
-			goos:         runtime.GOOS,
-			directCLI:    true,
-			networkLocks: newContainerMutexes(),
+			runner:          runner,
+			timeout:         defaultTimeout,
+			lookPath:        exec.LookPath,
+			goos:            runtime.GOOS,
+			directCLI:       true,
+			networkLocks:    newContainerMutexes(),
+			containerNameMu: &sync.Mutex{},
 		}
 		manager.runtimeConnector = manager.connectContainerRuntime
 		return manager
@@ -89,12 +91,13 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		runner = runtimes.ExecRunner{}
 	}
 	manager := &Manager{
-		runner:       runner,
-		timeout:      defaultTimeout,
-		stateDir:     stateDir,
-		lookPath:     exec.LookPath,
-		goos:         runtime.GOOS,
-		networkLocks: newContainerMutexes(),
+		runner:          runner,
+		timeout:         defaultTimeout,
+		stateDir:        stateDir,
+		lookPath:        exec.LookPath,
+		goos:            runtime.GOOS,
+		networkLocks:    newContainerMutexes(),
+		containerNameMu: &sync.Mutex{},
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	manager.creationConnector = manager.connectContainerCreation

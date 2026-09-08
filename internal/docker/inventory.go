@@ -115,7 +115,7 @@ func containerCapabilities() ContainerCapabilities {
 		LifecycleEvents: RuntimeCapability{Supported: true},
 		TaskRecreation: RuntimeCapability{
 			Supported: true,
-			Reason:    "stopped tasks are recreated from the containerd OCI spec and snapshot mounts; attached stream recreation remains on the compatibility path",
+			Reason:    "Porto-owned stopped tasks are recreated from their OCI spec, snapshot mounts, I/O, and network state; legacy tasks stay on the compatibility path",
 		},
 		DirectCreation: RuntimeCapability{
 			Supported: false,

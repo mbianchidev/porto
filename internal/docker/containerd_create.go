@@ -47,7 +47,11 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 	if err != nil {
 		return "", err
 	}
-	if err := r.ensureContainerNameAvailable(ctx, request.Name); err != nil {
+	if r.containerNameMu != nil {
+		r.containerNameMu.Lock()
+		defer r.containerNameMu.Unlock()
+	}
+	if err := r.ensureContainerNameAvailable(ctx, request.Name, ""); err != nil {
 		return "", err
 	}
 	id, err := randomResourceName()
@@ -185,7 +189,11 @@ func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContain
 	return hostname, nil
 }
 
-func (r *grpcContainerRuntime) ensureContainerNameAvailable(ctx context.Context, name string) error {
+func (r *grpcContainerRuntime) ensureContainerNameAvailable(
+	ctx context.Context,
+	name,
+	excludedID string,
+) error {
 	if name == "" {
 		return nil
 	}
@@ -197,6 +205,9 @@ func (r *grpcContainerRuntime) ensureContainerNameAvailable(ctx context.Context,
 		return fmt.Errorf("list container names before direct create: %w", err)
 	}
 	for _, record := range response.GetContainers() {
+		if record.GetID() == excludedID {
+			continue
+		}
 		if record.GetLabels()[nerdctlNameLabel] == name {
 			return fmt.Errorf("%w: container name %q is already in use", ErrConflict, name)
 		}
