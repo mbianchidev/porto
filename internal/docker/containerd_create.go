@@ -20,15 +20,17 @@ import (
 )
 
 const (
-	portoManagedLabel    = "io.porto.container.managed"
-	portoLogPathLabel    = "io.porto.container.log-path"
-	portoOpenStdinLabel  = "io.porto.container.open-stdin"
-	portoTTYLabel        = "io.porto.container.tty"
-	portoAutoRemoveLabel = "io.porto.container.auto-remove"
-	portoRuntimeVersion  = "1"
-	portoRuntimeName     = "io.containerd.runc.v2"
-	directNetworkNone    = "none"
-	directNetworkHost    = "host"
+	portoManagedLabel      = "io.porto.container.managed"
+	portoLogPathLabel      = "io.porto.container.log-path"
+	portoOpenStdinLabel    = "io.porto.container.open-stdin"
+	portoTTYLabel          = "io.porto.container.tty"
+	portoAutoRemoveLabel   = "io.porto.container.auto-remove"
+	portoNetworkAliasLabel = "io.porto.container.network-aliases"
+	portoNetworkStateLabel = "io.porto.container.network-state"
+	portoRuntimeVersion    = "1"
+	portoRuntimeName       = "io.containerd.runc.v2"
+	directNetworkNone      = "none"
+	directNetworkHost      = "host"
 )
 
 func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContainerRequest) (string, error) {

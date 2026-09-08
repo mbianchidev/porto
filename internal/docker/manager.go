@@ -50,6 +50,8 @@ type Manager struct {
 	inventory           *containerInventory
 	inventoryCancel     context.CancelFunc
 	inventoryDone       chan struct{}
+	healthCancel        context.CancelFunc
+	healthDone          chan struct{}
 	runtimeConnector    containerRuntimeConnector
 	creationConnector   containerCreationConnector
 	operationsConnector containerOperationsConnector
@@ -224,6 +226,15 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	} else if err := m.verifyLimaOwnership(ctx, ownerID); err != nil {
 		return Status{}, err
 	}
+	if err := m.installLimaRuntimeHelper(ctx, engineInstanceName); err != nil {
+		if created {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without helper", nil, "limactl", "delete", "--force", engineInstanceName)
+			cancel()
+			return Status{}, errors.Join(err, cleanupErr)
+		}
+		return Status{}, err
+	}
 	limaBackend := commandBackend{
 		name:        "limactl",
 		prefix:      []string{"shell", engineInstanceName, "--", "nerdctl"},
@@ -262,6 +273,34 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		return Status{}, err
 	}
 	return installedStatus(limaBackend, versionOutput), nil
+}
+
+func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string) error {
+	path, err := m.lookPath("porto-runtime-helper")
+	if err != nil {
+		return nil
+	}
+	binary, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read Porto runtime helper %s: %w", path, err)
+	}
+	_, err = m.runCommand(
+		ctx,
+		30*time.Second,
+		"install Porto runtime helper",
+		binary,
+		"limactl",
+		"shell",
+		instance,
+		"--",
+		"sh",
+		"-c",
+		`set -eu; umask 077; mkdir -p "$HOME/.local/bin"; cat > "$HOME/.local/bin/porto-runtime-helper"; chmod 0755 "$HOME/.local/bin/porto-runtime-helper"; "$HOME/.local/bin/porto-runtime-helper" version`,
+	)
+	if err != nil {
+		return fmt.Errorf("install Porto runtime helper in Lima: %w", err)
+	}
+	return nil
 }
 
 func (m *Manager) StartEngine(ctx context.Context) error {
@@ -629,6 +668,9 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 	if healthcheck.StartPeriod > 0 {
 		args = append(args, "--health-start-period", healthcheck.StartPeriod.String())
 	}
+	if healthcheck.StartInterval > 0 {
+		args = append(args, "--health-start-interval", healthcheck.StartInterval.String())
+	}
 	if healthcheck.Retries > 0 {
 		args = append(args, "--health-retries", strconv.Itoa(healthcheck.Retries))
 	}
@@ -636,13 +678,14 @@ func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]
 }
 
 func validateHealthcheck(healthcheck *ContainerHealthcheck) error {
-	if healthcheck.StartInterval != 0 {
-		return fmt.Errorf("%w: healthcheck start interval", ErrUnsupported)
+	if healthcheck == nil {
+		return nil
 	}
 	for name, value := range map[string]time.Duration{
-		"interval":     healthcheck.Interval,
-		"timeout":      healthcheck.Timeout,
-		"start period": healthcheck.StartPeriod,
+		"interval":       healthcheck.Interval,
+		"timeout":        healthcheck.Timeout,
+		"start period":   healthcheck.StartPeriod,
+		"start interval": healthcheck.StartInterval,
 	} {
 		if value < 0 {
 			return fmt.Errorf("healthcheck %s cannot be negative", name)
@@ -865,6 +908,26 @@ func (m *Manager) CheckpointContainer(ctx context.Context, id, parent string) ([
 		return nil, fallbackReason
 	}
 	return nil, fmt.Errorf("%w: container checkpoint", ErrUnsupported)
+}
+
+func (m *Manager) RestoreContainer(ctx context.Context, id, checkpoint string) error {
+	if err := validateObjectID(id); err != nil {
+		return err
+	}
+	if strings.TrimSpace(checkpoint) == "" || strings.ContainsAny(checkpoint, "\r\n\x00") {
+		return errors.New("checkpoint image reference is required")
+	}
+	if handled, directErr, fallbackReason := m.attemptContainerOperation(ctx, func(operations containerOperations) error {
+		return operations.Restore(ctx, id, checkpoint)
+	}); handled {
+		if directErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return directErr
+	} else if fallbackReason != nil {
+		return fallbackReason
+	}
+	return fmt.Errorf("%w: container restore", ErrUnsupported)
 }
 
 func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {

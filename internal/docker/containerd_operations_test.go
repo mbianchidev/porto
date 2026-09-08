@@ -17,6 +17,7 @@ import (
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -48,6 +49,15 @@ type fakeExecOperations struct {
 func (f *fakeExecOperations) StartExec(
 	_ context.Context,
 	_ ExecRequest,
+) (runtimes.Process, error) {
+	f.startCalls.Add(1)
+	return f.process, f.startErr
+}
+
+func (f *fakeExecOperations) StartAttached(
+	_ context.Context,
+	_ string,
+	_ bool,
 ) (runtimes.Process, error) {
 	f.startCalls.Add(1)
 	return f.process, f.startErr
@@ -173,6 +183,14 @@ func (f *fakeContainerOperations) UpdateResources(_ context.Context, id string, 
 	))
 }
 
+func (f *fakeContainerOperations) UpdateRestartPolicy(
+	_ context.Context,
+	id,
+	policy string,
+) error {
+	return f.record("update-restart " + id + " " + policy)
+}
+
 func (f *fakeContainerOperations) UpdateHealth(
 	_ context.Context,
 	id string,
@@ -190,6 +208,10 @@ func (f *fakeContainerOperations) UpdateHealth(
 
 func (f *fakeContainerOperations) Checkpoint(_ context.Context, id, parent string) ([]string, error) {
 	return []string{"checkpoint"}, f.record(fmt.Sprintf("checkpoint %s %s", id, parent))
+}
+
+func (f *fakeContainerOperations) Restore(_ context.Context, id, checkpoint string) error {
+	return f.record(fmt.Sprintf("restore %s %s", id, checkpoint))
 }
 
 func (f *fakeContainerOperations) Delete(_ context.Context, id string, force, volumes bool) error {
@@ -336,9 +358,9 @@ func TestContainerdExecRequiresHighLevelClient(t *testing.T) {
 	}
 }
 
-func TestContainerCapabilitiesReportDirectExecLifecycle(t *testing.T) {
+func TestContainerCapabilitiesRequireActiveExecConnection(t *testing.T) {
 	capability := containerCapabilities().ExecLifecycle
-	if !capability.Supported || !strings.Contains(capability.Reason, "FIFO") {
+	if capability.Supported || !strings.Contains(capability.Reason, "active") {
 		t.Fatalf("exec lifecycle capability = %+v", capability)
 	}
 }
@@ -454,24 +476,46 @@ func TestDockerAPIReportsUnsupportedDirectNetworkOperation(t *testing.T) {
 	}
 }
 
-func TestContainerdNetworkOperationsReturnTypedUnsupportedErrors(t *testing.T) {
+func TestContainerdNetworkOperationsRequireRuntimeServices(t *testing.T) {
 	runtimeClient := &grpcContainerRuntime{}
 	connectErr := runtimeClient.Connect(context.Background(), "backend", "demo", nil)
-	if !errors.Is(connectErr, ErrUnsupported) ||
-		!strings.Contains(connectErr.Error(), "CNI endpoints") {
+	if !errors.Is(connectErr, ErrUnavailable) ||
+		!strings.Contains(connectErr.Error(), "container and task services") {
 		t.Fatalf("containerd connect error = %v", connectErr)
 	}
 	disconnectErr := runtimeClient.Disconnect(context.Background(), "backend", "demo", false)
-	if !errors.Is(disconnectErr, ErrUnsupported) ||
-		!strings.Contains(disconnectErr.Error(), "metadata alone") {
+	if !errors.Is(disconnectErr, ErrUnavailable) ||
+		!strings.Contains(disconnectErr.Error(), "container and task services") {
 		t.Fatalf("containerd disconnect error = %v", disconnectErr)
 	}
 }
 
-func TestContainerCapabilitiesReportUnsupportedDirectNetworkUpdates(t *testing.T) {
+func TestContainerCapabilitiesRequireCNIProbe(t *testing.T) {
 	capability := containerCapabilities().NetworkUpdates
-	if capability.Supported || !strings.Contains(capability.Reason, "CNI endpoint") {
+	if capability.Supported || !strings.Contains(capability.Reason, "probe") {
 		t.Fatalf("network update capability = %+v", capability)
+	}
+}
+
+func TestGRPCRuntimeCapabilitiesUseBackendHelperProbe(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"/helper probe": []byte(`{"cni":true,"criu":true}`),
+		},
+		errors: map[string]error{},
+	}
+	runtimeClient := &grpcContainerRuntime{
+		client:     new(containerd.Client),
+		runner:     runner,
+		helperPath: "/helper",
+	}
+	capabilities := runtimeClient.Capabilities(context.Background())
+	if !capabilities.DirectCreation.Supported ||
+		!capabilities.ExecLifecycle.Supported ||
+		!capabilities.HealthUpdates.Supported ||
+		!capabilities.NetworkUpdates.Supported ||
+		!capabilities.CheckpointRestore.Supported {
+		t.Fatalf("runtime capabilities = %+v", capabilities)
 	}
 }
 
@@ -708,15 +752,42 @@ func TestDockerAPIReportsUnsupportedDirectHealthUpdate(t *testing.T) {
 	}
 }
 
-func TestContainerdHealthUpdateReturnsTypedUnsupportedError(t *testing.T) {
+func TestContainerdHealthUpdateRequiresMetadataService(t *testing.T) {
 	err := (&grpcContainerRuntime{}).UpdateHealth(
 		context.Background(),
 		"demo",
 		&ContainerHealthcheck{Test: []string{"CMD-SHELL", "true"}},
 	)
-	if !errors.Is(err, ErrUnsupported) ||
-		!strings.Contains(err.Error(), "scheduling and result logs") {
+	if !errors.Is(err, ErrUnavailable) ||
+		!strings.Contains(err.Error(), "metadata service") {
 		t.Fatalf("containerd health update error = %v", err)
+	}
+}
+
+func TestContainerdHealthUpdatePersistsPortoOwnedConfiguration(t *testing.T) {
+	containers := &fakeContainersClient{container: &containersapi.Container{
+		ID: "demo",
+		Labels: map[string]string{
+			portoManagedLabel: portoRuntimeVersion,
+		},
+	}}
+	runtimeClient := &grpcContainerRuntime{namespace: "default", containers: containers}
+	err := runtimeClient.UpdateHealth(
+		context.Background(),
+		"demo",
+		&ContainerHealthcheck{
+			Test:     []string{"CMD", "true"},
+			Interval: time.Second,
+			Retries:  2,
+		},
+	)
+	if err != nil {
+		t.Fatalf("update health: %v", err)
+	}
+	labels := containers.updateRequest.GetContainer().GetLabels()
+	if !strings.Contains(labels[nerdctlHealthcheckLabel], `"CMD"`) ||
+		!strings.Contains(labels[nerdctlHealthStateLabel], `"starting"`) {
+		t.Fatalf("health labels = %v", labels)
 	}
 }
 

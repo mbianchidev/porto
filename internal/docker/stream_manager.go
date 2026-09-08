@@ -73,6 +73,12 @@ func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin b
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
+	if process, handled, err := m.startContainerAttachedDirect(ctx, id, stdin); handled {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return process, err
+	}
 	args := []string{"start", "--attach"}
 	if stdin {
 		args = append(args, "--interactive")

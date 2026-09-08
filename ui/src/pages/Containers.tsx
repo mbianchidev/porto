@@ -138,6 +138,21 @@ export function Containers() {
   const selected = items.find((container) => container.id === selectedID) ?? null
   const available = containers.snapshot?.available ?? status.data?.available ?? false
   const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
+  const directCapabilities = containers.snapshot?.capabilities
+  const directFeatureList = directCapabilities
+    ? [
+        directCapabilities.directCreation,
+        directCapabilities.execLifecycle,
+        directCapabilities.healthUpdates,
+        directCapabilities.networkUpdates,
+        directCapabilities.checkpointRestore,
+      ]
+    : []
+  const supportedDirectFeatures = directFeatureList.filter((capability) => capability.supported).length
+  const directCapabilityDetail = directFeatureList
+    .filter((capability) => !capability.supported && capability.reason)
+    .map((capability) => capability.reason)
+    .join(' · ')
   const images = usePolledResource<DockerImage[]>(
     (signal) => available ? apiGet('/api/docker/images', signal) : Promise.resolve([]),
     15000,
@@ -223,6 +238,11 @@ export function Containers() {
         </span>
         {status.data?.context && <span className="fleetDatum"><small>Context</small><strong>{status.data.context}</strong></span>}
         {containers.snapshot?.namespace && <span className="fleetDatum"><small>Namespace</small><strong>{containers.snapshot.namespace}</strong></span>}
+        {directFeatureList.length > 0 && (
+          <span className="fleetDatum" title={directCapabilityDetail || 'All direct runtime features are available'}>
+            <small>Direct</small><strong>{supportedDirectFeatures}/{directFeatureList.length}</strong>
+          </span>
+        )}
         <span className="fleetMessage">
           {items.length} container(s) · revision {containers.snapshot?.revision ?? 0}
           {!containers.connected && available ? ' · reconnecting updates' : ''}
@@ -386,8 +406,10 @@ export function Containers() {
                     <div><dt>Exit</dt><dd>{selected.exitCode === undefined ? '—' : `${selected.exitCode}${selected.exitSignal ? ` (signal ${selected.exitSignal})` : ''}`}</dd></div>
                     <div><dt>Exit reason</dt><dd>{selected.exitReason || '—'}</dd></div>
                     <div><dt>Restart policy</dt><dd>{selected.restartPolicy || 'none'}</dd></div>
+                    <div><dt>Last restart</dt><dd>{selected.lastRestartReason ? `${selected.lastRestartReason}${selected.lastRestartAt ? ` · ${selected.lastRestartAt}` : ''}` : '—'}</dd></div>
                     <div><dt>CPU quota</dt><dd>{selected.resources.cpuQuota ?? '—'}</dd></div>
                     <div><dt>Memory limit</dt><dd>{selected.resources.memoryLimit ?? '—'}</dd></div>
+                    <div><dt>Health output</dt><dd>{selected.health.output || '—'}</dd></div>
                     <div>
                       <dt>Stop behavior</dt>
                       <dd>
@@ -397,6 +419,27 @@ export function Containers() {
                   </dl>
                   {selected.inventoryError && <p className="errorText">{selected.inventoryError}</p>}
                 </section>
+                {selected.networkDetails && selected.networkDetails.length > 0 && (
+                  <section className="drawerPanel">
+                    <h3>Network endpoints</h3>
+                    <dl className="runtimeGrid">
+                      {selected.networkDetails.map((network, index) => (
+                        <div key={`${network.name}-${network.interface || index}`}>
+                          <dt>{network.name || 'port mapping'}</dt>
+                          <dd>
+                            {[
+                              network.interface,
+                              network.ipAddress,
+                              network.gateway ? `via ${network.gateway}` : '',
+                              network.aliases?.length ? `aliases ${network.aliases.join(', ')}` : '',
+                              network.hostPort ? `${network.hostIp || '0.0.0.0'}:${network.hostPort}->${network.containerPort}/${network.protocol || 'tcp'}` : '',
+                            ].filter(Boolean).join(' · ') || 'Attached'}
+                          </dd>
+                        </div>
+                      ))}
+                    </dl>
+                  </section>
+                )}
                 {selected.history && selected.history.length > 0 && (
                   <section className="drawerPanel">
                     <h3>Lifecycle history</h3>

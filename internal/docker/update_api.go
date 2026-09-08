@@ -2,6 +2,7 @@ package docker
 
 import (
 	"net/http"
+	"strconv"
 	"time"
 )
 
@@ -62,7 +63,6 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 		request.IOMaximumIOps != 0 || request.IOMaximumBandwidth != 0 ||
 		request.MemorySwappiness != nil || request.OomKillDisable != nil ||
 		request.PidsLimit != nil || len(request.Ulimits) > 0 || len(request.Devices) > 0 ||
-		request.RestartPolicy.Name != "" || request.RestartPolicy.MaximumRetryCount != 0 ||
 		len(request.DeviceCgroupRules) > 0 ||
 		len(request.DeviceRequests) > 0 || len(request.BlkioWeightDevice) > 0 ||
 		len(request.BlkioDeviceReadBps) > 0 || len(request.BlkioDeviceWriteBps) > 0 ||
@@ -81,10 +81,19 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 			Retries:       request.Healthcheck.Retries,
 		}
 	}
+	restartPolicy := request.RestartPolicy.Name
+	if request.RestartPolicy.MaximumRetryCount != 0 {
+		if restartPolicy != "on-failure" {
+			writeDockerUnsupported(w, "restart retry count without on-failure policy")
+			return
+		}
+		restartPolicy += ":" + strconv.Itoa(request.RestartPolicy.MaximumRetryCount)
+	}
 	if err := a.manager.UpdateContainer(r.Context(), r.PathValue("id"), ContainerUpdate{
 		Memory:      request.Memory,
 		MemorySwap:  request.MemorySwap,
 		NanoCPUs:    request.NanoCPUs,
+		Restart:     restartPolicy,
 		Healthcheck: healthcheck,
 	}); err != nil {
 		writeDockerError(w, err)

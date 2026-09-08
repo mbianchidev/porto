@@ -31,6 +31,11 @@ cleanup() {
 trap cleanup EXIT HUP INT TERM
 stdin_path=""
 stderr_path=""
+log_path="$3"
+if [ -n "$log_path" ]; then
+  mkdir -p "$(dirname "$log_path")"
+  touch "$log_path"
+fi
 if [ "$2" = "1" ]; then
   stdin_path="$dir/stdin"
   mkfifo "$stdin_path"
@@ -45,9 +50,17 @@ printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 if [ -n "$stdin_path" ]; then
   cat > "$stdin_path" &
 fi
-cat "$stdout_path" &
+if [ -n "$log_path" ]; then
+  tee -a "$log_path" < "$stdout_path" &
+else
+  cat "$stdout_path" &
+fi
 if [ -n "$stderr_path" ]; then
-  cat "$stderr_path" >&2 &
+  if [ -n "$log_path" ]; then
+    tee -a "$log_path" < "$stderr_path" >&2 &
+  else
+    cat "$stderr_path" >&2 &
+  fi
 fi
 wait
 `
@@ -169,7 +182,7 @@ func (r *grpcContainerRuntime) StartExec(
 	if err != nil {
 		return nil, err
 	}
-	processIO, err := r.newDirectProcessIO(ctx, execID, request.TTY, request.AttachStdin)
+	processIO, err := r.newDirectProcessIO(ctx, execID, request.TTY, request.AttachStdin, "")
 	if err != nil {
 		return nil, err
 	}
@@ -190,6 +203,71 @@ func (r *grpcContainerRuntime) StartExec(
 		return nil, containerdOperationError("start exec in", request.ContainerID, err)
 	}
 	return &directContainerProcess{process: process, wait: wait, io: processIO}, nil
+}
+
+func (r *grpcContainerRuntime) StartAttached(
+	ctx context.Context,
+	id string,
+	attachStdin bool,
+) (runtimes.Process, error) {
+	if r.client == nil {
+		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
+	}
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	container, err := r.client.LoadContainer(namespacedContext, id)
+	if err != nil {
+		return nil, containerdOperationError("load metadata for attached start of", id, err)
+	}
+	labels, err := container.Labels(namespacedContext)
+	if err != nil {
+		return nil, containerdOperationError("read metadata for attached start of", id, err)
+	}
+	if labels[portoManagedLabel] != portoRuntimeVersion {
+		return nil, fmt.Errorf("%w: container %q attached I/O is owned by its compatibility runtime", ErrUnsupported, id)
+	}
+	spec, err := container.Spec(namespacedContext)
+	if err != nil {
+		return nil, containerdOperationError("read spec for attached start of", id, err)
+	}
+	terminal := spec.Process != nil && spec.Process.Terminal
+	processIO, err := r.newDirectProcessIO(ctx, id, terminal, attachStdin, labels[portoLogPathLabel])
+	if err != nil {
+		return nil, err
+	}
+	if existing, taskErr := container.Task(namespacedContext, nil); taskErr == nil {
+		status, statusErr := existing.Status(namespacedContext)
+		if statusErr != nil {
+			_ = processIO.cleanup()
+			return nil, containerdOperationError("inspect task for attached start of", id, statusErr)
+		}
+		if status.Status == containerd.Running ||
+			status.Status == containerd.Paused ||
+			status.Status == containerd.Pausing {
+			_ = processIO.cleanup()
+			return nil, fmt.Errorf("%w: container %q is already running", ErrConflict, id)
+		}
+		if _, deleteErr := existing.Delete(namespacedContext); deleteErr != nil {
+			_ = processIO.cleanup()
+			return nil, containerdOperationError("delete stopped task for attached start of", id, deleteErr)
+		}
+	}
+	task, err := container.NewTask(namespacedContext, processIO.creator)
+	if err != nil {
+		_ = processIO.cleanup()
+		return nil, containerdOperationError("create attached task for", id, err)
+	}
+	wait, err := task.Wait(namespacedContext)
+	if err != nil {
+		_, _ = task.Delete(context.Background())
+		_ = processIO.cleanup()
+		return nil, containerdOperationError("wait for attached task", id, err)
+	}
+	if err := task.Start(namespacedContext); err != nil {
+		_, _ = task.Delete(context.Background())
+		_ = processIO.cleanup()
+		return nil, containerdOperationError("start attached task", id, err)
+	}
+	return &directContainerProcess{process: task, wait: wait, io: processIO}, nil
 }
 
 func (r *grpcContainerRuntime) execProcessSpec(
@@ -286,9 +364,10 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 	id string,
 	terminal,
 	attachStdin bool,
+	logPath string,
 ) (directProcessIO, error) {
 	if r.lima != "" {
-		return r.newLimaProcessIO(ctx, id, terminal, attachStdin)
+		return r.newLimaProcessIO(ctx, id, terminal, attachStdin, logPath)
 	}
 	if r.fifoDir == "" {
 		return directProcessIO{}, fmt.Errorf("%w: containerd FIFO directory is unavailable", ErrUnsupported)
@@ -299,8 +378,23 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 	stdinReader, stdinWriter := io.Pipe()
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
+	stdoutTarget := io.Writer(stdoutWriter)
+	stderrTarget := io.Writer(stderrWriter)
+	var logFile *os.File
+	if logPath != "" {
+		if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
+			return directProcessIO{}, err
+		}
+		var err error
+		logFile, err = os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		if err != nil {
+			return directProcessIO{}, fmt.Errorf("open direct attached log %q: %w", logPath, err)
+		}
+		stdoutTarget = io.MultiWriter(stdoutWriter, logFile)
+		stderrTarget = io.MultiWriter(stderrWriter, logFile)
+	}
 	options := []cio.Opt{
-		cio.WithStreams(stdinReader, stdoutWriter, stderrWriter),
+		cio.WithStreams(stdinReader, stdoutTarget, stderrTarget),
 		cio.WithFIFODir(r.fifoDir),
 	}
 	if terminal {
@@ -319,6 +413,7 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 				stdoutWriter.Close(),
 				stderrReader.Close(),
 				stderrWriter.Close(),
+				closeOptionalFile(logFile),
 			)
 		},
 	}, nil
@@ -329,6 +424,7 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 	id string,
 	terminal,
 	attachStdin bool,
+	logPath string,
 ) (directProcessIO, error) {
 	runner, ok := r.runner.(runtimes.ProcessRunner)
 	if !ok {
@@ -341,7 +437,7 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 			"porto-container-io",
 			boolShellFlag(terminal),
 			boolShellFlag(attachStdin),
-			id,
+			logPath,
 		},
 	})
 	if err != nil {
@@ -383,6 +479,13 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 			return nil
 		},
 	}, nil
+}
+
+func closeOptionalFile(file *os.File) error {
+	if file == nil {
+		return nil
+	}
+	return file.Close()
 }
 
 func boolShellFlag(value bool) string {

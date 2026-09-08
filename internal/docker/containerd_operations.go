@@ -5,6 +5,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -15,6 +20,9 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/containerd/api/types"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/pkg/cio"
+	"github.com/containerd/errdefs"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
@@ -40,8 +48,10 @@ type containerOperations interface {
 	Rename(context.Context, string, string) error
 	UpdateLabels(context.Context, string, map[string]string) error
 	UpdateResources(context.Context, string, ContainerUpdate) error
+	UpdateRestartPolicy(context.Context, string, string) error
 	UpdateHealth(context.Context, string, *ContainerHealthcheck) error
 	Checkpoint(context.Context, string, string) ([]string, error)
+	Restore(context.Context, string, string) error
 	Delete(context.Context, string, bool, bool) error
 	Close() error
 }
@@ -57,6 +67,7 @@ type containerCreationConnector func(context.Context) (containerCreation, error)
 
 type execOperations interface {
 	StartExec(context.Context, ExecRequest) (runtimes.Process, error)
+	StartAttached(context.Context, string, bool) (runtimes.Process, error)
 	Close() error
 }
 
@@ -193,6 +204,39 @@ func (m *Manager) startExecDirect(
 	return &managedExecProcess{Process: process, close: operations.Close}, true, nil
 }
 
+func (m *Manager) startContainerAttachedDirect(
+	ctx context.Context,
+	id string,
+	stdin bool,
+) (runtimes.Process, bool, error) {
+	connector := m.execConnector
+	if connector == nil {
+		return nil, false, nil
+	}
+	operations, err := connector(ctx)
+	if err != nil {
+		if errors.Is(err, ErrUnsupported) || errors.Is(err, ErrUnavailable) {
+			return nil, false, nil
+		}
+		return nil, true, err
+	}
+	process, startErr := operations.StartAttached(ctx, id, stdin)
+	if errors.Is(startErr, ErrUnsupported) || errors.Is(startErr, ErrUnavailable) {
+		_ = operations.Close()
+		return nil, false, nil
+	}
+	if startErr != nil {
+		return nil, true, errors.Join(startErr, operations.Close())
+	}
+	if process == nil {
+		return nil, true, errors.Join(
+			errors.New("direct attached start returned an empty process"),
+			operations.Close(),
+		)
+	}
+	return &managedExecProcess{Process: process, close: operations.Close}, true, nil
+}
+
 type managedExecProcess struct {
 	runtimes.Process
 	close    func() error
@@ -205,6 +249,16 @@ func (p *managedExecProcess) Wait() error {
 		p.waitErr = errors.Join(p.Process.Wait(), p.close())
 	})
 	return p.waitErr
+}
+
+func (p *managedExecProcess) Resize(ctx context.Context, width, height uint32) error {
+	resizable, ok := p.Process.(interface {
+		Resize(context.Context, uint32, uint32) error
+	})
+	if !ok {
+		return fmt.Errorf("%w: process terminal resize", ErrUnsupported)
+	}
+	return resizable.Resize(ctx, width, height)
 }
 
 func (m *Manager) withContainerOperations(
@@ -262,27 +316,216 @@ func (m *Manager) withNetworkOperations(
 }
 
 func (r *grpcContainerRuntime) Connect(
-	context.Context,
-	string,
-	string,
-	[]string,
+	ctx context.Context,
+	network string,
+	containerID string,
+	aliases []string,
 ) error {
-	return fmt.Errorf(
-		"%w: containerd cannot safely connect nerdctl CNI endpoints or represent Docker network aliases",
-		ErrUnsupported,
+	if network == directNetworkNone || network == directNetworkHost {
+		return fmt.Errorf("%w: built-in network %q cannot be connected as an additional CNI endpoint", ErrUnsupported, network)
+	}
+	if len(aliases) > 1 {
+		return fmt.Errorf("%w: direct CNI supports one endpoint alias", ErrUnsupported)
+	}
+	record, networks, aliasMap, process, err := r.directNetworkState(ctx, containerID)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(networks, network) {
+		return fmt.Errorf("%w: container %q is already connected to network %q", ErrConflict, containerID, network)
+	}
+	if process == nil || process.GetPid() == 0 {
+		return fmt.Errorf("%w: container %q has no running network namespace", ErrConflict, containerID)
+	}
+	netns := fmt.Sprintf("/proc/%d/ns/net", process.GetPid())
+	output, err := r.runRuntimeHelper(ctx,
+		"cni-connect",
+		"--network", network,
+		"--container", containerID,
+		"--netns", netns,
+		"--aliases", strings.Join(aliases, ","),
 	)
+	if err != nil {
+		return err
+	}
+	networks = append(networks, network)
+	sort.Strings(networks)
+	if len(aliases) > 0 {
+		aliasMap[network] = append([]string(nil), aliases...)
+	}
+	stateMap := directNetworkStateMap(record.GetLabels()[portoNetworkStateLabel])
+	var endpoint struct {
+		Interface string   `json:"interface"`
+		MAC       string   `json:"mac"`
+		Addresses []string `json:"addresses"`
+		Gateways  []string `json:"gateways"`
+	}
+	if err := json.Unmarshal(output, &endpoint); err != nil {
+		_, rollbackErr := r.runRuntimeHelper(
+			context.Background(),
+			"cni-disconnect",
+			"--network", network,
+			"--container", containerID,
+			"--netns", netns,
+			"--aliases", strings.Join(aliases, ","),
+		)
+		return errors.Join(
+			fmt.Errorf("decode CNI endpoint result for network %q: %w", network, err),
+			rollbackErr,
+		)
+	}
+	state := ContainerNetworkState{
+		Name:      network,
+		Interface: endpoint.Interface,
+		MAC:       endpoint.MAC,
+		Aliases:   append([]string(nil), aliases...),
+	}
+	if len(endpoint.Addresses) > 0 {
+		state.IPAddress = endpoint.Addresses[0]
+	}
+	if len(endpoint.Gateways) > 0 {
+		state.Gateway = endpoint.Gateways[0]
+	}
+	stateMap[network] = state
+	networkDocument, _ := json.Marshal(networks)
+	aliasDocument, _ := json.Marshal(aliasMap)
+	stateDocument, _ := json.Marshal(stateMap)
+	if err := r.UpdateLabels(ctx, containerID, map[string]string{
+		nerdctlNetworksLabel:   string(networkDocument),
+		portoNetworkAliasLabel: string(aliasDocument),
+		portoNetworkStateLabel: string(stateDocument),
+	}); err != nil {
+		_, rollbackErr := r.runRuntimeHelper(
+			context.Background(),
+			"cni-disconnect",
+			"--network", network,
+			"--container", containerID,
+			"--netns", netns,
+			"--aliases", strings.Join(aliases, ","),
+		)
+		return errors.Join(err, rollbackErr)
+	}
+	return nil
 }
 
 func (r *grpcContainerRuntime) Disconnect(
-	context.Context,
-	string,
-	string,
-	bool,
+	ctx context.Context,
+	network string,
+	containerID string,
+	force bool,
 ) error {
-	return fmt.Errorf(
-		"%w: containerd cannot safely disconnect nerdctl CNI endpoints by changing container metadata alone",
-		ErrUnsupported,
+	if network == directNetworkNone || network == directNetworkHost {
+		return fmt.Errorf("%w: built-in network %q cannot be disconnected", ErrUnsupported, network)
+	}
+	record, networks, aliasMap, process, err := r.directNetworkState(ctx, containerID)
+	if err != nil {
+		return err
+	}
+	index := slices.Index(networks, network)
+	if index < 0 {
+		if force {
+			return nil
+		}
+		return fmt.Errorf("%w: container %q is not connected to network %q", ErrNotFound, containerID, network)
+	}
+	netns := ""
+	if process != nil && process.GetPid() > 0 {
+		netns = fmt.Sprintf("/proc/%d/ns/net", process.GetPid())
+	}
+	aliases := aliasMap[network]
+	if _, err := r.runRuntimeHelper(ctx,
+		"cni-disconnect",
+		"--network", network,
+		"--container", containerID,
+		"--netns", netns,
+		"--aliases", strings.Join(aliases, ","),
+	); err != nil && !force {
+		return err
+	}
+	networks = append(networks[:index], networks[index+1:]...)
+	delete(aliasMap, network)
+	stateMap := directNetworkStateMap(record.GetLabels()[portoNetworkStateLabel])
+	delete(stateMap, network)
+	networkDocument, _ := json.Marshal(networks)
+	aliasDocument, _ := json.Marshal(aliasMap)
+	stateDocument, _ := json.Marshal(stateMap)
+	if err := r.UpdateLabels(ctx, containerID, map[string]string{
+		nerdctlNetworksLabel:   string(networkDocument),
+		portoNetworkAliasLabel: string(aliasDocument),
+		portoNetworkStateLabel: string(stateDocument),
+	}); err != nil {
+		return fmt.Errorf("CNI endpoint was removed but container metadata reconciliation failed: %w", err)
+	}
+	return nil
+}
+
+func directNetworkStateMap(encoded string) map[string]ContainerNetworkState {
+	result := make(map[string]ContainerNetworkState)
+	if encoded != "" {
+		_ = json.Unmarshal([]byte(encoded), &result)
+	}
+	return result
+}
+
+func (r *grpcContainerRuntime) directNetworkState(
+	ctx context.Context,
+	containerID string,
+) (*containersapi.Container, []string, map[string][]string, *tasktypes.Process, error) {
+	if r.containers == nil || r.tasks == nil {
+		return nil, nil, nil, nil, fmt.Errorf("%w: container and task services are required for CNI", ErrUnavailable)
+	}
+	response, err := r.containers.Get(
+		withContainerdNamespace(ctx, r.namespace),
+		&containersapi.GetContainerRequest{ID: containerID},
 	)
+	if err != nil {
+		return nil, nil, nil, nil, containerdOperationError("inspect network metadata for", containerID, err)
+	}
+	record := response.GetContainer()
+	var networks []string
+	if encoded := record.GetLabels()[nerdctlNetworksLabel]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &networks); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("decode networks for container %q: %w", containerID, err)
+		}
+	}
+	aliasMap := make(map[string][]string)
+	if encoded := record.GetLabels()[portoNetworkAliasLabel]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &aliasMap); err != nil {
+			return nil, nil, nil, nil, fmt.Errorf("decode network aliases for container %q: %w", containerID, err)
+		}
+	}
+	process, err := r.getTask(ctx, containerID)
+	if err != nil {
+		if status.Code(err) != codes.NotFound {
+			return nil, nil, nil, nil, containerdOperationError("inspect network namespace for", containerID, err)
+		}
+		process = nil
+	}
+	return record, networks, aliasMap, process, nil
+}
+
+func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...string) ([]byte, error) {
+	command := runtimes.Command{}
+	if r.lima != "" {
+		command.Name = "limactl"
+		command.Args = []string{
+			"shell", r.lima, "--", "sh", "-c",
+			`exec "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+			"porto-runtime-helper",
+		}
+		command.Args = append(command.Args, args...)
+	} else {
+		if r.helperPath == "" {
+			return nil, fmt.Errorf("%w: Porto runtime helper is unavailable", ErrUnsupported)
+		}
+		command.Name = r.helperPath
+		command.Args = append([]string(nil), args...)
+	}
+	output, err := r.runner.Run(ctx, command)
+	if err != nil {
+		return nil, fmt.Errorf("run Porto runtime helper %s: %w: %s", args[0], err, strings.TrimSpace(string(output)))
+	}
+	return output, nil
 }
 
 func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
@@ -454,18 +697,61 @@ func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id stri
 			runtimeOptions = proto.Clone(runtime.GetOptions()).(*anypb.Any)
 		}
 	}
-	_, err = r.tasks.Create(namespacedContext, &tasksapi.CreateTaskRequest{
+	createRequest := &tasksapi.CreateTaskRequest{
 		ContainerID: id,
 		Rootfs:      rootfs,
 		Terminal:    ociSpecTerminal(record.GetSpec().GetValue()),
 		Options:     runtimeOptions,
-	})
+	}
+	if record.GetLabels()[portoManagedLabel] == portoRuntimeVersion {
+		logPath := record.GetLabels()[portoLogPathLabel]
+		if logPath == "" {
+			return fmt.Errorf("%w: Porto-managed container %q has no persistent log path", ErrConflict, id)
+		}
+		if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
+			return err
+		}
+		logURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}).String()
+		createRequest.Stdout = logURI
+		createRequest.Stderr = logURI
+	}
+	_, err = r.tasks.Create(namespacedContext, createRequest)
 	if err != nil {
 		return containerdOperationError("recreate task for", id, err)
 	}
 	if _, err = r.tasks.Start(namespacedContext, &tasksapi.StartRequest{ContainerID: id}); err != nil {
 		_, _ = r.tasks.Delete(namespacedContext, &tasksapi.DeleteTaskRequest{ContainerID: id})
 		return containerdOperationError("start recreated task for", id, err)
+	}
+	return nil
+}
+
+func (r *grpcContainerRuntime) prepareDirectLogPath(ctx context.Context, logPath string) error {
+	if r.lima != "" {
+		_, err := r.runner.Run(ctx, runtimes.Command{
+			Name: "limactl",
+			Args: []string{
+				"shell", r.lima, "--", "sh", "-c",
+				`set -eu; umask 077; mkdir -p -- "$1"; touch -- "$2"`,
+				"porto-container-log",
+				filepath.Dir(logPath),
+				logPath,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("prepare Lima container log %q: %w", logPath, err)
+		}
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		return fmt.Errorf("create direct container log directory: %w", err)
+	}
+	file, err := os.OpenFile(logPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return fmt.Errorf("prepare direct container log %q: %w", logPath, err)
+	}
+	if err := file.Close(); err != nil {
+		return fmt.Errorf("close direct container log %q: %w", logPath, err)
 	}
 	return nil
 }
@@ -524,7 +810,11 @@ func (r *grpcContainerRuntime) UpdateLabels(ctx context.Context, id string, upda
 		labels = map[string]string{}
 	}
 	for key, value := range updates {
-		labels[key] = value
+		if value == "" {
+			delete(labels, key)
+		} else {
+			labels[key] = value
+		}
 	}
 	record.Labels = labels
 	_, err = r.containers.Update(namespacedContext, &containersapi.UpdateContainerRequest{
@@ -532,6 +822,19 @@ func (r *grpcContainerRuntime) UpdateLabels(ctx context.Context, id string, upda
 		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"labels"}},
 	})
 	return containerdOperationError("update metadata for", id, err)
+}
+
+func (r *grpcContainerRuntime) UpdateRestartPolicy(ctx context.Context, id, policy string) error {
+	if err := validateRestartPolicy(policy); err != nil {
+		return err
+	}
+	updates := map[string]string{restartPolicyLabel: policy}
+	if policy == "" || policy == "no" {
+		updates[restartPolicyLabel] = ""
+		updates[restartCountLabel] = ""
+		updates[restartStatusLabel] = ""
+	}
+	return r.UpdateLabels(ctx, id, updates)
 }
 
 func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, update ContainerUpdate) error {
@@ -618,14 +921,58 @@ func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, u
 	)
 }
 
-func (r *grpcContainerRuntime) UpdateHealth(context.Context, string, *ContainerHealthcheck) error {
-	return fmt.Errorf(
-		"%w: direct healthcheck updates cannot safely manage nerdctl scheduling and result logs",
-		ErrUnsupported,
+func (r *grpcContainerRuntime) UpdateHealth(
+	ctx context.Context,
+	id string,
+	healthcheck *ContainerHealthcheck,
+) error {
+	if healthcheck == nil {
+		return errors.New("healthcheck is required")
+	}
+	if r.containers == nil {
+		return fmt.Errorf("%w: container metadata service is unavailable", ErrUnavailable)
+	}
+	if err := validateHealthcheck(healthcheck); err != nil {
+		return err
+	}
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	response, err := r.containers.Get(
+		namespacedContext,
+		&containersapi.GetContainerRequest{ID: id},
 	)
+	if err != nil {
+		return containerdOperationError("inspect health metadata for", id, err)
+	}
+	record := response.GetContainer()
+	if record.GetLabels()[portoManagedLabel] != portoRuntimeVersion {
+		return fmt.Errorf(
+			"%w: container %q health scheduling is owned by its compatibility runtime",
+			ErrUnsupported,
+			id,
+		)
+	}
+	encoded, err := json.Marshal(healthcheck)
+	if err != nil {
+		return fmt.Errorf("encode healthcheck for container %q: %w", id, err)
+	}
+	status := "starting"
+	if len(healthcheck.Test) == 0 || healthcheck.Test[0] == "" || healthcheck.Test[0] == "NONE" {
+		status = "none"
+	}
+	state, err := json.Marshal(containerHealthState{Status: status})
+	if err != nil {
+		return fmt.Errorf("encode health state for container %q: %w", id, err)
+	}
+	return r.UpdateLabels(ctx, id, map[string]string{
+		nerdctlHealthcheckLabel: string(encoded),
+		nerdctlHealthStateLabel: string(state),
+	})
 }
 
 func (r *grpcContainerRuntime) Checkpoint(ctx context.Context, id, parent string) ([]string, error) {
+	if r.client != nil {
+		return r.checkpointContainer(ctx, id, parent)
+	}
 	if r.tasks == nil {
 		return nil, fmt.Errorf("%w: task service is unavailable", ErrUnavailable)
 	}
@@ -647,6 +994,87 @@ func (r *grpcContainerRuntime) Checkpoint(ctx context.Context, id, parent string
 		}
 	}
 	return result, nil
+}
+
+func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint string) error {
+	if r.client == nil {
+		return fmt.Errorf("%w: high-level containerd restore client is unavailable", ErrUnsupported)
+	}
+	capability := r.Capabilities(ctx).CheckpointRestore
+	if !capability.Supported {
+		return fmt.Errorf("%w: container restore: %s", ErrUnsupported, capability.Reason)
+	}
+	namespacedContext := withContainerdNamespace(ctx, r.namespace)
+	if _, err := r.client.LoadContainer(namespacedContext, id); err == nil {
+		return fmt.Errorf("%w: restore target container %q already exists", ErrConflict, id)
+	} else if !errdefs.IsNotFound(err) {
+		return containerdOperationError("inspect restore target", id, err)
+	}
+	checkpointImage, err := r.client.GetImage(namespacedContext, checkpoint)
+	if err != nil {
+		return fmt.Errorf("load checkpoint %q: %w", checkpoint, err)
+	}
+	restored, err := r.client.Restore(
+		namespacedContext,
+		id,
+		checkpointImage,
+		containerd.WithRestoreImage,
+		containerd.WithRestoreSpec,
+		containerd.WithRestoreRuntime,
+		containerd.WithRestoreRW,
+	)
+	if err != nil {
+		return fmt.Errorf("restore container %q metadata from checkpoint %q: %w", id, checkpoint, err)
+	}
+	cleanup := func(operationErr error) error {
+		cleanupErr := restored.Delete(context.Background(), containerd.WithSnapshotCleanup)
+		return errors.Join(operationErr, cleanupErr)
+	}
+	labels, err := checkpointContainerLabels(checkpointImage.Labels())
+	if err != nil {
+		return cleanup(err)
+	}
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[portoManagedLabel] = portoRuntimeVersion
+	labels[nerdctlNameLabel] = id
+	logPath, err := r.directContainerLogPath(id)
+	if err != nil {
+		return cleanup(err)
+	}
+	labels[portoLogPathLabel] = logPath
+	if _, err := restored.SetLabels(namespacedContext, labels); err != nil {
+		return cleanup(fmt.Errorf("restore container %q labels: %w", id, err))
+	}
+	spec, err := restored.Spec(namespacedContext)
+	if err != nil {
+		return cleanup(fmt.Errorf("read restored container %q spec: %w", id, err))
+	}
+	if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
+		return cleanup(err)
+	}
+	logURI := &url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}
+	ioCreator := cio.LogURI(logURI)
+	if spec.Process != nil && spec.Process.Terminal {
+		ioCreator = cio.TerminalLogURI(logURI)
+	}
+	task, err := restored.NewTask(
+		namespacedContext,
+		ioCreator,
+		containerd.WithTaskCheckpoint(checkpointImage),
+	)
+	if err != nil {
+		return cleanup(fmt.Errorf("create restored task for container %q: %w", id, err))
+	}
+	if err := task.Start(namespacedContext); err != nil {
+		_, deleteErr := task.Delete(context.Background())
+		return cleanup(errors.Join(
+			fmt.Errorf("start restored task for container %q: %w", id, err),
+			deleteErr,
+		))
+	}
+	return nil
 }
 
 func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdate) {
@@ -715,9 +1143,10 @@ func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, vol
 	if record == nil {
 		return fmt.Errorf("inspect metadata for container %q returned an empty record", id)
 	}
-	if record.GetSnapshotKey() != "" || record.GetSnapshotter() != "" ||
+	managed := record.GetLabels()[portoManagedLabel] == portoRuntimeVersion
+	if !managed && (record.GetSnapshotKey() != "" || record.GetSnapshotter() != "" ||
 		record.GetLabels()[nerdctlNetworksLabel] != "" ||
-		record.GetLabels()[nerdctlPortsLabel] != "" {
+		record.GetLabels()[nerdctlPortsLabel] != "") {
 		return fmt.Errorf("%w: direct removal cannot safely clean up container snapshots or networking", ErrUnsupported)
 	}
 
@@ -769,7 +1198,60 @@ func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, vol
 		namespacedContext,
 		&containersapi.DeleteContainerRequest{ID: id},
 	)
-	return containerdOperationError("delete metadata for", id, err)
+	if err != nil {
+		return containerdOperationError("delete metadata for", id, err)
+	}
+	if managed && record.GetSnapshotKey() != "" {
+		if r.client == nil {
+			return fmt.Errorf(
+				"container %q metadata was removed but snapshot %q remains: %w",
+				id,
+				record.GetSnapshotKey(),
+				ErrUnavailable,
+			)
+		}
+		snapshotter := record.GetSnapshotter()
+		if snapshotter == "" {
+			return fmt.Errorf("container %q metadata was removed but its snapshotter is unknown", id)
+		}
+		if err := r.client.SnapshotService(snapshotter).Remove(namespacedContext, record.GetSnapshotKey()); err != nil &&
+			!errdefs.IsNotFound(err) {
+			return fmt.Errorf(
+				"container %q metadata was removed but snapshot %q cleanup failed: %w",
+				id,
+				record.GetSnapshotKey(),
+				err,
+			)
+		}
+	}
+	if managed {
+		if err := r.removeDirectLog(ctx, record.GetLabels()[portoLogPathLabel]); err != nil {
+			return fmt.Errorf("container %q was removed but log cleanup failed: %w", id, err)
+		}
+	}
+	return nil
+}
+
+func (r *grpcContainerRuntime) removeDirectLog(ctx context.Context, logPath string) error {
+	if logPath == "" {
+		return nil
+	}
+	if r.lima != "" {
+		_, err := r.runner.Run(ctx, runtimes.Command{
+			Name: "limactl",
+			Args: []string{
+				"shell", r.lima, "--", "rm", "-f", "--", logPath,
+			},
+		})
+		if err != nil {
+			return fmt.Errorf("remove Lima container log %q: %w", logPath, err)
+		}
+		return nil
+	}
+	if err := os.Remove(logPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove direct container log %q: %w", logPath, err)
+	}
+	return nil
 }
 
 func (r *grpcContainerRuntime) getTask(ctx context.Context, id string) (*tasktypes.Process, error) {

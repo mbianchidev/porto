@@ -57,13 +57,14 @@ type containerInventory struct {
 	connector containerRuntimeConnector
 	options   inventoryOptions
 
-	mu          sync.RWMutex
-	snapshot    ContainerSnapshot
-	sequence    uint64
-	subscribers map[uint64]chan ContainerSnapshot
-	nextID      uint64
-	refresh     chan struct{}
-	instanceID  string
+	mu           sync.RWMutex
+	snapshot     ContainerSnapshot
+	capabilities ContainerCapabilities
+	sequence     uint64
+	subscribers  map[uint64]chan ContainerSnapshot
+	nextID       uint64
+	refresh      chan struct{}
+	instanceID   string
 }
 
 func newContainerInventory(connector containerRuntimeConnector, options inventoryOptions) *containerInventory {
@@ -82,16 +83,18 @@ func newContainerInventory(connector containerRuntimeConnector, options inventor
 	if options.operationTimeout <= 0 {
 		options.operationTimeout = defaultInventoryOperationTimeout
 	}
+	capabilities := containerCapabilities()
 	inventory := &containerInventory{
-		connector:   connector,
-		options:     options,
-		subscribers: map[uint64]chan ContainerSnapshot{},
-		refresh:     make(chan struct{}, 1),
-		instanceID:  newInventoryInstanceID(),
+		connector:    connector,
+		options:      options,
+		subscribers:  map[uint64]chan ContainerSnapshot{},
+		refresh:      make(chan struct{}, 1),
+		instanceID:   newInventoryInstanceID(),
+		capabilities: capabilities,
 		snapshot: ContainerSnapshot{
 			Message:      "Connecting to containerd",
 			Containers:   []Container{},
-			Capabilities: containerCapabilities(),
+			Capabilities: capabilities,
 		},
 	}
 	inventory.snapshot.InstanceID = inventory.instanceID
@@ -114,17 +117,21 @@ func containerCapabilities() ContainerCapabilities {
 			Supported: true,
 			Reason:    "stopped tasks are recreated from the containerd OCI spec and snapshot mounts; attached stream recreation remains on the compatibility path",
 		},
+		DirectCreation: RuntimeCapability{
+			Supported: false,
+			Reason:    "direct creation requires an active containerd capability probe",
+		},
 		ExecLifecycle: RuntimeCapability{
-			Supported: true,
-			Reason:    "Porto creates and bridges containerd FIFO and TTY streams for direct exec processes",
+			Supported: false,
+			Reason:    "direct exec requires an active containerd connection",
 		},
 		HealthUpdates: RuntimeCapability{
 			Supported: false,
-			Reason:    "containerd does not manage nerdctl healthcheck scheduling and result logs",
+			Reason:    "health scheduling requires direct exec support",
 		},
 		NetworkUpdates: RuntimeCapability{
 			Supported: false,
-			Reason:    "containerd does not expose nerdctl CNI endpoint connect and disconnect operations",
+			Reason:    "network updates require a backend-local CNI capability probe",
 		},
 		CheckpointRestore: RuntimeCapability{
 			Supported: false,
@@ -151,6 +158,13 @@ func (i *containerInventory) run(ctx context.Context) {
 			backoff = min(backoff*2, i.options.maxBackoff)
 			continue
 		}
+		capabilities := containerCapabilities()
+		if provider, ok := runtimeClient.(interface {
+			Capabilities(context.Context) ContainerCapabilities
+		}); ok {
+			capabilities = provider.Capabilities(ctx)
+		}
+		i.setCapabilities(capabilities)
 
 		backoff = i.options.connectBackoff
 		err = i.runConnected(ctx, runtimeClient)
@@ -167,6 +181,13 @@ func (i *containerInventory) run(ctx context.Context) {
 		}
 		backoff = min(backoff*2, i.options.maxBackoff)
 	}
+}
+
+func (i *containerInventory) setCapabilities(capabilities ContainerCapabilities) {
+	i.mu.Lock()
+	i.capabilities = capabilities
+	i.snapshot.Capabilities = capabilities
+	i.mu.Unlock()
 }
 
 func (i *containerInventory) runConnected(ctx context.Context, runtimeClient containerRuntime) error {
@@ -358,6 +379,7 @@ func (i *containerInventory) publishContainers(
 			var latestOOM time.Time
 			var latestStart time.Time
 			var latestHealthTransition time.Time
+			var latestRestart time.Time
 			for eventIndex := len(history) - 1; eventIndex >= 0; eventIndex-- {
 				event := history[eventIndex]
 				if latestOOM.IsZero() && event.OOM {
@@ -369,9 +391,16 @@ func (i *containerInventory) publishContainers(
 				if latestHealthTransition.IsZero() && event.Type == "health-transition" {
 					latestHealthTransition = event.Timestamp
 				}
+				if latestRestart.IsZero() && event.Type == "restart" {
+					latestRestart = event.Timestamp
+					containers[index].LastRestartReason = event.Reason
+				}
 			}
 			if !latestHealthTransition.IsZero() {
 				containers[index].Health.UpdatedAt = latestHealthTransition.Format(time.RFC3339Nano)
+			}
+			if !latestRestart.IsZero() {
+				containers[index].LastRestartAt = latestRestart.Format(time.RFC3339Nano)
 			}
 			if !latestOOM.IsZero() && (latestStart.IsZero() || latestOOM.After(latestStart)) {
 				containers[index].OOMKilled = true
@@ -408,7 +437,7 @@ func (i *containerInventory) publishContainers(
 	i.snapshot.ConnectedAt = connectedAt
 	i.snapshot.LastReconciledAt = reconciledAt
 	i.snapshot.Containers = containers
-	i.snapshot.Capabilities = containerCapabilities()
+	i.snapshot.Capabilities = i.capabilities
 	snapshot := cloneContainerSnapshot(i.snapshot)
 	i.publishLocked(snapshot)
 	i.mu.Unlock()
@@ -443,7 +472,22 @@ func (i *containerInventory) recordReconciledTransitionsLocked(old, current Cont
 		})
 	}
 	if current.RestartCount > old.RestartCount {
-		appendEvent("restart", fmt.Sprintf("count %d->%d", old.RestartCount, current.RestartCount))
+		reason := fmt.Sprintf("count %d->%d", old.RestartCount, current.RestartCount)
+		for index := len(i.snapshot.Events) - 1; index >= 0; index-- {
+			event := i.snapshot.Events[index]
+			if event.ContainerID != current.ID {
+				continue
+			}
+			if event.OOM {
+				reason = "oom"
+				break
+			}
+			if event.ExitCode != nil {
+				reason = event.Reason
+				break
+			}
+		}
+		appendEvent("restart", reason)
 	}
 	if old.Networks != current.Networks || old.Ports != current.Ports ||
 		!reflect.DeepEqual(old.NetworkDetails, current.NetworkDetails) {
@@ -520,7 +564,7 @@ func (i *containerInventory) markUnavailable(err error) {
 	i.snapshot.Available = false
 	i.snapshot.Stale = len(i.snapshot.Containers) > 0
 	i.snapshot.Message = message
-	i.snapshot.Capabilities = containerCapabilities()
+	i.snapshot.Capabilities = i.capabilities
 	snapshot := cloneContainerSnapshot(i.snapshot)
 	i.publishLocked(snapshot)
 	i.mu.Unlock()

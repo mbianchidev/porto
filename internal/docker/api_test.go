@@ -228,18 +228,27 @@ func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	}
 }
 
-func TestDockerAPICheckpointAndRestoreReturnTypedUnsupportedErrors(t *testing.T) {
+func TestDockerAPICheckpointReturnsTypedUnsupportedError(t *testing.T) {
 	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
-	for _, path := range []string{
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(
+		http.MethodPost,
 		"/v1.47/containers/demo/checkpoint",
-		"/v1.47/containers/demo/restore",
-	} {
-		response := httptest.NewRecorder()
-		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, path, nil))
-		if response.Code != http.StatusNotImplemented ||
-			!strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
-			t.Fatalf("%s = %d: %s", path, response.Code, response.Body.String())
-		}
+		nil,
+	))
+	if response.Code != http.StatusNotImplemented ||
+		!strings.Contains(response.Body.String(), ErrUnsupported.Error()) {
+		t.Fatalf("checkpoint = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIRestoreRequiresCheckpointReference(t *testing.T) {
+	response := httptest.NewRecorder()
+	NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock").
+		ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1.47/containers/demo/restore", nil))
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "checkpoint image reference") {
+		t.Fatalf("restore = %d: %s", response.Code, response.Body.String())
 	}
 }
 
@@ -254,6 +263,25 @@ func TestDockerAPICheckpointUsesDirectContainerOperations(t *testing.T) {
 	))
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "checkpoint") {
 		t.Fatalf("checkpoint response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIRestoreUsesDirectContainerOperations(t *testing.T) {
+	operations := &fakeContainerOperations{errs: map[string]error{}}
+	response := httptest.NewRecorder()
+	NewAPI(managerWithContainerOperations(operations), "/tmp/porto.sock").ServeHTTP(
+		response,
+		httptest.NewRequest(
+			http.MethodPost,
+			"/v1.47/containers/restored/restore?checkpoint=porto.local%2Fcheckpoints%2Fdemo%3A1",
+			nil,
+		),
+	)
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("restore response = %d: %s", response.Code, response.Body.String())
+	}
+	if want := []string{"restore restored porto.local/checkpoints/demo:1", "close"}; !reflect.DeepEqual(operations.calls, want) {
+		t.Fatalf("restore calls = %q, want %q", operations.calls, want)
 	}
 }
 
