@@ -81,7 +81,12 @@ func TestWindowsProcessTreeHelper(t *testing.T) {
 		if err := child.Start(); err != nil {
 			os.Exit(1)
 		}
-		if err := os.WriteFile(os.Getenv("PORTO_PROCESS_TREE_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+		pidFile := os.Getenv("PORTO_PROCESS_TREE_PID_FILE")
+		temporaryPIDFile := pidFile + ".tmp"
+		if err := os.WriteFile(temporaryPIDFile, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			os.Exit(1)
+		}
+		if err := os.Rename(temporaryPIDFile, pidFile); err != nil {
 			os.Exit(1)
 		}
 	}
