@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -14,6 +15,33 @@ import (
 )
 
 const stillActive = 259
+
+func TestNewCommandHidesWindowsConsole(t *testing.T) {
+	command := NewCommand(context.Background(), "", "cmd.exe", "/C", "exit 0")
+	if command.SysProcAttr == nil {
+		t.Fatal("SysProcAttr is nil")
+	}
+	if !command.SysProcAttr.HideWindow {
+		t.Fatal("HideWindow is false")
+	}
+	if command.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
+		t.Fatalf("CreationFlags = %#x, want CREATE_NO_WINDOW", command.SysProcAttr.CreationFlags)
+	}
+}
+
+func TestConfigurePreservesWindowsCreationFlags(t *testing.T) {
+	command := exec.Command("cmd.exe", "/C", "exit 0")
+	command.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
+
+	configure(command)
+
+	if command.SysProcAttr.CreationFlags&windows.CREATE_NEW_PROCESS_GROUP == 0 {
+		t.Fatalf("CreationFlags = %#x, want CREATE_NEW_PROCESS_GROUP", command.SysProcAttr.CreationFlags)
+	}
+	if command.SysProcAttr.CreationFlags&windows.CREATE_NO_WINDOW == 0 {
+		t.Fatalf("CreationFlags = %#x, want CREATE_NO_WINDOW", command.SysProcAttr.CreationFlags)
+	}
+}
 
 func TestKillTerminatesWindowsProcessTree(t *testing.T) {
 	executable, err := os.Executable()
@@ -53,7 +81,12 @@ func TestWindowsProcessTreeHelper(t *testing.T) {
 		if err := child.Start(); err != nil {
 			os.Exit(1)
 		}
-		if err := os.WriteFile(os.Getenv("PORTO_PROCESS_TREE_PID_FILE"), []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+		pidFile := os.Getenv("PORTO_PROCESS_TREE_PID_FILE")
+		temporaryPIDFile := pidFile + ".tmp"
+		if err := os.WriteFile(temporaryPIDFile, []byte(strconv.Itoa(child.Process.Pid)), 0o600); err != nil {
+			os.Exit(1)
+		}
+		if err := os.Rename(temporaryPIDFile, pidFile); err != nil {
 			os.Exit(1)
 		}
 	}

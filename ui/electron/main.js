@@ -110,6 +110,7 @@ async function startDaemon() {
       detached: true,
       env: environment,
       stdio: 'ignore',
+      windowsHide: true,
     })
     child.once('error', reject)
     child.once('spawn', () => {
@@ -126,6 +127,7 @@ async function runningDaemonProcesses() {
     const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
       timeout: 10000,
       maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
     })
     if (stdout.trim() === '') return []
     processes = windowsDaemonProcesses(JSON.parse(stdout))
@@ -150,6 +152,7 @@ async function processIdentity(pid) {
       const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
         timeout: 5000,
         maxBuffer: 1024 * 1024,
+        windowsHide: true,
       })
       if (stdout.trim() === '') return null
       const processInfo = JSON.parse(stdout)
