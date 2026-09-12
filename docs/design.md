@@ -203,7 +203,7 @@ Corners stay tight and mechanical: 2px (buttons, inputs, lamps' hairline borders
 - **Combobox (branch picker):** search input with an inline leading icon and chevron; results are pinned (default branch, then `main`, then `master`) ahead of the remaining options sorted alphabetically; selected/hovered rows highlight in `olive-soft`.
 
 ### Navigation
-- **Primary rail:** a full-height graphite navigation rack grouped by local development, containers, Kubernetes, virtual machines, and system controls. The active route gets a light putty insert with a hard-offset edge; inactive routes remain low-contrast graphite controls that brighten on hover. At narrow widths the rail opens over a scrim from a persistent menu button.
+- **Primary rail:** a full-height graphite navigation rack grouped by local development, containers, Kubernetes, databases, virtual machines, and system controls. Runtime and system groups use native-button section toggles with visible chevrons and `aria-expanded`; they start open and collapse in place without changing the active route. The active route gets a light putty insert with a hard-offset edge; inactive routes remain low-contrast graphite controls that brighten on hover. At narrow widths the rail opens over a scrim from a persistent menu button.
 
 ### Status Lamp (signature component)
 A 9px circle with a 1px dark border and an inset highlight, reading as a physical panel LED. Color encodes state directly: olive (running), amber (starting), fault red (crashed/error), mid-gray (stopped/unset). It appears at fleet level (aggregate counts) and per-channel (leading the channel row) — it is always paired with a text state label, never used as the sole signal.

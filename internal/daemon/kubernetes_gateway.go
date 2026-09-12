@@ -349,6 +349,8 @@ func httpKubernetesServicePort(port kubernetes.ServicePort) bool {
 }
 
 func (s *Server) ensureKubernetesGatewayForward(ctx context.Context, contextName string) (*kubeForward, error) {
+	s.kubeForwardMu.Lock()
+	defer s.kubeForwardMu.Unlock()
 	key := contextName + "/gateway"
 	s.mu.Lock()
 	existing := s.kubeForwards[key]
@@ -389,6 +391,8 @@ func (s *Server) ensureKubernetesRawForward(
 	service kubernetes.Service,
 	servicePort kubernetes.ServicePort,
 ) (*kubeForward, error) {
+	s.kubeForwardMu.Lock()
+	defer s.kubeForwardMu.Unlock()
 	key := kubernetesRawForwardKey(contextName, service.Namespace, service.Name, servicePort.Port)
 	if existing := s.kubernetesForward(key); existing != nil {
 		return existing, nil

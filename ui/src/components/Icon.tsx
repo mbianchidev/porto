@@ -11,8 +11,12 @@ export type IconName =
   | 'volumes'
   | 'networks'
   | 'kubernetes'
+  | 'deployments'
   | 'pods'
   | 'services'
+  | 'jobs'
+  | 'cronjobs'
+  | 'portForward'
   | 'configs'
   | 'secrets'
   | 'nodes'
@@ -62,8 +66,12 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'volumes' && <path d="M4 8c0-2 3.5-3 8-3s8 1 8 3-3.5 3-8 3-8-1-8-3Zm0 0v8c0 2 3.5 3 8 3s8-1 8-3V8M4 12c0 2 3.5 3 8 3s8-1 8-3" />}
       {name === 'networks' && <path d="M12 4v5m0 0-6 4m6-4 6 4M6 13v4m12-4v4M4 21h4v-4H4Zm8 0h4v-4h-4Zm8 0h4v-4h-4Z" />}
       {name === 'kubernetes' && <path d="m12 3 7.5 4.3v9.4L12 21l-7.5-4.3V7.3ZM12 3v18m7.5-13.7L12 12m-7.5-2.7L12 12" />}
+      {name === 'deployments' && <><path d="m12 3 7 4-7 4-7-4Z" /><path d="m5 11 7 4 7-4M5 15l7 4 7-4" /></>}
       {name === 'pods' && <path d="M12 3a4 4 0 0 1 4 4v3H8V7a4 4 0 0 1 4-4Zm-5 7h10l1 10H6Z" />}
       {name === 'services' && <path d="M12 6a2.5 2.5 0 1 0 0 5 2.5 2.5 0 0 0 0-5Zm0-3v2m0 14v2m8.5-11h-2m-13 0H3M17.7 6.3l-1.4 1.4m-8.6 8.6-1.4 1.4m11.4 0-1.4-1.4M7.7 7.7 6.3 6.3" />}
+      {name === 'jobs' && <><path d="M6 4h12v16H6Z" /><path d="m9 12 2 2 4-5M9 7h6" /></>}
+      {name === 'cronjobs' && <><circle cx="12" cy="12" r="8" /><path d="M12 7v5l3 2M6 3 3 2M18 3l-3 2" /></>}
+      {name === 'portForward' && <><path d="M4 7h6v5H4Zm10 5h6v5h-6Z" /><path d="M10 9.5h4m-2-2 2 2-2 2M14 14.5h-4m2-2-2 2 2 2" /></>}
       {name === 'configs' && <><path d="M7 3h10v18H7Z" /><path d="M9.5 8h5M9.5 12h5M9.5 16h3" /></>}
       {name === 'secrets' && <><rect x="5" y="10" width="14" height="10" rx="2" /><path d="M8 10V7a4 4 0 0 1 8 0v3m-4 4v2" /></>}
       {name === 'nodes' && <path d="M5 5h5v5H5Zm9 0h5v5h-5ZM5 14h5v5H5Zm9 0h5v5h-5Z" />}

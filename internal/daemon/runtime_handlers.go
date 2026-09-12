@@ -62,6 +62,12 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/kubernetes/contexts", s.requireRuntime("kubernetes", s.kubernetesContexts))
 	mux.HandleFunc("GET /api/kubernetes/pods", s.requireRuntime("kubernetes", s.kubernetesPods))
 	mux.HandleFunc("GET /api/kubernetes/services", s.requireRuntime("kubernetes", s.kubernetesServices))
+	mux.HandleFunc("GET /api/kubernetes/deployments", s.requireRuntime("kubernetes", s.kubernetesDeployments))
+	mux.HandleFunc("GET /api/kubernetes/jobs", s.requireRuntime("kubernetes", s.kubernetesJobs))
+	mux.HandleFunc("GET /api/kubernetes/cronjobs", s.requireRuntime("kubernetes", s.kubernetesCronJobs))
+	mux.HandleFunc("GET /api/kubernetes/port-forwards", s.requireRuntime("kubernetes", s.kubernetesPortForwards))
+	mux.HandleFunc("POST /api/kubernetes/port-forwards", s.requireRuntime("kubernetes", s.createKubernetesPortForward))
+	mux.HandleFunc("DELETE /api/kubernetes/port-forwards/{id}", s.requireRuntime("kubernetes", s.stopKubernetesPortForward))
 	mux.HandleFunc("GET /api/kubernetes/configmaps", s.requireRuntime("kubernetes", s.kubernetesConfigMaps))
 	mux.HandleFunc("GET /api/kubernetes/configmaps/{namespace}/{name}", s.requireRuntime("kubernetes", s.kubernetesConfigMap))
 	mux.HandleFunc("GET /api/kubernetes/secrets", s.requireRuntime("kubernetes", s.kubernetesSecrets))
@@ -509,6 +515,21 @@ func (s *Server) kubernetesServices(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesDeployments(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Deployments(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesJobs(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.Jobs(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) kubernetesCronJobs(w http.ResponseWriter, r *http.Request) {
+	value, err := s.kubernetes.CronJobs(r.Context(), runtimeContext(r), r.URL.Query().Get("namespace"))
 	writeRuntimeResult(w, value, err)
 }
 
@@ -1142,6 +1163,8 @@ func renameRollbackError(err error) error {
 }
 
 func (s *Server) stopKubernetesClusterForwards(clusterName string) error {
+	s.kubeForwardMu.Lock()
+	defer s.kubeForwardMu.Unlock()
 	legacyContext := "porto-" + clusterName
 	stopErrors := []error{s.stopKubernetesForwards(legacyContext)}
 	contextName, err := s.clusters.ContextName(clusterName)

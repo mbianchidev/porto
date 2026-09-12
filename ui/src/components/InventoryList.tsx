@@ -1,4 +1,4 @@
-import type { ReactNode } from 'react'
+import type { CSSProperties, ReactNode } from 'react'
 import { StatusLamp } from './StatusLamp'
 import type { LampState } from '../types'
 
@@ -40,6 +40,7 @@ export function InventoryList<T>({
   emptyMessage,
   ariaLabel,
 }: InventoryListProps<T>) {
+  const columnsStyle = { '--inventory-columns': columnsTemplate } as CSSProperties
   if (items.length === 0) {
     return (
       <article className="empty">
@@ -49,7 +50,7 @@ export function InventoryList<T>({
   }
   return (
     <div className="inventoryList" role="listbox" aria-label={ariaLabel}>
-      <div className="inventoryHead" style={{ gridTemplateColumns: columnsTemplate }} aria-hidden="true">
+      <div className="inventoryHead" style={columnsStyle} aria-hidden="true">
         {getLamp && <span />}
         {columns.map((column) => (
           <span key={column.header}>{column.header}</span>
@@ -65,8 +66,8 @@ export function InventoryList<T>({
               type="button"
               role="option"
               aria-selected={selected}
-              className="inventoryRowToggle"
-              style={{ gridTemplateColumns: columnsTemplate }}
+              className={`inventoryRowToggle ${getLamp ? 'withLamp' : 'withoutLamp'}`}
+              style={columnsStyle}
               onClick={() => onSelect(item)}
             >
               {getLamp && (
@@ -76,7 +77,8 @@ export function InventoryList<T>({
                 </span>
               )}
               {columns.map((column) => (
-                <span className={column.className ?? ''} key={column.header}>
+                <span className={`inventoryCell ${column.className ?? ''}`.trim()} data-label={column.header} key={column.header}>
+                  <span className="visuallyHidden">{column.header}: </span>
                   {column.render(item)}
                 </span>
               ))}
