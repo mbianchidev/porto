@@ -189,6 +189,18 @@ does not poll resource APIs until the selected context is reachable. On first
 load it prefers a fully running managed cluster; start a stopped cluster or
 select another context before opening its resources.
 
+The Kubernetes rail includes dedicated inventories for Deployments, Pods,
+Services, Jobs, CronJobs, storage, Gateway API resources, ConfigMaps, Secrets,
+and Nodes. Resource dashboards share context selection, namespaced inventories
+add namespace filtering, and each list provides health signals plus an adjacent
+inspector for the selected resource.
+
+The **Port forwarding** dashboard starts and stops explicit loopback forwards
+for Services, Pods, and Deployments. Leave the local port empty to allocate a
+free port from Porto's forwarding range, or request a specific available port.
+Forwards bind only to `127.0.0.1`, remain active until stopped or until the
+cluster or Porto daemon exits, and are not restored after a daemon restart.
+
 ### Create a local cluster
 
 Porto supports three native-engine providers:

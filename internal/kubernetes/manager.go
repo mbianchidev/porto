@@ -108,6 +108,52 @@ type Service struct {
 	Age         string        `json:"age"`
 }
 
+type Deployment struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Desired     int32  `json:"desired"`
+	Current     int32  `json:"current"`
+	Updated     int32  `json:"updated"`
+	Ready       int32  `json:"ready"`
+	Available   int32  `json:"available"`
+	Unavailable int32  `json:"unavailable"`
+	Strategy    string `json:"strategy"`
+	State       string `json:"state"`
+	Reason      string `json:"reason,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Age         string `json:"age"`
+}
+
+type Job struct {
+	Name        string `json:"name"`
+	Namespace   string `json:"namespace"`
+	Completions int32  `json:"completions"`
+	Parallelism int32  `json:"parallelism"`
+	Active      int32  `json:"active"`
+	Succeeded   int32  `json:"succeeded"`
+	Failed      int32  `json:"failed"`
+	Suspended   bool   `json:"suspended"`
+	State       string `json:"state"`
+	Reason      string `json:"reason,omitempty"`
+	Message     string `json:"message,omitempty"`
+	Age         string `json:"age"`
+}
+
+type CronJob struct {
+	Name              string `json:"name"`
+	Namespace         string `json:"namespace"`
+	Schedule          string `json:"schedule"`
+	Suspended         bool   `json:"suspended"`
+	ConcurrencyPolicy string `json:"concurrencyPolicy"`
+	Active            int    `json:"active"`
+	LastSchedule      string `json:"lastSchedule"`
+	LastSuccessful    string `json:"lastSuccessful"`
+	SuccessfulHistory int32  `json:"successfulHistory"`
+	FailedHistory     int32  `json:"failedHistory"`
+	State             string `json:"state"`
+	Age               string `json:"age"`
+}
+
 type ConfigMap struct {
 	Name            string   `json:"name"`
 	Namespace       string   `json:"namespace"`
@@ -533,6 +579,118 @@ func (m *Manager) Services(ctx context.Context, contextName, namespace string) (
 		})
 	}
 	return services, nil
+}
+
+func (m *Manager) Deployments(ctx context.Context, contextName, namespace string) ([]Deployment, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("deployments", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list deploymentList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes deployments: %w", err)
+	}
+	deployments := make([]Deployment, 0, len(list.Items))
+	for _, item := range list.Items {
+		desired := int32Value(item.Spec.Replicas, 1)
+		state, reason, message := deploymentStatus(
+			desired,
+			item.Status.Replicas,
+			item.Status.UpdatedReplicas,
+			item.Status.AvailableReplicas,
+			item.Status.Conditions,
+		)
+		deployments = append(deployments, Deployment{
+			Name:        item.Metadata.Name,
+			Namespace:   item.Metadata.Namespace,
+			Desired:     desired,
+			Current:     item.Status.Replicas,
+			Updated:     item.Status.UpdatedReplicas,
+			Ready:       item.Status.ReadyReplicas,
+			Available:   item.Status.AvailableReplicas,
+			Unavailable: item.Status.UnavailableReplicas,
+			Strategy:    firstNonEmpty(item.Spec.Strategy.Type, "RollingUpdate"),
+			State:       state,
+			Reason:      reason,
+			Message:     message,
+			Age:         age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return deployments, nil
+}
+
+func (m *Manager) Jobs(ctx context.Context, contextName, namespace string) ([]Job, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("jobs", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list jobList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes jobs: %w", err)
+	}
+	jobs := make([]Job, 0, len(list.Items))
+	for _, item := range list.Items {
+		completions := int32Value(item.Spec.Completions, 1)
+		parallelism := int32Value(item.Spec.Parallelism, 1)
+		state, reason, message := jobStatus(
+			item.Spec.Suspend,
+			completions,
+			item.Status.Active,
+			item.Status.Succeeded,
+			item.Status.Failed,
+			item.Status.Conditions,
+		)
+		jobs = append(jobs, Job{
+			Name:        item.Metadata.Name,
+			Namespace:   item.Metadata.Namespace,
+			Completions: completions,
+			Parallelism: parallelism,
+			Active:      item.Status.Active,
+			Succeeded:   item.Status.Succeeded,
+			Failed:      item.Status.Failed,
+			Suspended:   item.Spec.Suspend,
+			State:       state,
+			Reason:      reason,
+			Message:     message,
+			Age:         age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return jobs, nil
+}
+
+func (m *Manager) CronJobs(ctx context.Context, contextName, namespace string) ([]CronJob, error) {
+	output, err := m.run(ctx, contextName, m.timeout, nil, namespacedListArgs("cronjobs", namespace)...)
+	if err != nil {
+		return nil, err
+	}
+	var list cronJobList
+	if err := json.Unmarshal(output, &list); err != nil {
+		return nil, fmt.Errorf("decode Kubernetes cron jobs: %w", err)
+	}
+	cronJobs := make([]CronJob, 0, len(list.Items))
+	for _, item := range list.Items {
+		state := "scheduled"
+		if item.Spec.Suspend {
+			state = "suspended"
+		} else if len(item.Status.Active) > 0 {
+			state = "running"
+		}
+		cronJobs = append(cronJobs, CronJob{
+			Name:              item.Metadata.Name,
+			Namespace:         item.Metadata.Namespace,
+			Schedule:          item.Spec.Schedule,
+			Suspended:         item.Spec.Suspend,
+			ConcurrencyPolicy: firstNonEmpty(item.Spec.ConcurrencyPolicy, "Allow"),
+			Active:            len(item.Status.Active),
+			LastSchedule:      age(item.Status.LastScheduleTime),
+			LastSuccessful:    age(item.Status.LastSuccessfulTime),
+			SuccessfulHistory: int32Value(item.Spec.SuccessfulJobsHistoryLimit, 3),
+			FailedHistory:     int32Value(item.Spec.FailedJobsHistoryLimit, 1),
+			State:             state,
+			Age:               age(item.Metadata.CreationTimestamp),
+		})
+	}
+	return cronJobs, nil
 }
 
 func (m *Manager) ConfigMaps(ctx context.Context, contextName, namespace string) ([]ConfigMap, error) {
@@ -1453,6 +1611,65 @@ func mergeResourceCondition(current, candidate resourceStatusCondition) resource
 	return current
 }
 
+func deploymentStatus(
+	desired int32,
+	current int32,
+	updated int32,
+	available int32,
+	conditions []resourceStatusCondition,
+) (string, string, string) {
+	replicaFailure := findResourceCondition(conditions, "ReplicaFailure")
+	progressing := findResourceCondition(conditions, "Progressing")
+	availableCondition := findResourceCondition(conditions, "Available")
+	switch {
+	case desired == 0:
+		return "scaled to zero", "", ""
+	case strings.EqualFold(replicaFailure.Status, "True"):
+		return "degraded", replicaFailure.Reason, replicaFailure.Message
+	case strings.EqualFold(progressing.Status, "False"):
+		return "degraded", progressing.Reason, progressing.Message
+	case available >= desired && updated >= desired:
+		return "available", availableCondition.Reason, availableCondition.Message
+	case current > 0 || updated > 0 || strings.EqualFold(progressing.Status, "True"):
+		return "progressing", availableCondition.Reason, availableCondition.Message
+	default:
+		return "pending", progressing.Reason, progressing.Message
+	}
+}
+
+func jobStatus(
+	suspended bool,
+	completions int32,
+	active int32,
+	succeeded int32,
+	failed int32,
+	conditions []resourceStatusCondition,
+) (string, string, string) {
+	complete := findResourceCondition(conditions, "Complete")
+	failedCondition := findResourceCondition(conditions, "Failed")
+	switch {
+	case suspended:
+		return "suspended", "", ""
+	case strings.EqualFold(failedCondition.Status, "True"):
+		return "failed", failedCondition.Reason, failedCondition.Message
+	case strings.EqualFold(complete.Status, "True") || (completions > 0 && succeeded >= completions):
+		return "complete", complete.Reason, complete.Message
+	case active > 0:
+		return "running", "", ""
+	case failed > 0:
+		return "failed", failedCondition.Reason, failedCondition.Message
+	default:
+		return "pending", "", ""
+	}
+}
+
+func int32Value(value *int32, fallback int32) int32 {
+	if value == nil {
+		return fallback
+	}
+	return *value
+}
+
 func gatewayReference(namespace, name, section string, port int32) string {
 	reference := name
 	if namespace != "" {
@@ -1667,6 +1884,63 @@ type serviceList struct {
 					Hostname string `json:"hostname"`
 				} `json:"ingress"`
 			} `json:"loadBalancer"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type deploymentList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			Replicas *int32 `json:"replicas"`
+			Strategy struct {
+				Type string `json:"type"`
+			} `json:"strategy"`
+		} `json:"spec"`
+		Status struct {
+			Replicas            int32                     `json:"replicas"`
+			UpdatedReplicas     int32                     `json:"updatedReplicas"`
+			ReadyReplicas       int32                     `json:"readyReplicas"`
+			AvailableReplicas   int32                     `json:"availableReplicas"`
+			UnavailableReplicas int32                     `json:"unavailableReplicas"`
+			Conditions          []resourceStatusCondition `json:"conditions"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type jobList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			Completions *int32 `json:"completions"`
+			Parallelism *int32 `json:"parallelism"`
+			Suspend     bool   `json:"suspend"`
+		} `json:"spec"`
+		Status struct {
+			Active     int32                     `json:"active"`
+			Succeeded  int32                     `json:"succeeded"`
+			Failed     int32                     `json:"failed"`
+			Conditions []resourceStatusCondition `json:"conditions"`
+		} `json:"status"`
+	} `json:"items"`
+}
+
+type cronJobList struct {
+	Items []struct {
+		Metadata metadata `json:"metadata"`
+		Spec     struct {
+			Schedule                   string `json:"schedule"`
+			Suspend                    bool   `json:"suspend"`
+			ConcurrencyPolicy          string `json:"concurrencyPolicy"`
+			SuccessfulJobsHistoryLimit *int32 `json:"successfulJobsHistoryLimit"`
+			FailedJobsHistoryLimit     *int32 `json:"failedJobsHistoryLimit"`
+		} `json:"spec"`
+		Status struct {
+			Active []struct {
+				Name string `json:"name"`
+			} `json:"active"`
+			LastScheduleTime   string `json:"lastScheduleTime"`
+			LastSuccessfulTime string `json:"lastSuccessfulTime"`
 		} `json:"status"`
 	} `json:"items"`
 }

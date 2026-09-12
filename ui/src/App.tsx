@@ -14,8 +14,12 @@ import { Builds } from './pages/Builds'
 import { Volumes } from './pages/Volumes'
 import { Networks } from './pages/Networks'
 import { KubernetesOverview } from './pages/KubernetesOverview'
+import { KubernetesDeployments } from './pages/KubernetesDeployments'
 import { Pods } from './pages/Pods'
 import { KubernetesServices } from './pages/KubernetesServices'
+import { KubernetesJobs } from './pages/KubernetesJobs'
+import { KubernetesCronJobs } from './pages/KubernetesCronJobs'
+import { KubernetesPortForwards } from './pages/KubernetesPortForwards'
 import { KubernetesStorage } from './pages/KubernetesStorage'
 import { KubernetesGateways } from './pages/KubernetesGateways'
 import { ConfigMaps } from './pages/ConfigMaps'
@@ -37,7 +41,8 @@ import type {
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
-  'kubernetes', 'pods', 'services', 'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'activity', 'settings',
+  'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
+  'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'activity', 'settings',
 ]
 
 function routeFromHash(): RouteID {
@@ -151,6 +156,7 @@ function AppShell() {
             onClusterRenamed={renameKubernetesResources}
           />
         )}
+        {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'pods' && (
           <Pods
             key={`pods:${activeKubeContext}`}
@@ -168,6 +174,9 @@ function AppShell() {
           />
         )}
         {route === 'services' && <KubernetesServices key={`services:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'jobs' && <KubernetesJobs key={`jobs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'cronjobs' && <KubernetesCronJobs key={`cronjobs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'port-forwards' && <KubernetesPortForwards key={`port-forwards:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'storage' && <KubernetesStorage key={`storage:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'gateways' && <KubernetesGateways key={`gateways:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'configs' && <ConfigMaps key={`configs:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}

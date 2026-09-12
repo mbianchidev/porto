@@ -208,6 +208,54 @@ func TestStorageAndGatewayResourceDecoding(t *testing.T) {
 	}
 }
 
+func TestWorkloadResourceDecoding(t *testing.T) {
+	runner := newFakeRunner()
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case strings.Contains(joined, "get deployments --namespace default -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"api","namespace":"default","creationTimestamp":"2025-09-01T10:00:00Z"},"spec":{"replicas":3,"strategy":{"type":"RollingUpdate"}},"status":{"replicas":3,"updatedReplicas":3,"readyReplicas":2,"availableReplicas":2,"unavailableReplicas":1,"conditions":[{"type":"Progressing","status":"True","reason":"NewReplicaSetAvailable","message":"ReplicaSet is progressing"},{"type":"Available","status":"False","reason":"MinimumReplicasUnavailable","message":"Deployment does not have minimum availability"}]}}]}`), nil
+		case strings.Contains(joined, "get jobs --namespace default -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"migrate","namespace":"default","creationTimestamp":"2025-09-01T10:01:00Z"},"spec":{"completions":2,"parallelism":1},"status":{"succeeded":2,"conditions":[{"type":"Complete","status":"True","reason":"CompletionsReached","message":"Job completed"}]}}]}`), nil
+		case strings.Contains(joined, "get cronjobs --namespace default -o json"):
+			return []byte(`{"items":[{"metadata":{"name":"backup","namespace":"default","creationTimestamp":"2025-09-01T10:02:00Z"},"spec":{"schedule":"*/5 * * * *","concurrencyPolicy":"Forbid","successfulJobsHistoryLimit":3,"failedJobsHistoryLimit":1},"status":{"active":[{"name":"backup-123"}],"lastScheduleTime":"2025-09-01T10:05:00Z","lastSuccessfulTime":"2025-09-01T10:00:00Z"}}]}`), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", joined)
+		}
+	}
+	manager := New(runner)
+	ctx := context.Background()
+
+	deployments, err := manager.Deployments(ctx, "porto-dev", "default")
+	if err != nil || len(deployments) != 1 {
+		t.Fatalf("deployments = %+v, err = %v", deployments, err)
+	}
+	deployment := deployments[0]
+	if deployment.Desired != 3 || deployment.Ready != 2 || deployment.Unavailable != 1 ||
+		deployment.State != "progressing" || deployment.Reason != "MinimumReplicasUnavailable" {
+		t.Fatalf("unexpected deployment: %+v", deployment)
+	}
+
+	jobs, err := manager.Jobs(ctx, "porto-dev", "default")
+	if err != nil || len(jobs) != 1 {
+		t.Fatalf("jobs = %+v, err = %v", jobs, err)
+	}
+	job := jobs[0]
+	if job.Completions != 2 || job.Succeeded != 2 || job.State != "complete" || job.Reason != "CompletionsReached" {
+		t.Fatalf("unexpected job: %+v", job)
+	}
+
+	cronJobs, err := manager.CronJobs(ctx, "porto-dev", "default")
+	if err != nil || len(cronJobs) != 1 {
+		t.Fatalf("cron jobs = %+v, err = %v", cronJobs, err)
+	}
+	cronJob := cronJobs[0]
+	if cronJob.Schedule != "*/5 * * * *" || cronJob.Active != 1 || cronJob.State != "running" ||
+		cronJob.ConcurrencyPolicy != "Forbid" {
+		t.Fatalf("unexpected cron job: %+v", cronJob)
+	}
+}
+
 func TestManagedContextUsesPrivateKubeconfig(t *testing.T) {
 	dir := t.TempDir()
 	kubeconfigPath := filepath.Join(dir, config.KubernetesClusterFileToken("dev")+".yaml")

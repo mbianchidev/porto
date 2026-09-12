@@ -393,6 +393,67 @@ export type KubernetesService = {
   age: string
 }
 
+export type KubernetesDeployment = {
+  name: string
+  namespace: string
+  desired: number
+  current: number
+  updated: number
+  ready: number
+  available: number
+  unavailable: number
+  strategy: string
+  state: string
+  reason?: string
+  message?: string
+  age: string
+}
+
+export type KubernetesJob = {
+  name: string
+  namespace: string
+  completions: number
+  parallelism: number
+  active: number
+  succeeded: number
+  failed: number
+  suspended: boolean
+  state: string
+  reason?: string
+  message?: string
+  age: string
+}
+
+export type KubernetesCronJob = {
+  name: string
+  namespace: string
+  schedule: string
+  suspended: boolean
+  concurrencyPolicy: string
+  active: number
+  lastSchedule: string
+  lastSuccessful: string
+  successfulHistory: number
+  failedHistory: number
+  state: string
+  age: string
+}
+
+export type KubernetesPortForwardResource = 'service' | 'pod' | 'deployment'
+
+export type KubernetesPortForward = {
+  id: string
+  context: string
+  namespace: string
+  resourceType: KubernetesPortForwardResource
+  resourceName: string
+  address: string
+  localPort: number
+  remotePort: number
+  startedAt: string
+  status: string
+}
+
 export type KubernetesConfigMap = {
   name: string
   namespace: string
@@ -653,8 +714,12 @@ export type RouteID =
   | 'volumes'
   | 'networks'
   | 'kubernetes'
+  | 'deployments'
   | 'pods'
   | 'services'
+  | 'jobs'
+  | 'cronjobs'
+  | 'port-forwards'
   | 'storage'
   | 'gateways'
   | 'configs'

@@ -69,6 +69,7 @@ type Server struct {
 	sendboxMessages map[int64]string
 	composePorts    map[int64][]int
 	kubeForwards    map[string]*kubeForward
+	kubeForwardMu   sync.Mutex
 	kubeAddons      map[string]bool
 	kubeOperationMu sync.Mutex
 	kubeOperations  map[string]string
