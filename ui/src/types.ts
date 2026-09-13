@@ -65,6 +65,12 @@ export type RegistryProfile = {
   updatedAt: string
 }
 
+export type DesktopPreferences = {
+  openAtLogin: boolean
+  keepInTray: boolean
+  loginItemSupported: boolean
+}
+
 // Snapshot from GET/POST /api/runtime/features: whether each optional runtime
 // gate is on. All three default OFF server-side to preserve native-only
 // behavior until a user opts in from Settings.

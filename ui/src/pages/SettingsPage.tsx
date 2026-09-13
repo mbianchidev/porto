@@ -1,5 +1,6 @@
 import { useState } from 'react'
 import { apiSend, errorMessage } from '../api'
+import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
 import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../preferences'
 import { useMessages } from '../useMessages'
@@ -233,6 +234,8 @@ export function SettingsPage({
           </div>
         </div>
       </section>
+
+      <DesktopBehaviorSettings />
 
       <section className="hygiene" aria-labelledby="branch-hygiene-title">
         <div className="hygieneIntro">

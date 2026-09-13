@@ -43,6 +43,21 @@ and motion preferences apply across the dashboard after saving. Terminal
 preferences are used by VM and managed-cluster terminals, and reduced motion
 also disables cursor blinking.
 
+Installed desktop builds add two shell preferences:
+
+- **Open Porto when I sign in** registers or removes the operating-system login
+  item on Windows and after the macOS app has been moved into Applications.
+- **Close the window to the menu bar or system tray** hides Porto instead of
+  quitting the desktop shell. The tray menu provides explicit **Open Porto**
+  and **Quit Porto** actions. When both settings are enabled, Windows login
+  launches quietly in the tray while the daemon starts and resumes its managed
+  runtime. Electron 44 no longer supports hidden login launch on macOS, so the
+  macOS window opens normally and can then be closed to the menu bar.
+
+These preferences are stored in the desktop app's user-data directory. The web
+dashboard shows the controls as unavailable because a browser cannot manage
+login items or a system tray.
+
 ## Start the daemon automatically
 
 The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.

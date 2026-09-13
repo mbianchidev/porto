@@ -3,10 +3,9 @@
 // This process never talks to the daemon's data on its own: it only opens a
 // window pointed at the local daemon's web UI, and starts the bundled daemon when
 // the endpoint is unreachable or belongs to a different binary build.
-// contextIsolation stays on and nodeIntegration stays off so the
-// loaded page runs like any other web page with no access to Node or desktop runtime
-// internals; the preload script intentionally exposes nothing.
-const { app, BrowserWindow, dialog, shell } = require('electron')
+// contextIsolation stays on and nodeIntegration stays off. The preload exposes
+// only the narrow desktop-preferences bridge used by the Settings page.
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -27,6 +26,16 @@ const {
   resolveLoginShellPath,
   windowsDaemonProcesses,
 } = require('./daemon-readiness.cjs')
+const {
+  DEFAULT_DESKTOP_PREFERENCES,
+  loadDesktopPreferences,
+  loginItemOptions,
+  loginItemSupported,
+  saveDesktopPreferences,
+  shouldHideWindow,
+  shouldStartHidden,
+  validateDesktopPreferences,
+} = require('./desktop-preferences.cjs')
 
 const APP_NAME = 'Porto'
 const APP_ID = 'dev.mbianchi.porto'
@@ -34,12 +43,153 @@ const APP_ICON = path.join(__dirname, 'assets', 'porto.png')
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const windows = new Set()
 const execFileAsync = promisify(execFile)
+let desktopPreferences = { ...DEFAULT_DESKTOP_PREFERENCES }
+let desktopPreferencesPath = ''
+let tray = null
+let quitting = false
 
 app.setName(APP_NAME)
 process.title = APP_NAME
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
+}
+
+function loginSupported() {
+  if (!loginItemSupported(process.platform, app.isPackaged)) return false
+  return process.platform !== 'darwin' || app.isInApplicationsFolder()
+}
+
+function getLoginItemSettings(preferences) {
+  if (!loginSupported()) return {}
+  if (process.platform === 'win32') {
+    const options = loginItemOptions(preferences, process.platform, app.getPath('exe'))
+    return app.getLoginItemSettings({
+      path: options.path,
+      args: options.args,
+    })
+  }
+  return app.getLoginItemSettings()
+}
+
+function desktopPreferencesSnapshot() {
+  const supported = loginSupported()
+  return {
+    ...desktopPreferences,
+    openAtLogin: supported ? getLoginItemSettings(desktopPreferences).openAtLogin === true : false,
+    loginItemSupported: supported,
+  }
+}
+
+function applyLoginItemSettings(preferences) {
+  if (!loginSupported()) {
+    if (preferences.openAtLogin) {
+      throw new Error('Open at login is available only in an installed macOS or Windows desktop build.')
+    }
+    return
+  }
+  const options = loginItemOptions(preferences, process.platform, app.getPath('exe'))
+  app.setLoginItemSettings(options)
+  const actual = getLoginItemSettings(preferences).openAtLogin === true
+  if (actual !== preferences.openAtLogin) {
+    throw new Error(`Unable to ${preferences.openAtLogin ? 'enable' : 'disable'} opening Porto at login.`)
+  }
+}
+
+function presentWindow(window) {
+  if (process.platform === 'darwin') app.dock?.show()
+  app.focus({ steal: true })
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+  window.moveTop()
+}
+
+function mainWindow() {
+  for (const window of windows) {
+    if (!window.isDestroyed()) return window
+  }
+  return null
+}
+
+function showMainWindow() {
+  const window = mainWindow()
+  if (window) {
+    presentWindow(window)
+    return
+  }
+  createWindow()
+}
+
+function configureTray(enabled) {
+  if (!enabled) {
+    tray?.destroy()
+    tray = null
+    return
+  }
+  if (tray !== null) return
+  const size = process.platform === 'darwin' ? 18 : 20
+  const icon = nativeImage.createFromPath(APP_ICON).resize({ width: size, height: size })
+  if (icon.isEmpty()) {
+    throw new Error(`Unable to load Porto tray icon from ${APP_ICON}`)
+  }
+  tray = new Tray(icon)
+  tray.setToolTip(APP_NAME)
+  tray.setContextMenu(Menu.buildFromTemplate([
+    {
+      label: 'Open Porto',
+      click: showMainWindow,
+    },
+    { type: 'separator' },
+    {
+      label: 'Quit Porto',
+      click: () => {
+        quitting = true
+        app.quit()
+      },
+    },
+  ]))
+  tray.on('click', showMainWindow)
+}
+
+function assertTrustedDesktopPreferencesRequest(event) {
+  const senderURL = event.senderFrame?.url
+  try {
+    if (new URL(senderURL).origin === DAEMON_URL) return
+  } catch {
+    // Fall through to the explicit rejection below.
+  }
+  throw new Error('Desktop preferences are available only to the Porto dashboard.')
+}
+
+function registerDesktopPreferencesIPC() {
+  ipcMain.handle('porto:desktop-preferences:get', (event) => {
+    assertTrustedDesktopPreferencesRequest(event)
+    return desktopPreferencesSnapshot()
+  })
+  ipcMain.handle('porto:desktop-preferences:set', (event, value) => {
+    assertTrustedDesktopPreferencesRequest(event)
+    const next = validateDesktopPreferences(value)
+    const previous = { ...desktopPreferences }
+    try {
+      applyLoginItemSettings(next)
+      configureTray(next.keepInTray)
+      saveDesktopPreferences(desktopPreferencesPath, next)
+      desktopPreferences = next
+      return {
+        ...next,
+        loginItemSupported: loginSupported(),
+      }
+    } catch (error) {
+      try {
+        applyLoginItemSettings(previous)
+        configureTray(previous.keepInTray)
+      } catch (rollbackError) {
+        console.error('Unable to roll back desktop preference changes', rollbackError)
+      }
+      throw error
+    }
+  })
 }
 
 function portoBinary() {
@@ -294,11 +444,12 @@ async function ensureDockerEngine() {
   }
 }
 
-function createBootstrapWindow() {
+function createBootstrapWindow(show = true) {
   const window = new BrowserWindow({
     width: 460,
     height: 210,
     resizable: false,
+    show,
     backgroundColor: '#252925',
     title: APP_NAME,
     icon: APP_ICON,
@@ -343,14 +494,6 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
     },
   })
-  const presentWindow = () => {
-    if (process.platform === 'darwin') app.dock?.show()
-    app.focus({ steal: true })
-    if (window.isMinimized()) window.restore()
-    window.show()
-    window.focus()
-    window.moveTop()
-  }
   let retries = 0
   let blankReloadAttempts = 0
   const openExternalURL = (targetURL) => {
@@ -405,11 +548,20 @@ function createWindow() {
     }, 500)
   })
   windows.add(window)
+  window.on('close', (event) => {
+    if (!shouldHideWindow(desktopPreferences, quitting)) return
+    event.preventDefault()
+    window.hide()
+    if (process.platform === 'darwin') app.dock?.hide()
+  })
+  window.on('query-session-end', () => {
+    quitting = true
+  })
   window.on('closed', () => windows.delete(window))
-  presentWindow()
-  window.once('ready-to-show', presentWindow)
+  presentWindow(window)
+  window.once('ready-to-show', () => presentWindow(window))
   window.loadURL(DAEMON_URL).then(() => {
-    presentWindow()
+    presentWindow(window)
   }).catch((error) => {
     console.error('Unable to load Porto dashboard', error)
   })
@@ -421,18 +573,31 @@ if (!hasLock) {
 }
 
 app.on('second-instance', () => {
-  const window = BrowserWindow.getAllWindows()[0]
-  if (!window) {
-    createWindow()
-    return
-  }
-  if (window.isMinimized()) window.restore()
-  window.focus()
+  showMainWindow()
 })
 
 app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID)
   if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
+  desktopPreferencesPath = path.join(app.getPath('userData'), 'desktop-preferences.json')
+  desktopPreferences = loadDesktopPreferences(desktopPreferencesPath, (error) => {
+    console.error('Unable to load desktop preferences; using defaults', error)
+  })
+  let loginSettings = {}
+  if (loginSupported()) {
+    try {
+      loginSettings = getLoginItemSettings(desktopPreferences)
+      desktopPreferences.openAtLogin = loginSettings.openAtLogin === true
+    } catch (error) {
+      desktopPreferences.openAtLogin = false
+      console.error('Unable to inspect the Porto login item', error)
+    }
+  } else {
+    desktopPreferences.openAtLogin = false
+  }
+  registerDesktopPreferencesIPC()
+  const startHidden = shouldStartHidden(desktopPreferences, process.argv)
+  if (startHidden && process.platform === 'darwin') app.dock?.hide()
   if (!bundledPortoBinaryReady()) {
     dialog.showErrorBox(
       'Porto installation incomplete',
@@ -441,7 +606,7 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-  const bootstrapWindow = createBootstrapWindow()
+  const bootstrapWindow = createBootstrapWindow(!startHidden)
   const healthy = await ensureDaemonRunning()
   if (!healthy) {
     bootstrapWindow.close()
@@ -459,19 +624,39 @@ app.whenReady().then(async () => {
     dockerError = error
     console.error('Unable to prepare the bundled Porto container runtime', error)
   }
-  createWindow()
+  let trayError = null
+  try {
+    configureTray(desktopPreferences.keepInTray)
+  } catch (error) {
+    trayError = error
+    desktopPreferences.keepInTray = false
+    console.error('Unable to initialize the Porto tray icon', error)
+    try {
+      saveDesktopPreferences(desktopPreferencesPath, desktopPreferences)
+    } catch (saveError) {
+      console.error('Unable to persist the tray fallback', saveError)
+    }
+  }
+  if (!startHidden || trayError !== null) createWindow()
   bootstrapWindow.close()
+  if (trayError !== null) {
+    dialog.showErrorBox('Porto tray unavailable', trayError.message)
+  }
   if (dockerError !== null) {
     dialog.showErrorBox('Porto container runtime unavailable', dockerError.message)
   }
 
   app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+    showMainWindow()
   })
+})
+
+app.on('before-quit', () => {
+  quitting = true
 })
 
 app.on('window-all-closed', () => {
   // Intentionally does not stop the Porto daemon: it keeps managing projects,
   // containers, clusters, and VMs regardless of whether the window is open.
-  if (process.platform !== 'darwin') app.quit()
+  if (!desktopPreferences.keepInTray && process.platform !== 'darwin') app.quit()
 })
