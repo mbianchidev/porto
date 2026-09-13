@@ -308,7 +308,13 @@ export function SettingsPage({
       <section className="integration" aria-labelledby="sqlite-integration-title">
         <div className="hygieneIntro">
           <h2 id="sqlite-integration-title">Discover project SQLite databases.</h2>
-          <p>Porto installs and runs sql-not-so-lite only when an orchestrated project contains a valid SQLite database.</p>
+          <p>
+            Porto installs and runs{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/sql-not-so-lite" target="_blank" rel="noreferrer">
+              sql-not-so-lite
+            </a>{' '}
+            only when an orchestrated project contains a valid SQLite database.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">
@@ -326,7 +332,13 @@ export function SettingsPage({
       <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
         <div className="hygieneIntro">
           <h2 id="sendbox-integration-title">Run configured projects in Sendbox.</h2>
-          <p>Porto starts Sendbox independently for projects with<code> .sendbox.yaml</code>. Normal project controls stay unchanged.</p>
+          <p>
+            Porto starts{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/sendbox" target="_blank" rel="noreferrer">
+              Sendbox
+            </a>{' '}
+            independently for projects with<code> .sendbox.yaml</code>. Normal project controls stay unchanged.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">
@@ -344,7 +356,13 @@ export function SettingsPage({
       <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
         <div className="hygieneIntro">
           <h2 id="kill-switch-integration-title">Hand active dev ports to KillSwitch.</h2>
-          <p>Porto registers only ports for processes it is actively managing. KillSwitch keeps those ports separate from your own watch list.</p>
+          <p>
+            Porto registers only ports for processes it is actively managing.{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/kill-switch" target="_blank" rel="noreferrer">
+              KillSwitch
+            </a>{' '}
+            keeps those ports separate from your own watch list.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">
