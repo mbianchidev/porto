@@ -96,8 +96,11 @@ run_validation() {
   npm --prefix ui/electron test
   node --check ui/electron/main.js
   node --check ui/electron/daemon-readiness.cjs
+  node --check ui/electron/desktop-update-install.cjs
+  node --check ui/electron/desktop-updater.cjs
   node --check ui/electron/preload.js
   node --check ui/electron/package.cjs
+  bash -n ui/electron/apply-update.sh
   node --check scripts/desktop-runtime-symlinks.cjs
   bash -n scripts/bundle-desktop-runtime.sh
   bash -n scripts/package-desktop-installer.sh

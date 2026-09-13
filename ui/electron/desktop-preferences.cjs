@@ -4,6 +4,7 @@ const path = require('node:path')
 const DEFAULT_DESKTOP_PREFERENCES = Object.freeze({
   openAtLogin: false,
   keepInTray: false,
+  automaticallyDownloadUpdates: false,
 })
 
 function normalizeDesktopPreferences(value) {
@@ -13,6 +14,7 @@ function normalizeDesktopPreferences(value) {
   return {
     openAtLogin: value.openAtLogin === true,
     keepInTray: value.keepInTray === true,
+    automaticallyDownloadUpdates: value.automaticallyDownloadUpdates === true,
   }
 }
 
@@ -26,9 +28,13 @@ function validateDesktopPreferences(value) {
   if (typeof value.keepInTray !== 'boolean') {
     throw new Error('keepInTray must be a boolean')
   }
+  if (typeof value.automaticallyDownloadUpdates !== 'boolean') {
+    throw new Error('automaticallyDownloadUpdates must be a boolean')
+  }
   return {
     openAtLogin: value.openAtLogin,
     keepInTray: value.keepInTray,
+    automaticallyDownloadUpdates: value.automaticallyDownloadUpdates,
   }
 }
 

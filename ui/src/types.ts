@@ -68,7 +68,28 @@ export type RegistryProfile = {
 export type DesktopPreferences = {
   openAtLogin: boolean
   keepInTray: boolean
+  automaticallyDownloadUpdates: boolean
   loginItemSupported: boolean
+}
+
+export type DesktopUpdatePhase =
+  | 'unsupported'
+  | 'idle'
+  | 'checking'
+  | 'up-to-date'
+  | 'available'
+  | 'downloading'
+  | 'downloaded'
+  | 'installing'
+  | 'error'
+
+export type DesktopUpdateStatus = {
+  phase: DesktopUpdatePhase
+  currentVersion: string
+  availableVersion: string
+  progressPercent: number | null
+  releaseURL: string
+  message: string
 }
 
 // Snapshot from GET/POST /api/runtime/features: whether each optional runtime

@@ -4,7 +4,7 @@
 // window pointed at the local daemon's web UI, and starts the bundled daemon when
 // the endpoint is unreachable or belongs to a different binary build.
 // contextIsolation stays on and nodeIntegration stays off. The preload exposes
-// only the narrow desktop-preferences bridge used by the Settings page.
+// only narrow desktop-preferences and update bridges used by the Settings page.
 const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const fs = require('node:fs')
@@ -36,6 +36,12 @@ const {
   shouldStartHidden,
   validateDesktopPreferences,
 } = require('./desktop-preferences.cjs')
+const { launchDownloadedUpdate } = require('./desktop-update-install.cjs')
+const {
+  DEFAULT_UPDATE_CHECK_INTERVAL,
+  createDesktopUpdater,
+  readPackagedReleaseVersion,
+} = require('./desktop-updater.cjs')
 
 const APP_NAME = 'Porto'
 const APP_ID = 'dev.mbianchi.porto'
@@ -45,6 +51,12 @@ const windows = new Set()
 const execFileAsync = promisify(execFile)
 let desktopPreferences = { ...DEFAULT_DESKTOP_PREFERENCES }
 let desktopPreferencesPath = ''
+let desktopUpdater = null
+let updateCheckTimer = null
+let updateInstallErrorPath = ''
+let updatePromptActive = false
+let promptedAvailableVersion = ''
+let promptedDownloadedVersion = ''
 let tray = null
 let quitting = false
 
@@ -103,6 +115,7 @@ function presentWindow(window) {
   window.show()
   window.focus()
   window.moveTop()
+  void presentPendingUpdatePrompt(window)
 }
 
 function mainWindow() {
@@ -152,23 +165,131 @@ function configureTray(enabled) {
   tray.on('click', showMainWindow)
 }
 
-function assertTrustedDesktopPreferencesRequest(event) {
+function assertTrustedDashboardRequest(event) {
   const senderURL = event.senderFrame?.url
   try {
     if (new URL(senderURL).origin === DAEMON_URL) return
   } catch {
     // Fall through to the explicit rejection below.
   }
-  throw new Error('Desktop preferences are available only to the Porto dashboard.')
+  throw new Error('Desktop integrations are available only to the Porto dashboard.')
 }
 
-function registerDesktopPreferencesIPC() {
+function broadcastUpdateStatus(status) {
+  for (const window of windows) {
+    if (!window.isDestroyed()) window.webContents.send('porto:updates:status', status)
+  }
+}
+
+async function downloadAvailableUpdate() {
+  if (desktopUpdater === null) return
+  try {
+    await desktopUpdater.download()
+  } catch (error) {
+    console.error('Unable to download the Porto update', error)
+  }
+}
+
+function handleDesktopUpdateStatus(status) {
+  broadcastUpdateStatus(status)
+  if (status.phase === 'available' && desktopPreferences.automaticallyDownloadUpdates) {
+    void downloadAvailableUpdate()
+    return
+  }
+  if (status.phase === 'available' || status.phase === 'downloaded') {
+    void presentPendingUpdatePrompt()
+  }
+}
+
+async function restartAndInstallUpdate() {
+  if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
+  const update = await desktopUpdater.downloadedUpdate()
+  await launchDownloadedUpdate({
+    platform: process.platform,
+    executablePath: app.getPath('exe'),
+    packagePath: update.packagePath,
+    downloadsDirectory: path.dirname(update.packagePath),
+    errorFile: updateInstallErrorPath,
+    helperDirectory: process.resourcesPath,
+  })
+  desktopUpdater.markInstalling()
+  quitting = true
+  app.quit()
+  return desktopUpdater.getStatus()
+}
+
+async function presentPendingUpdatePrompt(window = mainWindow()) {
+  if (
+    desktopUpdater === null
+    || updatePromptActive
+    || !window
+    || window.isDestroyed()
+    || !window.isVisible()
+  ) return
+
+  const status = desktopUpdater.getStatus()
+  if (status.phase === 'downloaded' && status.availableVersion !== promptedDownloadedVersion) {
+    promptedDownloadedVersion = status.availableVersion
+    updatePromptActive = true
+    let response = 1
+    try {
+      ({ response } = await dialog.showMessageBox(window, {
+        type: 'info',
+        title: 'Porto update ready',
+        message: `Porto ${status.availableVersion} is ready to install.`,
+        detail: 'Restart Porto to update the desktop app and bundled daemon. Running VMs, Kubernetes clusters, and containers remain in place while Porto reconnects.',
+        buttons: ['Restart and update', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      }))
+    } finally {
+      updatePromptActive = false
+    }
+    if (response === 0) {
+      try {
+        await restartAndInstallUpdate()
+      } catch (error) {
+        console.error('Unable to restart Porto for the downloaded update', error)
+        dialog.showErrorBox('Porto update failed', error.message)
+      }
+    }
+    return
+  }
+
+  if (
+    status.phase === 'available'
+    && !desktopPreferences.automaticallyDownloadUpdates
+    && status.availableVersion !== promptedAvailableVersion
+  ) {
+    promptedAvailableVersion = status.availableVersion
+    updatePromptActive = true
+    let response = 1
+    try {
+      ({ response } = await dialog.showMessageBox(window, {
+        type: 'info',
+        title: 'Porto update available',
+        message: `Porto ${status.availableVersion} is available.`,
+        detail: 'Download the verified update in Porto now, or leave it for later from Settings.',
+        buttons: ['Download update', 'Later'],
+        defaultId: 0,
+        cancelId: 1,
+        noLink: true,
+      }))
+    } finally {
+      updatePromptActive = false
+    }
+    if (response === 0) void downloadAvailableUpdate()
+  }
+}
+
+function registerDesktopIPC() {
   ipcMain.handle('porto:desktop-preferences:get', (event) => {
-    assertTrustedDesktopPreferencesRequest(event)
+    assertTrustedDashboardRequest(event)
     return desktopPreferencesSnapshot()
   })
   ipcMain.handle('porto:desktop-preferences:set', (event, value) => {
-    assertTrustedDesktopPreferencesRequest(event)
+    assertTrustedDashboardRequest(event)
     const next = validateDesktopPreferences(value)
     const previous = { ...desktopPreferences }
     try {
@@ -176,10 +297,10 @@ function registerDesktopPreferencesIPC() {
       configureTray(next.keepInTray)
       saveDesktopPreferences(desktopPreferencesPath, next)
       desktopPreferences = next
-      return {
-        ...next,
-        loginItemSupported: loginSupported(),
+      if (next.automaticallyDownloadUpdates && desktopUpdater?.getStatus().phase === 'available') {
+        void downloadAvailableUpdate()
       }
+      return desktopPreferencesSnapshot()
     } catch (error) {
       try {
         applyLoginItemSettings(previous)
@@ -190,6 +311,49 @@ function registerDesktopPreferencesIPC() {
       throw error
     }
   })
+  ipcMain.handle('porto:updates:get-status', (event) => {
+    assertTrustedDashboardRequest(event)
+    if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
+    return desktopUpdater.getStatus()
+  })
+  ipcMain.handle('porto:updates:check', async (event) => {
+    assertTrustedDashboardRequest(event)
+    if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
+    return desktopUpdater.check()
+  })
+  ipcMain.handle('porto:updates:download', async (event) => {
+    assertTrustedDashboardRequest(event)
+    if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
+    return desktopUpdater.download()
+  })
+  ipcMain.handle('porto:updates:restart-and-install', async (event) => {
+    assertTrustedDashboardRequest(event)
+    return restartAndInstallUpdate()
+  })
+}
+
+function startUpdateChecks() {
+  if (desktopUpdater === null) return
+  const check = () => {
+    void desktopUpdater.check().catch((error) => {
+      console.error('Unable to check GitHub Releases for Porto updates', error)
+    })
+  }
+  const initialCheck = setTimeout(check, 3000)
+  initialCheck.unref?.()
+  updateCheckTimer = setInterval(check, DEFAULT_UPDATE_CHECK_INTERVAL)
+  updateCheckTimer.unref?.()
+}
+
+function consumeUpdateInstallError() {
+  try {
+    const message = fs.readFileSync(updateInstallErrorPath, 'utf8').trim()
+    fs.rmSync(updateInstallErrorPath, { force: true })
+    return message
+  } catch (error) {
+    if (error.code !== 'ENOENT') console.error('Unable to read the previous Porto update error', error)
+    return ''
+  }
 }
 
 function portoBinary() {
@@ -579,6 +743,8 @@ app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID)
   if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
   desktopPreferencesPath = path.join(app.getPath('userData'), 'desktop-preferences.json')
+  const updatesDirectory = path.join(app.getPath('userData'), 'updates')
+  updateInstallErrorPath = path.join(updatesDirectory, 'install-error.txt')
   desktopPreferences = loadDesktopPreferences(desktopPreferencesPath, (error) => {
     console.error('Unable to load desktop preferences; using defaults', error)
   })
@@ -594,7 +760,26 @@ app.whenReady().then(async () => {
   } else {
     desktopPreferences.openAtLogin = false
   }
-  registerDesktopPreferencesIPC()
+  let currentReleaseVersion = app.getVersion()
+  try {
+    currentReleaseVersion = readPackagedReleaseVersion({
+      isPackaged: app.isPackaged,
+      appVersion: app.getVersion(),
+      resourcesPath: process.resourcesPath,
+    })
+  } catch (error) {
+    console.error('Unable to read the packaged Porto release version; using application metadata', error)
+  }
+  desktopUpdater = createDesktopUpdater({
+    currentVersion: currentReleaseVersion,
+    platform: process.platform,
+    arch: process.arch,
+    isPackaged: app.isPackaged,
+    downloadsDirectory: updatesDirectory,
+    onStatus: handleDesktopUpdateStatus,
+  })
+  const updateInstallError = consumeUpdateInstallError()
+  registerDesktopIPC()
   const startHidden = shouldStartHidden(desktopPreferences, process.argv)
   if (startHidden && process.platform === 'darwin') app.dock?.hide()
   if (!bundledPortoBinaryReady()) {
@@ -644,6 +829,10 @@ app.whenReady().then(async () => {
   if (dockerError !== null) {
     dialog.showErrorBox('Porto container runtime unavailable', dockerError.message)
   }
+  if (updateInstallError !== '') {
+    dialog.showErrorBox('Porto update failed', updateInstallError)
+  }
+  startUpdateChecks()
 
   app.on('activate', () => {
     showMainWindow()
@@ -652,6 +841,7 @@ app.whenReady().then(async () => {
 
 app.on('before-quit', () => {
   quitting = true
+  if (updateCheckTimer !== null) clearInterval(updateCheckTimer)
 })
 
 app.on('window-all-closed', () => {

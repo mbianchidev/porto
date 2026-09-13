@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "package": "node package.cjs",
-    "test": "node --test daemon-readiness.test.cjs desktop-preferences.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
+    "test": "node --test daemon-readiness.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
   },
   "build": {
     "appId": "dev.mbianchi.porto",

@@ -93,8 +93,11 @@ jobs:
           npm --prefix ui/electron test
           node --check ui/electron/main.js
           node --check ui/electron/daemon-readiness.cjs
+          node --check ui/electron/desktop-update-install.cjs
+          node --check ui/electron/desktop-updater.cjs
           node --check ui/electron/preload.js
           node --check ui/electron/package.cjs
+          bash -n ui/electron/apply-update.sh
           node --check scripts/desktop-runtime-symlinks.cjs
           bash -n scripts/bundle-desktop-runtime.sh
           bash -n scripts/package-desktop-installer.sh
@@ -153,6 +156,7 @@ jobs:
                 --platform="$electron_platform" \
                 --arch="$electron_arch" \
                 --out=release \
+                --porto-release-version="$VERSION" \
                 --app-version="$desktop_version" \
                 --build-version="$GITHUB_RUN_NUMBER" \
                 --extra-resource="../../${root}/${binary}" \
@@ -264,6 +268,10 @@ jobs:
           npm --prefix ui run build
           npm --prefix ui/electron ci
 
+      - name: Validate Windows update helper
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw ui/electron/apply-update.ps1)) | Out-Null'
+
       - name: Package EXE installers
         env:
           VERSION: ${{ needs.build.outputs.version }}
@@ -343,31 +351,49 @@ jobs:
           (cd dist && sha256sum --check SHA256SUMS)
           assets=(dist/SHA256SUMS "${archives[@]}")
 
-          update_release() {
-            echo "Updating existing release ${TAG}"
-            gh release upload "$TAG" "${assets[@]}" --clobber
-            gh release edit "$TAG" \
-              --verify-tag \
-              --title "Porto ${TAG}" \
-              --draft=false \
-              --prerelease="$PRERELEASE"
-          }
-
-          if gh release view "$TAG" --json tagName --jq '.tagName' >/dev/null 2>&1; then
-            update_release
-            exit 0
-          fi
-
-          args=(--verify-tag --generate-notes --title "Porto ${TAG}")
-          if [ "$PRERELEASE" = "true" ]; then
-            args+=(--prerelease)
-          fi
-
-          if ! gh release create "$TAG" "${args[@]}" "${assets[@]}"; then
-            # Another run may have created the release after the existence check.
-            if gh release view "$TAG" --json tagName --jq '.tagName' >/dev/null 2>&1; then
-              update_release
-            else
+          if release_is_draft="$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null)"; then
+            if [ "$release_is_draft" != "true" ]; then
+              echo "::error::${TAG} is already published. Published Porto releases are immutable."
               exit 1
             fi
+            echo "Refreshing draft release ${TAG}"
+          else
+            args=(--verify-tag --generate-notes --draft --title "Porto ${TAG}")
+            if [ "$PRERELEASE" = "true" ]; then
+              args+=(--prerelease)
+            fi
+            if ! gh release create "$TAG" "${args[@]}"; then
+              if [ "$(gh release view "$TAG" --json isDraft --jq '.isDraft' 2>/dev/null || true)" != "true" ]; then
+                echo "::error::Unable to create a draft release for ${TAG}"
+                exit 1
+              fi
+            fi
           fi
+
+          while IFS= read -r existing_asset; do
+            expected=false
+            for asset in "${assets[@]}"; do
+              if [ "$(basename "$asset")" = "$existing_asset" ]; then
+                expected=true
+                break
+              fi
+            done
+            if [ "$expected" = "false" ]; then
+              echo "Removing stale draft asset ${existing_asset}"
+              gh release delete-asset "$TAG" "$existing_asset" --yes
+            fi
+          done < <(gh release view "$TAG" --json assets --jq '.assets[].name')
+
+          gh release upload "$TAG" "${assets[@]}" --clobber
+          expected_assets="$(printf '%s\n' "${assets[@]##*/}" | sort)"
+          published_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          if [ "$published_assets" != "$expected_assets" ]; then
+            echo "::error::Draft release assets do not match the verified local asset set"
+            diff -u <(printf '%s\n' "$expected_assets") <(printf '%s\n' "$published_assets") || true
+            exit 1
+          fi
+          gh release edit "$TAG" \
+            --verify-tag \
+            --title "Porto ${TAG}" \
+            --draft=false \
+            --prerelease="$PRERELEASE"

@@ -46,6 +46,26 @@ toolchains installed outside the system paths available to graphical application
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
 
+### Desktop updates
+
+Installed Porto desktop builds check the repository's stable GitHub Releases
+shortly after launch and every 12 hours. When a newer version is available,
+Porto prompts before downloading the matching macOS DMG, Windows NSIS installer,
+or Linux desktop archive. Every download is verified against the release's
+`SHA256SUMS` file.
+
+Enable **Automatically download new Porto versions** in the desktop preferences
+on **Settings** to skip the download prompt. Porto never restarts itself: after
+verification it waits for **Restart and update**. That restart replaces the
+desktop package and reconnects the bundled daemon without deleting or
+recreating existing VMs, Kubernetes clusters, containers, images, or volumes.
+
+In-app installation requires the current application directory to be writable
+by the user. The one-line installers use writable per-user locations by default.
+If Porto was copied into an administrator-owned directory, install the
+downloaded update manually or move Porto to a user-writable application
+directory.
+
 macOS DMGs still need Developer ID signing/notarization for warning-free
 launches, and Windows installers may show SmartScreen until releases are
 signed. Porto provides its own Docker-compatible API, containerd backend,

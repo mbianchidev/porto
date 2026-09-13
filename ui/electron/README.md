@@ -11,7 +11,13 @@ that its dashboard assets are ready.
 - `contextIsolation: true` and `nodeIntegration: false` (plus `sandbox: true`)
   on the desktop window, so the loaded page has no access to Node or desktop
   runtime APIs.
-- `preload.js` is intentionally empty; it exposes no bridged API.
+- `preload.js` exposes only narrow desktop-preference and application-update
+  operations. The main process rejects calls from pages outside the local Porto
+  dashboard origin.
+- Update downloads come only from the stable release returned by GitHub's
+  `mbianchidev/porto` Releases API. Porto selects the exact installer for the
+  current OS and architecture and verifies it against the release's
+  `SHA256SUMS` entry before offering a restart.
 - The daemon is started detached and un-ref'd. Closing the window never stops
   it — Porto keeps managing projects, containers, clusters, and VMs in the
   background exactly as it does when driven from a browser tab.
@@ -41,6 +47,7 @@ bash scripts/bundle-desktop-runtime.sh darwin arm64 runtime
 npm --prefix ui run desktop:package -- \
   --platform=darwin \
   --arch=arm64 \
+  --porto-release-version=1.0.0 \
   --extra-resource=porto \
   --extra-resource=../dist \
   --extra-resource=../../runtime
@@ -68,3 +75,22 @@ resources directory before falling back to `PORTO_BINARY` or `PATH`. Packages
 also contain a statically linked Linux `porto-runtime-helper`; Porto
 installs it only inside the Porto-owned Lima instance and uses it for guest-local
 CNI operations and runtime capability probes.
+
+## Updates
+
+Installed builds check GitHub Releases shortly after launch and every 12 hours.
+When a newer stable version exists, Porto prompts before downloading it. The
+Settings page can enable automatic downloads; installation still waits for the
+user to choose **Restart and update**.
+
+The restart replaces only the packaged desktop application and, when required,
+its detached daemon. It does not delete or recreate VMs, Kubernetes clusters,
+containers, images, or volumes. After the updated app launches, the existing
+daemon is reused when its bundled binary identity still matches, or replaced so
+the new dashboard can reconnect to the same managed resources.
+
+Updates require Porto to run from a user-writable installation. The standard
+installers use `~/Applications/Porto.app`, `%LOCALAPPDATA%\Programs\Porto`, and
+`~/.local/opt/porto`, which satisfy that requirement. A read-only or
+administrator-owned installation reports an error and leaves the downloaded
+package available instead of quitting.
