@@ -11,16 +11,16 @@ const BROWSER_DEFAULTS: DesktopPreferences = {
 
 export function DesktopBehaviorSettings() {
   const { notifyError, notifyNotice } = useMessages()
-  const [preferences, setPreferences] = useState<DesktopPreferences | null>(null)
+  const bridge = window.portoDesktop
+  const [preferences, setPreferences] = useState<DesktopPreferences | null>(
+    bridge ? null : BROWSER_DEFAULTS,
+  )
   const [loadError, setLoadError] = useState('')
   const [saving, setSaving] = useState(false)
-  const bridge = window.portoDesktop
 
   useEffect(() => {
-    if (!bridge) {
-      setPreferences(BROWSER_DEFAULTS)
-      return
-    }
+    if (!bridge) return
+
     let active = true
     void bridge.getPreferences()
       .then((loaded) => {

@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { apiSend, errorMessage } from '../api'
 import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
-import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../preferences'
+import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../experiencePreferences'
 import { useMessages } from '../useMessages'
 import type { IntegrationStatus, KillSwitchCleanupResult, KillSwitchStatus, RuntimeFeatureName, RuntimeFeatures, Settings } from '../types'
 
