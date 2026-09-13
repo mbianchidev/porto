@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
-import { usePreferences } from '../preferences'
+import { usePreferences } from '../usePreferences'
 import type { VMInstance } from '../types'
 import { ActionButton } from './ActionButton'
 

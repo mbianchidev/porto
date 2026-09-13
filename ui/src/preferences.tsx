@@ -1,39 +1,14 @@
-import { createContext, useContext, useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import type { ReactNode } from 'react'
+import {
+  DEFAULT_EXPERIENCE_PREFERENCES,
+  normalizeExperiencePreferences,
+  type ExperiencePreferences,
+} from './experiencePreferences'
+import { PreferencesContext } from './preferencesContext'
 import type { Settings } from './types'
 
-export type ExperiencePreferences = Pick<
-  Settings,
-  | 'interfaceDensity'
-  | 'reduceMotion'
-  | 'terminalFontSize'
-  | 'terminalLineHeight'
-  | 'terminalCursorBlink'
-  | 'terminalScrollback'
->
-
-export const DEFAULT_EXPERIENCE_PREFERENCES: ExperiencePreferences = {
-  interfaceDensity: 'compact',
-  reduceMotion: false,
-  terminalFontSize: 12,
-  terminalLineHeight: 1.35,
-  terminalCursorBlink: true,
-  terminalScrollback: 5000,
-}
-
 const EXPERIENCE_STORAGE_KEY = 'porto.experiencePreferences.v1'
-const PreferencesContext = createContext<ExperiencePreferences>(DEFAULT_EXPERIENCE_PREFERENCES)
-
-export function normalizeExperiencePreferences(settings: Settings | null): ExperiencePreferences {
-  return {
-    interfaceDensity: settings?.interfaceDensity === 'comfortable' ? 'comfortable' : 'compact',
-    reduceMotion: settings?.reduceMotion ?? DEFAULT_EXPERIENCE_PREFERENCES.reduceMotion,
-    terminalFontSize: settings?.terminalFontSize || DEFAULT_EXPERIENCE_PREFERENCES.terminalFontSize,
-    terminalLineHeight: settings?.terminalLineHeight || DEFAULT_EXPERIENCE_PREFERENCES.terminalLineHeight,
-    terminalCursorBlink: settings?.terminalCursorBlink ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalCursorBlink,
-    terminalScrollback: settings?.terminalScrollback || DEFAULT_EXPERIENCE_PREFERENCES.terminalScrollback,
-  }
-}
 
 function loadCachedPreferences(): ExperiencePreferences {
   try {
@@ -82,8 +57,4 @@ export function PreferencesProvider({ settings, children }: { settings: Settings
   }, [preferences, settings])
 
   return <PreferencesContext.Provider value={preferences}>{children}</PreferencesContext.Provider>
-}
-
-export function usePreferences() {
-  return useContext(PreferencesContext)
 }
