@@ -103,6 +103,7 @@ type Server struct {
 	daemonIdentity    string
 	identityErr       error
 	registryVault     *registries.Vault
+	registryMu        sync.RWMutex
 	registryConfigMu  sync.Mutex
 	registryConfigKey string
 	registryConfig    []byte

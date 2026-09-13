@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -137,5 +138,41 @@ func TestNormalizeSettingsDefaultsAndValidatesExperience(t *testing.T) {
 	normalized.TerminalFontSize = 25
 	if _, err := normalizeSettings(normalized); err == nil || !strings.Contains(err.Error(), "font size") {
 		t.Fatalf("invalid font size error = %v", err)
+	}
+}
+
+func TestRegistryVerificationRejectsStaleProfileResult(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	profile, err := st.CreateRegistry(context.Background(), app.RegistryProfile{
+		Name:             "GitHub",
+		Provider:         "github",
+		Server:           "ghcr.io",
+		Username:         "octocat",
+		TestImage:        "ghcr.io/example/private:latest",
+		Enabled:          true,
+		CredentialStored: true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	updated := profile
+	updated.Name = "Changed while verifying"
+	if err := st.UpdateRegistry(context.Background(), updated); err != nil {
+		t.Fatal(err)
+	}
+	server := &Server{store: st}
+	if _, err := server.finishRegistryVerification(context.Background(), profile, nil); !errors.Is(err, errRegistryProfileChanged) {
+		t.Fatalf("stale verification error = %v", err)
+	}
+	current, err := st.Registry(context.Background(), profile.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.Verified {
+		t.Fatal("stale verification result changed the profile")
 	}
 }

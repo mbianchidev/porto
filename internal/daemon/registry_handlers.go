@@ -34,6 +34,8 @@ type registryProfileRequest struct {
 }
 
 func (s *Server) listRegistries(w http.ResponseWriter, r *http.Request) {
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
 	profiles, err := s.store.ListRegistries(r.Context())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -43,6 +45,8 @@ func (s *Server) listRegistries(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) createRegistry(w http.ResponseWriter, r *http.Request) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	var request registryProfileRequest
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
@@ -72,6 +76,8 @@ func (s *Server) createRegistry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) updateRegistry(w http.ResponseWriter, r *http.Request) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	id, ok := registryID(w, r)
 	if !ok {
 		return
@@ -132,6 +138,8 @@ func (s *Server) updateRegistry(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteRegistry(w http.ResponseWriter, r *http.Request) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
 	id, ok := registryID(w, r)
 	if !ok {
 		return
@@ -167,38 +175,40 @@ func (s *Server) verifyRegistry(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	s.registryMu.RLock()
 	profile, err := s.store.Registry(r.Context(), id)
 	if err != nil {
+		s.registryMu.RUnlock()
 		writeRegistryStoreError(w, err)
 		return
 	}
 	credential, err := s.registryVault.Get(id)
+	s.registryMu.RUnlock()
+	var verificationErr error
 	if err != nil {
-		verificationErr := s.recordRegistryVerification(r.Context(), profile.ID, false, err)
-		http.Error(w, errors.Join(err, verificationErr).Error(), http.StatusUnprocessableEntity)
+		verificationErr = err
+	} else {
+		verificationErr = s.docker.PullImageWithAuth(r.Context(), profile.TestImage, "", &portodocker.RegistryAuth{
+			Username:      profile.Username,
+			Password:      credential,
+			ServerAddress: profile.Server,
+		})
+	}
+	verified, finishErr := s.finishRegistryVerification(r.Context(), profile, verificationErr)
+	if finishErr != nil {
+		if errors.Is(finishErr, errRegistryProfileChanged) {
+			http.Error(w, finishErr.Error(), http.StatusConflict)
+		} else {
+			http.Error(w, finishErr.Error(), http.StatusInternalServerError)
+		}
 		return
 	}
-	err = s.docker.PullImageWithAuth(r.Context(), profile.TestImage, "", &portodocker.RegistryAuth{
-		Username:      profile.Username,
-		Password:      credential,
-		ServerAddress: profile.Server,
-	})
-	if err != nil {
-		verificationErr := s.recordRegistryVerification(r.Context(), profile.ID, false, err)
+	if verificationErr != nil {
 		status := http.StatusUnprocessableEntity
-		if errors.Is(err, portodocker.ErrUnavailable) {
+		if errors.Is(verificationErr, portodocker.ErrUnavailable) {
 			status = http.StatusServiceUnavailable
 		}
-		http.Error(w, errors.Join(err, verificationErr).Error(), status)
-		return
-	}
-	if err := s.recordRegistryVerification(r.Context(), profile.ID, true, nil); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	verified, err := s.store.Registry(r.Context(), id)
-	if err != nil {
-		writeRegistryStoreError(w, err)
+		http.Error(w, verificationErr.Error(), status)
 		return
 	}
 	writeJSON(w, verified)
@@ -296,9 +306,28 @@ func (s *Server) restoreRegistryCredential(id int64, credential string) error {
 	return s.registryVault.Set(id, credential)
 }
 
-func (s *Server) recordRegistryVerification(ctx context.Context, id int64, verified bool, verificationErr error) error {
+var errRegistryProfileChanged = errors.New("registry profile changed during verification; run verification again")
+
+func (s *Server) finishRegistryVerification(
+	ctx context.Context,
+	profile app.RegistryProfile,
+	verificationErr error,
+) (app.RegistryProfile, error) {
+	s.registryMu.Lock()
+	defer s.registryMu.Unlock()
+	current, err := s.store.Registry(ctx, profile.ID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return app.RegistryProfile{}, errRegistryProfileChanged
+		}
+		return app.RegistryProfile{}, err
+	}
+	if current.UpdatedAt != profile.UpdatedAt {
+		return app.RegistryProfile{}, errRegistryProfileChanged
+	}
 	verifiedAt := ""
 	lastError := ""
+	verified := verificationErr == nil
 	if verified {
 		verifiedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	} else if verificationErr != nil {
@@ -307,14 +336,16 @@ func (s *Server) recordRegistryVerification(ctx context.Context, id int64, verif
 			lastError = lastError[:maxRegistryErrorBytes]
 		}
 	}
-	if err := s.store.SetRegistryVerification(ctx, id, verified, verifiedAt, lastError); err != nil {
-		return fmt.Errorf("save registry verification result: %w", err)
+	if err := s.store.SetRegistryVerification(ctx, profile.ID, verified, verifiedAt, lastError); err != nil {
+		return app.RegistryProfile{}, fmt.Errorf("save registry verification result: %w", err)
 	}
 	s.invalidateRegistryConfig()
-	return nil
+	return s.store.Registry(ctx, profile.ID)
 }
 
 func (s *Server) registryAuthForImage(ctx context.Context, reference string) (*portodocker.RegistryAuth, error) {
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
 	server, err := registries.ServerForImage(reference)
 	if err != nil {
 		return nil, err
@@ -341,6 +372,8 @@ func (s *Server) registryAuthForImage(ctx context.Context, reference string) (*p
 }
 
 func (s *Server) registryDockerConfig(ctx context.Context) ([]byte, error) {
+	s.registryMu.RLock()
+	defer s.registryMu.RUnlock()
 	profiles, err := s.store.ListRegistries(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list registry profiles: %w", err)
