@@ -209,13 +209,26 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
-Porto runs internal kind operations with a private Docker client configuration.
-When kind needs its Docker Hub node image, Porto can resolve that registry's
-credential from the user's configured helper or stored auth, writes only that
-auth to a temporary `0600` Docker config, and removes it after kind finishes.
-If no usable helper or stored auth is available, Porto falls back to an
-anonymous pull without copying the user's Docker contexts, helper settings, or
-unrelated registry credentials.
+Registry profiles are configured in **Settings → Registries**. Porto stores only
+profile metadata in its database; passwords and access tokens go to the
+operating system credential store. Saving a profile verifies it with a real
+pull of the chosen test image. Only enabled, verified profiles are matched to
+image hosts for dashboard and Docker-compatible pulls.
+
+Managed clusters receive a `porto-registry-credentials` Docker-config Secret in
+every current namespace. Porto adds it to each namespace's default service
+account, preserves other `imagePullSecrets`, and reconciles newly created
+namespaces while the cluster is running. Workloads that use a custom service
+account can reference the same Secret explicitly. Removing or disabling every
+verified profile removes Porto's service-account reference and only deletes
+Secrets carrying Porto's registry-management labels.
+
+Porto also runs internal kind operations with a private Docker client
+configuration. Verified Porto profiles take priority when kind pulls its node
+image. If Porto has no verified profiles, it can resolve Docker Hub credentials
+from the user's configured helper or stored auth. Temporary Docker configs use
+`0600` permissions and are removed after kind finishes; unrelated Docker
+contexts and helper settings are never copied.
 
 Porto-managed clusters include a default local-path storage class and Envoy
 Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
@@ -540,6 +553,12 @@ GET    /api/docker/images
 GET    /api/docker/builds
 GET    /api/docker/networks
 GET    /api/docker/volumes
+
+GET    /api/registries
+POST   /api/registries
+PUT    /api/registries/{id}
+DELETE /api/registries/{id}
+POST   /api/registries/{id}/verify
 
 GET    /api/kubernetes/status
 GET    /api/kubernetes/contexts

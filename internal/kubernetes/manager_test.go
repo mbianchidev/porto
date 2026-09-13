@@ -1231,6 +1231,7 @@ func TestKindCreateDockerEnvironmentScopesCredentialHelperIdentityToken(t *testi
 	); err != nil {
 		t.Fatal(err)
 	}
+
 	runner := newFakeRunner()
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		if command.Name != "docker-credential-osxkeychain" ||
@@ -1285,6 +1286,42 @@ func TestKindCreateDockerEnvironmentScopesCredentialHelperIdentityToken(t *testi
 	cleanup()
 	if _, err := os.Stat(configDir); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("temporary Docker config was not removed: %v", err)
+	}
+}
+
+func TestKindCreateDockerEnvironmentPrefersPortoRegistryProfiles(t *testing.T) {
+	root := t.TempDir()
+	userConfigDir := t.TempDir()
+	t.Setenv("DOCKER_CONFIG", userConfigDir)
+	if err := os.WriteFile(
+		filepath.Join(userConfigDir, "config.json"),
+		[]byte(`{"auths":{"https://index.docker.io/v1/":{"auth":"dXNlcjpvbGQ="}}}`),
+		0o600,
+	); err != nil {
+		t.Fatal(err)
+	}
+	runner := newFakeRunner()
+	provisioner := NewClusterProvisioner(vm.New(runner), runner, root)
+	want := []byte(`{"auths":{"https://index.docker.io/v1/":{"auth":"dXNlcjpuZXc="},"ghcr.io":{"auth":"b2N0b2NhdDp0b2tlbg=="}}}`)
+	provisioner.SetRegistryConfigProvider(func(context.Context) ([]byte, error) {
+		return want, nil
+	})
+
+	environment, cleanup, err := provisioner.kindCreateDockerEnv(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cleanup()
+	configDir := environmentVariable(environment, "DOCKER_CONFIG")
+	data, err := os.ReadFile(filepath.Join(configDir, "config.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(data, want) {
+		t.Fatalf("kind Docker config = %s, want %s", data, want)
+	}
+	if len(runner.commands) != 0 {
+		t.Fatalf("Porto registry config unexpectedly consulted user credential helper: %+v", runner.commands)
 	}
 }
 

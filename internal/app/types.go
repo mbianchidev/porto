@@ -46,6 +46,35 @@ type Settings struct {
 	DockerEnabled       bool     `json:"dockerEnabled"`
 	KubernetesEnabled   bool     `json:"kubernetesEnabled"`
 	VMsEnabled          bool     `json:"vmsEnabled"`
+	InterfaceDensity    string   `json:"interfaceDensity"`
+	ReduceMotion        bool     `json:"reduceMotion"`
+	TerminalFontSize    int      `json:"terminalFontSize"`
+	TerminalLineHeight  float64  `json:"terminalLineHeight"`
+	TerminalCursorBlink bool     `json:"terminalCursorBlink"`
+	TerminalScrollback  int      `json:"terminalScrollback"`
+}
+
+const (
+	DefaultInterfaceDensity   = "compact"
+	DefaultTerminalFontSize   = 12
+	DefaultTerminalLineHeight = 1.35
+	DefaultTerminalScrollback = 5000
+)
+
+type RegistryProfile struct {
+	ID               int64  `json:"id"`
+	Name             string `json:"name"`
+	Provider         string `json:"provider"`
+	Server           string `json:"server"`
+	Username         string `json:"username"`
+	TestImage        string `json:"testImage"`
+	Enabled          bool   `json:"enabled"`
+	Verified         bool   `json:"verified"`
+	CredentialStored bool   `json:"credentialStored"`
+	LastVerifiedAt   string `json:"lastVerifiedAt,omitempty"`
+	LastError        string `json:"lastError,omitempty"`
+	CreatedAt        string `json:"createdAt"`
+	UpdatedAt        string `json:"updatedAt"`
 }
 
 type BranchCleanupResult struct {

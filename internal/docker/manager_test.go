@@ -204,6 +204,47 @@ func TestAuthenticatedPullUsesTemporaryConfigInsideLima(t *testing.T) {
 	}
 }
 
+func TestPullImageUsesConfiguredRegistryAuthResolver(t *testing.T) {
+	var configData []byte
+	runner := &fakeRunner{
+		outputs: map[string][]byte{},
+		errors:  map[string]error{},
+	}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "nerdctl" ||
+			!reflect.DeepEqual(command.Args, []string{"pull", "ghcr.io/example/private:latest"}) {
+			return nil, fmt.Errorf("unexpected command: %s %v", command.Name, command.Args)
+		}
+		for _, entry := range command.Env {
+			if configDir, ok := strings.CutPrefix(entry, "DOCKER_CONFIG="); ok {
+				var err error
+				configData, err = os.ReadFile(filepath.Join(configDir, "config.json"))
+				return nil, err
+			}
+		}
+		return nil, errors.New("authenticated pull did not set DOCKER_CONFIG")
+	}
+	manager := New(runner)
+	manager.SetRegistryAuthResolver(func(_ context.Context, reference string) (*RegistryAuth, error) {
+		if reference != "ghcr.io/example/private:latest" {
+			return nil, fmt.Errorf("unexpected reference %q", reference)
+		}
+		return &RegistryAuth{
+			Username:      "octocat",
+			Password:      "test-token",
+			ServerAddress: "ghcr.io",
+		}, nil
+	})
+
+	if err := manager.PullImage(context.Background(), "ghcr.io/example/private:latest", ""); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(configData), `"ghcr.io"`) ||
+		!strings.Contains(string(configData), `"auth":"b2N0b2NhdDp0ZXN0LXRva2Vu"`) {
+		t.Fatalf("scoped registry config = %s", configData)
+	}
+}
+
 func (f *fakeRunner) Start(_ context.Context, command runtimes.Command) (runtimes.Process, error) {
 	f.mu.Lock()
 	f.commands = append(f.commands, command)

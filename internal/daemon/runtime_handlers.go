@@ -832,6 +832,10 @@ func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		writeRuntimeError(w, err)
 		return
 	}
+	if syncErr := s.syncClusterRegistryCredentials(operationContext, cluster.Name); syncErr != nil {
+		log.Printf("synchronize registry credentials for new Kubernetes cluster %s: %v", cluster.Context, syncErr)
+		cluster.Message = appendRuntimeMessage(cluster.Message, "Registry credentials could not be synchronized yet: "+syncErr.Error())
+	}
 	s.rememberKubernetesClusterAddons(cluster.Context)
 	writeJSONStatus(w, http.StatusCreated, cluster)
 }
@@ -862,7 +866,18 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 		response["status"] = "recreated"
 		response["message"] = "The control-plane container was missing, so Porto recreated the KinD cluster before starting it."
 	}
+	if syncErr := s.syncClusterRegistryCredentials(r.Context(), name); syncErr != nil {
+		log.Printf("synchronize registry credentials for started Kubernetes cluster %s: %v", name, syncErr)
+		response["message"] = appendRuntimeMessage(response["message"], "Registry credentials could not be synchronized yet: "+syncErr.Error())
+	}
 	writeJSON(w, response)
+}
+
+func appendRuntimeMessage(current, next string) string {
+	if strings.TrimSpace(current) == "" {
+		return next
+	}
+	return current + " " + next
 }
 
 func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {

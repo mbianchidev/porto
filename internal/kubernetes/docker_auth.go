@@ -53,10 +53,29 @@ func (p *ClusterProvisioner) runKindCreate(ctx context.Context, args []string) (
 
 func (p *ClusterProvisioner) kindCreateDockerEnv(ctx context.Context) ([]string, func(), error) {
 	environment := p.portoDockerEnv()
+	if p.registryConfig != nil {
+		document, err := p.registryConfig(ctx)
+		if err != nil {
+			return nil, nil, fmt.Errorf("load Porto registry credentials for kind: %w", err)
+		}
+		if len(document) > 0 {
+			return temporaryDockerConfigEnvironment(environment, document)
+		}
+	}
 	auth, found := p.kindRegistryAuth(ctx, dockerHubRegistry)
 	if !found {
 		return environment, func() {}, nil
 	}
+	document, err := json.Marshal(dockerScopedConfig{
+		Auths: map[string]dockerStoredAuth{dockerHubRegistry: auth},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("encode temporary kind Docker config: %w", err)
+	}
+	return temporaryDockerConfigEnvironment(environment, document)
+}
+
+func temporaryDockerConfigEnvironment(environment []string, document []byte) ([]string, func(), error) {
 	configDir, err := os.MkdirTemp("", "porto-kind-docker-*")
 	if err != nil {
 		return nil, nil, fmt.Errorf("create temporary kind Docker config: %w", err)
@@ -65,13 +84,6 @@ func (p *ClusterProvisioner) kindCreateDockerEnv(ctx context.Context) ([]string,
 		if err := os.RemoveAll(configDir); err != nil {
 			log.Printf("remove temporary kind Docker config: %v", err)
 		}
-	}
-	document, err := json.Marshal(dockerScopedConfig{
-		Auths: map[string]dockerStoredAuth{dockerHubRegistry: auth},
-	})
-	if err != nil {
-		cleanup()
-		return nil, nil, fmt.Errorf("encode temporary kind Docker config: %w", err)
 	}
 	configPath := filepath.Join(configDir, "config.json")
 	if err := os.WriteFile(configPath, document, 0o600); err != nil {

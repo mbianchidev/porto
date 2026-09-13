@@ -37,6 +37,13 @@ func TestRuntimeFeatureSettingsDefaultDockerOnAndRoundTrip(t *testing.T) {
 	if !settings.DockerEnabled || settings.KubernetesEnabled || settings.VMsEnabled {
 		t.Fatalf("Docker must default on while optional runtimes default off: %+v", settings)
 	}
+	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
+		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
+		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
+		!settings.TerminalCursorBlink ||
+		settings.TerminalScrollback != app.DefaultTerminalScrollback {
+		t.Fatalf("unexpected experience defaults: %+v", settings)
+	}
 	settings.KubernetesEnabled = true
 	settings.VMsEnabled = true
 	if err := st.SetSettings(context.Background(), settings); err != nil {
@@ -169,6 +176,12 @@ func TestSettingsRoundTrip(t *testing.T) {
 		SQLNotSoLiteEnabled: true,
 		KillSwitchEnabled:   true,
 		SendboxEnabled:      true,
+		InterfaceDensity:    "comfortable",
+		ReduceMotion:        true,
+		TerminalFontSize:    15,
+		TerminalLineHeight:  1.5,
+		TerminalCursorBlink: false,
+		TerminalScrollback:  20000,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -220,6 +233,73 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	}
 	if settings.KillSwitchEnabled {
 		t.Fatal("KillSwitch integration should default to disabled")
+	}
+	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
+		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
+		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
+		!settings.TerminalCursorBlink ||
+		settings.TerminalScrollback != app.DefaultTerminalScrollback {
+		t.Fatalf("legacy settings did not receive experience defaults: %+v", settings)
+	}
+}
+
+func TestRegistryProfilesRoundTripWithoutCredentialMaterial(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	created, err := st.CreateRegistry(context.Background(), app.RegistryProfile{
+		Name:             "GitHub",
+		Provider:         "github",
+		Server:           "ghcr.io",
+		Username:         "octocat",
+		TestImage:        "ghcr.io/octocat/private:latest",
+		Enabled:          true,
+		CredentialStored: true,
+	})
+	if err != nil {
+		t.Fatalf("create registry: %v", err)
+	}
+	if created.ID <= 0 || created.Verified || !created.CredentialStored {
+		t.Fatalf("created registry = %+v", created)
+	}
+
+	if err := st.SetRegistryVerification(
+		context.Background(),
+		created.ID,
+		true,
+		"2026-09-13T10:00:00Z",
+		"",
+	); err != nil {
+		t.Fatalf("verify registry: %v", err)
+	}
+	profiles, err := st.ListRegistries(context.Background())
+	if err != nil {
+		t.Fatalf("list registries: %v", err)
+	}
+	if len(profiles) != 1 || !profiles[0].Verified || profiles[0].Server != "ghcr.io" {
+		t.Fatalf("registries = %+v", profiles)
+	}
+
+	profiles[0].Name = "GitHub packages"
+	profiles[0].Enabled = false
+	if err := st.UpdateRegistry(context.Background(), profiles[0]); err != nil {
+		t.Fatalf("update registry: %v", err)
+	}
+	updated, err := st.Registry(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("reload registry: %v", err)
+	}
+	if updated.Name != "GitHub packages" || updated.Enabled {
+		t.Fatalf("updated registry = %+v", updated)
+	}
+	if err := st.DeleteRegistry(context.Background(), created.ID); err != nil {
+		t.Fatalf("delete registry: %v", err)
+	}
+	if profiles, err := st.ListRegistries(context.Background()); err != nil || len(profiles) != 0 {
+		t.Fatalf("registries after delete = %+v, %v", profiles, err)
 	}
 }
 

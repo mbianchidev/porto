@@ -59,7 +59,11 @@ type Manager struct {
 	networkConnector    networkOperationsConnector
 	networkLocks        *containerMutexes
 	containerNameMu     *sync.Mutex
+	registryAuthMu      sync.RWMutex
+	registryAuth        RegistryAuthResolver
 }
+
+type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
 
 type engineState struct {
 	Mode      string    `json:"mode"`
@@ -105,6 +109,22 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 	manager.execConnector = manager.connectExecOperations
 	manager.networkConnector = manager.connectNetworkOperations
 	return manager
+}
+
+func (m *Manager) SetRegistryAuthResolver(resolver RegistryAuthResolver) {
+	m.registryAuthMu.Lock()
+	defer m.registryAuthMu.Unlock()
+	m.registryAuth = resolver
+}
+
+func (m *Manager) resolveRegistryAuth(ctx context.Context, reference string) (*RegistryAuth, error) {
+	m.registryAuthMu.RLock()
+	resolver := m.registryAuth
+	m.registryAuthMu.RUnlock()
+	if resolver == nil {
+		return nil, nil
+	}
+	return resolver(ctx, reference)
 }
 
 func (m *Manager) Status(ctx context.Context, socketPath string) Status {
@@ -1391,6 +1411,13 @@ func (m *Manager) PullImageWithAuth(
 	args = appendStringFlag(args, "--platform", platform)
 	normalized := normalizeNerdctlReference(reference)
 	args = append(args, normalized)
+	var err error
+	if registryAuth == nil {
+		registryAuth, err = m.resolveRegistryAuth(ctx, normalized)
+		if err != nil {
+			return fmt.Errorf("resolve registry credentials for %q: %w", normalized, err)
+		}
+	}
 	config, authenticated, err := registryDockerConfig(normalized, registryAuth)
 	if err != nil {
 		return err

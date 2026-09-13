@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"math"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -36,6 +37,7 @@ import (
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
+	"github.com/mbianchidev/porto/internal/registries"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
@@ -58,48 +60,53 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
-	store           *store.Store
-	mu              sync.Mutex
-	running         map[int64]*projectProcess
-	stopping        map[int64]bool
-	settingUp       map[int64]bool
-	deleting        map[int64]bool
-	sendboxRunning  map[int64]*exec.Cmd
-	sendboxStates   map[int64]string
-	sendboxMessages map[int64]string
-	composePorts    map[int64][]int
-	kubeForwards    map[string]*kubeForward
-	kubeForwardMu   sync.Mutex
-	kubeAddons      map[string]bool
-	kubeOperationMu sync.Mutex
-	kubeOperations  map[string]string
-	kubeOpGates     map[string]chan struct{}
-	ui              fs.FS
-	sendbox         sendboxIntegration
-	compose         composeIntegration
-	setupRunner     projectSetupRunner
-	healthClient    *http.Client
-	readinessDelay  time.Duration
-	sqnsl           *sqnsl.Manager
-	killSwitch      *killswitch.Manager
-	tlsCertificates *certificates.Manager
-	userHomeDir     func() (string, error)
-	docker          *portodocker.Manager
-	dockerAPI       *portodocker.APIServer
-	runtimeMu       sync.Mutex
-	runtimeContext  context.Context
-	runtimeOps      sync.WaitGroup
-	runtimeOpsMu    sync.Mutex
-	runtimeClosing  bool
-	runtimeActive   int
-	kubernetes      *kubernetes.Manager
-	clusters        *kubernetes.ClusterProvisioner
-	kubeconfigErr   error
-	vms             *vm.Manager
-	providers       *providers.Manager
-	dockerSocket    string
-	daemonIdentity  string
-	identityErr     error
+	store             *store.Store
+	mu                sync.Mutex
+	running           map[int64]*projectProcess
+	stopping          map[int64]bool
+	settingUp         map[int64]bool
+	deleting          map[int64]bool
+	sendboxRunning    map[int64]*exec.Cmd
+	sendboxStates     map[int64]string
+	sendboxMessages   map[int64]string
+	composePorts      map[int64][]int
+	kubeForwards      map[string]*kubeForward
+	kubeForwardMu     sync.Mutex
+	kubeAddons        map[string]bool
+	kubeOperationMu   sync.Mutex
+	kubeOperations    map[string]string
+	kubeOpGates       map[string]chan struct{}
+	ui                fs.FS
+	sendbox           sendboxIntegration
+	compose           composeIntegration
+	setupRunner       projectSetupRunner
+	healthClient      *http.Client
+	readinessDelay    time.Duration
+	sqnsl             *sqnsl.Manager
+	killSwitch        *killswitch.Manager
+	tlsCertificates   *certificates.Manager
+	userHomeDir       func() (string, error)
+	docker            *portodocker.Manager
+	dockerAPI         *portodocker.APIServer
+	runtimeMu         sync.Mutex
+	runtimeContext    context.Context
+	runtimeOps        sync.WaitGroup
+	runtimeOpsMu      sync.Mutex
+	runtimeClosing    bool
+	runtimeActive     int
+	kubernetes        *kubernetes.Manager
+	clusters          *kubernetes.ClusterProvisioner
+	kubeconfigErr     error
+	vms               *vm.Manager
+	providers         *providers.Manager
+	dockerSocket      string
+	daemonIdentity    string
+	identityErr       error
+	registryVault     *registries.Vault
+	registryMu        sync.RWMutex
+	registryConfigMu  sync.Mutex
+	registryConfigKey string
+	registryConfig    []byte
 }
 
 var (
@@ -144,7 +151,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
 	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
 	daemonIdentity, identityErr := currentDaemonIdentity()
-	return &Server{
+	server := &Server{
 		store:           st,
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
@@ -182,7 +189,11 @@ func New(st *store.Store, ui fs.FS) *Server {
 		dockerSocket:   dockerSocket,
 		daemonIdentity: daemonIdentity,
 		identityErr:    identityErr,
+		registryVault:  registries.NewVault(),
 	}
+	dockerManager.SetRegistryAuthResolver(server.registryAuthForImage)
+	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
+	return server
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -532,6 +543,11 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects", s.list)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.setSettings)
+	mux.HandleFunc("GET /api/registries", s.listRegistries)
+	mux.HandleFunc("POST /api/registries", s.createRegistry)
+	mux.HandleFunc("PUT /api/registries/{id}", s.updateRegistry)
+	mux.HandleFunc("DELETE /api/registries/{id}", s.deleteRegistry)
+	mux.HandleFunc("POST /api/registries/{id}/verify", s.verifyRegistry)
 	mux.HandleFunc("GET /api/integrations/sql-not-so-lite", s.sqlNotSoLiteStatus)
 	mux.HandleFunc("GET /api/integrations/kill-switch", s.killSwitchStatus)
 	mux.HandleFunc("POST /api/integrations/kill-switch/install", s.installKillSwitch)
@@ -624,6 +640,12 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid settings", http.StatusBadRequest)
 		return
 	}
+	var err error
+	settings, err = normalizeSettings(settings)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 	protected, err := gitutil.NormalizeProtectedPatterns(settings.ProtectedBranches)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -646,6 +668,39 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		s.syncKillSwitch(r.Context())
 	}
 	writeJSON(w, settings)
+}
+
+func normalizeSettings(settings app.Settings) (app.Settings, error) {
+	if settings.InterfaceDensity == "" {
+		settings.InterfaceDensity = app.DefaultInterfaceDensity
+	}
+	switch settings.InterfaceDensity {
+	case "compact", "comfortable":
+	default:
+		return settings, errors.New("interface density must be compact or comfortable")
+	}
+	if settings.TerminalFontSize == 0 {
+		settings.TerminalFontSize = app.DefaultTerminalFontSize
+	}
+	if settings.TerminalFontSize < 10 || settings.TerminalFontSize > 24 {
+		return settings, errors.New("terminal font size must be between 10 and 24")
+	}
+	if settings.TerminalLineHeight == 0 {
+		settings.TerminalLineHeight = app.DefaultTerminalLineHeight
+	}
+	if math.IsNaN(settings.TerminalLineHeight) ||
+		math.IsInf(settings.TerminalLineHeight, 0) ||
+		settings.TerminalLineHeight < 1.1 ||
+		settings.TerminalLineHeight > 2 {
+		return settings, errors.New("terminal line height must be between 1.1 and 2")
+	}
+	if settings.TerminalScrollback == 0 {
+		settings.TerminalScrollback = app.DefaultTerminalScrollback
+	}
+	if settings.TerminalScrollback < 1000 || settings.TerminalScrollback > 50000 {
+		return settings, errors.New("terminal scrollback must be between 1000 and 50000 lines")
+	}
+	return settings, nil
 }
 
 func (s *Server) sqlNotSoLiteStatus(w http.ResponseWriter, r *http.Request) {

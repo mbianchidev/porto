@@ -49,6 +49,7 @@ func (s *Server) reconcileKubernetesClusters(ctx context.Context) {
 		log.Printf("list clusters for Kubernetes route reconciliation: %v", err)
 		return
 	}
+	registryConfig, registryConfigErr := s.registryDockerConfig(ctx)
 	for _, cluster := range clusters {
 		if cluster.State != "running" && cluster.State != "degraded" {
 			continue
@@ -61,7 +62,7 @@ func (s *Server) reconcileKubernetesClusters(ctx context.Context) {
 		if !acquired {
 			continue
 		}
-		s.reconcileKubernetesCluster(ctx, cluster, release)
+		s.reconcileKubernetesCluster(ctx, cluster, release, registryConfig, registryConfigErr)
 	}
 }
 
@@ -69,6 +70,8 @@ func (s *Server) reconcileKubernetesCluster(
 	ctx context.Context,
 	cluster kubernetes.Cluster,
 	release func(),
+	registryConfig []byte,
+	registryConfigErr error,
 ) {
 	defer release()
 	currentClusters, err := s.clusters.List(ctx)
@@ -85,6 +88,11 @@ func (s *Server) reconcileKubernetesCluster(
 	}
 	if current.Name == "" || (current.State != "running" && current.State != "degraded") {
 		return
+	}
+	if registryConfigErr != nil {
+		log.Printf("load registry credentials for Kubernetes cluster %s: %v", current.Context, registryConfigErr)
+	} else if err := s.clusters.SyncRegistryCredentials(ctx, current.Name, registryConfig); err != nil {
+		log.Printf("synchronize registry credentials for Kubernetes cluster %s: %v", current.Context, err)
 	}
 	if err := s.ensureKubernetesClusterAddons(ctx, current); err != nil {
 		log.Printf("ensure Kubernetes addons for %s: %v", current.Context, err)

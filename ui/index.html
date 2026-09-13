@@ -6,6 +6,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#252925" />
     <title>Porto | Operations desk</title>
+    <script>
+      try {
+        const preferences = JSON.parse(localStorage.getItem('porto.experiencePreferences.v1') || '{}')
+        document.documentElement.dataset.density = preferences.interfaceDensity === 'comfortable' ? 'comfortable' : 'compact'
+        document.documentElement.dataset.reduceMotion = preferences.reduceMotion === true ? 'true' : 'false'
+      } catch (error) {
+        console.error('Unable to apply cached Porto experience preferences', error)
+      }
+    </script>
   </head>
   <body>
     <!--

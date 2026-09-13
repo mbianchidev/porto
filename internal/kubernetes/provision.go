@@ -76,6 +76,9 @@ type ClusterProvisioner struct {
 	clusterNames   map[string]string
 	apiPortMu      sync.Mutex
 	apiPorts       map[int]struct{}
+	registrySyncMu sync.Mutex
+	registrySync   map[string]registrySyncState
+	registryConfig func(context.Context) ([]byte, error)
 }
 
 type ClusterProvisionerOption func(*ClusterProvisioner)
@@ -88,6 +91,10 @@ func WithKubeconfigRegistry(registry *KubeconfigRegistry) ClusterProvisionerOpti
 
 func (p *ClusterProvisioner) SetKubeconfigRegistry(registry *KubeconfigRegistry) {
 	p.kubeconfigs = registry
+}
+
+func (p *ClusterProvisioner) SetRegistryConfigProvider(provider func(context.Context) ([]byte, error)) {
+	p.registryConfig = provider
 }
 
 func (p *ClusterProvisioner) runtimeNameReserved(runtimeName, owner string) bool {
@@ -241,6 +248,7 @@ func NewClusterProvisioner(
 		reservations:   make(map[string]string),
 		clusterNames:   make(map[string]string),
 		apiPorts:       make(map[int]struct{}),
+		registrySync:   make(map[string]registrySyncState),
 	}
 	for _, option := range options {
 		option(provisioner)

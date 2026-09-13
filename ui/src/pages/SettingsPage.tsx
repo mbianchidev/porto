@@ -1,5 +1,8 @@
 import { useState } from 'react'
 import { apiSend, errorMessage } from '../api'
+import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
+import { RegistrySettings } from '../components/RegistrySettings'
+import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../preferences'
 import { useMessages } from '../useMessages'
 import type { IntegrationStatus, KillSwitchCleanupResult, KillSwitchStatus, RuntimeFeatureName, RuntimeFeatures, Settings } from '../types'
 
@@ -7,6 +10,10 @@ const RUNTIME_LABELS: Record<RuntimeFeatureName, string> = {
   docker: 'Docker',
   kubernetes: 'Kubernetes',
   vms: 'Virtual machines',
+}
+
+function editableSettings(settings: Settings | null): Settings | null {
+  return settings ? { ...settings, ...normalizeExperiencePreferences(settings) } : null
 }
 
 export function SettingsPage({
@@ -26,7 +33,7 @@ export function SettingsPage({
 }) {
   const { notifyError, notifyNotice } = useMessages()
   const [priorSettings, setPriorSettings] = useState(settings)
-  const [draft, setDraft] = useState<Settings | null>(settings)
+  const [draft, setDraft] = useState<Settings | null>(() => editableSettings(settings))
   const [protectedBranches, setProtectedBranches] = useState(settings?.protectedBranches.join(', ') ?? '')
   const [savedSendboxEnabled, setSavedSendboxEnabled] = useState(settings?.sendboxEnabled ?? false)
   const [savedKillSwitchEnabled, setSavedKillSwitchEnabled] = useState(settings?.killSwitchEnabled ?? false)
@@ -47,7 +54,7 @@ export function SettingsPage({
   // draft never briefly shows stale values after a save or the initial load.
   if (settings !== priorSettings) {
     setPriorSettings(settings)
-    setDraft(settings)
+    setDraft(editableSettings(settings))
     setProtectedBranches(settings?.protectedBranches.join(', ') ?? '')
     setSavedSendboxEnabled(settings?.sendboxEnabled ?? false)
     setSavedKillSwitchEnabled(settings?.killSwitchEnabled ?? false)
@@ -59,8 +66,12 @@ export function SettingsPage({
     })
   }
 
-  function updateDraft(key: keyof Omit<Settings, 'protectedBranches'>, value: boolean) {
+  function updateDraft<Key extends keyof Settings>(key: Key, value: Settings[Key]) {
     setDraft((current) => (current ? { ...current, [key]: value } : current))
+  }
+
+  function resetExperience() {
+    setDraft((current) => current ? { ...current, ...DEFAULT_EXPERIENCE_PREFERENCES } : current)
   }
 
   async function setRuntimeFeature(feature: RuntimeFeatureName, enabled: boolean) {
@@ -150,10 +161,81 @@ export function SettingsPage({
       <header className="pageIntro">
         <div>
           <h1>System settings</h1>
-          <p>Configure branch cleanup and optional integrations away from daily project controls.</p>
+          <p>Configure the desktop experience, runtime access, registries, cleanup, and optional integrations.</p>
         </div>
         <a className="buttonLink" href="#/localhost-ing">Back to localhost-ing</a>
       </header>
+
+      <section className="hygiene experienceSettings" aria-labelledby="experience-settings-title">
+        <div className="hygieneIntro">
+          <h2 id="experience-settings-title">Tune the control desk to your working rhythm.</h2>
+          <p>Choose how densely Porto packs information and how embedded terminals feel during longer sessions.</p>
+        </div>
+        <div className="hygieneControls">
+          <label className="settingsField">
+            <span>Interface density</span>
+            <select
+              value={draft?.interfaceDensity ?? DEFAULT_EXPERIENCE_PREFERENCES.interfaceDensity}
+              disabled={!draft}
+              onChange={(event) => updateDraft('interfaceDensity', event.target.value as Settings['interfaceDensity'])}
+            >
+              <option value="compact">Compact — maximum signal</option>
+              <option value="comfortable">Comfortable — more breathing room</option>
+            </select>
+          </label>
+          <label className="settingsField rangeField">
+            <span>Terminal font size <output>{draft?.terminalFontSize ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalFontSize}px</output></span>
+            <input
+              type="range"
+              min={10}
+              max={24}
+              value={draft?.terminalFontSize ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalFontSize}
+              disabled={!draft}
+              onChange={(event) => updateDraft('terminalFontSize', Number(event.target.value))}
+            />
+          </label>
+          <label className="settingsField rangeField">
+            <span>Terminal line height <output>{(draft?.terminalLineHeight ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalLineHeight).toFixed(2)}</output></span>
+            <input
+              type="range"
+              min={1.1}
+              max={2}
+              step={0.05}
+              value={draft?.terminalLineHeight ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalLineHeight}
+              disabled={!draft}
+              onChange={(event) => updateDraft('terminalLineHeight', Number(event.target.value))}
+            />
+          </label>
+          <label className="settingsField">
+            <span>Terminal scrollback</span>
+            <select
+              value={draft?.terminalScrollback ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalScrollback}
+              disabled={!draft}
+              onChange={(event) => updateDraft('terminalScrollback', Number(event.target.value))}
+            >
+              <option value={1000}>1,000 lines</option>
+              <option value={5000}>5,000 lines</option>
+              <option value={10000}>10,000 lines</option>
+              <option value={20000}>20,000 lines</option>
+              <option value={50000}>50,000 lines</option>
+            </select>
+          </label>
+          <label className="toggleRow">
+            <span><strong>Blink terminal cursor</strong><small>Reduced motion always disables cursor blinking.</small></span>
+            <input type="checkbox" checked={draft?.terminalCursorBlink ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalCursorBlink} disabled={!draft} onChange={(event) => updateDraft('terminalCursorBlink', event.target.checked)} />
+          </label>
+          <label className="toggleRow">
+            <span><strong>Reduce interface motion</strong><small>Stops drawer, banner, tooltip, and navigation transitions.</small></span>
+            <input type="checkbox" checked={draft?.reduceMotion ?? DEFAULT_EXPERIENCE_PREFERENCES.reduceMotion} disabled={!draft} onChange={(event) => updateDraft('reduceMotion', event.target.checked)} />
+          </label>
+          <div className="settingsActions">
+            <button type="button" onClick={resetExperience} disabled={!draft}>Reset experience</button>
+            <button type="button" onClick={save} disabled={!draft}>Save experience</button>
+          </div>
+        </div>
+      </section>
+
+      <DesktopBehaviorSettings />
 
       <section className="hygiene" aria-labelledby="branch-hygiene-title">
         <div className="hygieneIntro">
@@ -221,10 +303,18 @@ export function SettingsPage({
         </div>
       </section>
 
+      <RegistrySettings />
+
       <section className="integration" aria-labelledby="sqlite-integration-title">
         <div className="hygieneIntro">
           <h2 id="sqlite-integration-title">Discover project SQLite databases.</h2>
-          <p>Porto installs and runs sql-not-so-lite only when an orchestrated project contains a valid SQLite database.</p>
+          <p>
+            Porto installs and runs{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/sql-not-so-lite" target="_blank" rel="noreferrer">
+              sql-not-so-lite
+            </a>{' '}
+            only when an orchestrated project contains a valid SQLite database.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">
@@ -242,7 +332,13 @@ export function SettingsPage({
       <section className="integration sendboxIntegration" aria-labelledby="sendbox-integration-title">
         <div className="hygieneIntro">
           <h2 id="sendbox-integration-title">Run configured projects in Sendbox.</h2>
-          <p>Porto starts Sendbox independently for projects with<code> .sendbox.yaml</code>. Normal project controls stay unchanged.</p>
+          <p>
+            Porto starts{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/sendbox" target="_blank" rel="noreferrer">
+              Sendbox
+            </a>{' '}
+            independently for projects with<code> .sendbox.yaml</code>. Normal project controls stay unchanged.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">
@@ -260,7 +356,13 @@ export function SettingsPage({
       <section className="integration killSwitchIntegration" aria-labelledby="kill-switch-integration-title">
         <div className="hygieneIntro">
           <h2 id="kill-switch-integration-title">Hand active dev ports to KillSwitch.</h2>
-          <p>Porto registers only ports for processes it is actively managing. KillSwitch keeps those ports separate from your own watch list.</p>
+          <p>
+            Porto registers only ports for processes it is actively managing.{' '}
+            <a className="integrationRepoLink" href="https://github.com/mbianchidev/kill-switch" target="_blank" rel="noreferrer">
+              KillSwitch
+            </a>{' '}
+            keeps those ports separate from your own watch list.
+          </p>
         </div>
         <div className="hygieneControls">
           <label className="toggleRow">

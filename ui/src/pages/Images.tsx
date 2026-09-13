@@ -8,7 +8,7 @@ import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
-import type { DockerImage, DockerStatus } from '../types'
+import type { DockerImage, DockerStatus, RegistryProfile } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(200px,1.4fr) minmax(90px,0.5fr) minmax(200px,1.3fr) minmax(90px,0.5fr)'
 
@@ -21,7 +21,9 @@ export function Images() {
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const images = usePolledResource<DockerImage[]>((signal) => apiGet('/api/docker/images', signal), 8000, [], 'docker:images')
+  const registries = usePolledResource<RegistryProfile[]>((signal) => apiGet('/api/registries', signal), 15000, [], 'registries')
   const items = images.data ?? []
+  const verifiedRegistries = (registries.data ?? []).filter((registry) => registry.enabled && registry.verified)
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
@@ -66,6 +68,7 @@ export function Images() {
       <section className="fleetRail" aria-label="Docker status">
         <span className="fleetRailTitle">Registry signal</span>
         <span className="fleetDatum"><StatusLamp state={available ? 'running' : 'crashed'} />{available ? 'Available' : 'Unavailable'}</span>
+        <span className="fleetDatum">{verifiedRegistries.length} verified credential profile(s)</span>
         <span className="fleetMessage">{items.length} image(s)</span>
       </section>
       <div className="controlBar">
@@ -80,6 +83,7 @@ export function Images() {
             value={pullReference}
             placeholder="registry/repository:tag"
             aria-label="Image reference to pull"
+            title="Porto automatically uses a verified registry profile matching the image host."
             disabled={!available || pulling}
             onChange={(event) => setPullReference(event.target.value)}
           />
