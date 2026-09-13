@@ -19,7 +19,8 @@ selected item (an accessible full-screen overlay on narrow widths):
 - **Virtual machines** — `#/machines` lists the Lima-backed VM image catalog
   and instances, with a create form and terminal/snapshot inspector tabs.
 - **System** — `#/activity` shows recent client-side actions and errors for
-  this session; `#/settings` keeps branch cleanup and integration settings.
+  this session; `#/settings` keeps branch cleanup, integrations, desktop
+  behavior, and application updates.
 
 Every runtime section (Docker, Kubernetes, VMs) reports a clear "unavailable"
 state instead of inventing data when the underlying engine, cluster, or

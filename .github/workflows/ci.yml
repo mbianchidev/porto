@@ -139,8 +139,11 @@ jobs:
           npm --prefix electron test
           node --check electron/main.js
           node --check electron/daemon-readiness.cjs
+          node --check electron/desktop-update-install.cjs
+          node --check electron/desktop-updater.cjs
           node --check electron/preload.js
           node --check electron/package.cjs
+          bash -n electron/apply-update.sh
           node --check ../scripts/desktop-runtime-symlinks.cjs
 
       - name: Audit desktop dependencies
@@ -203,6 +206,11 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
+
+      - name: Validate Windows update helper
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: '[scriptblock]::Create((Get-Content -Raw ui/electron/apply-update.ps1)) | Out-Null'
 
       - name: Build native installers
         shell: bash

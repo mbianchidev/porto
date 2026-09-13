@@ -69,6 +69,7 @@ test -f "$runtime_directory/VERSIONS"
     --platform="$electron_platform" \
     --arch="$electron_arch" \
     --out="$packager_output" \
+    --porto-release-version="$version" \
     --app-version="$desktop_version" \
     --build-version="${GITHUB_RUN_NUMBER:-0}" \
     --extra-resource="$app_root/$binary" \

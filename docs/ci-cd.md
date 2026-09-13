@@ -53,7 +53,13 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
 
 5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, creates macOS DMGs and Windows NSIS EXE installers on native runners, and publishes a GitHub release with generated notes.
 
-Tags must contain a strict SemVer prefixed with `v`. A suffix such as `v1.2.3-rc.1` is published as a pre-release. Re-running a release job is safe: if the GitHub release already exists, the workflow preserves its notes, refreshes its metadata, and replaces the same-named assets. A manual run from the Actions tab still requires the tag to exist.
+Tags must contain a strict SemVer prefixed with `v`. A suffix such as
+`v1.2.3-rc.1` is published as a pre-release. Release assets are assembled and
+verified while the GitHub release is still a draft, then published together.
+Re-running a failed job can refresh that draft safely. A published release is
+immutable: reruns fail instead of replacing assets that update clients may
+already be downloading. A manual run from the Actions tab still requires the
+tag to exist.
 
 ## Release artifacts
 
@@ -79,6 +85,11 @@ macOS releases additionally contain architecture-specific `.dmg` installers,
 and Windows releases contain architecture-specific NSIS `.exe` installers.
 The one-line install scripts select these native packages automatically;
 portable archives remain available for manual and headless setups.
+The desktop updater consumes these same exact asset names through the GitHub
+Releases API; Linux updates use the portable desktop `.tar.gz` archive.
+Every desktop package also embeds the complete release SemVer separately from
+OS version metadata, so a release candidate can still detect the matching
+stable release.
 
 A `SHA256SUMS` file covers every archive and installer, and each asset gets a
 signed build provenance attestation. The assets themselves are not
