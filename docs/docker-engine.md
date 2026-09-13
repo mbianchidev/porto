@@ -73,6 +73,21 @@ lifecycle is owned by the compatibility runtime remain on that path.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
 
+## Private registry credentials
+
+Add Docker Hub, GitHub Container Registry, GitLab Container Registry, or a
+custom HTTPS OCI registry from the dashboard Settings page. Porto stores the
+credential in the operating system credential store and keeps only the profile
+name, registry host, username, test image, and verification status in SQLite.
+
+Saving or re-verifying a profile performs a real image pull. Enabled profiles
+are used only after that succeeds. Dashboard pulls and Docker-compatible
+`/images/create` requests without an explicit `X-Registry-Auth` header
+automatically select the verified profile whose host matches the image
+reference. A client-supplied `X-Registry-Auth` header still takes precedence.
+For every authenticated pull, Porto creates a narrowly scoped temporary Docker
+config in the active backend and removes it after the command finishes.
+
 Container creation uses the containerd v2 client for image resolution and
 unpack, writable snapshot allocation, OCI spec generation, metadata creation,
 and ordered cleanup. Porto selects this path only after preflight confirms that
@@ -239,7 +254,7 @@ Not implemented:
 - build history, commit, import, export, load, and save through the legacy Docker API
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
-- the Docker Engine-compatible `/events` endpoint, system prune, system disk-usage details, and registry authentication on the legacy image-pull endpoint; the dashboard uses Porto's internal revisioned SSE endpoint instead
+- the Docker Engine-compatible `/events` endpoint, system prune, and system disk-usage details; the dashboard uses Porto's internal revisioned SSE endpoint instead
 - namespace overrides beyond KinD's host/private modes, combined resource and restart-policy updates, and resource limits beyond CPU/memory container updates
 - remote TCP/TLS exposure and Windows containers
 

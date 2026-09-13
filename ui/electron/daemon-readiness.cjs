@@ -6,7 +6,7 @@ const { promisify } = require('node:util')
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
 const DEFAULT_TIMEOUT_MS = 800
-const EXPECTED_API_VERSION = 28
+const EXPECTED_API_VERSION = 29
 const PATH_MARKER = '__PORTO_PATH__'
 const execFileAsync = promisify(execFile)
 

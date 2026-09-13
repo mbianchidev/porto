@@ -35,6 +35,14 @@ porto daemon status
 
 Keep the archive layout intact whenever the installation is moved or upgraded.
 
+## Tune the desktop experience
+
+The Settings page persists interface density, reduced motion, terminal font
+size, terminal line height, cursor blinking, and terminal scrollback. Density
+and motion preferences apply across the dashboard after saving. Terminal
+preferences are used by VM and managed-cluster terminals, and reduced motion
+also disables cursor blinking.
+
 ## Start the daemon automatically
 
 The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.

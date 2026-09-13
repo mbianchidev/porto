@@ -6,10 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/mbianchidev/porto/internal/registries"
 )
 
 const (
-	dockerHubRegistry          = "https://index.docker.io/v1/"
+	dockerHubRegistry          = registries.DockerHubServer
 	maxRegistryAuthHeaderBytes = 64 * 1024
 )
 
@@ -68,12 +70,15 @@ func registryDockerConfig(reference string, auth *RegistryAuth) ([]byte, bool, e
 	if auth.RegistryToken != "" {
 		return nil, false, fmt.Errorf("%w: registry token authentication", ErrUnsupported)
 	}
-	registry := normalizeRegistryAddress(auth.ServerAddress)
-	if registry == "" {
-		registry = registryForImage(reference)
+	var registry string
+	var err error
+	if strings.TrimSpace(auth.ServerAddress) == "" {
+		registry, err = registries.ServerForImage(reference)
+	} else {
+		registry, err = registries.NormalizeServer(auth.ServerAddress)
 	}
-	if registry == "" || strings.ContainsAny(registry, "\r\n\x00") {
-		return nil, false, errors.New("invalid registry address")
+	if err != nil {
+		return nil, false, fmt.Errorf("invalid registry address: %w", err)
 	}
 	entry := registryAuthEntry{
 		Auth:          auth.Auth,
@@ -99,26 +104,4 @@ func (auth RegistryAuth) hasCredentials() bool {
 		auth.RegistryToken != "" ||
 		auth.Username != "" ||
 		auth.Password != ""
-}
-
-func registryForImage(reference string) string {
-	reference = strings.TrimSpace(reference)
-	first, remainder, hasPath := strings.Cut(reference, "/")
-	if !hasPath || (!strings.ContainsAny(first, ".:") && first != "localhost") {
-		return dockerHubRegistry
-	}
-	if remainder == "" {
-		return ""
-	}
-	return normalizeRegistryAddress(first)
-}
-
-func normalizeRegistryAddress(registry string) string {
-	registry = strings.TrimSpace(registry)
-	switch strings.TrimSuffix(registry, "/") {
-	case "docker.io", "index.docker.io", "registry-1.docker.io", "https://index.docker.io/v1":
-		return dockerHubRegistry
-	default:
-		return registry
-	}
 }

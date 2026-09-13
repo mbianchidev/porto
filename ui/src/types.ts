@@ -39,6 +39,30 @@ export type Settings = {
   dockerEnabled: boolean
   kubernetesEnabled: boolean
   vmsEnabled: boolean
+  interfaceDensity: 'compact' | 'comfortable'
+  reduceMotion: boolean
+  terminalFontSize: number
+  terminalLineHeight: number
+  terminalCursorBlink: boolean
+  terminalScrollback: number
+}
+
+export type RegistryProvider = 'docker-hub' | 'github' | 'gitlab' | 'custom'
+
+export type RegistryProfile = {
+  id: number
+  name: string
+  provider: RegistryProvider
+  server: string
+  username: string
+  testImage: string
+  enabled: boolean
+  verified: boolean
+  credentialStored: boolean
+  lastVerifiedAt?: string
+  lastError?: string
+  createdAt: string
+  updatedAt: string
 }
 
 // Snapshot from GET/POST /api/runtime/features: whether each optional runtime

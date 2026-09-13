@@ -4,6 +4,7 @@ import { apiGet } from './api'
 import { usePolledResource, useNarrowViewport } from './hooks'
 import { MessagesProvider } from './messages'
 import { useMessages } from './useMessages'
+import { PreferencesProvider } from './preferences'
 import { RuntimeActivity } from './runtimeActivity'
 import { ActionButton } from './components/ActionButton'
 import { Rail } from './components/Rail'
@@ -114,33 +115,34 @@ function AppShell() {
   }
 
   return (
-    <div className={`appShell ${railOpen ? 'railOpen' : ''}`}>
-      {/*
-        THESIS: Porto is one dense operations desk, not a dashboard of cards, spanning
-        local processes, containers, clusters, and VMs behind a single control surface.
-        OWN-WORLD: Painted graphite/putty metal, engraved mono labels, status lamps, and
-        a fixed left rail feeding a ranked inventory and a right inspector — olive healthy,
-        amber attention, red fault, never a fourth hue.
-        STORY: Pick a rail section, scan the section's signal rail and ranked inventory,
-        select a row, then act from its inspector without leaving the surface.
-        FIRST VIEWPORT: A dark rail, a fused signal-rail/control-bar instrument, and a
-        dense ranked inventory fill the screen with no oversized hero or card grid.
-        FORM: Broadcast patchbay operations desk extended into a three-pane infrastructure
-        control board, distinctly Porto.
-      */}
-      <ActionButton
-        className="railToggle"
-        label={railOpen ? 'Close navigation' : 'Open navigation'}
-        icon={railOpen ? 'close' : 'menu'}
-        aria-expanded={railOpen}
-        onClick={() => setRailOpen((value) => !value)}
-      />
-      <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
-      {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
-      <main className="appMain">
-        <RuntimeActivity dockerEnabled={settings?.dockerEnabled ?? false} />
-        {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
-        {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
+    <PreferencesProvider settings={settings}>
+      <div className={`appShell ${railOpen ? 'railOpen' : ''}`}>
+        {/*
+          THESIS: Porto is one dense operations desk, not a dashboard of cards, spanning
+          local processes, containers, clusters, and VMs behind a single control surface.
+          OWN-WORLD: Painted graphite/putty metal, engraved mono labels, status lamps, and
+          a fixed left rail feeding a ranked inventory and a right inspector — olive healthy,
+          amber attention, red fault, never a fourth hue.
+          STORY: Pick a rail section, scan the section's signal rail and ranked inventory,
+          select a row, then act from its inspector without leaving the surface.
+          FIRST VIEWPORT: A dark rail, a fused signal-rail/control-bar instrument, and a
+          dense ranked inventory fill the screen with no oversized hero or card grid.
+          FORM: Broadcast patchbay operations desk extended into a three-pane infrastructure
+          control board, distinctly Porto.
+        */}
+        <ActionButton
+          className="railToggle"
+          label={railOpen ? 'Close navigation' : 'Open navigation'}
+          icon={railOpen ? 'close' : 'menu'}
+          aria-expanded={railOpen}
+          onClick={() => setRailOpen((value) => !value)}
+        />
+        <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
+        {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
+        <main className="appMain">
+          <RuntimeActivity dockerEnabled={settings?.dockerEnabled ?? false} />
+          {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
+          {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
         {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={activeKubeContext} />}
         {route === 'containers' && <Containers />}
@@ -195,8 +197,9 @@ function AppShell() {
             onIntegrationsChanged={reloadIntegrations}
           />
         )}
-      </main>
-    </div>
+        </main>
+      </div>
+    </PreferencesProvider>
   )
 }
 

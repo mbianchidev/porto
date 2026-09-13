@@ -116,7 +116,28 @@ CREATE TABLE IF NOT EXISTS settings (
  sendbox_enabled INTEGER NOT NULL DEFAULT 0,
  docker_enabled INTEGER NOT NULL DEFAULT 1,
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
- vms_enabled INTEGER NOT NULL DEFAULT 0
+ vms_enabled INTEGER NOT NULL DEFAULT 0,
+ interface_density TEXT NOT NULL DEFAULT 'compact',
+ reduce_motion INTEGER NOT NULL DEFAULT 0,
+ terminal_font_size INTEGER NOT NULL DEFAULT 12,
+ terminal_line_height REAL NOT NULL DEFAULT 1.35,
+ terminal_cursor_blink INTEGER NOT NULL DEFAULT 1,
+ terminal_scrollback INTEGER NOT NULL DEFAULT 5000
+);
+CREATE TABLE IF NOT EXISTS registries (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ name TEXT NOT NULL,
+ provider TEXT NOT NULL,
+ server TEXT NOT NULL UNIQUE COLLATE NOCASE,
+ username TEXT NOT NULL,
+ test_image TEXT NOT NULL,
+ enabled INTEGER NOT NULL DEFAULT 1,
+ verified INTEGER NOT NULL DEFAULT 0,
+ credential_stored INTEGER NOT NULL DEFAULT 0,
+ last_verified_at TEXT NOT NULL DEFAULT '',
+ last_error TEXT NOT NULL DEFAULT '',
+ created_at TEXT NOT NULL,
+ updated_at TEXT NOT NULL
 );
 `)
 	if err != nil {
@@ -138,6 +159,24 @@ CREATE TABLE IF NOT EXISTS settings (
 		return err
 	}
 	if err := s.ensureSettingsColumn("vms_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("interface_density", "TEXT NOT NULL DEFAULT 'compact'"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("reduce_motion", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("terminal_font_size", "INTEGER NOT NULL DEFAULT 12"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("terminal_line_height", "REAL NOT NULL DEFAULT 1.35"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("terminal_cursor_blink", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("terminal_scrollback", "INTEGER NOT NULL DEFAULT 5000"); err != nil {
 		return err
 	}
 	for name, definition := range map[string]string{
@@ -444,9 +483,27 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var settings app.Settings
 	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled, killSwitchEnabled, sendboxEnabled int
 	var dockerEnabled, kubernetesEnabled, vmsEnabled int
+	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,kubernetes_enabled,vms_enabled FROM settings WHERE id=1`).
-		Scan(&cleanupLocal, &cleanupRemote, &prune, &protected, &sqlNotSoLiteEnabled, &killSwitchEnabled, &sendboxEnabled, &dockerEnabled, &kubernetesEnabled, &vmsEnabled)
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback FROM settings WHERE id=1`).
+		Scan(
+			&cleanupLocal,
+			&cleanupRemote,
+			&prune,
+			&protected,
+			&sqlNotSoLiteEnabled,
+			&killSwitchEnabled,
+			&sendboxEnabled,
+			&dockerEnabled,
+			&kubernetesEnabled,
+			&vmsEnabled,
+			&settings.InterfaceDensity,
+			&reduceMotion,
+			&settings.TerminalFontSize,
+			&settings.TerminalLineHeight,
+			&terminalCursorBlink,
+			&settings.TerminalScrollback,
+		)
 	if err != nil {
 		return settings, err
 	}
@@ -462,15 +519,29 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	settings.DockerEnabled = dockerEnabled == 1
 	settings.KubernetesEnabled = kubernetesEnabled == 1
 	settings.VMsEnabled = vmsEnabled == 1
+	settings.ReduceMotion = reduceMotion == 1
+	settings.TerminalCursorBlink = terminalCursorBlink == 1
 	return settings, nil
 }
 
 func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
+	if settings.InterfaceDensity == "" {
+		settings.InterfaceDensity = app.DefaultInterfaceDensity
+	}
+	if settings.TerminalFontSize == 0 {
+		settings.TerminalFontSize = app.DefaultTerminalFontSize
+	}
+	if settings.TerminalLineHeight == 0 {
+		settings.TerminalLineHeight = app.DefaultTerminalLineHeight
+	}
+	if settings.TerminalScrollback == 0 {
+		settings.TerminalScrollback = app.DefaultTerminalScrollback
+	}
 	protected, err := json.Marshal(settings.ProtectedBranches)
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,kubernetes_enabled=?,vms_enabled=? WHERE id=1`,
+	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -481,8 +552,170 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.DockerEnabled),
 		boolInt(settings.KubernetesEnabled),
 		boolInt(settings.VMsEnabled),
+		settings.InterfaceDensity,
+		boolInt(settings.ReduceMotion),
+		settings.TerminalFontSize,
+		settings.TerminalLineHeight,
+		boolInt(settings.TerminalCursorBlink),
+		settings.TerminalScrollback,
 	)
 	return err
+}
+
+func (s *Store) CreateRegistry(ctx context.Context, profile app.RegistryProfile) (app.RegistryProfile, error) {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(
+		ctx,
+		`INSERT INTO registries(name,provider,server,username,test_image,enabled,verified,credential_stored,last_verified_at,last_error,created_at,updated_at)
+VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`,
+		profile.Name,
+		profile.Provider,
+		profile.Server,
+		profile.Username,
+		profile.TestImage,
+		boolInt(profile.Enabled),
+		boolInt(profile.Verified),
+		boolInt(profile.CredentialStored),
+		profile.LastVerifiedAt,
+		profile.LastError,
+		now,
+		now,
+	)
+	if err != nil {
+		return app.RegistryProfile{}, err
+	}
+	profile.ID, err = result.LastInsertId()
+	if err != nil {
+		return app.RegistryProfile{}, err
+	}
+	return s.Registry(ctx, profile.ID)
+}
+
+func (s *Store) Registry(ctx context.Context, id int64) (app.RegistryProfile, error) {
+	return scanRegistry(s.db.QueryRowContext(
+		ctx,
+		`SELECT id,name,provider,server,username,test_image,enabled,verified,credential_stored,last_verified_at,last_error,created_at,updated_at
+FROM registries WHERE id=?`,
+		id,
+	))
+}
+
+func (s *Store) ListRegistries(ctx context.Context) ([]app.RegistryProfile, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT id,name,provider,server,username,test_image,enabled,verified,credential_stored,last_verified_at,last_error,created_at,updated_at
+FROM registries ORDER BY name COLLATE NOCASE, server COLLATE NOCASE`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	profiles := make([]app.RegistryProfile, 0)
+	for rows.Next() {
+		profile, err := scanRegistry(rows)
+		if err != nil {
+			return nil, err
+		}
+		profiles = append(profiles, profile)
+	}
+	return profiles, rows.Err()
+}
+
+func (s *Store) UpdateRegistry(ctx context.Context, profile app.RegistryProfile) error {
+	profile.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE registries SET name=?,provider=?,server=?,username=?,test_image=?,enabled=?,verified=?,credential_stored=?,last_verified_at=?,last_error=?,updated_at=? WHERE id=?`,
+		profile.Name,
+		profile.Provider,
+		profile.Server,
+		profile.Username,
+		profile.TestImage,
+		boolInt(profile.Enabled),
+		boolInt(profile.Verified),
+		boolInt(profile.CredentialStored),
+		profile.LastVerifiedAt,
+		profile.LastError,
+		profile.UpdatedAt,
+		profile.ID,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) SetRegistryVerification(ctx context.Context, id int64, verified bool, verifiedAt, lastError string) error {
+	result, err := s.db.ExecContext(
+		ctx,
+		`UPDATE registries SET verified=?,last_verified_at=?,last_error=?,updated_at=? WHERE id=?`,
+		boolInt(verified),
+		verifiedAt,
+		lastError,
+		time.Now().UTC().Format(time.RFC3339Nano),
+		id,
+	)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+func (s *Store) DeleteRegistry(ctx context.Context, id int64) error {
+	result, err := s.db.ExecContext(ctx, `DELETE FROM registries WHERE id=?`, id)
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return sql.ErrNoRows
+	}
+	return nil
+}
+
+type registryScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanRegistry(scanner registryScanner) (app.RegistryProfile, error) {
+	var profile app.RegistryProfile
+	var enabled, verified, credentialStored int
+	err := scanner.Scan(
+		&profile.ID,
+		&profile.Name,
+		&profile.Provider,
+		&profile.Server,
+		&profile.Username,
+		&profile.TestImage,
+		&enabled,
+		&verified,
+		&credentialStored,
+		&profile.LastVerifiedAt,
+		&profile.LastError,
+		&profile.CreatedAt,
+		&profile.UpdatedAt,
+	)
+	profile.Enabled = enabled == 1
+	profile.Verified = verified == 1
+	profile.CredentialStored = credentialStored == 1
+	return profile, err
 }
 
 func (s *Store) ensureSettingsColumn(name, definition string) error {

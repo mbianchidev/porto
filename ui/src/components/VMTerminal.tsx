@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import { FitAddon } from '@xterm/addon-fit'
 import { Terminal } from '@xterm/xterm'
 import '@xterm/xterm/css/xterm.css'
+import { usePreferences } from '../preferences'
 import type { VMInstance } from '../types'
 import { ActionButton } from './ActionButton'
 
@@ -32,6 +33,7 @@ export function InteractiveTerminal({
   ariaLabel,
   stoppedMessage,
 }: InteractiveTerminalProps) {
+  const preferences = usePreferences()
   const [maximized, setMaximized] = useState(false)
   const [sessionToken, setSessionToken] = useState(0)
   const [state, setState] = useState<TerminalState>(
@@ -76,12 +78,12 @@ export function InteractiveTerminal({
 
     const styles = window.getComputedStyle(document.documentElement)
     const terminal = new Terminal({
-      cursorBlink: true,
+      cursorBlink: preferences.terminalCursorBlink && !preferences.reduceMotion,
       fontFamily: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
-      fontSize: 12,
-      lineHeight: 1.35,
+      fontSize: preferences.terminalFontSize,
+      lineHeight: preferences.terminalLineHeight,
       screenReaderMode: true,
-      scrollback: 5000,
+      scrollback: preferences.terminalScrollback,
       theme: {
         background: styles.getPropertyValue('--panel-dark').trim(),
         foreground: styles.getPropertyValue('--white').trim(),
@@ -158,7 +160,16 @@ export function InteractiveTerminal({
       fitAddonRef.current = null
       terminalRef.current = null
     }
-  }, [endpoint, running, sessionToken])
+  }, [
+    endpoint,
+    preferences.reduceMotion,
+    preferences.terminalCursorBlink,
+    preferences.terminalFontSize,
+    preferences.terminalLineHeight,
+    preferences.terminalScrollback,
+    running,
+    sessionToken,
+  ])
 
   const stateLabel = !running
     ? 'stopped'
