@@ -10,6 +10,8 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 type Command struct {
@@ -33,9 +35,7 @@ type OutputChunk struct {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
-	cmd.Dir = command.Dir
-	cmd.Env = append(os.Environ(), command.Env...)
+	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
 		return nil, err
@@ -49,9 +49,7 @@ func (ExecRunner) RunStreaming(
 	command Command,
 	emit func(OutputChunk) error,
 ) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
-	cmd.Dir = command.Dir
-	cmd.Env = append(os.Environ(), command.Env...)
+	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
 		return nil, err
@@ -62,6 +60,12 @@ func (ExecRunner) RunStreaming(
 	cmd.Stderr = chunkWriter{stream: "stderr", output: output}
 	err = cmd.Run()
 	return output.diagnostic, err
+}
+
+func newExecCommand(ctx context.Context, command Command) *exec.Cmd {
+	cmd := process.NewCommand(ctx, command.Dir, command.Name, command.Args...)
+	cmd.Env = process.WithEnvironment(os.Environ(), command.Env...)
+	return cmd
 }
 
 func configureCommandInput(cmd *exec.Cmd, command Command) (func(), error) {

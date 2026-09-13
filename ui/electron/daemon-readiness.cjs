@@ -188,9 +188,8 @@ function windowsDaemonProcessIDs(processes) {
 
 function dockerBootstrapCommand(status, {
   isPackaged = true,
-  platform = process.platform,
 } = {}) {
-  if (!isPackaged || platform === 'win32' || !status?.enabled || status.available) {
+  if (!isPackaged || !status?.enabled || status.available) {
     return null
   }
   return ['docker', 'engine-install']

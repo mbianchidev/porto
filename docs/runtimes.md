@@ -76,14 +76,15 @@ On Windows, Porto exposes the equivalent named pipe:
 \\.\pipe\porto_docker_engine
 ```
 
-The endpoint is served by Porto itself whenever the Docker runtime is enabled. It can answer health and system information requests even when the containerd execution backend still needs installation.
+The endpoint is served by Porto itself whenever the Docker runtime is enabled. It can answer health and system information requests while the packaged desktop app prepares the containerd execution backend.
 
 ```sh
 porto docker context-install
 docker --context porto info
 ```
 
-Install the execution backend before creating containers:
+Packaged desktop builds install the execution backend automatically. CLI-only
+installations can prepare it before creating containers:
 
 ```sh
 porto docker engine-install

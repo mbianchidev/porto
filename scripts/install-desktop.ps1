@@ -91,12 +91,12 @@ try {
         if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
             & winget.exe install --id SoftwareFreedomConservancy.QEMU --exact --silent --accept-package-agreements --accept-source-agreements
             if ($LASTEXITCODE -ne 0) {
-                Write-Warning "QEMU installation failed. Install QEMU manually to use Porto virtual machines."
+                Write-Warning "QEMU installation failed. Install QEMU to use Porto's managed container runtime and virtual machines."
             }
             $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
         }
         else {
-            Write-Warning "Install QEMU to use Porto virtual machines."
+            Write-Warning "Install QEMU to use Porto's managed container runtime and virtual machines."
         }
     }
 

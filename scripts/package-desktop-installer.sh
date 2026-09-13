@@ -62,6 +62,7 @@ CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
   go build -trimpath -ldflags '-s -w' -o "$app_root/$binary" ./cmd/porto
 bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime_directory"
 test -f "$runtime_directory/VERSIONS"
+test -f "$runtime_directory/bin/porto-runtime-helper"
 
 (
   cd ui/electron

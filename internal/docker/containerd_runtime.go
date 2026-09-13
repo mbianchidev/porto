@@ -25,6 +25,7 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -383,7 +384,9 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 		return nil, fmt.Errorf("create containerd tunnel directory: %w", err)
 	}
 	localSocket := filepath.Join(directory, "containerd.sock")
-	command := exec.Command(
+	command := process.NewCommand(
+		ctx,
+		"",
 		"ssh",
 		"-F",
 		sshConfig,

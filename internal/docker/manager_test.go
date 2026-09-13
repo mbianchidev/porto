@@ -741,7 +741,6 @@ func TestInstallEngineSerializesConcurrentRequests(t *testing.T) {
 func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	runner := &engineInstallRunner{}
 	manager := NewWithStateDir(runner, t.TempDir())
-	manager.goos = "darwin"
 	manager.dialBuildKit = workingBuildKitDialer
 	manager.lookPath = func(name string) (string, error) {
 		switch name {
@@ -780,7 +779,6 @@ func TestInstallEngineRejectsUnownedLimaNameCollision(t *testing.T) {
 		errors: map[string]error{},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
-	manager.goos = "darwin"
 	manager.lookPath = func(name string) (string, error) {
 		if name == "limactl" {
 			return "/usr/local/bin/limactl", nil
@@ -789,6 +787,44 @@ func TestInstallEngineRejectsUnownedLimaNameCollision(t *testing.T) {
 	}
 	if _, err := manager.InstallEngine(context.Background()); err == nil || !strings.Contains(err.Error(), "not owned") {
 		t.Fatalf("expected ownership collision, got %v", err)
+	}
+}
+
+func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
+	root := t.TempDir()
+	executable := filepath.Join(root, "porto.exe")
+	helper := filepath.Join(root, "runtime", "bin", "porto-runtime-helper")
+	if err := os.MkdirAll(filepath.Dir(helper), 0o755); err != nil {
+		t.Fatalf("create runtime directory: %v", err)
+	}
+	if err := os.WriteFile(helper, []byte("helper"), 0o644); err != nil {
+		t.Fatalf("write runtime helper: %v", err)
+	}
+
+	path, err := resolveRuntimeHelperPath(executable, func(string) (string, error) {
+		return "", errors.New("PATH lookup should not run")
+	})
+	if err != nil {
+		t.Fatalf("resolve runtime helper: %v", err)
+	}
+	if path != helper {
+		t.Fatalf("runtime helper = %q, want %q", path, helper)
+	}
+}
+
+func TestResolveRuntimeHelperPathFallsBackToPath(t *testing.T) {
+	expected := filepath.Join(t.TempDir(), "porto-runtime-helper")
+	path, err := resolveRuntimeHelperPath(filepath.Join(t.TempDir(), "porto"), func(name string) (string, error) {
+		if name != "porto-runtime-helper" {
+			t.Fatalf("lookup name = %q", name)
+		}
+		return expected, nil
+	})
+	if err != nil {
+		t.Fatalf("resolve runtime helper: %v", err)
+	}
+	if path != expected {
+		t.Fatalf("runtime helper = %q, want %q", path, expected)
 	}
 }
 

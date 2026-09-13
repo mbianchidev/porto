@@ -67,8 +67,7 @@ type Runner interface {
 type ExecRunner struct{}
 
 func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
-	cmd.Dir = command.Dir
+	cmd := process.NewCommand(ctx, command.Dir, command.Name, command.Args...)
 	cmd.Env = process.WithEnvironment(os.Environ(), command.Env...)
 	return cmd.CombinedOutput()
 }

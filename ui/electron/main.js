@@ -426,7 +426,6 @@ async function ensureDockerEngine() {
   if (!status.enabled) return
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
-    platform: process.platform,
   })
   if (command !== null) {
     await installDockerEngine({ daemonURL: DAEMON_URL })

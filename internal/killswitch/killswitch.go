@@ -19,6 +19,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 const (
@@ -51,7 +52,7 @@ func (ExecRunner) LookPath(name string) (string, error) {
 func (ExecRunner) Run(ctx context.Context, name string, args ...string) (CommandOutput, error) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	cmd := exec.CommandContext(ctx, name, args...)
+	cmd := process.NewCommand(ctx, "", name, args...)
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 	err := cmd.Run()

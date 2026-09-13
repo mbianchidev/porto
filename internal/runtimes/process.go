@@ -3,7 +3,6 @@ package runtimes
 import (
 	"context"
 	"io"
-	"os"
 	"os/exec"
 	"sync"
 )
@@ -22,9 +21,7 @@ type ProcessRunner interface {
 }
 
 func (ExecRunner) Start(ctx context.Context, command Command) (Process, error) {
-	cmd := exec.CommandContext(ctx, command.Name, command.Args...)
-	cmd.Dir = command.Dir
-	cmd.Env = append(os.Environ(), command.Env...)
+	cmd := newExecCommand(ctx, command)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
