@@ -38,8 +38,7 @@ BuildKit socket or Lima `buildctl dial-stdio`
 The API server is part of the Porto daemon and starts whenever the Docker runtime is enabled. Docker is enabled by default for new Porto installations and can be toggled with `porto runtime enable docker` or `porto runtime disable docker`. The execution backend is independent:
 
 - If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
-- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch. Porto installs its bundled Linux runtime helper only in that owned VM. CLI-only installations can run `porto docker engine-install`.
-- Windows exposes the Docker-compatible named pipe, but automatic backend installation is not implemented. Install nerdctl, containerd, and BuildKit manually.
+- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper only in that owned VM. CLI-only installations can run `porto docker engine-install`.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 

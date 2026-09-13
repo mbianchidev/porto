@@ -146,17 +146,16 @@ test('finds Windows Porto daemon processes', () => {
   ])
 })
 
-test('bootstraps the bundled engine only for packaged supported desktops', () => {
+test('bootstraps the bundled engine for packaged desktops', () => {
   const unavailable = { enabled: true, available: false }
 
   assert.deepEqual(
-    dockerBootstrapCommand(unavailable, { isPackaged: true, platform: 'darwin' }),
+    dockerBootstrapCommand(unavailable, { isPackaged: true }),
     ['docker', 'engine-install'],
   )
-  assert.equal(dockerBootstrapCommand({ enabled: true, available: true }, { isPackaged: true, platform: 'darwin' }), null)
-  assert.equal(dockerBootstrapCommand({ enabled: false, available: false }, { isPackaged: true, platform: 'darwin' }), null)
-  assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: false, platform: 'darwin' }), null)
-  assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: true, platform: 'win32' }), null)
+  assert.equal(dockerBootstrapCommand({ enabled: true, available: true }, { isPackaged: true }), null)
+  assert.equal(dockerBootstrapCommand({ enabled: false, available: false }, { isPackaged: true }), null)
+  assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: false }), null)
 })
 
 test('installs the engine through the active daemon', async () => {

@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 const limaBuildKitCommand = `
@@ -97,8 +99,9 @@ func dialBuildKitAddress(ctx context.Context, address string) (net.Conn, error) 
 }
 
 func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
-	command := exec.CommandContext(
+	command := process.NewCommand(
 		ctx,
+		"",
 		"limactl",
 		"shell",
 		instance,

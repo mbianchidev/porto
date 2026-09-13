@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 	"strings"
 )
 
@@ -23,8 +22,9 @@ $rows = @(Get-CimInstance Win32_PerfFormattedData_PerfProc_Process | ForEach-Obj
 ConvertTo-Json -InputObject $rows -Compress`
 
 func readResourceRows(ctx context.Context) ([]resourceRow, error) {
-	output, err := exec.CommandContext(
+	output, err := NewCommand(
 		ctx,
+		"",
 		"powershell.exe",
 		"-NoProfile",
 		"-NonInteractive",

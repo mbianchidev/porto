@@ -11,7 +11,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,7 +41,6 @@ type Manager struct {
 	timeout             time.Duration
 	stateDir            string
 	lookPath            func(string) (string, error)
-	goos                string
 	directCLI           bool
 	dialBuildKit        func(context.Context) (net.Conn, error)
 	installMu           sync.Mutex
@@ -78,7 +76,6 @@ func New(runner runtimes.Runner) *Manager {
 			runner:          runner,
 			timeout:         defaultTimeout,
 			lookPath:        exec.LookPath,
-			goos:            runtime.GOOS,
 			directCLI:       true,
 			networkLocks:    newContainerMutexes(),
 			containerNameMu: &sync.Mutex{},
@@ -99,7 +96,6 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		timeout:         defaultTimeout,
 		stateDir:        stateDir,
 		lookPath:        exec.LookPath,
-		goos:            runtime.GOOS,
 		networkLocks:    newContainerMutexes(),
 		containerNameMu: &sync.Mutex{},
 	}
@@ -194,9 +190,6 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 				}
 			}
 		}
-	}
-	if m.goos == "windows" {
-		return Status{}, errors.New("Porto engine installation is not available on Windows; install nerdctl and containerd manually")
 	}
 	if _, err := m.lookPath("limactl"); err != nil {
 		return Status{}, errors.New("Lima is required to install the Porto container runtime; install limactl and retry")
@@ -302,8 +295,11 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 }
 
 func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string) error {
-	path, err := m.lookPath("porto-runtime-helper")
+	path, err := m.runtimeHelperPath()
 	if err != nil {
+		return err
+	}
+	if path == "" {
 		return nil
 	}
 	binary, err := os.ReadFile(path)
@@ -327,6 +323,32 @@ func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string)
 		return fmt.Errorf("install Porto runtime helper in Lima: %w", err)
 	}
 	return nil
+}
+
+func (m *Manager) runtimeHelperPath() (string, error) {
+	executable, _ := os.Executable()
+	return resolveRuntimeHelperPath(executable, m.lookPath)
+}
+
+func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, error)) (string, error) {
+	if executable != "" {
+		candidate := filepath.Join(filepath.Dir(executable), "runtime", "bin", "porto-runtime-helper")
+		info, err := os.Stat(candidate)
+		if err == nil {
+			if !info.Mode().IsRegular() {
+				return "", fmt.Errorf("Porto runtime helper is not a regular file: %s", candidate)
+			}
+			return candidate, nil
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			return "", fmt.Errorf("inspect bundled Porto runtime helper %s: %w", candidate, err)
+		}
+	}
+	path, err := lookPath("porto-runtime-helper")
+	if err != nil {
+		return "", nil
+	}
+	return path, nil
 }
 
 func (m *Manager) StartEngine(ctx context.Context) error {
