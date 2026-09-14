@@ -5,6 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"strings"
 	"testing"
@@ -26,6 +27,19 @@ func TestCommandConnHelperProcess(t *testing.T) {
 		}
 		fmt.Fprintln(os.Stderr, "synthetic runtime socket unavailable")
 		os.Exit(7)
+	case "proxy":
+		connection, err := net.Dial("tcp", os.Getenv("PORTO_TEST_TUNNEL_ADDRESS"))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		go func() {
+			_, _ = io.Copy(connection, os.Stdin)
+			_ = connection.Close()
+		}()
+		_, _ = io.Copy(os.Stdout, connection)
+		_ = connection.Close()
+		os.Exit(0)
 	}
 }
 

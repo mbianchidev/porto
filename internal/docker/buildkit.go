@@ -100,9 +100,13 @@ func dialBuildKitAddress(ctx context.Context, address string) (net.Conn, error) 
 }
 
 func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
-	command := process.NewCommand(
+	command := limaBuildKitStdioCommand(ctx, instance)
+	return dialCommandConn(ctx, "BuildKit tunnel", command, buildKitAddr("porto"), buildKitAddr("buildkit"))
+}
+
+func limaBuildKitStdioCommand(ctx context.Context, instance string) *exec.Cmd {
+	return newTunnelCommand(
 		ctx,
-		"",
 		"limactl",
 		"shell",
 		"--workdir=/",
@@ -112,7 +116,11 @@ func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
 		"-lc",
 		limaBuildKitCommand,
 	)
-	return dialCommandConn(ctx, "BuildKit tunnel", command, buildKitAddr("porto"), buildKitAddr("buildkit"))
+}
+
+func newTunnelCommand(ctx context.Context, name string, args ...string) *exec.Cmd {
+	// Dial cancellation must not kill an established connection; Close owns it.
+	return process.NewCommand(context.WithoutCancel(ctx), "", name, args...)
 }
 
 func dialCommandConn(ctx context.Context, action string, command *exec.Cmd, localAddr, remoteAddr net.Addr) (net.Conn, error) {

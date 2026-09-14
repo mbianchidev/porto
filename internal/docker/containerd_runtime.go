@@ -25,7 +25,6 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -397,9 +396,8 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 		return nil, fmt.Errorf("create containerd tunnel directory: %w", err)
 	}
 	localSocket := filepath.Join(directory, "containerd.sock")
-	command := process.NewCommand(
-		context.WithoutCancel(ctx),
-		"",
+	command := newTunnelCommand(
+		ctx,
 		"ssh",
 		"-F",
 		sshConfig,
@@ -461,10 +459,8 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 }
 
 func limaContainerdStdioCommand(ctx context.Context, instance, socket string) *exec.Cmd {
-	// A gRPC dial context ends once connected; Close owns the tunnel's lifetime.
-	return process.NewCommand(
-		context.WithoutCancel(ctx),
-		"",
+	return newTunnelCommand(
+		ctx,
 		"limactl",
 		"shell",
 		"--workdir=/",

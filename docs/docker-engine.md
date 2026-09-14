@@ -240,6 +240,11 @@ docker --context porto buildx build \
   --push .
 ```
 
+Lima BuildKit tunnels, including build-history connections, stay alive until
+their connection closes. Completion of gRPC dialing does not stop the tunnel;
+finishing or canceling a history request still closes and reaps its subprocess.
+This behavior is shared by macOS, Windows, and Linux.
+
 The Porto CLI and legacy Docker build API also pass comma-separated platforms
 to nerdctl:
 
