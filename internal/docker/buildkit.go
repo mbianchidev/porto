@@ -14,7 +14,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/process"
@@ -198,16 +197,15 @@ func (c *commandConn) Close() error {
 			return
 		default:
 		}
+		var killErr error
 		if c.command.Process != nil {
-			if err := process.Kill(c.command); err != nil &&
-				!errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
-				c.closeErr = errors.Join(c.closeErr, err)
-			}
+			killErr = process.Kill(c.command)
 		}
 		select {
 		case <-c.done:
+			// Closing stdin can let the process exit before taskkill reaches it.
 		case <-time.After(5 * time.Second):
-			c.closeErr = errors.Join(c.closeErr, fmt.Errorf("timed out stopping %s", c.action))
+			c.closeErr = errors.Join(c.closeErr, killErr, fmt.Errorf("timed out stopping %s", c.action))
 		}
 	})
 	return c.closeErr
