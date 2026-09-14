@@ -750,7 +750,7 @@ func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...str
 	if r.lima != "" {
 		command.Name = "limactl"
 		command.Args = []string{
-			"shell", r.lima, "--", "sh", "-c",
+			"shell", "--workdir=/", r.lima, "--", "sh", "-c",
 			`exec "$HOME/.local/bin/porto-runtime-helper" "$@"`,
 			"porto-runtime-helper",
 		}

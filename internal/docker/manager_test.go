@@ -122,12 +122,12 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 		case strings.HasPrefix(joined, "start --tty=false"):
 			r.created = true
 			return nil, nil
-		case joined == `shell porto-engine -- sh -c umask 077; cat > "$HOME/.porto-engine-owner"`:
+		case joined == `shell --workdir=/ porto-engine -- sh -c umask 077; cat > "$HOME/.porto-engine-owner"`:
 			r.ownerID = strings.TrimSpace(string(command.Stdin))
 			return nil, nil
-		case joined == `shell porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
+		case joined == `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
 			return []byte(r.ownerID + "\n"), nil
-		case joined == "shell porto-engine -- nerdctl version":
+		case joined == "shell --workdir=/ porto-engine -- nerdctl version":
 			return []byte("nerdctl version 2.1.0\n"), nil
 		}
 	}
@@ -296,7 +296,7 @@ func TestLimaInstanceStatusTreatsUnmatchedInstanceAsMissing(t *testing.T) {
 
 func TestVerifyLimaOwnershipIgnoresLimaDiagnostics(t *testing.T) {
 	const ownerID = "porto-owner"
-	key := `limactl shell porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
+	key := `limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
 			key: []byte(
@@ -313,7 +313,7 @@ func TestVerifyLimaOwnershipIgnoresLimaDiagnostics(t *testing.T) {
 }
 
 func TestVerifyLimaOwnershipRejectsDifferentMarker(t *testing.T) {
-	key := `limactl shell porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
+	key := `limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
 			key: []byte(
@@ -327,6 +327,66 @@ func TestVerifyLimaOwnershipRejectsDifferentMarker(t *testing.T) {
 	err := New(runner).verifyLimaOwnership(context.Background(), "porto-owner")
 	if err == nil || !strings.Contains(err.Error(), "ownership marker does not match") {
 		t.Fatalf("expected ownership mismatch, got %v", err)
+	}
+}
+
+func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "limactl" || len(command.Args) < 3 ||
+			!reflect.DeepEqual(command.Args[:3], []string{"shell", "--workdir=/", engineInstanceName}) {
+			return nil, fmt.Errorf("probe depends on the mounted host working directory: %v", command.Args)
+		}
+		switch command.Args[len(command.Args)-1] {
+		case `cat "$HOME/.porto-engine-owner"`:
+			return []byte("test-owner\n"), nil
+		case limaContainerdDiscoveryCommand:
+			return []byte("/run/user/1000/containerd/containerd.sock\ndefault\n"), nil
+		default:
+			return nil, nil
+		}
+	}}
+	manager := NewWithStateDir(runner, t.TempDir())
+	t.Run("ownership write", func(t *testing.T) {
+		if err := manager.writeLimaOwnership(context.Background(), "test-owner"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("ownership read", func(t *testing.T) {
+		if err := manager.verifyLimaOwnership(context.Background(), "test-owner"); err != nil {
+			t.Fatal(err)
+		}
+	})
+	t.Run("socket discovery", func(t *testing.T) {
+		socket, namespace, err := manager.discoverLimaContainerd(context.Background(), engineInstanceName)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if socket != "/run/user/1000/containerd/containerd.sock" || namespace != "default" {
+			t.Fatalf("socket discovery = %q, %q", socket, namespace)
+		}
+	})
+	t.Run("runtime helper", func(t *testing.T) {
+		client := grpcContainerRuntime{lima: engineInstanceName, runner: runner}
+		if _, err := client.runRuntimeHelper(context.Background(), "probe"); err != nil {
+			t.Fatal(err)
+		}
+	})
+}
+
+func TestEngineTimeoutIncludesCommandDiagnostics(t *testing.T) {
+	const diagnostic = "ssh: connect to host 127.0.0.1: connection timed out"
+	runner := &fakeRunner{
+		handler: func(runtimes.Command) ([]byte, error) {
+			return []byte(diagnostic), context.DeadlineExceeded
+		},
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	err := New(runner).verifyLimaOwnership(ctx, "test-owner")
+	if err == nil || !errors.Is(err, context.DeadlineExceeded) ||
+		!strings.Contains(err.Error(), diagnostic) ||
+		!strings.Contains(err.Error(), "verify Porto engine ownership") {
+		t.Fatalf("timeout discarded the guest diagnostic: %v", err)
 	}
 }
 
@@ -677,6 +737,9 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
 	manager.dialBuildKit = workingBuildKitDialer
+	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+	_, manager.inventoryCancel = context.WithCancel(context.Background())
+	defer manager.inventoryCancel()
 	manager.lookPath = func(name string) (string, error) {
 		if name == "nerdctl" {
 			return "/usr/local/bin/nerdctl", nil
@@ -696,6 +759,11 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 	}
 	if state.Mode != "direct" {
 		t.Fatalf("engine mode = %q, want direct", state.Mode)
+	}
+	select {
+	case <-manager.inventory.refresh:
+	default:
+		t.Fatal("successful engine installation did not wake the container inventory")
 	}
 }
 
@@ -790,6 +858,36 @@ func TestInstallEngineRejectsUnownedLimaNameCollision(t *testing.T) {
 	}
 }
 
+func TestStartEngineRefreshesInventory(t *testing.T) {
+	for _, phase := range []string{"Stopped", "Running"} {
+		t.Run(phase, func(t *testing.T) {
+			runner := &fakeRunner{
+				outputs: map[string][]byte{
+					"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"` + phase + `"}`),
+					`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("test-owner\n"),
+				},
+			}
+			manager := NewWithStateDir(runner, t.TempDir())
+			if err := manager.writeEngineState(engineState{
+				Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+			_, manager.inventoryCancel = context.WithCancel(context.Background())
+			defer manager.inventoryCancel()
+			if err := manager.StartEngine(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			select {
+			case <-manager.inventory.refresh:
+			default:
+				t.Fatal("starting the engine did not wake the container inventory")
+			}
+		})
+	}
+}
+
 func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "porto.exe")
@@ -809,6 +907,64 @@ func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
 	}
 	if path != helper {
 		t.Fatalf("runtime helper = %q, want %q", path, helper)
+	}
+}
+
+func TestInstallLimaRuntimeHelperPreservesPreviousBinaryOnFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("runtime helper installation runs in the Linux guest")
+	}
+	home := t.TempDir()
+	directory := filepath.Join(home, ".local", "bin")
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	installed := filepath.Join(directory, "porto-runtime-helper")
+	previous := []byte("previous helper")
+	if err := os.WriteFile(installed, previous, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	replacement := filepath.Join(t.TempDir(), "invalid-helper")
+	if err := os.WriteFile(replacement, []byte("#!/bin/sh\nexit 7\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "limactl" || len(command.Args) < 6 {
+			return nil, fmt.Errorf("unexpected helper installation: %+v", command)
+		}
+		return (runtimes.ExecRunner{}).Run(ctx, runtimes.Command{
+			Name:  "sh",
+			Args:  []string{"-c", command.Args[len(command.Args)-1]},
+			Env:   []string{"HOME=" + home},
+			Stdin: command.Stdin,
+		})
+	}}
+	manager := NewWithStateDir(runner, t.TempDir())
+	manager.lookPath = func(name string) (string, error) {
+		if name == "porto-runtime-helper" {
+			return replacement, nil
+		}
+		return "", errors.New("not found")
+	}
+
+	if err := manager.installLimaRuntimeHelper(ctx, "test-engine"); err == nil {
+		t.Fatal("invalid helper was accepted")
+	}
+	current, err := os.ReadFile(installed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(current, previous) {
+		t.Fatalf("failed helper installation replaced the working binary: %q", current)
+	}
+	entries, err := os.ReadDir(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "porto-runtime-helper" {
+		t.Fatalf("failed helper installation left temporary files: %+v", entries)
 	}
 }
 

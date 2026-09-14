@@ -14,9 +14,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/process"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 const limaBuildKitCommand = `
@@ -47,10 +49,10 @@ func (m *Manager) dialBuildKitBackend(ctx context.Context, backend commandBacken
 	if backend.name != "limactl" {
 		return dialLocalBuildKit(ctx)
 	}
-	if len(backend.prefix) < 2 {
+	if backend.limaInstance == "" {
 		return nil, errors.New("Porto Lima backend configuration is incomplete")
 	}
-	return dialLimaBuildKit(ctx, backend.prefix[1])
+	return dialLimaBuildKit(ctx, backend.limaInstance)
 }
 
 func dialLocalBuildKit(ctx context.Context) (net.Conn, error) {
@@ -104,6 +106,7 @@ func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
 		"",
 		"limactl",
 		"shell",
+		"--workdir=/",
 		instance,
 		"--",
 		"sh",
@@ -118,39 +121,42 @@ func dialCommandConn(ctx context.Context, action string, command *exec.Cmd, loca
 	if err != nil {
 		return nil, fmt.Errorf("open %s input: %w", action, err)
 	}
-	stdout, err := command.StdoutPipe()
-	if err != nil {
-		_ = stdin.Close()
-		return nil, fmt.Errorf("open %s output: %w", action, err)
-	}
+	stdout, output := io.Pipe()
+	command.Stdout = output
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
 		_ = stdin.Close()
 		_ = stdout.Close()
+		_ = output.Close()
 		return nil, fmt.Errorf("start %s: %w", action, err)
 	}
 	connection := &commandConn{
 		command:    command,
 		stdin:      stdin,
 		stdout:     stdout,
-		stderr:     &stderr,
-		done:       make(chan error, 1),
+		action:     action,
+		done:       make(chan struct{}),
 		localAddr:  localAddr,
 		remoteAddr: remoteAddr,
 	}
 	go func() {
-		connection.done <- command.Wait()
+		waitErr := command.Wait()
+		if waitErr != nil {
+			waitErr = runtimes.CommandError(action, stderr.Bytes(), waitErr)
+		}
+		connection.waitErr = waitErr
+		_ = output.CloseWithError(waitErr)
+		close(connection.done)
 	}()
 	select {
-	case err := <-connection.done:
+	case <-connection.done:
 		_ = stdin.Close()
 		_ = stdout.Close()
-		message := strings.TrimSpace(stderr.String())
-		if message == "" {
-			message = err.Error()
+		if connection.waitErr != nil {
+			return nil, fmt.Errorf("%s exited before connecting: %w", action, connection.waitErr)
 		}
-		return nil, fmt.Errorf("%s exited before connecting: %s", action, message)
+		return nil, fmt.Errorf("%s exited before connecting", action)
 	case <-time.After(100 * time.Millisecond):
 		return connection, nil
 	case <-ctx.Done():
@@ -163,9 +169,11 @@ type commandConn struct {
 	command    *exec.Cmd
 	stdin      io.WriteCloser
 	stdout     io.ReadCloser
-	stderr     *bytes.Buffer
-	done       chan error
+	action     string
+	done       chan struct{}
+	waitErr    error
 	once       sync.Once
+	closeErr   error
 	localAddr  net.Addr
 	remoteAddr net.Addr
 }
@@ -179,19 +187,30 @@ func (c *commandConn) Write(data []byte) (int, error) {
 }
 
 func (c *commandConn) Close() error {
-	var closeErr error
 	c.once.Do(func() {
-		closeErr = errors.Join(c.stdin.Close(), c.stdout.Close())
+		for _, err := range []error{c.stdin.Close(), c.stdout.Close()} {
+			if err != nil && !errors.Is(err, os.ErrClosed) {
+				c.closeErr = errors.Join(c.closeErr, err)
+			}
+		}
+		select {
+		case <-c.done:
+			return
+		default:
+		}
 		if c.command.Process != nil {
-			closeErr = errors.Join(closeErr, c.command.Process.Kill())
+			if err := process.Kill(c.command); err != nil &&
+				!errors.Is(err, os.ErrProcessDone) && !errors.Is(err, syscall.ESRCH) {
+				c.closeErr = errors.Join(c.closeErr, err)
+			}
 		}
 		select {
 		case <-c.done:
 		case <-time.After(5 * time.Second):
-			closeErr = errors.Join(closeErr, errors.New("timed out stopping BuildKit tunnel"))
+			c.closeErr = errors.Join(c.closeErr, fmt.Errorf("timed out stopping %s", c.action))
 		}
 	})
-	return closeErr
+	return c.closeErr
 }
 
 func (c *commandConn) LocalAddr() net.Addr {

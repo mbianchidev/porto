@@ -70,6 +70,41 @@ func (f *fakeContainerRuntime) Close() error {
 	return nil
 }
 
+type blockedCapabilityRuntime struct {
+	*fakeContainerRuntime
+}
+
+func (r *blockedCapabilityRuntime) Capabilities(ctx context.Context) ContainerCapabilities {
+	<-ctx.Done()
+	return ContainerCapabilities{
+		NetworkUpdates: RuntimeCapability{Reason: context.Cause(ctx).Error()},
+	}
+}
+
+func TestContainerInventoryBoundsGuestCapabilityProbe(t *testing.T) {
+	client := &blockedCapabilityRuntime{newFakeContainerRuntime([]Container{{ID: "test-container"}})}
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return client, nil },
+		inventoryOptions{operationTimeout: 20 * time.Millisecond},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inventory.run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	snapshot := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	if snapshot.Capabilities.NetworkUpdates.Reason != context.DeadlineExceeded.Error() {
+		t.Fatalf("capability probe did not retain its timeout: %+v", snapshot.Capabilities)
+	}
+}
+
 func TestContainerInventorySubscribesBeforeSnapshotAndRefreshesOnEvent(t *testing.T) {
 	runtimeClient := newFakeContainerRuntime(
 		[]Container{{ID: "one", Name: "api", State: "created"}},
@@ -746,6 +781,51 @@ func TestManagerUsesContainerInventoryWithoutNerdctlPolling(t *testing.T) {
 	defer runner.mu.Unlock()
 	if len(runner.commands) != 1 || strings.Join(runner.commands[0].Args, " ") != "stop one" {
 		t.Fatalf("unexpected action commands: %+v", runner.commands)
+	}
+}
+
+func TestContainerInventoryRefreshInterruptsConnectionBackoff(t *testing.T) {
+	runtimeClient := newFakeContainerRuntime([]Container{})
+	attempts := 0
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) {
+			attempts++
+			if attempts == 1 {
+				return nil, ErrUnavailable
+			}
+			return runtimeClient, nil
+		},
+		inventoryOptions{
+			connectBackoff: time.Hour,
+			maxBackoff:     time.Hour,
+		},
+	)
+	updates, unsubscribe := inventory.subscribe()
+	defer unsubscribe()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inventory.run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case snapshot := <-updates:
+			if snapshot.Available {
+				return
+			}
+			if strings.Contains(snapshot.Message, ErrUnavailable.Error()) {
+				inventory.triggerRefresh()
+			}
+		case <-timer.C:
+			t.Fatalf("refresh did not reconnect the inventory: %+v", inventory.snapshotValue())
+		}
 	}
 }
 

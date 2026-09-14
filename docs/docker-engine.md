@@ -59,11 +59,22 @@ revision, typed task/exit/OOM/restart/health/resource metadata, lifecycle
 history, namespace, and stale-state status.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
-inside the VM and keeps a socket tunnel open for the gRPC connection. The
-connection and subscription are canceled during runtime disable and daemon
-shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
+inside the VM and keeps a tunnel open for the gRPC connection. Windows uses
+Lima shell standard input/output and the bundled guest helper; it never asks
+Windows OpenSSH to create a host Unix socket. macOS and Linux retain their
+Unix-socket SSH forwarding. A completed gRPC dial does not terminate the
+established tunnel. The connection and subscription are closed during runtime
+disable and daemon shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 `limactl shell` processes. Container lifecycle events and inventory failures
 also flow into the desktop Activity log.
+
+Ownership, socket discovery, and helper probes run from the guest root
+directory instead of entering a mounted host home directory. Capability probes
+have a bounded deadline so a stalled optional helper cannot prevent the
+container inventory from becoming available. Successful engine installation
+and startup wake reconnect backoff immediately; timeout errors retain the
+underlying command diagnostics. Helper updates are staged and checked before
+replacing the previous executable, including while existing tunnels use it.
 
 Lifecycle actions use containerd task APIs. Starting or restarting a stopped
 Porto-owned container recreates its task from the stored OCI spec, snapshot

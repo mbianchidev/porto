@@ -152,7 +152,7 @@ func (i *containerInventory) run(ctx context.Context) {
 		if err != nil {
 			i.markUnavailable(fmt.Errorf("connect container inventory: %w", err))
 			log.Printf("container inventory connection: %v", err)
-			if !waitForInventoryRetry(ctx, backoff) {
+			if !i.waitForRetry(ctx, backoff) {
 				return
 			}
 			backoff = min(backoff*2, i.options.maxBackoff)
@@ -162,7 +162,9 @@ func (i *containerInventory) run(ctx context.Context) {
 		if provider, ok := runtimeClient.(interface {
 			Capabilities(context.Context) ContainerCapabilities
 		}); ok {
-			capabilities = provider.Capabilities(ctx)
+			probeContext, cancel := context.WithTimeout(ctx, i.options.operationTimeout)
+			capabilities = provider.Capabilities(probeContext)
+			cancel()
 		}
 		i.setCapabilities(capabilities)
 
@@ -176,7 +178,7 @@ func (i *containerInventory) run(ctx context.Context) {
 		err = errors.Join(err, closeErr)
 		i.markUnavailable(fmt.Errorf("container inventory disconnected: %w", err))
 		log.Printf("container inventory disconnected: %v", err)
-		if !waitForInventoryRetry(ctx, backoff) {
+		if !i.waitForRetry(ctx, backoff) {
 			return
 		}
 		backoff = min(backoff*2, i.options.maxBackoff)
@@ -267,12 +269,14 @@ func (i *containerInventory) readSnapshot(ctx context.Context, runtimeClient con
 	return containers, nil
 }
 
-func waitForInventoryRetry(ctx context.Context, delay time.Duration) bool {
+func (i *containerInventory) waitForRetry(ctx context.Context, delay time.Duration) bool {
 	timer := time.NewTimer(delay)
 	defer timer.Stop()
 	select {
 	case <-ctx.Done():
 		return false
+	case <-i.refresh:
+		return true
 	case <-timer.C:
 		return true
 	}
