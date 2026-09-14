@@ -24,6 +24,7 @@ type recordingRunner struct {
 	failSnapshot bool
 	listPrefix   string
 	invalidList  bool
+	absent       bool
 }
 
 type brokenInstanceRunner struct {
@@ -85,7 +86,7 @@ func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) 
 	r.commands = append(r.commands, command)
 	joined := strings.Join(command.Args, " ")
 	switch joined {
-	case "list --json":
+	case "list --json", "list --json test-vm":
 		if r.deleted {
 			return nil, nil
 		}
@@ -113,7 +114,7 @@ func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) 
 	case "stop --force test-vm":
 		r.recovered = true
 		return nil, nil
-	case "shell test-vm -- true":
+	case "shell --workdir=/ test-vm -- true":
 		return nil, nil
 	case "delete test-vm":
 		return []byte("expected status `Stopped`, got `Broken`"), errors.New("exit status 1")
@@ -132,7 +133,13 @@ func (r *recordingRunner) Run(_ context.Context, command runtimes.Command) ([]by
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.commands = append(r.commands, command)
+	if len(command.Args) > 0 && command.Args[0] == "create" {
+		r.absent = false
+	}
 	if len(command.Args) >= 2 && command.Args[0] == "list" && command.Args[1] == "--json" {
+		if r.absent {
+			return nil, nil
+		}
 		if r.invalidList {
 			return []byte("{invalid"), nil
 		}
@@ -195,7 +202,7 @@ func TestImageCatalogExplainsRollingAndInstallerImages(t *testing.T) {
 }
 
 func TestCreateUsesConfiguredResources(t *testing.T) {
-	runner := &recordingRunner{}
+	runner := &recordingRunner{absent: true}
 	manager := New(runner)
 	instance, err := manager.Create(context.Background(), CreateRequest{
 		Name: "test-vm", Image: "ubuntu-24.04", VMType: "qemu", CPUs: 4, MemoryMiB: 4096, DiskGiB: 30,
@@ -208,10 +215,13 @@ func TestCreateUsesConfiguredResources(t *testing.T) {
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	if len(runner.commands) < 2 {
-		t.Fatalf("expected create and list commands, got %+v", runner.commands)
+	if len(runner.commands) < 3 {
+		t.Fatalf("expected existence check, create and list commands, got %+v", runner.commands)
 	}
-	createCommand := strings.Join(runner.commands[0].Args, " ")
+	createCommand := strings.Join(runner.commands[1].Args, " ")
+	if strings.Contains(createCommand, "--mount-none") || strings.Contains(createCommand, "--containerd=none") {
+		t.Fatalf("standalone VM inherited the Kubernetes-only profile: %s", createCommand)
+	}
 	for _, expected := range []string{"--vm-type qemu", "--cpus 4", "--memory 4", "--disk 30", "template:ubuntu-24.04"} {
 		if !strings.Contains(createCommand, expected) {
 			t.Errorf("create command %q missing %q", createCommand, expected)
@@ -278,7 +288,7 @@ func TestCreateConfigIncludesRequestedVMType(t *testing.T) {
 }
 
 func TestCreateUsesOnlySupportedImageArchitecture(t *testing.T) {
-	runner := &recordingRunner{}
+	runner := &recordingRunner{absent: true}
 	manager := New(runner)
 	if _, err := manager.Create(context.Background(), CreateRequest{
 		Name: "test-vm", Image: "archlinux", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
@@ -287,7 +297,7 @@ func TestCreateUsesOnlySupportedImageArchitecture(t *testing.T) {
 	}
 	runner.mu.Lock()
 	defer runner.mu.Unlock()
-	createCommand := strings.Join(runner.commands[0].Args, " ")
+	createCommand := strings.Join(runner.commands[1].Args, " ")
 	if !strings.Contains(createCommand, "--arch x86_64") {
 		t.Fatalf("create command %q did not select x86_64", createCommand)
 	}
@@ -386,11 +396,12 @@ func TestStartRecoversBrokenLimaInstance(t *testing.T) {
 		commands = append(commands, strings.Join(command.Args, " "))
 	}
 	want := []string{
+		"list --json test-vm",
 		"start test-vm",
 		"list --json",
 		"stop --force test-vm",
 		"start test-vm",
-		"shell test-vm -- true",
+		"shell --workdir=/ test-vm -- true",
 	}
 	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("recovery commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))
@@ -535,7 +546,7 @@ func TestExistingSurfacesBrokenInstanceDiagnostics(t *testing.T) {
 }
 
 func TestCreateCleansUpWhenFinalInspectionFails(t *testing.T) {
-	runner := &recordingRunner{invalidList: true}
+	runner := &recordingRunner{invalidList: true, absent: true}
 	_, err := New(runner).Create(context.Background(), CreateRequest{
 		Name: "test-vm", Image: "ubuntu-24.04", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
 	})
@@ -556,7 +567,7 @@ func TestCreateCleansUpWhenFinalInspectionFails(t *testing.T) {
 }
 
 func TestKubernetesNodeCreationReturnsManagedInstanceButIsNotStandalone(t *testing.T) {
-	manager := NewWithStateDir(&recordingRunner{}, t.TempDir())
+	manager := NewWithStateDir(&recordingRunner{absent: true}, t.TempDir())
 	instance, err := manager.CreateNode(context.Background(), CreateRequest{
 		Name: "test-vm", Image: "ubuntu-24.04", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
 	})
@@ -572,7 +583,7 @@ func TestKubernetesNodeCreationReturnsManagedInstanceButIsNotStandalone(t *testi
 }
 
 func TestKubernetesNodeOwnershipSurvivesClusterRename(t *testing.T) {
-	manager := NewWithStateDir(&recordingRunner{}, t.TempDir())
+	manager := NewWithStateDir(&recordingRunner{absent: true}, t.TempDir())
 	if _, err := manager.CreateNode(context.Background(), CreateRequest{
 		Name: "test-vm", Owner: "dev", Image: "ubuntu-24.04", CPUs: 2, MemoryMiB: 2048, DiskGiB: 20,
 	}); err != nil {
@@ -636,8 +647,9 @@ func TestSnapshotStopsAndRestartsRunningVM(t *testing.T) {
 		"list --json",
 		"stop test-vm",
 		"snapshot create test-vm --tag before",
+		"list --json test-vm",
 		"start test-vm",
-		"shell test-vm -- true",
+		"shell --workdir=/ test-vm -- true",
 	}
 	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("snapshot commands:\n%s\nwant:\n%s", strings.Join(commands, "\n"), strings.Join(want, "\n"))

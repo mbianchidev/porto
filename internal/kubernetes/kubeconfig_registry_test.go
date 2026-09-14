@@ -1190,6 +1190,7 @@ func TestStoppingKindClusterKeepsRegisteredContext(t *testing.T) {
 
 func TestVMClusterStartRefetchesGlobalKubeconfigCredentials(t *testing.T) {
 	baseRunner := newFakeRunner()
+	baseRunner.instances["porto-dev-server-1"] = true
 	runner := newFakeRunner()
 	refetched := false
 	runner.handler = func(command runtimes.Command) ([]byte, error) {

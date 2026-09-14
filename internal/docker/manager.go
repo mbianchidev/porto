@@ -28,6 +28,17 @@ const (
 	engineLockFile     = "engine-install.lock"
 )
 
+const limaRuntimeHelperInstallCommand = `set -eu
+umask 077
+mkdir -p "$HOME/.local/bin"
+temporary="$(mktemp "$HOME/.local/bin/.porto-runtime-helper.XXXXXX")"
+trap 'rm -f "$temporary"' EXIT
+cat > "$temporary"
+chmod 0755 "$temporary"
+"$temporary" version
+mv -f "$temporary" "$HOME/.local/bin/porto-runtime-helper"
+`
+
 var (
 	ErrUnavailable            = errors.New("Porto container runtime is unavailable")
 	ErrUnsupported            = errors.New("Docker operation is not supported by Porto")
@@ -172,6 +183,9 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	}
 	defer func() {
 		err = errors.Join(err, lock.Close())
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
 	}()
 
 	existingState, stateErr := m.readEngineState()
@@ -255,9 +269,10 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		return Status{}, err
 	}
 	limaBackend := commandBackend{
-		name:        "limactl",
-		prefix:      []string{"shell", engineInstanceName, "--", "nerdctl"},
-		description: "containerd in Lima " + engineInstanceName,
+		name:         "limactl",
+		prefix:       []string{"shell", "--workdir=/", engineInstanceName, "--", "nerdctl"},
+		description:  "containerd in Lima " + engineInstanceName,
+		limaInstance: engineInstanceName,
 	}
 	versionOutput, err := m.runBackend(ctx, limaBackend, 30*time.Second, "verify Porto container runtime", nil, "version")
 	if err != nil {
@@ -313,11 +328,12 @@ func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string)
 		binary,
 		"limactl",
 		"shell",
+		"--workdir=/",
 		instance,
 		"--",
 		"sh",
 		"-c",
-		`set -eu; umask 077; mkdir -p "$HOME/.local/bin"; cat > "$HOME/.local/bin/porto-runtime-helper"; chmod 0755 "$HOME/.local/bin/porto-runtime-helper"; "$HOME/.local/bin/porto-runtime-helper" version`,
+		limaRuntimeHelperInstallCommand,
 	)
 	if err != nil {
 		return fmt.Errorf("install Porto runtime helper in Lima: %w", err)
@@ -351,7 +367,12 @@ func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, 
 	return path, nil
 }
 
-func (m *Manager) StartEngine(ctx context.Context) error {
+func (m *Manager) StartEngine(ctx context.Context) (err error) {
+	defer func() {
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+	}()
 	state, err := m.readEngineState()
 	if err != nil {
 		return fmt.Errorf("read Porto engine state: %w", err)
@@ -1673,7 +1694,11 @@ func (m *Manager) runStreamingInput(
 	}
 	output, runErr := runner.RunStreaming(commandContext, command, emit)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-		return fmt.Errorf("%s timed out after %s", action, timeout)
+		return runtimes.CommandError(
+			fmt.Sprintf("%s timed out after %s", action, timeout),
+			output,
+			context.Cause(commandContext),
+		)
 	}
 	if runErr != nil {
 		return runtimes.CommandError(action, output, runErr)
@@ -1710,7 +1735,11 @@ func (m *Manager) runCommandWithEnv(
 		Stdin: stdin,
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("%s timed out after %s", action, timeout)
+		return nil, runtimes.CommandError(
+			fmt.Sprintf("%s timed out after %s", action, timeout),
+			output,
+			context.Cause(commandContext),
+		)
 	}
 	if err != nil {
 		return nil, runtimes.CommandError(action, output, err)
@@ -1726,7 +1755,11 @@ func (m *Manager) limaInstanceStatus(ctx context.Context) (exists bool, running 
 		Args: []string{"list", engineInstanceName, "--json"},
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-		return false, false, errors.New("inspect Porto container runtime timed out after 20s")
+		return false, false, runtimes.CommandError(
+			"inspect Porto container runtime timed out after 20s",
+			output,
+			context.Cause(commandContext),
+		)
 	}
 	if runErr != nil {
 		message := strings.ToLower(string(output))
@@ -1781,6 +1814,7 @@ func (m *Manager) writeLimaOwnership(ctx context.Context, ownerID string) error 
 		[]byte(ownerID+"\n"),
 		"limactl",
 		"shell",
+		"--workdir=/",
 		engineInstanceName,
 		"--",
 		"sh",
@@ -1801,6 +1835,7 @@ func (m *Manager) verifyLimaOwnership(ctx context.Context, ownerID string) error
 		nil,
 		"limactl",
 		"shell",
+		"--workdir=/",
 		engineInstanceName,
 		"--",
 		"sh",

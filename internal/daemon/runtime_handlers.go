@@ -819,7 +819,11 @@ func (s *Server) createKubernetesCluster(w http.ResponseWriter, r *http.Request)
 	if operationBase == nil {
 		operationBase = context.Background()
 	}
-	operationContext, cancel := context.WithTimeout(operationBase, 20*time.Minute)
+	operationContext, cancel := context.WithTimeoutCause(
+		operationBase,
+		kubernetes.ClusterCreationTimeout,
+		fmt.Errorf("Kubernetes cluster creation timed out after %s: %w", kubernetes.ClusterCreationTimeout, context.DeadlineExceeded),
+	)
 	defer cancel()
 	release, err := s.beginKubernetesClusterOperation(operationContext, request.Name, "create")
 	if err != nil {

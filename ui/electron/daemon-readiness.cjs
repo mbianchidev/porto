@@ -2,6 +2,7 @@ const path = require('node:path')
 const crypto = require('node:crypto')
 const { execFile } = require('node:child_process')
 const fs = require('node:fs')
+const { setTimeout: delay } = require('node:timers/promises')
 const { promisify } = require('node:util')
 
 const DEFAULT_DAEMON_URL = 'http://127.0.0.1:37623'
@@ -84,6 +85,29 @@ async function installDockerEngine({
   } finally {
     clearTimeout(timer)
   }
+}
+
+async function waitForDockerEngine({
+  daemonURL = DEFAULT_DAEMON_URL,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 120000,
+  nowImpl = () => performance.now(),
+  delayImpl = delay,
+} = {}) {
+  const deadline = nowImpl() + timeoutMs
+  let message = 'Container inventory is still connecting'
+  while (nowImpl() < deadline) {
+    const status = await inspectDockerStatus({
+      daemonURL,
+      fetchImpl,
+      timeoutMs: Math.min(30000, deadline - nowImpl()),
+    })
+    if (status.available || status.enabled === false) return status
+    if (status.message) message = status.message
+    const remaining = deadline - nowImpl()
+    if (remaining > 0) await delayImpl(Math.min(500, remaining))
+  }
+  throw new Error(`Porto container runtime did not become available within ${timeoutMs / 1000}s: ${message}`)
 }
 
 async function installDockerContext({
@@ -252,4 +276,5 @@ module.exports = {
   resolveLoginShellPath,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
+  waitForDockerEngine,
 }

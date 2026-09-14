@@ -25,7 +25,6 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -162,10 +161,10 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 	}
 	namespace := configuredContainerdNamespace()
 	if backend.name == "limactl" {
-		if len(backend.prefix) < 2 {
+		if backend.limaInstance == "" {
 			return nil, errors.New("Porto Lima backend configuration is incomplete")
 		}
-		instance := backend.prefix[1]
+		instance := backend.limaInstance
 		socket, discoveredNamespace, err := m.discoverLimaContainerd(ctx, instance)
 		if err != nil {
 			return nil, err
@@ -173,9 +172,12 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		if discoveredNamespace != "" {
 			namespace = discoveredNamespace
 		}
-		sshConfig, err := m.discoverLimaSSHConfig(ctx, instance)
-		if err != nil {
-			return nil, err
+		var sshConfig string
+		if runtime.GOOS != "windows" {
+			sshConfig, err = m.discoverLimaSSHConfig(ctx, instance)
+			if err != nil {
+				return nil, err
+			}
 		}
 		helperPath, _ := m.lookPath("porto-runtime-helper")
 		return newGRPCContainerRuntime(
@@ -340,6 +342,7 @@ func (m *Manager) discoverLimaContainerd(ctx context.Context, instance string) (
 		nil,
 		"limactl",
 		"shell",
+		"--workdir=/",
 		instance,
 		"--",
 		"sh",
@@ -379,14 +382,22 @@ func (m *Manager) discoverLimaSSHConfig(ctx context.Context, instance string) (s
 }
 
 func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string) (net.Conn, error) {
+	if runtime.GOOS == "windows" {
+		return dialCommandConn(
+			ctx,
+			"containerd tunnel",
+			limaContainerdStdioCommand(ctx, instance, socket),
+			buildKitAddr("porto"),
+			buildKitAddr(socket),
+		)
+	}
 	directory, err := os.MkdirTemp("", "porto-containerd-tunnel-*")
 	if err != nil {
 		return nil, fmt.Errorf("create containerd tunnel directory: %w", err)
 	}
 	localSocket := filepath.Join(directory, "containerd.sock")
-	command := process.NewCommand(
+	command := newTunnelCommand(
 		ctx,
-		"",
 		"ssh",
 		"-F",
 		sshConfig,
@@ -445,6 +456,22 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 			}
 		}
 	}
+}
+
+func limaContainerdStdioCommand(ctx context.Context, instance, socket string) *exec.Cmd {
+	return newTunnelCommand(
+		ctx,
+		"limactl",
+		"shell",
+		"--workdir=/",
+		instance,
+		"--",
+		"sh",
+		"-c",
+		`exec "$HOME/.local/bin/porto-runtime-helper" dial-stdio "$1"`,
+		"porto-containerd",
+		socket,
+	)
 }
 
 func (m *Manager) containerInventoryEnricher(backend commandBackend) func(context.Context) ([]Container, error) {

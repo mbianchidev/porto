@@ -49,6 +49,13 @@ toolchains installed outside the system paths available to graphical application
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
 
+On Windows, Porto connects to the guest containerd socket through its bundled
+Linux helper over Lima's standard-input/output transport, without forwarding a
+Windows filesystem path as an SSH Unix socket. After installation or engine
+startup, the daemon immediately retries the container inventory connection.
+The desktop waits for that fresh inventory rather than treating an older
+unavailable snapshot as a failed installation.
+
 ### Desktop updates
 
 Installed Porto desktop builds check the repository's stable GitHub Releases

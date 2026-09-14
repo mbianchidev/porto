@@ -26,6 +26,7 @@ const {
   resolvePortoBinary,
   resolveLoginShellPath,
   windowsDaemonProcesses,
+  waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
 const {
   DEFAULT_DESKTOP_PREFERENCES,
@@ -591,14 +592,7 @@ async function ensureDockerEngine() {
   })
   if (command !== null) {
     await installDockerEngine({ daemonURL: DAEMON_URL })
-    for (let attempt = 0; attempt < 30; attempt += 1) {
-      status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
-      if (status.available) break
-      await delay(500)
-    }
-    if (!status.available) {
-      throw new Error(status.message || 'Porto container runtime did not become available')
-    }
+    status = await waitForDockerEngine({ daemonURL: DAEMON_URL })
   }
   if (app.isPackaged && process.platform !== 'win32' && status.available) {
     await installDockerContext({ daemonURL: DAEMON_URL })

@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-const helperVersion = "1"
+const helperVersion = "2"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -46,6 +46,10 @@ func main() {
 		fmt.Println(helperVersion)
 	case "probe":
 		if err := json.NewEncoder(os.Stdout).Encode(probeRuntime()); err != nil {
+			fail(err)
+		}
+	case "dial-stdio":
+		if err := dialStdio(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 	case "cni-connect", "cni-check", "cni-disconnect":

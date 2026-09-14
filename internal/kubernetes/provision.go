@@ -679,11 +679,11 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	if request.Version != "" {
 		args = append(args, "--image", "kindest/node:"+request.Version)
 	}
-	commandContext, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	commandContext, cancel := provisioningContext(ctx, "create kind cluster", kindCreationTimeout)
 	defer cancel()
 	output, err := p.runKindCreate(commandContext, args)
-	if err != nil {
-		commandErr := runtimes.CommandError("create kind cluster", output, err)
+	if err != nil || commandContext.Err() != nil {
+		commandErr := provisioningCommandError(commandContext, "create kind cluster", output, err)
 		if kindCreateCollision(commandErr) {
 			cleanupRuntime = false
 			return Cluster{}, fmt.Errorf("%w: %v", errClusterRuntimeCollision, commandErr)
@@ -1634,29 +1634,10 @@ func (p *ClusterProvisioner) Rename(ctx context.Context, clusterName, newName st
 }
 
 func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName string) error {
-	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
-	defer cancel()
-	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName}
-	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
-		commandArgs := append(append([]string(nil), baseArgs...), args...)
-		output, err := p.runner.Run(operationContext, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
-		if err != nil {
-			return output, runtimes.CommandError(action, output, err)
-		}
-		return output, nil
+	if err := p.waitForClusterAPI(ctx, kubeconfigPath, contextName); err != nil {
+		return err
 	}
-	var readinessErr error
-	for {
-		_, readinessErr = run("wait for k3s API", nil, "version", "--request-timeout=10s", "-o", "json")
-		if readinessErr == nil {
-			break
-		}
-		select {
-		case <-operationContext.Done():
-			return errors.Join(readinessErr, operationContext.Err())
-		case <-time.After(time.Second):
-		}
-	}
+	run := p.addonCommandRunner(ctx, kubeconfigPath, contextName)
 	if err := ensurePersistentStorage(run); err != nil {
 		return err
 	}
@@ -1678,7 +1659,7 @@ func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfig
 	); err != nil {
 		log.Printf("Porto Gateway is still becoming ready for context %s: %v", contextName, err)
 	}
-	return nil
+	return context.Cause(ctx)
 }
 
 func ensurePersistentStorage(
@@ -1730,6 +1711,9 @@ func ensureGatewayController(
 		"get", "deployment/envoy-gateway",
 		"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`,
 	)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	if err != nil || !strings.EqualFold(strings.TrimSpace(string(output)), "true") {
 		if _, err := run(
 			"install Envoy Gateway",
@@ -2020,9 +2004,7 @@ func (p *ClusterProvisioner) ensureKindMetricsServer(ctx context.Context, kubeco
 	p.metricsRuns[contextName] = run
 	p.metricsMu.Unlock()
 
-	operationContext, cancel := context.WithTimeout(ctx, 6*time.Minute)
-	run.err = p.installKindMetricsServer(operationContext, kubeconfigPath, contextName)
-	cancel()
+	run.err = p.installKindMetricsServer(ctx, kubeconfigPath, contextName)
 
 	p.metricsMu.Lock()
 	delete(p.metricsRuns, contextName)
@@ -2032,21 +2014,16 @@ func (p *ClusterProvisioner) ensureKindMetricsServer(ctx context.Context, kubeco
 }
 
 func (p *ClusterProvisioner) installKindMetricsServer(ctx context.Context, kubeconfigPath, contextName string) error {
-	baseArgs := []string{"--kubeconfig", kubeconfigPath, "--context", contextName}
-	run := func(action string, stdin []byte, args ...string) ([]byte, error) {
-		commandArgs := append(append([]string(nil), baseArgs...), args...)
-		output, err := p.runner.Run(ctx, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
-		if err != nil {
-			return output, runtimes.CommandError(action, output, err)
-		}
-		return output, nil
-	}
+	run := p.addonCommandRunner(ctx, kubeconfigPath, contextName)
 	output, err := run(
 		"inspect Metrics API",
 		nil,
 		"get", "apiservice", "v1beta1.metrics.k8s.io",
 		"-o", `jsonpath={.status.conditions[?(@.type=="Available")].status}`,
 	)
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return err
+	}
 	if err == nil && strings.EqualFold(strings.TrimSpace(string(output)), "true") {
 		return nil
 	}

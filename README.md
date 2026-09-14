@@ -44,7 +44,8 @@ checksum, install the native macOS DMG or Windows EXE package for the current
 user, expose the `porto` CLI, and launch the desktop app. Linux uses the
 portable desktop archive. Every desktop package bundles the daemon, dashboard,
 `kubectl`, `k9s`, Lima, the supported `kind` binary, and Porto's Linux runtime
-helper for direct container I/O, CNI, and checkpoint capability discovery.
+helper for direct container I/O, Windows containerd connections, CNI, and
+checkpoint capability discovery.
 
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the

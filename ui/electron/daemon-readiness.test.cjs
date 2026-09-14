@@ -20,6 +20,7 @@ const {
   resolveLoginShellPath,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
+  waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
 
 function response(body, ok = true) {
@@ -172,6 +173,50 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('waits for a fresh inventory beyond the old 15-second startup window', async () => {
+  let elapsed = 0
+  let requests = 0
+  const status = await waitForDockerEngine({
+    fetchImpl: async () => {
+      requests += 1
+      return response({
+        enabled: true,
+        available: requests === 40,
+        message: 'Connecting to containerd',
+      })
+    },
+    nowImpl: () => elapsed,
+    delayImpl: async (milliseconds) => { elapsed += milliseconds },
+  })
+
+  assert.equal(status.available, true)
+  assert.equal(requests, 40)
+  assert.ok(elapsed > 15000)
+})
+
+test('bounds the engine readiness wait and retains the latest diagnostic', async () => {
+  let elapsed = 0
+  await assert.rejects(waitForDockerEngine({
+    timeoutMs: 2000,
+    fetchImpl: async () => response({
+      enabled: true,
+      available: false,
+      message: 'containerd guest helper failed',
+    }),
+    nowImpl: () => elapsed,
+    delayImpl: async (milliseconds) => { elapsed += milliseconds },
+  }), /containerd guest helper failed/)
+  assert.equal(elapsed, 2000)
+})
+
+test('finishes readiness immediately if the runtime was disabled', async () => {
+  const status = await waitForDockerEngine({
+    fetchImpl: async () => response({ enabled: false, available: false }),
+    delayImpl: async () => assert.fail('disabled runtime must not be polled'),
+  })
+  assert.equal(status.enabled, false)
 })
 
 test('installs the Docker context through the active daemon', async () => {
