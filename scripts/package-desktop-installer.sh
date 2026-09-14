@@ -63,6 +63,14 @@ CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
 bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime_directory"
 test -f "$runtime_directory/VERSIONS"
 test -f "$runtime_directory/bin/porto-runtime-helper"
+if [ "$goos" = "windows" ]; then
+  test -f "$runtime_directory/qemu/qemu-img.exe"
+  if [ "$goarch" = "amd64" ]; then
+    test -f "$runtime_directory/qemu/qemu-system-x86_64.exe"
+  else
+    test -f "$runtime_directory/qemu/qemu-system-aarch64.exe"
+  fi
+fi
 
 (
   cd ui/electron
@@ -106,6 +114,12 @@ else
   if [ ! -f "$packaged_binary" ]; then
     echo "Packaged Porto application is missing its daemon: $packaged_binary" >&2
     exit 1
+  fi
+  test -f "$packaged_app/resources/runtime/qemu/qemu-img.exe"
+  if [ "$goarch" = "amd64" ]; then
+    test -f "$packaged_app/resources/runtime/qemu/qemu-system-x86_64.exe"
+  else
+    test -f "$packaged_app/resources/runtime/qemu/qemu-system-aarch64.exe"
   fi
 fi
 

@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "package": "node package.cjs",
-    "test": "node --test daemon-readiness.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
+    "test": "node --test daemon-readiness.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs windows-installer.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs"
   },
   "build": {
     "appId": "dev.mbianchi.porto",
@@ -37,13 +37,15 @@
       "perMachine": false,
       "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
+      "createDesktopShortcut": false,
       "createStartMenuShortcut": true,
+      "include": "assets/installer.nsh",
       "runAfterFinish": true
     }
   },
   "devDependencies": {
     "@electron/packager": "^20.3.0",
+    "7zip-bin-full": "^26.3.1",
     "electron": "^44.2.0",
     "electron-builder": "^26.15.3",
     "undici": "^8.10.2"

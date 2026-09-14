@@ -21,7 +21,9 @@ irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-des
 Both installers resolve the latest GitHub release, select the matching
 OS/architecture package, verify it against `SHA256SUMS`, install it for the
 current user, add a `porto` CLI entry, and launch the app. macOS uses a DMG,
-Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive. Set
+Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive.
+The interactive Windows installer offers an unchecked desktop-shortcut option;
+silent installs do not create one. Set
 `PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
 install without opening it.
 
@@ -32,11 +34,12 @@ version, and API compatibility version are unchanged. This prevents a newly
 installed Porto app from continuing to use code left running by an older build.
 
 Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
-Lima, and the supported `kind` binary for that platform. Windows ARM64 excludes
-the Docker CLI and KinD because upstream standalone binaries are unavailable.
-Linux installation installs QEMU
-through `apt`, `dnf`, `pacman`, or `zypper` when it is missing; Windows uses
-`winget` when available. Set `PORTO_SKIP_PREREQS=1` to skip that step.
+Lima, and the supported `kind` binary for that platform. Windows packages also
+contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
+system installation. Windows ARM64 excludes the Docker CLI and KinD because
+upstream standalone binaries are unavailable. Linux installation installs QEMU
+through `apt`, `dnf`, `pacman`, or `zypper` when it is missing. Set
+`PORTO_SKIP_PREREQS=1` to skip that Linux prerequisite step.
 
 On macOS, Linux, and Windows, the packaged app automatically provisions and starts its
 containerd and BuildKit backend on first launch when Docker support is enabled.
@@ -148,9 +151,9 @@ Source builds use standard host tools:
 - `kind` for Kubernetes-in-Porto clusters
 
 Release desktop apps bundle kubectl, k9s, and Lima. Docker and kind are also
-bundled except on Windows ARM64. QEMU is not bundled on any platform because
-upstream does not publish relocatable macOS binaries and package-manager builds
-have large architecture-specific dynamic library closures. On macOS, run
+bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
+not because upstream does not publish relocatable binaries and package-manager
+builds have large architecture-specific dynamic library closures. On macOS, run
 `brew install qemu` and restart Porto. Source builds can install the other
 providers with `porto runtime install lima|kind|k9s|k0s`.
 

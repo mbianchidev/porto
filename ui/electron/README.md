@@ -31,7 +31,8 @@ npm start
 
 Development runs require the daemon binary (`porto`) on `PATH`. Release
 packages bundle the daemon and portable runtime clients, so users do not need a
-separate Porto, Docker CLI, Lima, `kubectl`, or `kind` installation.
+separate Porto, Docker CLI, Lima, `kubectl`, or `kind` installation. Windows
+packages also bundle QEMU for the managed container runtime and virtual machines.
 Windows ARM64 excludes Docker CLI and KinD because upstream binaries are not
 published for that target.
 
@@ -61,6 +62,9 @@ EXE package with:
 bash scripts/package-desktop-installer.sh darwin arm64 1.0.0 dist
 # Use: windows amd64 1.0.0 dist on Windows.
 ```
+
+The assisted Windows installer leaves the desktop-shortcut option unchecked by
+default. Silent installs do not create a desktop shortcut.
 
 Packaged apps compare the bundled daemon's SHA-256 identity with the identity
 cached by the running process and replace it when they differ, including

@@ -87,19 +87,6 @@ try {
         [Environment]::SetEnvironmentVariable("Path", "$BinDirectory;$UserPath", "User")
     }
 
-    if ($env:PORTO_SKIP_PREREQS -ne "1" -and -not (Get-Command qemu-system-x86_64.exe -ErrorAction SilentlyContinue) -and -not (Get-Command qemu-system-aarch64.exe -ErrorAction SilentlyContinue)) {
-        if (Get-Command winget.exe -ErrorAction SilentlyContinue) {
-            & winget.exe install --id SoftwareFreedomConservancy.QEMU --exact --silent --accept-package-agreements --accept-source-agreements
-            if ($LASTEXITCODE -ne 0) {
-                Write-Warning "QEMU installation failed. Install QEMU to use Porto's managed container runtime and virtual machines."
-            }
-            $env:Path = [Environment]::GetEnvironmentVariable("Path", "Machine") + ";" + [Environment]::GetEnvironmentVariable("Path", "User")
-        }
-        else {
-            Write-Warning "Install QEMU to use Porto's managed container runtime and virtual machines."
-        }
-    }
-
     Write-Host "Installed Porto at $InstallRoot"
     if ($env:PORTO_NO_LAUNCH -ne "1") {
         Start-Process (Join-Path $InstallRoot "Porto.exe")

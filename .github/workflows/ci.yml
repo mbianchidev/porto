@@ -243,9 +243,14 @@ jobs:
           }
           $installer = Get-Item 'dist/porto-desktop_0.0.0-ci_windows_amd64.exe'
           $installRoot = Join-Path $env:RUNNER_TEMP 'Porto installer smoke'
+          $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Porto.lnk'
+          $desktopShortcutExisted = Test-Path $desktopShortcut
           $process = Start-Process $installer.FullName -ArgumentList "/S /D=$installRoot" -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "Installer exited with code $($process.ExitCode)."
+          }
+          if (-not $desktopShortcutExisted -and (Test-Path $desktopShortcut)) {
+            throw 'Silent installation created a desktop shortcut.'
           }
           if (-not (Test-Path (Join-Path $installRoot 'Porto.exe'))) {
             throw 'Installer did not create Porto.exe.'
@@ -255,6 +260,17 @@ jobs:
           }
           if (-not (Test-Path (Join-Path $installRoot 'resources/runtime/VERSIONS'))) {
             throw 'Installer did not include the desktop runtime.'
+          }
+          $qemuImg = Join-Path $installRoot 'resources/runtime/qemu/qemu-img.exe'
+          $qemuSystem = Join-Path $installRoot 'resources/runtime/qemu/qemu-system-x86_64.exe'
+          foreach ($binary in @($qemuImg, $qemuSystem)) {
+            if (-not (Test-Path $binary)) {
+              throw "Installer did not include $binary."
+            }
+            & $binary --version | Out-Null
+            if ($LASTEXITCODE -ne 0) {
+              throw "$binary exited with code $LASTEXITCODE."
+            }
           }
           $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $uninstaller) {

@@ -39,6 +39,7 @@ func TestBundledRuntimePathPrependsExistingDirectories(t *testing.T) {
 	for _, directory := range []string{
 		filepath.Join(base, "runtime", "bin"),
 		filepath.Join(base, "runtime", "lima", "bin"),
+		filepath.Join(base, "runtime", "qemu"),
 	} {
 		if err := os.MkdirAll(directory, 0o755); err != nil {
 			t.Fatal(err)
@@ -46,7 +47,11 @@ func TestBundledRuntimePathPrependsExistingDirectories(t *testing.T) {
 	}
 	current := filepath.Join(base, "system-bin")
 	got := filepath.SplitList(bundledRuntimePath(executable, current))
-	if len(got) != 3 || got[0] != filepath.Join(base, "runtime", "bin") || got[1] != filepath.Join(base, "runtime", "lima", "bin") || got[2] != current {
+	if len(got) != 4 ||
+		got[0] != filepath.Join(base, "runtime", "bin") ||
+		got[1] != filepath.Join(base, "runtime", "lima", "bin") ||
+		got[2] != filepath.Join(base, "runtime", "qemu") ||
+		got[3] != current {
 		t.Fatalf("bundled runtime PATH = %q", strings.Join(got, "|"))
 	}
 }

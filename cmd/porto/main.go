@@ -130,6 +130,7 @@ func bundledRuntimePath(executable, current string) string {
 	bundled := []string{
 		filepath.Join(base, "runtime", "bin"),
 		filepath.Join(base, "runtime", "lima", "bin"),
+		filepath.Join(base, "runtime", "qemu"),
 	}
 	prepend := make([]string, 0, len(bundled))
 	for _, candidate := range bundled {
