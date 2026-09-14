@@ -265,6 +265,16 @@ cluster creation and startup. Cluster ownership is recorded before the add-on
 phase so a new kind, k0s, or k3s cluster appears in the dashboard while final
 configuration is still running. An orphaned kubeconfig is also surfaced with a
 repair warning instead of disappearing from the managed cluster list.
+
+Cold kind creation has a 20-minute limit covering image preparation, node
+configuration, and its five-minute readiness wait. API readiness and each
+add-on command have independent six-minute limits, so a slow storage rollout
+cannot consume the time reserved for Envoy Gateway or metrics-server. The
+daemon allows up to one hour for the complete creation sequence, including
+runtime and add-on setup. Shutdown and shorter caller deadlines still cancel
+the operation. Failures retain command progress and identify the deadline or
+cancellation cause instead of reporting only `signal: killed`.
+
 The dashboard records creation in Activity immediately and keeps provisioning
 inside the daemon if the user closes the form or navigates elsewhere. Gateway
 resources use idempotent server-side apply, and a slow final Gateway readiness
