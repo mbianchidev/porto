@@ -8,6 +8,7 @@ const packageJson = require('./package.json')
 test('makes the Windows desktop shortcut an explicit installer choice', () => {
   assert.equal(packageJson.build.nsis.createDesktopShortcut, false)
   assert.equal(packageJson.build.nsis.include, 'assets/installer.nsh')
+  assert.equal(packageJson.devDependencies['7zip-bin-full'], '^26.3.1')
 
   const installer = fs.readFileSync(path.join(__dirname, 'assets', 'installer.nsh'), 'utf8')
   assert.match(installer, /Create a desktop shortcut/)

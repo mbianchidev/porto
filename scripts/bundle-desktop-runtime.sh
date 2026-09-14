@@ -197,13 +197,13 @@ if [ "$goos" = "windows" ]; then
 
   if ! seven_zip="$(
     cd "$(dirname "$0")/../ui/electron"
-    node -e 'process.stdout.write(require("7zip-bin").path7za)'
+    node -e 'process.stdout.write(require("7zip-bin-full").path7z)'
   )"; then
-    echo "7zip-bin is required to bundle QEMU; run npm --prefix ui/electron ci first." >&2
+    echo "7zip-bin-full is required to bundle QEMU; run npm --prefix ui/electron ci first." >&2
     exit 1
   fi
   if [ ! -f "$seven_zip" ]; then
-    echo "7zip-bin extractor is missing: $seven_zip" >&2
+    echo "7zip-bin-full extractor is missing: $seven_zip" >&2
     exit 1
   fi
 
