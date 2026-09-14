@@ -210,6 +210,33 @@ Porto supports three native-engine providers:
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
 
+k3s and k0s nodes use Ubuntu 24.04 cloud disk images and Lima's `user-v2`
+network for communication between nodes. On Windows, Lima 2.2 uses QEMU
+(version 11 or newer, with Windows Hypervisor Platform). Porto does not
+substitute the experimental WSL2 driver: it requires rootfs tar archives and
+does not implement the same per-VM CPU, memory, and networking settings.
+See Lima's [QEMU implementation](https://github.com/lima-vm/lima/blob/v2.2.0/pkg/driver/qemu/qemu.go)
+and [WSL2 limitations](https://github.com/lima-vm/lima/blob/v2.2.0/website/content/en/docs/config/vmtype/wsl2.md).
+
+Kubernetes nodes disable inherited host-directory mounts and Lima's own
+containerd installation. This avoids the Windows reverse-SSHFS startup path,
+including guest sshfs/FUSE requirements, and redundant engine downloads.
+k3s or k0s installs its own container runtime inside each guest. Standalone VM
+templates retain their existing defaults.
+
+The first `limactl start` has a 20-minute limit because Lima downloads and
+prepares the guest image during **start**, before its 10-minute boot-readiness
+watch. Subsequent starts retain a five-minute limit, followed by an SSH
+readiness check of up to two minutes. SSH-readiness and resource probes run
+from `/` inside the guest rather than entering a mounted host directory;
+general VM commands retain their existing working-directory behavior.
+Caller cancellation or a shorter caller deadline still takes precedence.
+Startup errors retain the last 64 KiB of Lima
+output, including image-download or boot diagnostics, rather than only reporting
+an elapsed timeout. Porto checks exact instance names before creation and start;
+it does not implicitly recreate missing nodes, recover foreign instances, or
+delete instances whose creation it could not establish.
+
 Registry profiles are configured in **Settings → Registries**. Porto stores only
 profile metadata in its database; passwords and access tokens go to the
 operating system credential store. Saving a profile verifies it with a real

@@ -21,6 +21,9 @@ import (
 
 const defaultTimeout = 2 * time.Minute
 
+// Lima downloads/prepares the image during start, before its 10-minute boot watch.
+const firstStartTimeout = 20 * time.Minute
+
 var (
 	ErrUnavailable = errors.New("Lima is unavailable; install limactl to manage Porto virtual machines")
 	vmNamePattern  = regexp.MustCompile(`^[a-z0-9][a-z0-9.-]{0,62}$`)
@@ -322,6 +325,11 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		request.DiskGiB = 20
 	}
 	args := []string{"create", "--tty=false", "--name", request.Name}
+	if kind == "kubernetes-node" {
+		// Kubernetes supplies its own containerd and does not need host home mounts.
+		// In particular, the Ubuntu template's mounts require reverse-sshfs on Windows.
+		args = append(args, "--mount-none", "--containerd=none")
+	}
 	if request.Architecture != "" {
 		if request.Architecture != "aarch64" && request.Architecture != "x86_64" {
 			return Instance{}, fmt.Errorf("unsupported VM architecture %q", request.Architecture)
@@ -332,6 +340,13 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	}
 	if request.Architecture != "" && !supportsArchitecture(image, request.Architecture) {
 		return Instance{}, fmt.Errorf("%s does not support %s", image.Distribution, request.Architecture)
+	}
+	existing, err := m.Existing(ctx, []string{request.Name})
+	if err != nil {
+		return Instance{}, fmt.Errorf("inspect Lima instance before creation: %w", err)
+	}
+	if len(existing) != 0 {
+		return Instance{}, fmt.Errorf("Lima instance %q already exists and was not created by Porto", request.Name)
 	}
 	configPath := ""
 	if request.Network != "" || len(request.PortForwards) > 0 {
@@ -371,7 +386,7 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
-		if err := m.Start(ctx, request.Name); err != nil {
+		if err := m.start(ctx, request.Name, firstStartTimeout); err != nil {
 			return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
 		}
 		if strings.TrimSpace(request.Provision) != "" {
@@ -447,8 +462,28 @@ func (m *Manager) EnsureStandalone(name string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {
-	startErr := m.action(ctx, "start", name)
+	return m.start(ctx, name, 5*time.Minute)
+}
+
+func (m *Manager) start(ctx context.Context, name string, timeout time.Duration) error {
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
+	existing, err := m.Existing(ctx, []string{name})
+	if err != nil {
+		return fmt.Errorf("inspect Lima instance before start: %w", err)
+	}
+	if len(existing) == 0 {
+		return fmt.Errorf("VM %q not found; refusing to create a replacement during start", name)
+	}
+	_, startErr := m.run(ctx, timeout, "start Lima instance", "start", name)
 	if startErr != nil {
+		if errors.Is(startErr, context.DeadlineExceeded) || errors.Is(startErr, context.Canceled) {
+			return startErr
+		}
 		exists, broken, inspectErr := m.instanceState(ctx, name)
 		if inspectErr != nil {
 			return errors.Join(startErr, fmt.Errorf("inspect failed Lima start: %w", inspectErr))
@@ -467,7 +502,13 @@ func (m *Manager) Start(ctx context.Context, name string) error {
 }
 
 func (m *Manager) Stop(ctx context.Context, name string) error {
-	stopErr := m.action(ctx, "stop", name)
+	if err := validateName(name); err != nil {
+		return err
+	}
+	if err := m.ensureManaged(name); err != nil {
+		return err
+	}
+	_, stopErr := m.run(ctx, 5*time.Minute, "stop Lima instance", "stop", name)
 	if stopErr == nil {
 		return stopErr
 	}
@@ -589,7 +630,7 @@ func (m *Manager) ResourceStats(ctx context.Context, name string) (resources.Usa
 	commandContext, cancel := context.WithTimeout(ctx, m.resourceTimeout)
 	defer cancel()
 	output, err := m.runner.Run(commandContext, m.limaCommand(
-		[]string{"shell", name, "--", "sh", "-c", vmResourceScript},
+		[]string{"shell", "--workdir=/", name, "--", "sh", "-c", vmResourceScript},
 		nil,
 	))
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
@@ -664,17 +705,6 @@ func (m *Manager) DeleteSnapshot(ctx context.Context, name, snapshot string) err
 	return err
 }
 
-func (m *Manager) action(ctx context.Context, action, name string) error {
-	if err := validateName(name); err != nil {
-		return err
-	}
-	if err := m.ensureManaged(name); err != nil {
-		return err
-	}
-	_, err := m.run(ctx, 5*time.Minute, action+" Lima instance", action, name)
-	return err
-}
-
 func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Duration) error {
 	waitContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -684,7 +714,7 @@ func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Dura
 	for {
 		output, err := m.runner.Run(waitContext, runtimes.Command{
 			Name: "limactl",
-			Args: []string{"shell", name, "--", "true"},
+			Args: []string{"shell", "--workdir=/", name, "--", "true"},
 			Env:  m.limaEnvironment(),
 		})
 		if err == nil {
@@ -700,14 +730,19 @@ func (m *Manager) waitForSSH(ctx context.Context, name string, timeout time.Dura
 }
 
 func (m *Manager) run(ctx context.Context, timeout time.Duration, action string, args ...string) ([]byte, error) {
+	started := time.Now()
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	output, err := m.runner.Run(commandContext, m.limaCommand(args, nil))
-	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("%s timed out after %s", action, timeout)
+	diagnostic := output[max(0, len(output)-64*1024):]
+	if contextErr := commandContext.Err(); contextErr != nil {
+		if errors.Is(contextErr, context.DeadlineExceeded) {
+			action = fmt.Sprintf("%s timed out after %s", action, time.Since(started).Round(time.Millisecond))
+		}
+		return nil, runtimes.CommandError(action, diagnostic, contextErr)
 	}
 	if err != nil {
-		return nil, runtimes.CommandError(action, output, err)
+		return nil, runtimes.CommandError(action, diagnostic, err)
 	}
 	return output, nil
 }
