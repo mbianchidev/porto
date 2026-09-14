@@ -148,6 +148,16 @@ function mergeExecutablePaths(paths, delimiter = path.delimiter) {
   return entries.join(delimiter)
 }
 
+function bundledExecutablePaths(resourcesPath, {
+  existsImpl = fs.existsSync,
+} = {}) {
+  return [
+    path.join(resourcesPath, 'runtime', 'bin'),
+    path.join(resourcesPath, 'runtime', 'lima', 'bin'),
+    path.join(resourcesPath, 'runtime', 'qemu'),
+  ].filter((candidate) => existsImpl(candidate))
+}
+
 function daemonExecutable(command) {
   const match = command.match(/\s+daemon\s+start\s*$/)
   if (!match) return null
@@ -225,6 +235,7 @@ function resolvePortoBinary({
 }
 
 module.exports = {
+  bundledExecutablePaths,
   daemonBinaryIdentity,
   daemonProcessIDs,
   daemonProcesses,

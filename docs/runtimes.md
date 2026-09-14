@@ -38,11 +38,11 @@ Additional runtime features require:
 | Capability | Requirement |
 | --- | --- |
 | Docker client compatibility | Docker CLI or another Docker Engine API client |
-| Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` for Porto-managed containerd and BuildKit |
+| Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` plus QEMU for Porto-managed containerd and BuildKit; Windows desktop releases bundle both |
 | Compose project orchestration | Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
-| Standalone virtual machines | `limactl` and host virtualization support |
+| Standalone virtual machines | `limactl`, QEMU, and host virtualization support; Windows desktop releases bundle Lima and QEMU |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
 

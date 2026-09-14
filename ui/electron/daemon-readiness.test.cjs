@@ -1,8 +1,10 @@
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
+const path = require('node:path')
 const test = require('node:test')
 
 const {
+  bundledExecutablePaths,
   daemonBinaryIdentity,
   daemonProcessIDs,
   daemonProcesses,
@@ -224,6 +226,23 @@ test('merges bundled, login-shell, and inherited executable paths once', () => {
     ], ':'),
     '/Applications/Porto.app/Contents/Resources/runtime/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin',
   )
+})
+
+test('resolves every packaged runtime executable directory that exists', () => {
+  const resourcesPath = path.join(path.sep, 'Applications', 'Porto', 'resources')
+  const qemuPath = path.join(resourcesPath, 'runtime', 'qemu')
+  const expected = [
+    path.join(resourcesPath, 'runtime', 'bin'),
+    path.join(resourcesPath, 'runtime', 'lima', 'bin'),
+    qemuPath,
+  ]
+
+  assert.deepEqual(bundledExecutablePaths(resourcesPath, {
+    existsImpl: () => true,
+  }), expected)
+  assert.deepEqual(bundledExecutablePaths(resourcesPath, {
+    existsImpl: (candidate) => candidate !== qemuPath,
+  }), expected.slice(0, 2))
 })
 
 test('resolves the packaged dashboard beside the bundled daemon', () => {

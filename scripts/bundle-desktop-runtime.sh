@@ -15,6 +15,8 @@ kind_version="${KIND_VERSION:-v0.33.0}"
 k9s_version="${K9S_VERSION:-v0.50.18}"
 lima_version="${LIMA_VERSION:-v2.2.0}"
 docker_version="29.7.2"
+qemu_version="11.1.0"
+qemu_build="20260811"
 
 case "$goos/$goarch" in
   linux/amd64|linux/arm64|darwin/amd64|darwin/arm64|windows/amd64|windows/arm64) ;;
@@ -174,12 +176,71 @@ else
   tar -xzf "$temporary/$lima_asset" -C "$destination/lima"
 fi
 
+qemu_bundled=false
+if [ "$goos" = "windows" ]; then
+  case "$goarch" in
+    amd64)
+      qemu_asset="qemu-w64-setup-${qemu_build}.exe"
+      qemu_url="https://qemu.weilnetz.de/w64/2026/${qemu_asset}"
+      qemu_checksum="f98a8aeb5f7faea9765b6dee28316c266cd179d80354a2fed8e50176f9a2e59f"
+      qemu_system="qemu-system-x86_64.exe"
+      ;;
+    arm64)
+      qemu_asset="qemu-arm-setup-${qemu_build}.exe"
+      qemu_url="https://qemu.weilnetz.de/aarch64/2026/${qemu_asset}"
+      qemu_checksum="58bf65887e4d3af1eef705bdecdcb1fa25dead950fc970c20e6094662afc957f"
+      qemu_system="qemu-system-aarch64.exe"
+      ;;
+  esac
+  download "$qemu_url" "$temporary/$qemu_asset"
+  verify "$qemu_checksum" "$temporary/$qemu_asset"
+
+  if ! seven_zip="$(
+    cd "$(dirname "$0")/../ui/electron"
+    node -e 'process.stdout.write(require("7zip-bin").path7za)'
+  )"; then
+    echo "7zip-bin is required to bundle QEMU; run npm --prefix ui/electron ci first." >&2
+    exit 1
+  fi
+  if [ ! -f "$seven_zip" ]; then
+    echo "7zip-bin extractor is missing: $seven_zip" >&2
+    exit 1
+  fi
+
+  qemu_extracted="$temporary/qemu-extracted"
+  mkdir -p "$qemu_extracted"
+  if ! "$seven_zip" x -bd -y "-o$qemu_extracted" "$temporary/$qemu_asset" >/dev/null; then
+    echo "failed to extract $qemu_asset" >&2
+    exit 1
+  fi
+  qemu_img="$(find "$qemu_extracted" -type f -iname 'qemu-img.exe' -print -quit)"
+  if [ -z "$qemu_img" ]; then
+    echo "$qemu_asset did not contain qemu-img.exe" >&2
+    exit 1
+  fi
+  qemu_root="$(dirname "$qemu_img")"
+  if [ ! -f "$qemu_root/$qemu_system" ]; then
+    echo "$qemu_asset did not contain $qemu_system beside qemu-img.exe" >&2
+    exit 1
+  fi
+
+  mkdir -p "$destination/qemu"
+  cp -R "$qemu_root/." "$destination/qemu/"
+  find "$destination/qemu" -maxdepth 1 -type f -iname 'qemu-system-*.exe' ! -iname "$qemu_system" -delete
+  test -f "$destination/qemu/qemu-img.exe"
+  test -f "$destination/qemu/$qemu_system"
+  qemu_bundled=true
+fi
+
 download "https://raw.githubusercontent.com/kubernetes/kubernetes/${kubectl_version}/LICENSE" "$destination/licenses/kubernetes.txt"
 download "https://raw.githubusercontent.com/kubernetes-sigs/kind/${kind_version}/LICENSE" "$destination/licenses/kind.txt"
 download "https://raw.githubusercontent.com/derailed/k9s/${k9s_version}/LICENSE" "$destination/licenses/k9s.txt"
 if [ "$docker_bundled" = "true" ]; then
   download "https://raw.githubusercontent.com/docker/cli/v${docker_version}/LICENSE" "$destination/licenses/docker-cli.txt"
   download "https://raw.githubusercontent.com/docker/cli/v${docker_version}/NOTICE" "$destination/licenses/docker-cli-NOTICE.txt"
+fi
+if [ "$qemu_bundled" = "true" ]; then
+  download "https://raw.githubusercontent.com/qemu/qemu/v${qemu_version}/COPYING" "$destination/licenses/qemu.txt"
 fi
 
 CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
@@ -200,6 +261,7 @@ docker $([ "$docker_bundled" = "true" ] && printf '%s' "$docker_version" || prin
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_version}
+qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
 porto-runtime-helper 1
 EOF
 

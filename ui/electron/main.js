@@ -12,6 +12,7 @@ const path = require('node:path')
 const { promisify } = require('node:util')
 
 const {
+  bundledExecutablePaths,
   daemonBinaryIdentity,
   daemonProcesses,
   dashboardLoadAction,
@@ -385,10 +386,7 @@ async function portoEnvironment() {
       delete environment[key]
     }
   }
-  const bundledPaths = [
-    path.join(process.resourcesPath, 'runtime', 'bin'),
-    path.join(process.resourcesPath, 'runtime', 'lima', 'bin'),
-  ].filter((candidate) => fs.existsSync(candidate))
+  const bundledPaths = bundledExecutablePaths(process.resourcesPath)
   const loginShellPath = await resolveLoginShellPath({ environment })
   environment[pathKey] = mergeExecutablePaths(
     [...bundledPaths, loginShellPath, process.env[pathKey]],
