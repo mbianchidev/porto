@@ -46,7 +46,7 @@
   "devDependencies": {
     "@electron/packager": "^20.3.0",
     "7zip-bin-full": "^26.3.1",
-    "electron": "^44.2.0",
+    "electron": "^44.3.0",
     "electron-builder": "^26.15.3",
     "undici": "^8.10.2"
   },
