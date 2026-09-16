@@ -38,7 +38,7 @@ BuildKit socket or Lima `buildctl dial-stdio`
 The API server is part of the Porto daemon and starts whenever the Docker runtime is enabled. Docker is enabled by default for new Porto installations and can be toggled with `porto runtime enable docker` or `porto runtime disable docker`. The execution backend is independent:
 
 - If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
-- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper only in that owned VM. CLI-only installations can run `porto docker engine-install`.
+- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper and configures QEMU user-mode emulation only in that owned VM. CLI-only installations can run `porto docker engine-install`.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 
@@ -254,8 +254,43 @@ porto docker build . \
   --platform linux/amd64,linux/arm64
 ```
 
-Cross-architecture builds require a BuildKit worker with the required native
-worker or binfmt/QEMU emulation.
+The managed Lima engine automatically installs static QEMU user-mode emulators
+from its Ubuntu package repositories and registers the packaged `binfmt_misc`
+handlers with the `F` (`fix_binary`) flag required inside containers. The
+systemd registrations survive VM reboots. Packaged desktop launches reconcile
+this setup even when the engine is already running, so existing installations
+gain multi-platform support without recreating the VM.
+Porto also enables packaged 32-bit ARM/x86 handlers that distributions omit
+because they assume native compatibility; Apple Silicon cannot execute
+32-bit ARM binaries natively.
+The first setup needs package-repository access; subsequent launches reuse the
+installed packages and repair missing or disabled registrations without
+downloading them again. Provisioning failures are reported instead of claiming
+that the engine is ready.
+
+BuildKit may retain a stale 32-bit platform list after emulation is enabled.
+Porto refreshes only the BuildKit user service once when required, then verifies
+its reported platforms. The VM, containerd, and running containers stay up.
+If BuildKit reports active builds, setup refuses the refresh with an explicit
+error; finish those builds and retry setup. Later launches and VM boots do not
+restart a builder that already reports the configured platforms.
+
+Inspect the platforms BuildKit can actually execute:
+
+```sh
+docker --context porto buildx inspect porto
+```
+
+The `PLATFORMS` column in `docker buildx ls` lists executable CPU targets, not
+separate build systems. BuildKit discovers native and emulated platforms; Porto
+does not hard-code that list. QEMU enables targets such as AMD64, ARM, ARM64,
+386, PowerPC, RISC-V, and s390x, subject to the installed emulator and image
+support. Emulated compilation can be slower than a native worker.
+
+CLI-only users can apply the same setup to an existing engine with
+`porto docker engine-install` or `porto docker engine-start`. Externally managed
+local containerd/BuildKit installations are not modified: their administrator
+must provide the required native workers or binfmt/QEMU emulation.
 
 ## Explicit limitations
 

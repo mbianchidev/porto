@@ -4,24 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"sort"
 	"strings"
 	"time"
 
 	controlapi "github.com/moby/buildkit/api/services/control"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 )
 
 func (m *Manager) Builds(ctx context.Context) ([]Build, error) {
-	connection, err := grpc.NewClient(
-		"passthrough:///buildkit",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(dialContext context.Context, _ string) (net.Conn, error) {
-			return m.DialBuildKit(dialContext)
-		}),
-	)
+	connection, err := newBuildKitControlConnection(m.DialBuildKit)
 	if err != nil {
 		return nil, fmt.Errorf("create BuildKit history client: %w", err)
 	}

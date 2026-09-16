@@ -21,7 +21,7 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects and managed Kubernetes Services through stable zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
 - **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
-- **Docker and Compose native.** Use the `porto` Docker context for Compose projects and BuildKit multi-platform image builds without proxying another Docker engine.
+- **Docker and Compose native.** Use the `porto` Docker context for Compose projects and BuildKit multi-platform image builds. Porto's managed engine sets up CPU emulation automatically, without proxying another Docker engine.
 
 ## Quickstart
 

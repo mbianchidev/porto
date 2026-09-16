@@ -30,10 +30,13 @@ type fakeRunner struct {
 }
 
 type engineInstallRunner struct {
-	mu       sync.Mutex
-	created  bool
-	ownerID  string
-	commands []runtimes.Command
+	mu               sync.Mutex
+	created          bool
+	ownerID          string
+	binfmtConfigured bool
+	binfmtErr        error
+	removed          bool
+	commands         []runtimes.Command
 }
 
 type concurrentInstallRunner struct {
@@ -74,10 +77,9 @@ func (r *cancellationCleanupRunner) Run(ctx context.Context, command runtimes.Co
 	}
 }
 
-func workingBuildKitDialer(context.Context) (net.Conn, error) {
-	connection, peer := net.Pipe()
-	_ = peer.Close()
-	return connection, nil
+func workingBuildKitDialer(t *testing.T) func(context.Context) (net.Conn, error) {
+	t.Helper()
+	return buildKitControlTestDialer(t, &buildKitPlatformServer{ready: true})
 }
 
 func (f *fakeRunner) RunStreaming(
@@ -127,8 +129,17 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 			return nil, nil
 		case joined == `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
 			return []byte(r.ownerID + "\n"), nil
+		case strings.HasPrefix(joined, "shell --workdir=/ porto-engine -- sudo -n sh -c "):
+			if r.ownerID == "" {
+				return nil, errors.New("binfmt setup preceded ownership verification")
+			}
+			r.binfmtConfigured = true
+			return []byte("configure guest QEMU/binfmt\n"), r.binfmtErr
 		case joined == "shell --workdir=/ porto-engine -- nerdctl version":
 			return []byte("nerdctl version 2.1.0\n"), nil
+		case joined == "delete --force porto-engine":
+			r.removed = true
+			return nil, nil
 		}
 	}
 	return nil, fmt.Errorf("unexpected command: %s %s", command.Name, strings.Join(command.Args, " "))
@@ -736,7 +747,7 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 		errors:  map[string]error{},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
-	manager.dialBuildKit = workingBuildKitDialer
+	manager.dialBuildKit = workingBuildKitDialer(t)
 	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
 	_, manager.inventoryCancel = context.WithCancel(context.Background())
 	defer manager.inventoryCancel()
@@ -760,6 +771,11 @@ func TestInstallDirectEnginePersistsState(t *testing.T) {
 	if state.Mode != "direct" {
 		t.Fatalf("engine mode = %q, want direct", state.Mode)
 	}
+	for _, command := range runner.commands {
+		if command.Name == "limactl" {
+			t.Fatalf("direct backend tried to provision guest emulation: %+v", command)
+		}
+	}
 	select {
 	case <-manager.inventory.refresh:
 	default:
@@ -775,7 +791,7 @@ func TestInstallEngineSerializesConcurrentRequests(t *testing.T) {
 		NewWithStateDir(runner, stateDir),
 	}
 	for _, manager := range managers {
-		manager.dialBuildKit = workingBuildKitDialer
+		manager.dialBuildKit = workingBuildKitDialer(t)
 		manager.lookPath = func(name string) (string, error) {
 			if name == "nerdctl" {
 				return "/usr/local/bin/nerdctl", nil
@@ -809,7 +825,7 @@ func TestInstallEngineSerializesConcurrentRequests(t *testing.T) {
 func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	runner := &engineInstallRunner{}
 	manager := NewWithStateDir(runner, t.TempDir())
-	manager.dialBuildKit = workingBuildKitDialer
+	manager.dialBuildKit = workingBuildKitDialer(t)
 	manager.lookPath = func(name string) (string, error) {
 		switch name {
 		case "nerdctl":
@@ -836,6 +852,59 @@ func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	}
 	if !foundWritableMount {
 		t.Fatalf("Lima creation did not request writable mounts: %+v", runner.commands)
+	}
+	if !runner.binfmtConfigured {
+		t.Fatal("Lima installation did not configure multi-platform execution")
+	}
+}
+
+func TestInstallEngineReconcilesMultiPlatformBuilds(t *testing.T) {
+	for _, existing := range []bool{false, true} {
+		for _, setupFails := range []bool{false, true} {
+			t.Run(fmt.Sprintf("existing=%t/failure=%t", existing, setupFails), func(t *testing.T) {
+				runner := &engineInstallRunner{created: existing, ownerID: "test-owner"}
+				if setupFails {
+					runner.binfmtErr = errors.New("QEMU package installation failed")
+				}
+				manager := NewWithStateDir(runner, t.TempDir())
+				manager.dialBuildKit = workingBuildKitDialer(t)
+				manager.lookPath = func(name string) (string, error) {
+					if name == "limactl" {
+						return name, nil
+					}
+					return "", errors.New("not found")
+				}
+				if existing {
+					if err := manager.writeEngineState(engineState{
+						Mode: "lima", Instance: engineInstanceName, OwnerID: runner.ownerID,
+					}); err != nil {
+						t.Fatal(err)
+					}
+				}
+
+				_, err := manager.InstallEngine(context.Background())
+				if setupFails {
+					if err == nil || !strings.Contains(err.Error(), runner.binfmtErr.Error()) {
+						t.Fatalf("provisioning error = %v, want QEMU installation failure", err)
+					}
+					if runner.removed != !existing {
+						t.Fatalf("removed engine = %t, existing = %t", runner.removed, existing)
+					}
+					state, stateErr := manager.readEngineState()
+					if existing && (stateErr != nil || state.OwnerID != "test-owner") {
+						t.Fatalf("failed upgrade changed engine ownership: %+v, %v", state, stateErr)
+					}
+					if !existing && !errors.Is(stateErr, os.ErrNotExist) {
+						t.Fatalf("failed installation persisted state: %v", stateErr)
+					}
+				} else if err != nil {
+					t.Fatal(err)
+				}
+				if !runner.binfmtConfigured {
+					t.Fatal("engine installation skipped multi-platform setup")
+				}
+			})
+		}
 	}
 }
 
@@ -868,6 +937,7 @@ func TestStartEngineRefreshesInventory(t *testing.T) {
 				},
 			}
 			manager := NewWithStateDir(runner, t.TempDir())
+			manager.dialBuildKit = workingBuildKitDialer(t)
 			if err := manager.writeEngineState(engineState{
 				Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
 			}); err != nil {
@@ -879,12 +949,81 @@ func TestStartEngineRefreshesInventory(t *testing.T) {
 			if err := manager.StartEngine(context.Background()); err != nil {
 				t.Fatal(err)
 			}
+			configured := false
+			for _, command := range runner.commands {
+				if strings.HasPrefix(strings.Join(command.Args, " "), "shell --workdir=/ porto-engine -- sudo -n sh -c ") {
+					configured = true
+				}
+			}
+			if !configured {
+				t.Fatal("engine startup skipped multi-platform setup")
+			}
 			select {
 			case <-manager.inventory.refresh:
 			default:
 				t.Fatal("starting the engine did not wake the container inventory")
 			}
 		})
+	}
+}
+
+func TestEngineProvisioningRejectsForeignOwnership(t *testing.T) {
+	for _, action := range []string{"install", "start"} {
+		t.Run(action, func(t *testing.T) {
+			runner := &fakeRunner{
+				outputs: map[string][]byte{
+					"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+					`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("another-owner\n"),
+				},
+			}
+			manager := NewWithStateDir(runner, t.TempDir())
+			manager.lookPath = func(name string) (string, error) { return name, nil }
+			if err := manager.writeEngineState(engineState{
+				Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+			}); err != nil {
+				t.Fatal(err)
+			}
+			var err error
+			if action == "install" {
+				_, err = manager.InstallEngine(context.Background())
+			} else {
+				err = manager.StartEngine(context.Background())
+			}
+			if err == nil || !strings.Contains(err.Error(), "does not match") {
+				t.Fatalf("foreign engine ownership was accepted: %v", err)
+			}
+			for _, command := range runner.commands {
+				if strings.Contains(strings.Join(command.Args, " "), "sudo") {
+					t.Fatalf("foreign engine was modified: %+v", command)
+				}
+			}
+		})
+	}
+}
+
+func TestStartEngineReportsBinfmtFailure(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+			`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("test-owner\n"),
+		},
+		errors: map[string]error{
+			"limactl shell --workdir=/ porto-engine -- sudo -n sh -c " + limaBinfmtInstallCommand: errors.New("binfmt registration failed"),
+		},
+	}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeEngineState(engineState{
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := manager.StartEngine(context.Background()); err == nil || !strings.Contains(err.Error(), "binfmt registration failed") {
+		t.Fatalf("startup suppressed provisioning failure: %v", err)
+	}
+	for _, command := range runner.commands {
+		if command.Args[0] == "stop" || command.Args[0] == "delete" {
+			t.Fatalf("failed provisioning destroyed existing engine state: %+v", command)
+		}
 	}
 }
 
