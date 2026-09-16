@@ -55,6 +55,7 @@ type Manager struct {
 	directCLI           bool
 	dialBuildKit        func(context.Context) (net.Conn, error)
 	installMu           sync.Mutex
+	cleanupMu           sync.Mutex
 	inventoryMu         sync.Mutex
 	inventory           *containerInventory
 	inventoryCancel     context.CancelFunc
@@ -1698,6 +1699,19 @@ func (m *Manager) runStreamingInput(
 	if err != nil {
 		return err
 	}
+	return m.runBackendStreamingInput(ctx, backend, timeout, action, stdin, stdinReader, emit, args...)
+}
+
+func (m *Manager) runBackendStreamingInput(
+	ctx context.Context,
+	backend commandBackend,
+	timeout time.Duration,
+	action string,
+	stdin []byte,
+	stdinReader io.Reader,
+	emit func(runtimes.OutputChunk) error,
+	args ...string,
+) error {
 	runner, ok := m.runner.(streamingRunner)
 	if !ok {
 		return fmt.Errorf("%w: streaming stdout and stderr capture", ErrUnsupported)

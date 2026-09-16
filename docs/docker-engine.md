@@ -292,6 +292,56 @@ CLI-only users can apply the same setup to an existing engine with
 local containerd/BuildKit installations are not modified: their administrator
 must provide the required native workers or binfmt/QEMU emulation.
 
+## Unused image and build-cache cleanup
+
+The Settings page offers opt-in weekly cleanup and a separate **Run now**
+action. Automatic cleanup is disabled for both new and existing installations.
+Enabling it requires confirmation and schedules the first run seven days later;
+saving unrelated settings does not reset that deadline. **Run now** also works
+with automatic cleanup disabled and requires its own confirmation.
+
+Both paths perform the same cleanup against Porto's configured backend:
+
+- Prune all unused BuildKit cache records. The `builder` and `buildx` commands
+  address the same Porto BuildKit cache, so it is pruned once, not twice.
+- Run namespace-scoped `nerdctl image prune --all --force`, including unused
+  tagged image references. Images referenced by running or stopped containers
+  are retained.
+
+Containers, volumes, networks, other Docker contexts, and VMs are not removed.
+Porto checks for active builds before starting and reports a skipped run rather
+than interfering with a build. Concurrent manual and scheduled requests cannot
+start overlapping cleanup runs.
+
+Accepted runs continue when the Settings page is closed. The daemon records
+the trigger, start/end times, outcome, removed image-reference count, build-cache
+record count, reported cache bytes, and diagnostic output in SQLite. Settings
+shows the latest ten results, including failures and partial results. Image
+layer storage can be shared, so Porto does not invent a reclaimed-byte total for
+images. Native image-prune warnings are reported as failures even when the CLI
+exits successfully.
+
+If a result cannot be saved, the running daemon still exposes its observed
+counts and storage error instead of leaving the UI stuck on "running".
+Further cleanup is blocked until the storage problem is resolved and Porto
+restarts; results that could not be persisted cannot survive that restart.
+
+Every completed attempt, including **Run now**, schedules the next automatic
+attempt seven days later when enabled. Missed weeks do not cause a burst of
+catch-up runs, and failures do not silently turn weekly cleanup into an hourly
+retry loop. Disable Docker to pause automatic execution, or disable the cleanup
+setting to remove the schedule; retained results remain available.
+
+Cleanup has a ten-minute deadline. Daemon shutdown cancels an active run and
+records its partial outcome before closing the runtime. On restart, an
+unfinished persisted run is marked interrupted rather than successful. Counts
+reflect runtime-reported removals; an interrupted operation can have additional
+effects that were not reported before it stopped.
+
+The daemon exposes `GET /api/docker/cleanup` for the schedule and results and
+`POST /api/docker/cleanup` for **Run now**. The POST returns `202 Accepted` with
+a run identifier; clients must read its eventual outcome from the GET response.
+
 ## Explicit limitations
 
 Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupported API operations. It does not silently ignore requested isolation or security settings.

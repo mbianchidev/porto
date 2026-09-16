@@ -37,6 +37,7 @@ export type Settings = {
   killSwitchEnabled: boolean
   sendboxEnabled: boolean
   dockerEnabled: boolean
+  dockerAutoPruneEnabled: boolean
   kubernetesEnabled: boolean
   vmsEnabled: boolean
   interfaceDensity: 'compact' | 'comfortable'
@@ -153,6 +154,34 @@ export type LogLine = {
 }
 
 // --- Docker -----------------------------------------------------------------
+
+export type DockerCleanupStep = {
+  status: 'not_run' | 'succeeded' | 'failed'
+  itemsRemoved: number
+  bytesReclaimed?: number
+  output?: string
+  error?: string
+}
+
+export type DockerCleanupRun = {
+  id: number
+  trigger: 'manual' | 'scheduled'
+  status: 'running' | 'succeeded' | 'failed' | 'skipped' | 'interrupted'
+  startedAt: string
+  completedAt?: string
+  result: {
+    buildCache: DockerCleanupStep
+    images: DockerCleanupStep
+  }
+  error?: string
+}
+
+export type DockerCleanupState = {
+  enabled: boolean
+  dockerEnabled: boolean
+  nextRunAt?: string
+  runs: DockerCleanupRun[]
+}
 
 export type DockerStatus = {
   available: boolean

@@ -1,7 +1,9 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { apiSend, errorMessage } from '../api'
 import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
+import { DockerCleanupSettings } from '../components/DockerCleanupSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
+import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
 import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../experiencePreferences'
 import { useMessages } from '../useMessages'
 import type { IntegrationStatus, KillSwitchCleanupResult, KillSwitchStatus, RuntimeFeatureName, RuntimeFeatures, Settings } from '../types'
@@ -13,7 +15,7 @@ const RUNTIME_LABELS: Record<RuntimeFeatureName, string> = {
 }
 
 function editableSettings(settings: Settings | null): Settings | null {
-  return settings ? { ...settings, ...normalizeExperiencePreferences(settings) } : null
+  return settings ? { ...settings, dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false, ...normalizeExperiencePreferences(settings) } : null
 }
 
 export function SettingsPage({
@@ -48,6 +50,10 @@ export function SettingsPage({
     vms: settings?.vmsEnabled ?? false,
   })
   const [runtimeBusy, setRuntimeBusy] = useState<RuntimeFeatureName | null>(null)
+  const [saving, setSaving] = useState(false)
+  const mutationPending = useRef(false)
+  const draftDisabled = !draft || saving
+  const saveDisabled = draftDisabled || runtimeBusy !== null
 
   // Sync editable draft state whenever the loaded/saved settings change, following
   // React's "adjust state during render" pattern instead of an effect so the
@@ -75,33 +81,45 @@ export function SettingsPage({
   }
 
   async function setRuntimeFeature(feature: RuntimeFeatureName, enabled: boolean) {
+    if (mutationPending.current) return
+    mutationPending.current = true
     setRuntimeBusy(feature)
     try {
       const features = await apiSend<RuntimeFeatures>(`/api/runtime/features/${feature}/${enabled ? 'enable' : 'disable'}`, 'POST')
       setRuntimeFeatures(features)
       const currentSettings = settings ?? draft
       if (currentSettings) {
-        onSettingsSaved({
+        const nextSettings = {
           ...currentSettings,
           dockerEnabled: features.docker,
           kubernetesEnabled: features.kubernetes,
           vmsEnabled: features.vms,
-        })
+        }
+        // Only the gates changed; do not reset unrelated, unsaved draft edits.
+        setPriorSettings(nextSettings)
+        onSettingsSaved(nextSettings)
       }
       notifyNotice('settings', `${RUNTIME_LABELS[feature]} ${enabled ? 'enabled' : 'disabled'}.`)
     } catch (err) {
       notifyError('settings', errorMessage(err, `Unable to ${enabled ? 'enable' : 'disable'} ${RUNTIME_LABELS[feature]}`))
     } finally {
+      mutationPending.current = false
       setRuntimeBusy(null)
     }
   }
 
   async function save() {
-    if (!draft) return
+    if (!draft || mutationPending.current) return
     if (draft.cleanupRemoteMerged && !settings?.cleanupRemoteMerged) {
       const confirmed = window.confirm('Remote cleanup permanently deletes fully merged branches from the Git remote. Enable it?')
       if (!confirmed) {
         updateDraft('cleanupRemoteMerged', false)
+        return
+      }
+    }
+    if (draft.dockerAutoPruneEnabled && !settings?.dockerAutoPruneEnabled) {
+      if (!window.confirm(`Enable weekly runtime cleanup? ${DOCKER_CLEANUP_WARNING} The first automatic run is scheduled seven days after enabling; scheduling pauses while Docker is disabled.`)) {
+        updateDraft('dockerAutoPruneEnabled', false)
         return
       }
     }
@@ -115,6 +133,8 @@ export function SettingsPage({
       kubernetesEnabled: runtimeFeatures.kubernetes,
       vmsEnabled: runtimeFeatures.vms,
     }
+    mutationPending.current = true
+    setSaving(true)
     try {
       const saved = await apiSend<Settings>('/api/settings', 'PUT', nextSettings)
       onSettingsSaved(saved)
@@ -127,6 +147,9 @@ export function SettingsPage({
       onIntegrationsChanged()
     } catch (err) {
       notifyError('settings', errorMessage(err, 'Unable to save settings'))
+    } finally {
+      mutationPending.current = false
+      setSaving(false)
     }
   }
 
@@ -176,7 +199,7 @@ export function SettingsPage({
             <span>Interface density</span>
             <select
               value={draft?.interfaceDensity ?? DEFAULT_EXPERIENCE_PREFERENCES.interfaceDensity}
-              disabled={!draft}
+              disabled={draftDisabled}
               onChange={(event) => updateDraft('interfaceDensity', event.target.value as Settings['interfaceDensity'])}
             >
               <option value="compact">Compact — maximum signal</option>
@@ -190,7 +213,7 @@ export function SettingsPage({
               min={10}
               max={24}
               value={draft?.terminalFontSize ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalFontSize}
-              disabled={!draft}
+              disabled={draftDisabled}
               onChange={(event) => updateDraft('terminalFontSize', Number(event.target.value))}
             />
           </label>
@@ -202,7 +225,7 @@ export function SettingsPage({
               max={2}
               step={0.05}
               value={draft?.terminalLineHeight ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalLineHeight}
-              disabled={!draft}
+              disabled={draftDisabled}
               onChange={(event) => updateDraft('terminalLineHeight', Number(event.target.value))}
             />
           </label>
@@ -210,7 +233,7 @@ export function SettingsPage({
             <span>Terminal scrollback</span>
             <select
               value={draft?.terminalScrollback ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalScrollback}
-              disabled={!draft}
+              disabled={draftDisabled}
               onChange={(event) => updateDraft('terminalScrollback', Number(event.target.value))}
             >
               <option value={1000}>1,000 lines</option>
@@ -222,15 +245,15 @@ export function SettingsPage({
           </label>
           <label className="toggleRow">
             <span><strong>Blink terminal cursor</strong><small>Reduced motion always disables cursor blinking.</small></span>
-            <input type="checkbox" checked={draft?.terminalCursorBlink ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalCursorBlink} disabled={!draft} onChange={(event) => updateDraft('terminalCursorBlink', event.target.checked)} />
+            <input type="checkbox" checked={draft?.terminalCursorBlink ?? DEFAULT_EXPERIENCE_PREFERENCES.terminalCursorBlink} disabled={draftDisabled} onChange={(event) => updateDraft('terminalCursorBlink', event.target.checked)} />
           </label>
           <label className="toggleRow">
             <span><strong>Reduce interface motion</strong><small>Stops drawer, banner, tooltip, and navigation transitions.</small></span>
-            <input type="checkbox" checked={draft?.reduceMotion ?? DEFAULT_EXPERIENCE_PREFERENCES.reduceMotion} disabled={!draft} onChange={(event) => updateDraft('reduceMotion', event.target.checked)} />
+            <input type="checkbox" checked={draft?.reduceMotion ?? DEFAULT_EXPERIENCE_PREFERENCES.reduceMotion} disabled={draftDisabled} onChange={(event) => updateDraft('reduceMotion', event.target.checked)} />
           </label>
           <div className="settingsActions">
-            <button type="button" onClick={resetExperience} disabled={!draft}>Reset experience</button>
-            <button type="button" onClick={save} disabled={!draft}>Save experience</button>
+            <button type="button" onClick={resetExperience} disabled={draftDisabled}>Reset experience</button>
+            <button type="button" onClick={save} disabled={saveDisabled}>Save experience</button>
           </div>
         </div>
       </section>
@@ -245,22 +268,22 @@ export function SettingsPage({
         <div className="hygieneControls">
           <label className="toggleRow">
             <span><strong>Clean up local branches immediately after merge</strong><small>Keeps the current, default, unmerged, and protected branches.</small></span>
-            <input type="checkbox" checked={draft?.cleanupLocalMerged ?? false} disabled={!draft} onChange={(event) => updateDraft('cleanupLocalMerged', event.target.checked)} />
+            <input type="checkbox" checked={draft?.cleanupLocalMerged ?? false} disabled={draftDisabled} onChange={(event) => updateDraft('cleanupLocalMerged', event.target.checked)} />
           </label>
           <label className="toggleRow destructive">
             <span><strong>Clean up remote branches immediately after merge</strong><small>Permanently deletes matching branches from the primary remote.</small></span>
-            <input type="checkbox" checked={draft?.cleanupRemoteMerged ?? false} disabled={!draft} onChange={(event) => updateDraft('cleanupRemoteMerged', event.target.checked)} />
+            <input type="checkbox" checked={draft?.cleanupRemoteMerged ?? false} disabled={draftDisabled} onChange={(event) => updateDraft('cleanupRemoteMerged', event.target.checked)} />
           </label>
           <label className="toggleRow">
             <span><strong>Prune stale remote-tracking branches</strong><small>Runs a non-interactive fetch and prune before remote cleanup.</small></span>
-            <input type="checkbox" checked={draft?.pruneRemoteTracking ?? false} disabled={!draft || !draft.cleanupRemoteMerged} onChange={(event) => updateDraft('pruneRemoteTracking', event.target.checked)} />
+            <input type="checkbox" checked={draft?.pruneRemoteTracking ?? false} disabled={draftDisabled || !draft?.cleanupRemoteMerged} onChange={(event) => updateDraft('pruneRemoteTracking', event.target.checked)} />
           </label>
           <label className="protectedField">
             <span>Protected branch patterns</span>
-            <input type="text" value={protectedBranches} disabled={!draft} onChange={(event) => setProtectedBranches(event.target.value)} placeholder="main, develop, release/*" />
+            <input type="text" value={protectedBranches} disabled={draftDisabled} onChange={(event) => setProtectedBranches(event.target.value)} placeholder="main, develop, release/*" />
             <small>Comma-separated names or glob patterns. The default and current branches are always protected.</small>
           </label>
-          <button type="button" onClick={save} disabled={!draft}>Save changes</button>
+          <button type="button" onClick={save} disabled={saveDisabled}>Save changes</button>
         </div>
       </section>
 
@@ -278,7 +301,7 @@ export function SettingsPage({
             <input
               type="checkbox"
               checked={runtimeFeatures.docker}
-              disabled={runtimeBusy !== null}
+              disabled={!draft || runtimeBusy !== null || saving}
               onChange={(event) => setRuntimeFeature('docker', event.target.checked)}
             />
           </label>
@@ -287,7 +310,7 @@ export function SettingsPage({
             <input
               type="checkbox"
               checked={runtimeFeatures.kubernetes}
-              disabled={runtimeBusy !== null}
+              disabled={!draft || runtimeBusy !== null || saving}
               onChange={(event) => setRuntimeFeature('kubernetes', event.target.checked)}
             />
           </label>
@@ -296,12 +319,22 @@ export function SettingsPage({
             <input
               type="checkbox"
               checked={runtimeFeatures.vms}
-              disabled={runtimeBusy !== null}
+              disabled={!draft || runtimeBusy !== null || saving}
               onChange={(event) => setRuntimeFeature('vms', event.target.checked)}
             />
           </label>
         </div>
       </section>
+
+      <DockerCleanupSettings
+        enabled={draft?.dockerAutoPruneEnabled ?? false}
+        savedEnabled={settings?.dockerAutoPruneEnabled ?? false}
+        dockerEnabled={runtimeFeatures.docker}
+        disabled={saveDisabled}
+        saving={saving}
+        onChange={(enabled) => updateDraft('dockerAutoPruneEnabled', enabled)}
+        onSave={save}
+      />
 
       <RegistrySettings />
 
@@ -319,13 +352,13 @@ export function SettingsPage({
         <div className="hygieneControls">
           <label className="toggleRow">
             <span><strong>Enable sql-not-so-lite</strong><small>Requires Go only when Porto needs to install the pinned sqnsl binary.</small></span>
-            <input type="checkbox" checked={draft?.sqlNotSoLiteEnabled ?? false} disabled={!draft} onChange={(event) => updateDraft('sqlNotSoLiteEnabled', event.target.checked)} />
+            <input type="checkbox" checked={draft?.sqlNotSoLiteEnabled ?? false} disabled={draftDisabled} onChange={(event) => updateDraft('sqlNotSoLiteEnabled', event.target.checked)} />
           </label>
           <div className={`integrationStatus ${sqlNotSoLiteStatus?.state ?? 'idle'}`}>
             <strong>{sqlNotSoLiteStatus?.state ?? 'loading'}</strong>
             <span>{sqlNotSoLiteStatus?.message ?? 'Loading integration status.'}</span>
           </div>
-          <button type="button" onClick={save} disabled={!draft}>Save integration setting</button>
+          <button type="button" onClick={save} disabled={saveDisabled}>Save integration setting</button>
         </div>
       </section>
 
@@ -343,13 +376,13 @@ export function SettingsPage({
         <div className="hygieneControls">
           <label className="toggleRow">
             <span><strong>Enable Sendbox</strong><small>Requires Sendbox, macOS 26, and Apple Silicon. Porto does not install it.</small></span>
-            <input type="checkbox" checked={draft?.sendboxEnabled ?? false} disabled={!draft} onChange={(event) => updateDraft('sendboxEnabled', event.target.checked)} />
+            <input type="checkbox" checked={draft?.sendboxEnabled ?? false} disabled={draftDisabled} onChange={(event) => updateDraft('sendboxEnabled', event.target.checked)} />
           </label>
           <div className={`integrationStatus ${sendboxStatus?.state ?? 'idle'}`}>
             <strong>{sendboxStatus?.state ?? 'loading'}</strong>
             <span>{sendboxStatus?.message ?? 'Loading Sendbox status.'}</span>
           </div>
-          <button type="button" onClick={save} disabled={!draft}>Save integration setting</button>
+          <button type="button" onClick={save} disabled={saveDisabled}>Save integration setting</button>
         </div>
       </section>
 
@@ -370,7 +403,7 @@ export function SettingsPage({
             <input
               type="checkbox"
               checked={draft?.killSwitchEnabled ?? false}
-              disabled={!draft || killSwitchStatus?.supported === false}
+              disabled={draftDisabled || killSwitchStatus?.supported === false}
               onChange={(event) => updateDraft('killSwitchEnabled', event.target.checked)}
             />
           </label>
@@ -388,7 +421,7 @@ export function SettingsPage({
             </div>
           </div>
           <div className="integrationActions">
-            <button type="button" onClick={save} disabled={!draft || killSwitchBusy}>Save integration setting</button>
+            <button type="button" onClick={save} disabled={saveDisabled || killSwitchBusy}>Save integration setting</button>
             <button type="button" onClick={() => runKillSwitchAction('install')} disabled={!killSwitchStatus?.supported || killSwitchBusy}>
               {killSwitchStatus?.installed ? 'Update KillSwitch' : 'Install KillSwitch'}
             </button>

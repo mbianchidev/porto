@@ -88,6 +88,12 @@ type Server struct {
 	userHomeDir       func() (string, error)
 	docker            *portodocker.Manager
 	dockerAPI         *portodocker.APIServer
+	cleanupMu         sync.Mutex
+	cleanupRunner     func(context.Context) (app.DockerCleanupResult, error)
+	cleanupNow        func() time.Time
+	cleanupCancel     context.CancelFunc
+	cleanupDone       chan struct{}
+	cleanupUnstored   *app.DockerCleanupRun
 	runtimeMu         sync.Mutex
 	runtimeContext    context.Context
 	runtimeOps        sync.WaitGroup
@@ -181,6 +187,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 		killSwitch:     killswitch.NewManager(nil, nil),
 		userHomeDir:    os.UserHomeDir,
 		docker:         dockerManager,
+		cleanupRunner:  dockerManager.CleanupUnused,
+		cleanupNow:     time.Now,
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
 		clusters:       clusterProvisioner,
 		kubeconfigErr:  kubeconfigErr,
@@ -197,6 +205,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 }
 
 func (s *Server) Run(ctx context.Context) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	s.runtimeContext = ctx
 	if s.identityErr != nil {
 		return fmt.Errorf("identify Porto daemon binary: %w", s.identityErr)
@@ -272,6 +282,14 @@ func (s *Server) Run(ctx context.Context) error {
 		return tlsRouterListenError(tlsAddress, err)
 	}
 	defer tlsListener.Close()
+	daemonListener, err := net.Listen("tcp", config.DaemonAddr)
+	if err != nil {
+		return fmt.Errorf("listen Porto daemon on %s: %w", config.DaemonAddr, err)
+	}
+	defer daemonListener.Close()
+	if err := s.store.RecoverDockerCleanup(ctx, s.dockerCleanupTime()); err != nil {
+		return fmt.Errorf("recover interrupted Docker cleanup: %w", err)
+	}
 	go func() {
 		if err := router.Serve(routerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
@@ -285,6 +303,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.branchCleanupLoop(ctx)
 	go s.certificateRenewalLoop(ctx)
 	go s.kubernetesRouteLoop(ctx)
+	go s.dockerCleanupLoop(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
 	log.Printf(
@@ -296,7 +315,7 @@ func (s *Server) Run(ctx context.Context) error {
 	)
 	serveErr := make(chan error, 1)
 	go func() {
-		serveErr <- srv.ListenAndServe()
+		serveErr <- srv.Serve(daemonListener)
 	}()
 
 	var serveResult error
@@ -307,6 +326,7 @@ func (s *Server) Run(ctx context.Context) error {
 	case <-ctx.Done():
 	}
 
+	cancel()
 	shutdownErr := s.shutdown(srv, router, tlsRouter)
 	if !serveReturned {
 		serveResult = <-serveErr
@@ -318,8 +338,16 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) shutdown(servers ...*http.Server) error {
-	httpContext, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	var shutdownErrors []error
+	s.runtimeOpsMu.Lock()
+	s.runtimeClosing = true
+	s.runtimeOpsMu.Unlock()
+	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), runtimeOperationTimeout)
+	if err := s.stopDockerCleanup(cleanupContext); err != nil {
+		shutdownErrors = append(shutdownErrors, err)
+	}
+	cancelCleanup()
+	httpContext, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)
 	for _, server := range servers {
 		if err := server.Shutdown(httpContext); err != nil {
 			shutdownErrors = append(shutdownErrors, err)

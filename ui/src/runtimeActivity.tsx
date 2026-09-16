@@ -1,13 +1,19 @@
 import { useEffect, useRef } from 'react'
+import { apiGet } from './api'
 import { useContainerSnapshots } from './containerSnapshots'
+import { cleanupRunSummary } from './dockerCleanup'
+import { usePolledResource } from './hooks'
 import { useMessages } from './useMessages'
 import type {
   ActivityLevel,
+  DockerCleanupState,
   DockerContainerLifecycleEvent,
   DockerContainerSnapshot,
 } from './types'
 
 const DOCKER_CURSOR_KEY = 'porto.activity.docker.v1'
+const CLEANUP_CURSOR_KEY = 'porto.activity.docker-cleanup.v1'
+const CLEANUP_CURSOR_LIMIT = 50
 const INITIAL_EVENT_LIMIT = 50
 
 type DockerActivityCursor = {
@@ -83,6 +89,62 @@ function newEvents(snapshot: DockerContainerSnapshot, cursor: DockerActivityCurs
   return ordered.slice(-INITIAL_EVENT_LIMIT)
 }
 
+function loadCleanupCursor(): string[] {
+  try {
+    const raw = window.localStorage.getItem(CLEANUP_CURSOR_KEY)
+    const value: unknown = raw ? JSON.parse(raw) : []
+    return Array.isArray(value) ? value.filter((key): key is string => typeof key === 'string').slice(-CLEANUP_CURSOR_LIMIT) : []
+  } catch (error) {
+    console.error('Unable to load runtime cleanup activity cursor', error)
+    return []
+  }
+}
+
+function DockerCleanupActivity() {
+  // Cleanup history stays readable with Docker disabled, including attempts that
+  // completed while Settings was closed or before the runtime was turned off.
+  const cleanup = usePolledResource<DockerCleanupState>(
+    (signal) => apiGet('/api/docker/cleanup', signal),
+    5000,
+    [],
+  )
+  const { recordActivity } = useMessages()
+  const cursor = useRef(loadCleanupCursor())
+  const previousError = useRef('')
+
+  useEffect(() => {
+    if (!cleanup.data) return
+    let changed = false
+    for (const run of [...cleanup.data.runs].reverse()) {
+      const key = `${run.id}:${run.startedAt}`
+      if (run.status === 'running' || cursor.current.includes(key)) continue
+      cursor.current = [...cursor.current, key].slice(-CLEANUP_CURSOR_LIMIT)
+      changed = true
+      const level = run.status === 'succeeded' ? 'notice' : run.status === 'skipped' ? 'info' : 'error'
+      recordActivity(level, 'cleanup', cleanupRunSummary(run), run.completedAt ?? run.startedAt)
+    }
+    if (changed) {
+      try {
+        window.localStorage.setItem(CLEANUP_CURSOR_KEY, JSON.stringify(cursor.current))
+      } catch (error) {
+        console.error('Unable to save runtime cleanup activity cursor', error)
+      }
+    }
+  }, [cleanup.data, recordActivity])
+
+  useEffect(() => {
+    if (!cleanup.error) {
+      previousError.current = ''
+      return
+    }
+    if (cleanup.error === previousError.current) return
+    previousError.current = cleanup.error
+    recordActivity('error', 'cleanup', `Unable to load runtime cleanup history: ${cleanup.error}`)
+  }, [cleanup.error, recordActivity])
+
+  return null
+}
+
 export function RuntimeActivity({ dockerEnabled }: { dockerEnabled: boolean }) {
   const containers = useContainerSnapshots(dockerEnabled)
   const { recordActivity } = useMessages()
@@ -113,5 +175,5 @@ export function RuntimeActivity({ dockerEnabled }: { dockerEnabled: boolean }) {
     recordActivity('error', 'containers', containers.error)
   }, [containers.error, dockerEnabled, recordActivity])
 
-  return null
+  return <DockerCleanupActivity />
 }

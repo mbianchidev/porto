@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"fmt"
-	"io"
 	"maps"
 	"net"
 	"slices"
@@ -80,23 +79,8 @@ func (m *Manager) limaBuildKitMissingPlatforms(ctx context.Context, requireIdle 
 	if len(missing) == 0 || !requireIdle {
 		return missing, nil
 	}
-	stream, err := client.ListenBuildHistory(ctx, &controlapi.BuildHistoryRequest{
-		ActiveOnly: true,
-		EarlyExit:  true,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("inspect active builds before refreshing BuildKit: %w", err)
+	if err := ensureBuildKitIdle(ctx, client); err != nil {
+		return nil, fmt.Errorf("check builds before refreshing BuildKit platforms: %w", err)
 	}
-	for {
-		event, err := stream.Recv()
-		if err == io.EOF {
-			return missing, nil
-		}
-		if err != nil {
-			return nil, fmt.Errorf("read active builds before refreshing BuildKit: %w", err)
-		}
-		if event.Type != controlapi.BuildHistoryEventType_DELETED && event.Record != nil && event.Record.CompletedAt == nil {
-			return nil, fmt.Errorf("%w: BuildKit has an active build; finish active builds and retry engine setup to refresh the platform list", ErrConflict)
-		}
-	}
+	return missing, nil
 }

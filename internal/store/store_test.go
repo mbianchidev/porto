@@ -3,9 +3,11 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/app"
@@ -195,6 +197,42 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
+func TestDockerCleanupSettingIsOptInAndPersists(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":false`) {
+		t.Fatalf("weekly cleanup must be explicitly disabled by default: %s", data)
+	}
+	if err := json.Unmarshal([]byte(`{"dockerAutoPruneEnabled":true}`), &settings); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.SetSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
+	saved, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(saved)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":true`) {
+		t.Fatalf("weekly cleanup opt-in was not persisted: %s", data)
+	}
+}
+
 func TestOpenMigratesLegacySettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "porto.db")
 	db, err := sql.Open("sqlite", path)
@@ -233,6 +271,13 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	}
 	if settings.KillSwitchEnabled {
 		t.Fatal("KillSwitch integration should default to disabled")
+	}
+	data, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":false`) {
+		t.Fatalf("migration must not enable cleanup of existing images: %s", data)
 	}
 	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
 		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
