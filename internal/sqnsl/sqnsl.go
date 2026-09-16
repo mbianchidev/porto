@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -195,10 +196,13 @@ func ProjectPathsWithSQLite(projects []app.Project) ([]string, error) {
 }
 
 func HasSQLiteDatabase(root string) (bool, error) {
+	if root == "" {
+		return false, errors.New("SQLite project root is empty")
+	}
 	found := false
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			return walkErr
+			return sqliteDiscoveryError(walkErr)
 		}
 		if entry.IsDir() {
 			if path != root && ignoredDirectories[entry.Name()] {
@@ -211,7 +215,7 @@ func HasSQLiteDatabase(root string) (bool, error) {
 		}
 		valid, err := hasSQLiteHeader(path)
 		if err != nil {
-			return err
+			return sqliteDiscoveryError(err)
 		}
 		if valid {
 			found = true
@@ -223,6 +227,14 @@ func HasSQLiteDatabase(root string) (bool, error) {
 		return false, err
 	}
 	return found, nil
+}
+
+func sqliteDiscoveryError(err error) error {
+	if errors.Is(err, os.ErrNotExist) {
+		log.Printf("skip missing path during SQLite discovery: %v", err)
+		return nil
+	}
+	return err
 }
 
 func hasSQLiteHeader(path string) (bool, error) {
