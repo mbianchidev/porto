@@ -41,7 +41,7 @@ Dependency updates arrive through `.github/dependabot.yml`, which groups Go modu
    ./release.sh 0.2.0
    ```
 
-   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates the dashboard and Electron package manifests and lockfiles with `npm version`, runs the local checks below, creates a `chore(release): v0.2.0` commit when the package files changed, and creates an annotated tag. Nothing is pushed by default.
+   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates the Go CLI version plus the dashboard and Electron package manifests and lockfiles, runs the local checks below, creates a `chore(release): v0.2.0` commit when release metadata changed, and creates an annotated tag. Nothing is pushed by default.
 
 4. Inspect the local commit and tag, then publish them explicitly:
 
@@ -74,7 +74,7 @@ porto_1.2.3_darwin_arm64/
   LICENSE
 ```
 
-The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working directory, then `ui/dist` or `dist` next to the executable, so keep `ui/dist` beside the binary when installing. Binaries are built with `CGO_ENABLED=0 -trimpath -ldflags '-s -w'`.
+The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working directory, then `ui/dist` or `dist` next to the executable, so keep `ui/dist` beside the binary when installing. Release binaries are built with `CGO_ENABLED=0 -trimpath`; linker flags strip debug data and inject the release SemVer into `porto --version`.
 
 Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
 archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,

@@ -48,16 +48,19 @@ is_strict_semver() {
   done
 }
 
-verify_package_versions() {
+verify_release_versions() {
   EXPECTED_VERSION="$version" node <<'NODE'
 const fs = require("node:fs");
 
 const expected = process.env.EXPECTED_VERSION;
+const configSource = fs.readFileSync("internal/config/config.go", "utf8");
+const configVersion = configSource.match(/^var Version = "([^"]+)"$/m)?.[1];
 const packageJson = JSON.parse(fs.readFileSync("ui/package.json", "utf8"));
 const packageLock = JSON.parse(fs.readFileSync("ui/package-lock.json", "utf8"));
 const electronPackageJson = JSON.parse(fs.readFileSync("ui/electron/package.json", "utf8"));
 const electronPackageLock = JSON.parse(fs.readFileSync("ui/electron/package-lock.json", "utf8"));
 const versions = [
+  ["internal/config/config.go", configVersion],
   ["ui/package.json", packageJson.version],
   ["ui/package-lock.json", packageLock.version],
   ['ui/package-lock.json packages[""]', packageLock.packages?.[""]?.version],
@@ -73,6 +76,31 @@ for (const [source, actual] of versions) {
   }
 }
 NODE
+}
+
+update_release_versions() {
+  EXPECTED_VERSION="$version" node <<'NODE'
+const fs = require("node:fs");
+
+const expected = process.env.EXPECTED_VERSION;
+const configPath = "internal/config/config.go";
+const source = fs.readFileSync(configPath, "utf8");
+const pattern = /^(var Version = ")[^"]+(")$/m;
+if (!pattern.test(source)) {
+  console.error(`${configPath} does not contain the expected Version declaration`);
+  process.exit(1);
+}
+fs.writeFileSync(configPath, source.replace(pattern, (_, prefix, suffix) => `${prefix}${expected}${suffix}`));
+NODE
+
+  (
+    cd ui
+    npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
+  )
+  (
+    cd ui/electron
+    npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
+  )
 }
 
 run_validation() {
@@ -107,14 +135,14 @@ run_validation() {
   sh -n scripts/install-desktop.sh
 }
 
-verify_only_package_changes() {
+verify_only_release_changes() {
   local changed_file
   local status_line
 
   while IFS= read -r status_line; do
     changed_file="${status_line:3}"
     case "$changed_file" in
-      ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
+      internal/config/config.go | ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
       *) fail "release validation produced an unexpected change: ${changed_file}" ;;
     esac
   done < <(git status --porcelain --untracked-files=normal)
@@ -141,7 +169,7 @@ push_release() {
       fail "the commit ahead of origin/main is not the ${tag} release commit"
     while IFS= read -r changed_file; do
       case "$changed_file" in
-        ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
+        internal/config/config.go | ui/package.json | ui/package-lock.json | ui/electron/package.json | ui/electron/package-lock.json) ;;
         *) fail "the release commit contains unexpected file: ${changed_file}" ;;
       esac
     done < <(git diff --name-only "${remote_main}..${head_sha}")
@@ -237,7 +265,7 @@ if git show-ref --verify --quiet "refs/tags/${tag}"; then
     fail "${tag} is not an annotated tag"
   [ "$(git rev-parse "${tag}^{}")" = "$head_sha" ] ||
     fail "${tag} does not point to the current main commit"
-  verify_package_versions
+  verify_release_versions
   run_validation
   [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
     fail "release validation changed the working tree"
@@ -261,21 +289,14 @@ if $dry_run; then
   exit 0
 fi
 
-echo "Updating dashboard package metadata to ${version}"
-(
-  cd ui
-  npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
-)
-(
-  cd ui/electron
-  npm version "$version" --no-git-tag-version --allow-same-version --ignore-scripts
-)
-verify_package_versions
+echo "Updating release metadata to ${version}"
+update_release_versions
+verify_release_versions
 run_validation
-verify_only_package_changes
+verify_only_release_changes
 
-if ! git diff --quiet -- ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json; then
-  git add -- ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json
+if ! git diff --quiet -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json; then
+  git add -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json
   git commit --no-gpg-sign -m "chore(release): ${tag}"
 fi
 

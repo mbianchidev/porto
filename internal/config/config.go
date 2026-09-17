@@ -13,9 +13,10 @@ import (
 	"time"
 )
 
+var Version = "1.2.6"
+
 const (
 	AppName                  = "porto"
-	Version                  = "1.0.0"
 	APIVersion               = 29
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
