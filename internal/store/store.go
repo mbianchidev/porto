@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS settings (
  kill_switch_enabled INTEGER NOT NULL DEFAULT 0,
  sendbox_enabled INTEGER NOT NULL DEFAULT 0,
  docker_enabled INTEGER NOT NULL DEFAULT 1,
+ docker_auto_prune_enabled INTEGER NOT NULL DEFAULT 0,
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
  vms_enabled INTEGER NOT NULL DEFAULT 0,
  interface_density TEXT NOT NULL DEFAULT 'compact',
@@ -124,6 +125,21 @@ CREATE TABLE IF NOT EXISTS settings (
  terminal_cursor_blink INTEGER NOT NULL DEFAULT 1,
  terminal_scrollback INTEGER NOT NULL DEFAULT 5000
 );
+CREATE TABLE IF NOT EXISTS docker_cleanup_schedule (
+ id INTEGER PRIMARY KEY CHECK (id = 1),
+ next_run_at TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO docker_cleanup_schedule(id) VALUES(1);
+CREATE TABLE IF NOT EXISTS docker_cleanup_runs (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ trigger TEXT NOT NULL,
+ status TEXT NOT NULL,
+ started_at TEXT NOT NULL,
+ completed_at TEXT NOT NULL DEFAULT '',
+ result TEXT NOT NULL,
+ error TEXT NOT NULL DEFAULT ''
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_docker_cleanup_running ON docker_cleanup_runs(status) WHERE status='running';
 CREATE TABLE IF NOT EXISTS registries (
  id INTEGER PRIMARY KEY AUTOINCREMENT,
  name TEXT NOT NULL,
@@ -153,6 +169,9 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("docker_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("docker_auto_prune_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("kubernetes_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -482,10 +501,10 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var settings app.Settings
 	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled, killSwitchEnabled, sendboxEnabled int
-	var dockerEnabled, kubernetesEnabled, vmsEnabled int
+	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
@@ -495,6 +514,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 			&killSwitchEnabled,
 			&sendboxEnabled,
 			&dockerEnabled,
+			&dockerAutoPruneEnabled,
 			&kubernetesEnabled,
 			&vmsEnabled,
 			&settings.InterfaceDensity,
@@ -517,6 +537,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	settings.KillSwitchEnabled = killSwitchEnabled == 1
 	settings.SendboxEnabled = sendboxEnabled == 1
 	settings.DockerEnabled = dockerEnabled == 1
+	settings.DockerAutoPruneEnabled = dockerAutoPruneEnabled == 1
 	settings.KubernetesEnabled = kubernetesEnabled == 1
 	settings.VMsEnabled = vmsEnabled == 1
 	settings.ReduceMotion = reduceMotion == 1
@@ -541,7 +562,16 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
 	}
-	_, err = s.db.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=? WHERE id=1`,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var previousAutoPrune int
+	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
+		return err
+	}
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -550,6 +580,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.KillSwitchEnabled),
 		boolInt(settings.SendboxEnabled),
 		boolInt(settings.DockerEnabled),
+		boolInt(settings.DockerAutoPruneEnabled),
 		boolInt(settings.KubernetesEnabled),
 		boolInt(settings.VMsEnabled),
 		settings.InterfaceDensity,
@@ -559,7 +590,15 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.TerminalCursorBlink),
 		settings.TerminalScrollback,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+	if previousAutoPrune != boolInt(settings.DockerAutoPruneEnabled) {
+		if err := scheduleDockerCleanup(ctx, tx, settings.DockerAutoPruneEnabled, time.Now().UTC()); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) CreateRegistry(ctx context.Context, profile app.RegistryProfile) (app.RegistryProfile, error) {

@@ -36,22 +36,23 @@ type LogLine struct {
 }
 
 type Settings struct {
-	CleanupLocalMerged  bool     `json:"cleanupLocalMerged"`
-	CleanupRemoteMerged bool     `json:"cleanupRemoteMerged"`
-	PruneRemoteTracking bool     `json:"pruneRemoteTracking"`
-	ProtectedBranches   []string `json:"protectedBranches"`
-	SQLNotSoLiteEnabled bool     `json:"sqlNotSoLiteEnabled"`
-	KillSwitchEnabled   bool     `json:"killSwitchEnabled"`
-	SendboxEnabled      bool     `json:"sendboxEnabled"`
-	DockerEnabled       bool     `json:"dockerEnabled"`
-	KubernetesEnabled   bool     `json:"kubernetesEnabled"`
-	VMsEnabled          bool     `json:"vmsEnabled"`
-	InterfaceDensity    string   `json:"interfaceDensity"`
-	ReduceMotion        bool     `json:"reduceMotion"`
-	TerminalFontSize    int      `json:"terminalFontSize"`
-	TerminalLineHeight  float64  `json:"terminalLineHeight"`
-	TerminalCursorBlink bool     `json:"terminalCursorBlink"`
-	TerminalScrollback  int      `json:"terminalScrollback"`
+	CleanupLocalMerged     bool     `json:"cleanupLocalMerged"`
+	CleanupRemoteMerged    bool     `json:"cleanupRemoteMerged"`
+	PruneRemoteTracking    bool     `json:"pruneRemoteTracking"`
+	ProtectedBranches      []string `json:"protectedBranches"`
+	SQLNotSoLiteEnabled    bool     `json:"sqlNotSoLiteEnabled"`
+	KillSwitchEnabled      bool     `json:"killSwitchEnabled"`
+	SendboxEnabled         bool     `json:"sendboxEnabled"`
+	DockerEnabled          bool     `json:"dockerEnabled"`
+	DockerAutoPruneEnabled bool     `json:"dockerAutoPruneEnabled"`
+	KubernetesEnabled      bool     `json:"kubernetesEnabled"`
+	VMsEnabled             bool     `json:"vmsEnabled"`
+	InterfaceDensity       string   `json:"interfaceDensity"`
+	ReduceMotion           bool     `json:"reduceMotion"`
+	TerminalFontSize       int      `json:"terminalFontSize"`
+	TerminalLineHeight     float64  `json:"terminalLineHeight"`
+	TerminalCursorBlink    bool     `json:"terminalCursorBlink"`
+	TerminalScrollback     int      `json:"terminalScrollback"`
 }
 
 const (

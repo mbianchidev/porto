@@ -69,7 +69,9 @@ default. Silent installs do not create a desktop shortcut.
 Packaged apps compare the bundled daemon's SHA-256 identity with the identity
 cached by the running process and replace it when they differ, including
 same-version rebuilds installed at the same path. They automatically provision
-the bundled Porto container runtime on first launch. Packaged apps always start
+the bundled Porto container runtime on first launch and reconcile its
+provisioning on later launches, including QEMU/binfmt setup for multi-platform
+builds in already-running managed engines. Packaged apps always start
 the daemon executable embedded in their resources; they never require
 `PORTO_BINARY` or a separate `porto` executable on `PATH`.
 

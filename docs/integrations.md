@@ -14,6 +14,12 @@ sqnsl scan <project-path>...
 
 Daemon activation and rescans run in the background and expose their current state in the dashboard. Offline `porto scan` commands run the integration synchronously. Output and failures are recorded in eligible project logs under the `sqnsl` stream.
 
+Removed project roots and database candidates that disappear during discovery
+are skipped and logged, so a deleted worktree or build directory does not block
+other projects. Missing paths do not trigger installation or an error state
+when no databases remain. Permission failures and other I/O errors are still
+reported; Porto does not delete or recreate stale project directories.
+
 ## KillSwitch
 
 On macOS, enable [KillSwitch](https://github.com/mbianchidev/kill-switch) to share the active ports owned by processes managed by the current Porto daemon. KillSwitch keeps those source-owned ports separate from its own configured ports.

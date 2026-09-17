@@ -38,7 +38,7 @@ BuildKit socket or Lima `buildctl dial-stdio`
 The API server is part of the Porto daemon and starts whenever the Docker runtime is enabled. Docker is enabled by default for new Porto installations and can be toggled with `porto runtime enable docker` or `porto runtime disable docker`. The execution backend is independent:
 
 - If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
-- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper only in that owned VM. CLI-only installations can run `porto docker engine-install`.
+- Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper and configures QEMU user-mode emulation only in that owned VM. CLI-only installations can run `porto docker engine-install`.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 
@@ -254,8 +254,93 @@ porto docker build . \
   --platform linux/amd64,linux/arm64
 ```
 
-Cross-architecture builds require a BuildKit worker with the required native
-worker or binfmt/QEMU emulation.
+The managed Lima engine automatically installs static QEMU user-mode emulators
+from its Ubuntu package repositories and registers the packaged `binfmt_misc`
+handlers with the `F` (`fix_binary`) flag required inside containers. The
+systemd registrations survive VM reboots. Packaged desktop launches reconcile
+this setup even when the engine is already running, so existing installations
+gain multi-platform support without recreating the VM.
+Porto also enables packaged 32-bit ARM/x86 handlers that distributions omit
+because they assume native compatibility; Apple Silicon cannot execute
+32-bit ARM binaries natively.
+The first setup needs package-repository access; subsequent launches reuse the
+installed packages and repair missing or disabled registrations without
+downloading them again. Provisioning failures are reported instead of claiming
+that the engine is ready.
+
+BuildKit may retain a stale 32-bit platform list after emulation is enabled.
+Porto refreshes only the BuildKit user service once when required, then verifies
+its reported platforms. The VM, containerd, and running containers stay up.
+If BuildKit reports active builds, setup refuses the refresh with an explicit
+error; finish those builds and retry setup. Later launches and VM boots do not
+restart a builder that already reports the configured platforms.
+
+Inspect the platforms BuildKit can actually execute:
+
+```sh
+docker --context porto buildx inspect porto
+```
+
+The `PLATFORMS` column in `docker buildx ls` lists executable CPU targets, not
+separate build systems. BuildKit discovers native and emulated platforms; Porto
+does not hard-code that list. QEMU enables targets such as AMD64, ARM, ARM64,
+386, PowerPC, RISC-V, and s390x, subject to the installed emulator and image
+support. Emulated compilation can be slower than a native worker.
+
+CLI-only users can apply the same setup to an existing engine with
+`porto docker engine-install` or `porto docker engine-start`. Externally managed
+local containerd/BuildKit installations are not modified: their administrator
+must provide the required native workers or binfmt/QEMU emulation.
+
+## Unused image and build-cache cleanup
+
+The Settings page offers opt-in weekly cleanup and a separate **Run now**
+action. Automatic cleanup is disabled for both new and existing installations.
+Enabling it requires confirmation and schedules the first run seven days later;
+saving unrelated settings does not reset that deadline. **Run now** also works
+with automatic cleanup disabled and requires its own confirmation.
+
+Both paths perform the same cleanup against Porto's configured backend:
+
+- Prune all unused BuildKit cache records. The `builder` and `buildx` commands
+  address the same Porto BuildKit cache, so it is pruned once, not twice.
+- Run namespace-scoped `nerdctl image prune --all --force`, including unused
+  tagged image references. Images referenced by running or stopped containers
+  are retained.
+
+Containers, volumes, networks, other Docker contexts, and VMs are not removed.
+Porto checks for active builds before starting and reports a skipped run rather
+than interfering with a build. Concurrent manual and scheduled requests cannot
+start overlapping cleanup runs.
+
+Accepted runs continue when the Settings page is closed. The daemon records
+the trigger, start/end times, outcome, removed image-reference count, build-cache
+record count, reported cache bytes, and diagnostic output in SQLite. Settings
+shows the latest ten results, including failures and partial results. Image
+layer storage can be shared, so Porto does not invent a reclaimed-byte total for
+images. Native image-prune warnings are reported as failures even when the CLI
+exits successfully.
+
+If a result cannot be saved, the running daemon still exposes its observed
+counts and storage error instead of leaving the UI stuck on "running".
+Further cleanup is blocked until the storage problem is resolved and Porto
+restarts; results that could not be persisted cannot survive that restart.
+
+Every completed attempt, including **Run now**, schedules the next automatic
+attempt seven days later when enabled. Missed weeks do not cause a burst of
+catch-up runs, and failures do not silently turn weekly cleanup into an hourly
+retry loop. Disable Docker to pause automatic execution, or disable the cleanup
+setting to remove the schedule; retained results remain available.
+
+Cleanup has a ten-minute deadline. Daemon shutdown cancels an active run and
+records its partial outcome before closing the runtime. On restart, an
+unfinished persisted run is marked interrupted rather than successful. Counts
+reflect runtime-reported removals; an interrupted operation can have additional
+effects that were not reported before it stopped.
+
+The daemon exposes `GET /api/docker/cleanup` for the schedule and results and
+`POST /api/docker/cleanup` for **Run now**. The POST returns `202 Accepted` with
+a run identifier; clients must read its eventual outcome from the GET response.
 
 ## Explicit limitations
 

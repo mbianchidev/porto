@@ -1397,6 +1397,52 @@ dd a {
   gap: 7px;
 }
 
+.cleanupRuns,
+.cleanupSteps {
+  display: grid;
+  min-width: 0;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.cleanupRun {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.cleanupRun h4 {
+  margin: 0 0 4px;
+}
+
+.cleanupSteps > div {
+  border-top: 1px solid var(--line);
+  padding-top: 8px;
+}
+
+.cleanupSteps dt {
+  font-weight: 600;
+}
+
+.cleanupSteps dd {
+  margin: 4px 0 0;
+}
+
+.cleanupSteps summary {
+  margin-top: 6px;
+  cursor: pointer;
+}
+
+.cleanupSteps pre {
+  max-height: 180px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font: 10px/1.5 var(--mono);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .registryWorkbench {
   display: grid;
   gap: 12px;

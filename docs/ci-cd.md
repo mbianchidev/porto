@@ -113,6 +113,17 @@ npm --prefix ui run lint
 npm --prefix ui run build
 ```
 
+An opt-in multi-platform integration test uses an already running, Porto-owned
+Lima engine on macOS or Linux. It applies engine emulation provisioning, then
+runs uncached Dockerfile commands for eight Linux targets through a temporary
+Porto Docker API socket and checks the exported architecture for each target.
+It uses synthetic build inputs and does not restart or recreate the VM:
+
+```sh
+PORTO_DOCKER_MULTIPLATFORM_INTEGRATION=1 \
+  go test ./internal/docker -run '^TestDockerMultiPlatformBuildIntegration$' -count=1 -v
+```
+
 Workflow files can be validated before pushing with:
 
 ```sh

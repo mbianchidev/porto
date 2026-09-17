@@ -223,7 +223,7 @@ function windowsDaemonProcessIDs(processes) {
 function dockerBootstrapCommand(status, {
   isPackaged = true,
 } = {}) {
-  if (!isPackaged || !status?.enabled || status.available) {
+  if (!isPackaged || !status?.enabled) {
     return null
   }
   return ['docker', 'engine-install']

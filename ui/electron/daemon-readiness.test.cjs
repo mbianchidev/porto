@@ -149,14 +149,17 @@ test('finds Windows Porto daemon processes', () => {
   ])
 })
 
-test('bootstraps the bundled engine for packaged desktops', () => {
+test('reconciles engine provisioning on every packaged desktop launch', () => {
   const unavailable = { enabled: true, available: false }
 
   assert.deepEqual(
     dockerBootstrapCommand(unavailable, { isPackaged: true }),
     ['docker', 'engine-install'],
   )
-  assert.equal(dockerBootstrapCommand({ enabled: true, available: true }, { isPackaged: true }), null)
+  assert.deepEqual(
+    dockerBootstrapCommand({ enabled: true, available: true }, { isPackaged: true }),
+    ['docker', 'engine-install'],
+  )
   assert.equal(dockerBootstrapCommand({ enabled: false, available: false }, { isPackaged: true }), null)
   assert.equal(dockerBootstrapCommand(unavailable, { isPackaged: false }), null)
 })

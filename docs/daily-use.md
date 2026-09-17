@@ -58,6 +58,24 @@ These preferences are stored in the desktop app's user-data directory. The web
 dashboard shows the controls as unavailable because a browser cannot manage
 login items or a system tray.
 
+## Clean up unused runtime data
+
+Use the runtime cleanup controls in **Settings** to opt in to weekly cleanup,
+or choose **Run now** for a one-off cleanup without enabling a schedule. Both
+actions warn that unused tagged images and build caches will be removed, so
+future builds may need to download or rebuild them.
+
+The first automatic run is seven days after enabling the setting. Later
+attempts are scheduled seven days after the previous attempt finishes. The
+daemon must be running and Docker enabled; overdue schedules run once when
+available rather than replaying every missed week.
+
+Settings retains the latest manual and scheduled results, including partial
+failures and interruptions. Running and stopped containers keep their referenced
+images; containers, volumes, and VMs are never pruned. See
+[runtime cleanup](docker-engine.md#unused-image-and-build-cache-cleanup) for
+scope, reporting, and lifecycle details.
+
 ## Start the daemon automatically
 
 The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.

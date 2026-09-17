@@ -31,6 +31,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
 	mux.HandleFunc("GET /api/activity/resources", s.activityResources)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
+	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
+	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
@@ -1349,6 +1351,8 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, portodocker.ErrConflict):
+		status = http.StatusConflict
 	case strings.Contains(message, "unavailable"),
 		strings.Contains(message, "not found"),
 		strings.Contains(message, "connection refused"),

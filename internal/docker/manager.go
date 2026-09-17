@@ -55,6 +55,7 @@ type Manager struct {
 	directCLI           bool
 	dialBuildKit        func(context.Context) (net.Conn, error)
 	installMu           sync.Mutex
+	cleanupMu           sync.Mutex
 	inventoryMu         sync.Mutex
 	inventory           *containerInventory
 	inventoryCancel     context.CancelFunc
@@ -259,6 +260,15 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	} else if err := m.verifyLimaOwnership(ctx, ownerID); err != nil {
 		return Status{}, err
 	}
+	if err := m.installLimaBinfmt(ctx); err != nil {
+		if created {
+			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without multi-platform support", nil, "limactl", "delete", "--force", engineInstanceName)
+			cancel()
+			return Status{}, errors.Join(err, cleanupErr)
+		}
+		return Status{}, err
+	}
 	if err := m.installLimaRuntimeHelper(ctx, engineInstanceName); err != nil {
 		if created {
 			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -368,7 +378,14 @@ func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, 
 }
 
 func (m *Manager) StartEngine(ctx context.Context) (err error) {
+	m.installMu.Lock()
+	defer m.installMu.Unlock()
+	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	if err != nil {
+		return fmt.Errorf("lock Porto container runtime startup: %w", err)
+	}
 	defer func() {
+		err = errors.Join(err, lock.Close())
 		if err == nil {
 			m.invalidateContainerInventory()
 		}
@@ -387,17 +404,19 @@ func (m *Manager) StartEngine(ctx context.Context) (err error) {
 	if !exists {
 		return fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
 	}
-	if running {
-		return m.verifyLimaOwnership(ctx, state.OwnerID)
-	}
-	if _, err := m.runCommand(ctx, 5*time.Minute, "start Porto container runtime", nil, "limactl", "start", state.Instance); err != nil {
-		return err
+	if !running {
+		if _, err := m.runCommand(ctx, 5*time.Minute, "start Porto container runtime", nil, "limactl", "start", state.Instance); err != nil {
+			return err
+		}
 	}
 	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+		if running {
+			return err
+		}
 		_, stopErr := m.runCommand(context.Background(), 5*time.Minute, "stop unowned Lima instance", nil, "limactl", "stop", state.Instance)
 		return errors.Join(err, stopErr)
 	}
-	return nil
+	return m.installLimaBinfmt(ctx)
 }
 
 func (m *Manager) StopEngine(ctx context.Context) error {
@@ -1680,6 +1699,19 @@ func (m *Manager) runStreamingInput(
 	if err != nil {
 		return err
 	}
+	return m.runBackendStreamingInput(ctx, backend, timeout, action, stdin, stdinReader, emit, args...)
+}
+
+func (m *Manager) runBackendStreamingInput(
+	ctx context.Context,
+	backend commandBackend,
+	timeout time.Duration,
+	action string,
+	stdin []byte,
+	stdinReader io.Reader,
+	emit func(runtimes.OutputChunk) error,
+	args ...string,
+) error {
 	runner, ok := m.runner.(streamingRunner)
 	if !ok {
 		return fmt.Errorf("%w: streaming stdout and stderr capture", ErrUnsupported)
