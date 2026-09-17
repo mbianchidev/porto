@@ -122,7 +122,9 @@ jobs:
 
             echo "::group::${name}"
             mkdir -p "${root}/ui"
-            GOOS="$goos" GOARCH="$goarch" go build -trimpath -ldflags '-s -w' -o "${root}/${binary}" ./cmd/porto
+            GOOS="$goos" GOARCH="$goarch" go build -trimpath \
+              -ldflags "-s -w -X github.com/mbianchidev/porto/internal/config.Version=${VERSION}" \
+              -o "${root}/${binary}" ./cmd/porto
             cp -R ui/dist "${root}/ui/dist"
             cp README.md LICENSE "${root}/"
 
