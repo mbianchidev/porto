@@ -48,6 +48,9 @@ portable desktop archive. Every desktop package bundles the daemon, dashboard,
 helper for direct container I/O, Windows containerd connections, CNI, and
 checkpoint capability discovery.
 
+Windows packages include Lima's stale-process recovery fix, so a previous
+shutdown does not require deleting PID files or recreating the runtime VM.
+
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the
 `porto` binary and `ui/dist` directory together, then add the binary to `PATH`.

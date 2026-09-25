@@ -1,0 +1,35 @@
+Backport of https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435
+to Lima v2.2.0. Copyright The Lima Authors; Apache-2.0.
+
+Discard PID files only when Windows reports ERROR_INVALID_PARAMETER for a
+terminated process. Preserve live PIDs and all other inspection errors.
+
+diff --git a/pkg/store/instance.go b/pkg/store/instance.go
+--- a/pkg/store/instance.go
++++ b/pkg/store/instance.go
+@@ -213,13 +213,21 @@ func ReadPIDFile(path string) (int, error) {
+ 		return 0, err
+ 	}
+ 	proc, err := os.FindProcess(pid)
++	if runtime.GOOS == "windows" {
++		// On Windows, os.FindProcess will fail if the process does not exist.
++		if err == nil {
++			return pid, nil
++		}
++		var errno syscall.Errno
++		const ErrorInvalidParameter syscall.Errno = 0x57
++		if errors.As(err, &errno) && errno == ErrorInvalidParameter {
++			_ = os.Remove(path)
++			return 0, nil
++		}
++	}
+ 	if err != nil {
+ 		return 0, err
+ 	}
+-	// os.FindProcess will only return running processes on Windows, exit early
+-	if runtime.GOOS == "windows" {
+-		return pid, nil
+-	}
+ 	err = proc.Signal(syscall.Signal(0))
+ 	if err != nil {
+ 		if errors.Is(err, os.ErrProcessDone) {

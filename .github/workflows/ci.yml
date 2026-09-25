@@ -272,6 +272,11 @@ jobs:
               throw "$binary exited with code $LASTEXITCODE."
             }
           }
+          $limactl = Join-Path $installRoot 'resources/runtime/lima/bin/limactl.exe'
+          & node scripts/lima-runtime-smoke.cjs $limactl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installed Lima failed the process-state recovery checks.'
+          }
           $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $uninstaller) {
             throw 'Installer did not create an uninstaller.'
