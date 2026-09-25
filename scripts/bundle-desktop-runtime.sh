@@ -176,6 +176,10 @@ else
   tar -xzf "$temporary/$lima_asset" -C "$destination/lima"
 fi
 
+if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+  node "$(dirname "$0")/lima-runtime-smoke.cjs" "$destination/lima/bin/limactl${binary_suffix}"
+fi
+
 qemu_bundled=false
 if [ "$goos" = "windows" ]; then
   case "$goarch" in
