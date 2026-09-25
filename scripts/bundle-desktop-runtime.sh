@@ -9,6 +9,7 @@ fi
 goos="$1"
 goarch="$2"
 destination="$3"
+script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 
 kubectl_version="${KUBECTL_VERSION:-v1.36.1}"
 kind_version="${KIND_VERSION:-v0.33.0}"
@@ -30,6 +31,7 @@ temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT
 rm -rf "$destination"
 mkdir -p "$destination/bin" "$destination/lima" "$destination/licenses"
+destination="$(cd "$destination" && pwd -P)"
 
 download() {
   local url="$1"
@@ -176,6 +178,35 @@ else
   tar -xzf "$temporary/$lima_asset" -C "$destination/lima"
 fi
 
+lima_runtime_version="$lima_version"
+if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
+  lima_runtime_version="v2.2.0+porto.1"
+  download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz"
+  verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
+  # The release archive supplies templates; source-only aliases are not Go
+  # build inputs and cannot be extracted reliably by Windows tar.
+  tar --exclude='lima-2.2.0/templates/*' \
+    --exclude='lima-2.2.0/pkg/limayaml/default.yaml' \
+    --exclude='lima-2.2.0/pkg/cidata/cloud-config.yaml' \
+    -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
+  lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
+  (
+    cd "$temporary/lima-2.2.0"
+    git apply --check "$lima_pid_patch"
+    git apply "$lima_pid_patch"
+    CGO_ENABLED=0 GOOS=windows GOARCH="$goarch" GOWORK=off \
+      go build -mod=readonly -buildvcs=false -trimpath \
+        -ldflags "-s -w -X github.com/lima-vm/lima/v2/pkg/version.Version=$lima_runtime_version" \
+        -o "$destination/lima/bin/limactl.exe" ./cmd/limactl
+  )
+  cp "$temporary/lima-2.2.0/LICENSE" "$destination/licenses/lima.txt"
+  cp "$lima_pid_patch" "$destination/licenses/lima-windows-pid.patch"
+fi
+
+if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+  node "$script_directory/lima-runtime-smoke.cjs" "$destination/lima/bin/limactl${binary_suffix}"
+fi
+
 qemu_bundled=false
 if [ "$goos" = "windows" ]; then
   case "$goarch" in
@@ -260,7 +291,7 @@ kubectl ${kubectl_version}
 docker $([ "$docker_bundled" = "true" ] && printf '%s' "$docker_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
-lima ${lima_version}
+lima ${lima_runtime_version}
 qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
 porto-runtime-helper 1
 EOF

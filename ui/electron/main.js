@@ -11,6 +11,7 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { promisify } = require('node:util')
 
+const { attachRendererLogging, installDesktopLogging, resolveLogPath } = require('./desktop-logging.cjs')
 const {
   bundledExecutablePaths,
   daemonBinaryIdentity,
@@ -61,6 +62,7 @@ let promptedAvailableVersion = ''
 let promptedDownloadedVersion = ''
 let tray = null
 let quitting = false
+let desktopLogging = null
 
 app.setName(APP_NAME)
 process.title = APP_NAME
@@ -418,15 +420,17 @@ function normalizedExecutablePath(value) {
 // tracked or killed on app quit.
 async function startDaemon() {
   const environment = await portoEnvironment()
+  console.debug('Starting bundled daemon: %s', portoBinary())
   return new Promise((resolve, reject) => {
     const child = spawn(portoBinary(), ['daemon', 'start'], {
       detached: true,
       env: environment,
-      stdio: 'ignore',
+      stdio: ['ignore', desktopLogging.fd, desktopLogging.fd],
       windowsHide: true,
     })
     child.once('error', reject)
     child.once('spawn', () => {
+      console.debug('Daemon process started: pid=%d', child.pid)
       child.unref()
       resolve()
     })
@@ -538,6 +542,8 @@ async function ensureDaemonRunning() {
     expectedDaemonIdentity,
   })
   let existing = await inspectExpectedDaemon()
+  console.debug('Daemon readiness: reachable=%s ready=%s version=%s', existing.reachable, existing.ready, existing.health?.version)
+  console.debug('Daemon binary identity: expected=%s actual=%s', expectedDaemonIdentity, existing.health?.daemonIdentity)
   if (existing.ready && !app.isPackaged) return true
   let processes
   try {
@@ -553,6 +559,7 @@ async function ensureDaemonRunning() {
     }
   }
   if (processes.length > 0) {
+    console.debug('Inspecting existing daemon processes: count=%d', processes.length)
     if (!existing.reachable) {
       for (let attempt = 0; attempt < 10; attempt += 1) {
         await delay(300)
@@ -573,7 +580,8 @@ async function ensureDaemonRunning() {
   for (let startAttempt = 0; startAttempt < 3; startAttempt += 1) {
     try {
       await startDaemon()
-    } catch {
+    } catch (error) {
+      console.error('Unable to start the daemon on attempt %d', startAttempt + 1, error)
       continue
     }
     for (let attempt = 0; attempt < 30; attempt += 1) {
@@ -585,14 +593,17 @@ async function ensureDaemonRunning() {
 }
 
 async function ensureDockerEngine() {
+  console.debug('Checking container runtime readiness')
   let status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
   if (!status.enabled) return
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
   })
   if (command !== null) {
+    console.debug('Reconciling the bundled container runtime')
     await installDockerEngine({ daemonURL: DAEMON_URL })
     status = await waitForDockerEngine({ daemonURL: DAEMON_URL })
+    console.debug('Container runtime readiness: available=%s enabled=%s', status.available, status.enabled)
   }
   if (app.isPackaged && process.platform !== 'win32' && status.available) {
     await installDockerContext({ daemonURL: DAEMON_URL })
@@ -731,7 +742,20 @@ app.on('second-instance', () => {
   showMainWindow()
 })
 
+app.on('web-contents-created', (_event, webContents) => {
+  attachRendererLogging(webContents)
+})
+
 app.whenReady().then(async () => {
+  if (!hasLock) return
+  desktopLogging = installDesktopLogging({
+    logPath: resolveLogPath({ appDataPath: app.getPath('appData') }),
+  })
+  process.on('uncaughtExceptionMonitor', (error, origin) => {
+    console.error('Uncaught desktop exception (%s)', origin, error)
+  })
+  process.once('exit', () => desktopLogging.close())
+  console.debug('Starting Porto desktop: version=%s platform=%s arch=%s log=%s', app.getVersion(), process.platform, process.arch, desktopLogging.path)
   app.setAppUserModelId(APP_ID)
   if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
   desktopPreferencesPath = path.join(app.getPath('userData'), 'desktop-preferences.json')
@@ -762,6 +786,7 @@ app.whenReady().then(async () => {
   } catch (error) {
     console.error('Unable to read the packaged Porto release version; using application metadata', error)
   }
+  console.debug('Packaged Porto release: %s', currentReleaseVersion)
   desktopUpdater = createDesktopUpdater({
     currentVersion: currentReleaseVersion,
     platform: process.platform,
@@ -775,9 +800,10 @@ app.whenReady().then(async () => {
   const startHidden = shouldStartHidden(desktopPreferences, process.argv)
   if (startHidden && process.platform === 'darwin') app.dock?.hide()
   if (!bundledPortoBinaryReady()) {
+    console.error('Bundled Porto daemon is missing or not executable: %s', portoBinary())
     dialog.showErrorBox(
       'Porto installation incomplete',
-      `The bundled Porto daemon is missing or is not executable at ${portoBinary()}. Reinstall Porto from the DMG.`,
+      `The bundled Porto daemon is missing or is not executable at ${portoBinary()}. Reinstall Porto from the desktop installer.\n\nLog file: ${desktopLogging.path}`,
     )
     app.quit()
     return
@@ -785,10 +811,11 @@ app.whenReady().then(async () => {
   const bootstrapWindow = createBootstrapWindow(!startHidden)
   const healthy = await ensureDaemonRunning()
   if (!healthy) {
+    console.error('Porto daemon did not reach compatible readiness')
     bootstrapWindow.close()
     dialog.showErrorBox(
       'Porto daemon unavailable',
-      `Could not start ${portoBinary()} daemon start. Another Porto daemon may be incompatible or missing its dashboard; stop it and retry.`,
+      `Could not start ${portoBinary()} daemon start. Another Porto daemon may be incompatible or missing its dashboard; stop it and retry.\n\nLog file: ${desktopLogging.path}`,
     )
     app.quit()
     return
@@ -819,7 +846,7 @@ app.whenReady().then(async () => {
     dialog.showErrorBox('Porto tray unavailable', trayError.message)
   }
   if (dockerError !== null) {
-    dialog.showErrorBox('Porto container runtime unavailable', dockerError.message)
+    dialog.showErrorBox('Porto container runtime unavailable', `${dockerError.message}\n\nLog file: ${desktopLogging.path}`)
   }
   if (updateInstallError !== '') {
     dialog.showErrorBox('Porto update failed', updateInstallError)
@@ -829,9 +856,15 @@ app.whenReady().then(async () => {
   app.on('activate', () => {
     showMainWindow()
   })
+}).catch((error) => {
+  console.error('Porto desktop startup failed', error)
+  const logHint = desktopLogging ? `\n\nLog file: ${desktopLogging.path}` : ''
+  dialog.showErrorBox('Porto startup failed', `${error.message}${logHint}`)
+  app.exit(1)
 })
 
 app.on('before-quit', () => {
+  console.debug('Quitting Porto desktop; daemon continues independently')
   quitting = true
   if (updateCheckTimer !== null) clearInterval(updateCheckTimer)
 })

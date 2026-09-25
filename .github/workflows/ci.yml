@@ -206,6 +206,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
+          node --test ui/electron/desktop-logging.test.cjs
 
       - name: Validate Windows update helper
         if: runner.os == 'Windows'
@@ -271,6 +272,21 @@ jobs:
             if ($LASTEXITCODE -ne 0) {
               throw "$binary exited with code $LASTEXITCODE."
             }
+          }
+          $limactl = Join-Path $installRoot 'resources/runtime/lima/bin/limactl.exe'
+          & node scripts/lima-runtime-smoke.cjs $limactl
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installed Lima failed the process-state recovery checks.'
+          }
+          $env:PORTO_TEST_DAEMON = Join-Path $installRoot 'resources/porto.exe'
+          try {
+            & node --test ui/electron/desktop-logging.test.cjs
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed Porto failed the persistent logging checks.'
+            }
+          }
+          finally {
+            Remove-Item Env:PORTO_TEST_DAEMON
           }
           $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $uninstaller) {

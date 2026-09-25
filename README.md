@@ -48,6 +48,9 @@ portable desktop archive. Every desktop package bundles the daemon, dashboard,
 helper for direct container I/O, Windows containerd connections, CNI, and
 checkpoint capability discovery.
 
+Windows packages include Lima's stale-process recovery fix, so a previous
+shutdown does not require deleting PID files or recreating the runtime VM.
+
 For a headless installation, download the CLI/web archive from the
 [releases page](https://github.com/mbianchidev/porto/releases). Keep the
 `porto` binary and `ui/dist` directory together, then add the binary to `PATH`.
@@ -70,6 +73,11 @@ porto daemon start
 ```
 
 The daemon runs in the foreground. Leave it open and use a second terminal for project commands.
+
+Desktop and daemon diagnostics are saved to `logs/porto.log` under Porto's
+OS-specific data directory, with **debug** logging enabled by default. See
+[application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
+for exact paths and the `PORTO_LOG_LEVEL` setting.
 
 ### 4. Start a project
 

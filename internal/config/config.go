@@ -154,6 +154,14 @@ func DBPath() (string, error) {
 	return filepath.Join(dir, "porto.db"), nil
 }
 
+func LogPath() (string, error) {
+	dir, err := Dir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, "logs", "porto.log"), nil
+}
+
 func RuntimeDir() (string, error) {
 	dir, err := Dir()
 	if err != nil {

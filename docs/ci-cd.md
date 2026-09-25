@@ -24,6 +24,19 @@ once, avoiding redundant registry requests and npm-version-specific tree checks.
 Confirmed npm registry transport or server outages emit a warning instead of
 failing the matrix; vulnerability reports and invalid lockfiles still fail.
 
+Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
+actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
+VM files to check dead-PID recovery, live-PID preservation, malformed-PID
+diagnostics, and disk/configuration preservation without booting a VM.
+Windows CI repeats these checks against the installed package in a path with
+spaces, rather than only checking that its binaries exist.
+
+Desktop logging tests run natively on Windows and macOS. The Windows installer
+check also starts the installed daemon against a deliberately invalid,
+isolated test database to verify that early failures reach `logs/porto.log`
+at the default debug level, without duplicate records when stderr already
+points at that file. No user database or running daemon is used.
+
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
 ## Cutting a release
@@ -80,6 +93,15 @@ Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
 archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
 `k9s`, and supported `kind` clients. The app prepends those bundled tools to
 the daemon's `PATH`, so they do not need separate installation.
+
+For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
+applies `scripts/patches/lima-2.2.0-windows-pid.patch`, and rebuilds only
+`limactl.exe` as `v2.2.0+porto.1`. This is a narrow upstream backport, not an
+upgrade to an unreleased Lima branch. The patch and Apache-2.0 license ship in
+`runtime/licenses`, and `runtime/VERSIONS` records the patched version.
+Other platforms keep their verified upstream binaries. Remove the backport
+when moving to a stable Lima version containing the fix; keep the runtime
+smoke checks as the release gate.
 
 macOS releases additionally contain architecture-specific `.dmg` installers,
 and Windows releases contain architecture-specific NSIS `.exe` installers.

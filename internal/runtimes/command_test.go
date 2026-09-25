@@ -5,8 +5,57 @@ import (
 	"context"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	"github.com/mbianchidev/porto/internal/logging"
 )
+
+func TestRuntimeDebugLoggingDoesNotExposeCommandPayloads(t *testing.T) {
+	for _, streaming := range []bool{false, true} {
+		t.Run(map[bool]string{false: "combined", true: "streaming"}[streaming], func(t *testing.T) {
+			directory := t.TempDir()
+			stderr, err := os.Create(filepath.Join(directory, "stderr"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stderr.Close()
+			logPath := filepath.Join(directory, "porto.log")
+			closeLog, err := logging.Open(logPath, "", stderr)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer closeLog()
+			command := Command{
+				Name:  os.Args[0],
+				Args:  []string{"-test.run=^TestCommandInputHelper$", "--", "synthetic-private-argument"},
+				Env:   []string{"PORTO_COMMAND_INPUT_HELPER=1", "SYNTHETIC_PRIVATE_ENV=synthetic-private-environment"},
+				Stdin: []byte("synthetic-private-input"),
+			}
+			if streaming {
+				_, err = (ExecRunner{}).RunStreaming(context.Background(), command, func(OutputChunk) error { return nil })
+			} else {
+				_, err = (ExecRunner{}).Run(context.Background(), command)
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			contents, err := os.ReadFile(logPath)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, expected := range []string{"level=DEBUG", "Runtime command started", "Runtime command finished", "duration="} {
+				if !strings.Contains(string(contents), expected) {
+					t.Errorf("runtime diagnostics are missing %q: %s", expected, contents)
+				}
+			}
+			if strings.Contains(string(contents), "synthetic-private") {
+				t.Fatalf("runtime diagnostics exposed arguments, environment, or stream data: %s", contents)
+			}
+		})
+	}
+}
 
 func TestExecRunnerReadsInputFromStream(t *testing.T) {
 	executable, err := os.Executable()

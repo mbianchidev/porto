@@ -9,11 +9,13 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -27,6 +29,7 @@ import (
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/localhttps"
+	"github.com/mbianchidev/porto/internal/logging"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 )
@@ -38,7 +41,31 @@ func main() {
 	}
 }
 
-func run(args []string) error {
+func run(args []string) (err error) {
+	if len(args) < 2 || args[0] != "daemon" || args[1] != "start" {
+		return runCommand(args)
+	}
+	path, err := config.LogPath()
+	if err != nil {
+		return err
+	}
+	closeLog, err := logging.Open(path, os.Getenv(logging.LevelEnv), os.Stderr)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err != nil {
+			slog.Error("Daemon stopped", "error", err)
+		} else {
+			slog.Info("Daemon stopped")
+		}
+		err = errors.Join(err, closeLog())
+	}()
+	slog.Debug("Starting Porto daemon", "version", config.Version, "os", runtime.GOOS, "arch", runtime.GOARCH)
+	return runCommand(args)
+}
+
+func runCommand(args []string) error {
 	if err := configureBundledRuntimePath(); err != nil {
 		return err
 	}

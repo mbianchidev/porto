@@ -6,10 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/process"
 )
@@ -34,7 +37,9 @@ type OutputChunk struct {
 
 type ExecRunner struct{}
 
-func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
+func (ExecRunner) Run(ctx context.Context, command Command) (output []byte, err error) {
+	finish := traceCommand(command)
+	defer func() { finish(err) }()
 	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
@@ -48,7 +53,9 @@ func (ExecRunner) RunStreaming(
 	ctx context.Context,
 	command Command,
 	emit func(OutputChunk) error,
-) ([]byte, error) {
+) (result []byte, err error) {
+	finish := traceCommand(command)
+	defer func() { finish(err) }()
 	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
@@ -60,6 +67,15 @@ func (ExecRunner) RunStreaming(
 	cmd.Stderr = chunkWriter{stream: "stderr", output: output}
 	err = cmd.Run()
 	return output.diagnostic, err
+}
+
+func traceCommand(command Command) func(error) {
+	binary := filepath.Base(command.Name)
+	started := time.Now()
+	slog.Debug("Runtime command started", "binary", binary)
+	return func(err error) {
+		slog.Debug("Runtime command finished", "binary", binary, "duration", time.Since(started), "error", err)
+	}
 }
 
 func newExecCommand(ctx context.Context, command Command) *exec.Cmd {

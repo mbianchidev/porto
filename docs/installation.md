@@ -33,6 +33,12 @@ daemon before opening the dashboard, even when the executable path, product
 version, and API compatibility version are unchanged. This prevents a newly
 installed Porto app from continuing to use code left running by an older build.
 
+Desktop startup failures include the path to the persistent diagnostic log:
+`logs/porto.log` inside the platform's Porto data directory, or under
+`PORTO_HOME` when configured. Logging defaults to debug and includes the
+detached daemon's output. See [application diagnostic logs](daily-use.md#application-diagnostic-logs)
+for platform paths and verbosity settings.
+
 Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
 Lima, and the supported `kind` binary for that platform. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
@@ -55,6 +61,15 @@ Windows filesystem path as an SSH Unix socket. After installation or engine
 startup, the daemon immediately retries the container inventory connection.
 The desktop waits for that fresh inventory rather than treating an older
 unavailable snapshot as a failed installation.
+
+Windows packages bundle Lima `v2.2.0+porto.1`: the stable 2.2.0 source with
+[upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
+backported. After an interrupted shutdown, Lima removes stale host-agent and
+QEMU PID files when Windows reports that those processes no longer exist,
+instead of refusing to start with `OpenProcess: The parameter is incorrect`.
+Live process IDs, configuration errors, and VM disks are preserved; no manual
+PID-file deletion or VM recreation is required. macOS and Linux retain the
+unmodified upstream Lima binaries.
 
 ### Desktop updates
 
