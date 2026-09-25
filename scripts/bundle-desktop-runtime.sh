@@ -180,7 +180,7 @@ fi
 
 lima_runtime_version="$lima_version"
 if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
-  lima_runtime_version="v2.2.0+porto.1"
+  lima_runtime_version="v2.2.0+porto.2"
   download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz"
   verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
   # The release archive supplies templates; source-only aliases are not Go
@@ -190,10 +190,11 @@ if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
     --exclude='lima-2.2.0/pkg/cidata/cloud-config.yaml' \
     -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
   lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
+  lima_stop_patch="$script_directory/patches/lima-2.2.0-windows-stop.patch"
   (
     cd "$temporary/lima-2.2.0"
-    git apply --check "$lima_pid_patch"
-    git apply "$lima_pid_patch"
+    git apply --check "$lima_pid_patch" "$lima_stop_patch"
+    git apply "$lima_pid_patch" "$lima_stop_patch"
     CGO_ENABLED=0 GOOS=windows GOARCH="$goarch" GOWORK=off \
       go build -mod=readonly -buildvcs=false -trimpath \
         -ldflags "-s -w -X github.com/lima-vm/lima/v2/pkg/version.Version=$lima_runtime_version" \
@@ -201,6 +202,7 @@ if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
   )
   cp "$temporary/lima-2.2.0/LICENSE" "$destination/licenses/lima.txt"
   cp "$lima_pid_patch" "$destination/licenses/lima-windows-pid.patch"
+  cp "$lima_stop_patch" "$destination/licenses/lima-windows-stop.patch"
 fi
 
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

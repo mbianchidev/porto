@@ -214,14 +214,17 @@ jobs:
         run: '[scriptblock]::Create((Get-Content -Raw ui/electron/apply-update.ps1)) | Out-Null'
 
       - name: Build native installers
+        id: installers
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
         run: |
           set -euo pipefail
+          version="$(node -p "require('./ui/package.json').version.split('+')[0]")+ci.${GITHUB_RUN_NUMBER}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           for arch in amd64 arm64; do
-            bash scripts/package-desktop-installer.sh "$GOOS" "$arch" 0.0.0-ci dist
+            bash scripts/package-desktop-installer.sh "$GOOS" "$arch" "$version" dist
           done
 
       - name: Verify DMGs
@@ -242,7 +245,7 @@ jobs:
           if ($installers.Count -ne 2) {
             throw "Expected two Windows installers, found $($installers.Count)."
           }
-          $installer = Get-Item 'dist/porto-desktop_0.0.0-ci_windows_amd64.exe'
+          $installer = Get-Item 'dist/porto-desktop_${{ steps.installers.outputs.version }}_windows_amd64.exe'
           $installRoot = Join-Path $env:RUNNER_TEMP 'Porto installer smoke'
           $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Porto.lnk'
           $desktopShortcutExisted = Test-Path $desktopShortcut
@@ -296,3 +299,13 @@ jobs:
           if ($process.ExitCode -ne 0) {
             throw "Uninstaller exited with code $($process.ExitCode)."
           }
+
+      - name: Upload native installers
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: desktop-installers-${{ matrix.goos }}
+          path: |
+            dist/*.dmg
+            dist/*.exe
+          if-no-files-found: error
+          retention-days: 3

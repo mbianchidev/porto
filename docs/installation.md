@@ -62,14 +62,52 @@ startup, the daemon immediately retries the container inventory connection.
 The desktop waits for that fresh inventory rather than treating an older
 unavailable snapshot as a failed installation.
 
-Windows packages bundle Lima `v2.2.0+porto.1`: the stable 2.2.0 source with
+New Windows container engines use the explicit Ubuntu 24.04 LTS template,
+also used by Porto's managed Kubernetes nodes. A Lima default-image update
+therefore cannot silently change the Windows engine's guest OS. Existing
+engines retain their disks and guest OS; an app upgrade does not recreate them.
+
+Windows packages bundle Lima `v2.2.0+porto.2`: the stable 2.2.0 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
-backported. After an interrupted shutdown, Lima removes stale host-agent and
-QEMU PID files when Windows reports that those processes no longer exist,
-instead of refusing to start with `OpenProcess: The parameter is incorrect`.
-Live process IDs, configuration errors, and VM disks are preserved; no manual
-PID-file deletion or VM recreation is required. macOS and Linux retain the
+backported and a consoleless force-stop fix. After an interrupted shutdown,
+Lima removes stale host-agent and QEMU PID files when Windows reports that
+those processes no longer exist, instead of refusing to start with
+`OpenProcess: The parameter is incorrect`. Forced stops terminate the selected
+process tree instead of relying on a console event, allowing its log handles
+to close before the next startup. Live process IDs are not treated as stale;
+configuration errors and VM disks are preserved. macOS and Linux retain the
 unmodified upstream Lima binaries.
+
+### Windows guest recovery
+
+An ownership-check timeout can mean that QEMU is still running but the Linux
+guest has crashed. When an ownership probe fails, Porto checks a bounded tail
+of the guest's `serial.log` and includes a detected kernel panic and log path
+in the error. It does not bypass ownership verification or automatically
+delete or replace the engine. Increasing the SSH timeout cannot recover a
+panicked guest.
+
+For an existing guest, first try stopping and starting the engine with the
+updated bundled Lima. If an older force-stop left `ha.stdout.log` locked,
+restart Windows to release the orphaned processes before retrying.
+
+**Only for a disposable engine, or after backing up its data:** quit Porto,
+install the updated desktop package without launching it, then remove only
+the container-engine VM:
+
+```powershell
+$lima = "$env:LOCALAPPDATA\Programs\Porto\resources\runtime\lima\bin\limactl.exe"
+& $lima delete --force porto-engine
+if ($LASTEXITCODE -ne 0) {
+    throw "Engine removal failed. Do not manually delete PID files or VM directories."
+}
+```
+
+Adjust the executable path for a custom installation location. This deletes
+the engine's containers, images, and volumes. Reopen Porto to create the new
+Ubuntu 24.04 engine and install its bundled runtime helper automatically.
+Other Lima VMs and Porto's project database are not removed. Do not delete
+the entire `.lima` or Porto state directory.
 
 ### Desktop updates
 

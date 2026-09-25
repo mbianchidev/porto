@@ -29,7 +29,17 @@ actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
 diagnostics, and disk/configuration preservation without booting a VM.
 Windows CI repeats these checks against the installed package in a path with
-spaces, rather than only checking that its binaries exist.
+spaces, rather than only checking that its binaries exist. It also starts
+synthetic consoleless processes and verifies that a forced stop terminates the
+host agent and its descendants, releases the log files, and preserves VM data.
+A failed termination must return an error without removing the PID files.
+These checks do not boot a guest or prove guest-kernel compatibility.
+
+Native installers are retained for three days as the
+`desktop-installers-darwin` and `desktop-installers-windows` CI artifacts.
+They use the application version with `+ci.<run-number>` build metadata, so a
+test build is not immediately considered older than the same stable version.
+These are unsigned PR/test builds, not published releases.
 
 Desktop logging tests run natively on Windows and macOS. The Windows installer
 check also starts the installed daemon against a deliberately invalid,
@@ -95,12 +105,17 @@ archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
 the daemon's `PATH`, so they do not need separate installation.
 
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
-applies `scripts/patches/lima-2.2.0-windows-pid.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.1`. This is a narrow upstream backport, not an
-upgrade to an unreleased Lima branch. The patch and Apache-2.0 license ship in
-`runtime/licenses`, and `runtime/VERSIONS` records the patched version.
-Other platforms keep their verified upstream binaries. Remove the backport
-when moving to a stable Lima version containing the fix; keep the runtime
+applies `scripts/patches/lima-2.2.0-windows-pid.patch` and
+`scripts/patches/lima-2.2.0-windows-stop.patch`, and rebuilds only
+`limactl.exe` as `v2.2.0+porto.2`. The PID change is an upstream backport; the
+force-stop change makes Windows SIGKILL terminate the selected process tree
+with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
+It stops the host-agent tree before the driver can exit and orphan children;
+failed stops block PID cleanup, restart, and deletion. Other signals keep
+upstream behavior. Both patches and the Apache-2.0 license
+ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
+Other platforms keep their verified upstream binaries. Remove each patch
+when moving to a stable Lima version containing its fix; keep the runtime
 smoke checks as the release gate.
 
 macOS releases additionally contain architecture-specific `.dmg` installers,

@@ -385,6 +385,7 @@ func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
 }
 
 func TestEngineTimeoutIncludesCommandDiagnostics(t *testing.T) {
+	t.Setenv("LIMA_HOME", t.TempDir())
 	const diagnostic = "ssh: connect to host 127.0.0.1: connection timed out"
 	runner := &fakeRunner{
 		handler: func(runtimes.Command) ([]byte, error) {
@@ -822,6 +823,23 @@ func TestInstallEngineSerializesConcurrentRequests(t *testing.T) {
 	}
 }
 
+func TestLimaEngineTemplate(t *testing.T) {
+	for _, test := range []struct {
+		goos string
+		want string
+	}{
+		{goos: "windows", want: "template://ubuntu-24.04"},
+		{goos: "darwin", want: "template://default"},
+		{goos: "linux", want: "template://default"},
+	} {
+		t.Run(test.goos, func(t *testing.T) {
+			if got := limaEngineTemplate(test.goos); got != test.want {
+				t.Fatalf("engine template = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	runner := &engineInstallRunner{}
 	manager := NewWithStateDir(runner, t.TempDir())
@@ -846,6 +864,13 @@ func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	foundWritableMount := false
 	for _, command := range runner.commands {
 		if command.Name == "limactl" && strings.Contains(strings.Join(command.Args, " "), "--mount-writable") {
+			template := "template://default"
+			if runtime.GOOS == "windows" {
+				template = "template://ubuntu-24.04"
+			}
+			if got := command.Args[len(command.Args)-1]; got != template {
+				t.Fatalf("created engine from %q, want %q", got, template)
+			}
 			foundWritableMount = true
 			break
 		}
@@ -899,6 +924,13 @@ func TestInstallEngineReconcilesMultiPlatformBuilds(t *testing.T) {
 					}
 				} else if err != nil {
 					t.Fatal(err)
+				}
+				if existing {
+					for _, command := range runner.commands {
+						if command.Name == "limactl" && command.Args[0] == "start" {
+							t.Fatalf("reconciliation recreated the existing running engine: %+v", command)
+						}
+					}
 				}
 				if !runner.binfmtConfigured {
 					t.Fatal("engine installation skipped multi-platform setup")

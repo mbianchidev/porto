@@ -1,1 +1,1 @@
-scripts/patches/*.patch text eol=lf whitespace=-space-before-tab
+scripts/patches/*.patch text eol=lf whitespace=-space-before-tab,-blank-at-eol
