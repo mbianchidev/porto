@@ -2,9 +2,42 @@ package config
 
 import (
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
+
+func TestLogPathUsesPlatformStateDirectoryAndPortoHome(t *testing.T) {
+	directory := t.TempDir()
+	t.Setenv("PORTO_HOME", "")
+	t.Setenv("HOME", directory)
+	t.Setenv("APPDATA", filepath.Join(directory, "Roaming"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(directory, "xdg"))
+	base := filepath.Join(directory, "xdg")
+	switch runtime.GOOS {
+	case "darwin":
+		base = filepath.Join(directory, "Library", "Application Support")
+	case "windows":
+		base = filepath.Join(directory, "Roaming")
+	}
+	got, err := LogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(base, "porto", "logs", "porto.log"); got != want {
+		t.Fatalf("platform log path = %q, want %q", got, want)
+	}
+	custom := filepath.Join(directory, "synthetic portable")
+	t.Setenv("PORTO_HOME", custom)
+	got, err = LogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(custom, "logs", "porto.log"); got != want {
+		t.Fatalf("custom log path = %q, want %q", got, want)
+	}
+}
 
 func TestProjectHTTPSURLUsesConfiguredRouterPort(t *testing.T) {
 	t.Setenv("PORTO_HOME", t.TempDir())

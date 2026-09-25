@@ -8,6 +8,29 @@ import (
 	"testing"
 )
 
+func TestDaemonStartupFailureIsLogged(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("PORTO_HOME", home)
+	t.Setenv("PORTO_LOG_LEVEL", "")
+	if err := os.Mkdir(filepath.Join(home, "porto.db"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := run([]string{"daemon", "start"}); err == nil {
+		t.Fatal("daemon unexpectedly opened a directory as its database")
+	}
+
+	output, err := os.ReadFile(filepath.Join(home, "logs", "porto.log"))
+	if err != nil {
+		t.Fatalf("startup failure did not produce a log file: %v", err)
+	}
+	for _, expected := range []string{"level=DEBUG", "Starting Porto daemon", "level=ERROR", "Daemon stopped"} {
+		if !strings.Contains(string(output), expected) {
+			t.Errorf("startup log is missing %q: %s", expected, output)
+		}
+	}
+}
+
 func TestParseLogArgsAllowsOptionsBeforeAndAfterProject(t *testing.T) {
 	for _, args := range [][]string{
 		{"--stream", "stderr", "-n", "50", "app"},

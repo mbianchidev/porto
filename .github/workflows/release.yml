@@ -217,6 +217,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
+          node --test ui/electron/desktop-logging.test.cjs
 
       - name: Package DMGs
         env:
@@ -269,6 +270,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
+          node --test ui/electron/desktop-logging.test.cjs
 
       - name: Validate Windows update helper
         shell: pwsh

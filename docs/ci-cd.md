@@ -31,6 +31,12 @@ diagnostics, and disk/configuration preservation without booting a VM.
 Windows CI repeats these checks against the installed package in a path with
 spaces, rather than only checking that its binaries exist.
 
+Desktop logging tests run natively on Windows and macOS. The Windows installer
+check also starts the installed daemon against a deliberately invalid,
+isolated test database to verify that early failures reach `logs/porto.log`
+at the default debug level, without duplicate records when stderr already
+points at that file. No user database or running daemon is used.
+
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
 ## Cutting a release

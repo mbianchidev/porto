@@ -33,6 +33,12 @@ daemon before opening the dashboard, even when the executable path, product
 version, and API compatibility version are unchanged. This prevents a newly
 installed Porto app from continuing to use code left running by an older build.
 
+Desktop startup failures include the path to the persistent diagnostic log:
+`logs/porto.log` inside the platform's Porto data directory, or under
+`PORTO_HOME` when configured. Logging defaults to debug and includes the
+detached daemon's output. See [application diagnostic logs](daily-use.md#application-diagnostic-logs)
+for platform paths and verbosity settings.
+
 Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
 Lima, and the supported `kind` binary for that platform. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate

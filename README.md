@@ -74,6 +74,11 @@ porto daemon start
 
 The daemon runs in the foreground. Leave it open and use a second terminal for project commands.
 
+Desktop and daemon diagnostics are saved to `logs/porto.log` under Porto's
+OS-specific data directory, with **debug** logging enabled by default. See
+[application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
+for exact paths and the `PORTO_LOG_LEVEL` setting.
+
 ### 4. Start a project
 
 ```sh

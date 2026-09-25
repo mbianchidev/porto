@@ -76,6 +76,41 @@ images; containers, volumes, and VMs are never pruned. See
 [runtime cleanup](docker-engine.md#unused-image-and-build-cache-cleanup) for
 scope, reporting, and lifecycle details.
 
+## Application diagnostic logs
+
+The desktop shell and daemon append diagnostics to the same `logs/porto.log`
+file under Porto's state directory:
+
+| OS | Default log file |
+| --- | --- |
+| Windows | `%APPDATA%\porto\logs\porto.log` |
+| macOS | `~/Library/Application Support/porto/logs/porto.log` |
+| Linux | `${XDG_CONFIG_HOME:-~/.config}/porto/logs/porto.log` |
+
+With `PORTO_HOME` set, the file is `<PORTO_HOME>/logs/porto.log`. The directory
+and file are created automatically, including before daemon database startup,
+so initialization failures are retained. Unix directory/file permissions are
+`0700`/`0600`; Windows uses the user-profile directory's inherited permissions.
+Keep a custom `PORTO_HOME` private to your user.
+
+The default level is **debug**. Set `PORTO_LOG_LEVEL` to `debug`, `info`, `warn`,
+or `error` in the environment that launches Porto to change verbosity. Restart
+both the desktop and daemon after changing it; closing the desktop does not
+stop the daemon. Invalid levels or an inaccessible log file produce an explicit
+startup error rather than silently disabling logging.
+
+Entries include timestamps, severity, component, and process ID. The file also
+captures renderer console messages, desktop exceptions, daemon startup stderr,
+and fatal runtime output. Runtime debug traces include executable names,
+durations, and exit errors, but not command arguments, environment values, or
+input/output payloads. Existing error messages and renderer output can still
+contain local paths or other diagnostic details; review logs before sharing.
+
+Logs append across restarts. Foreground daemon diagnostics remain visible on
+stderr, and a desktop-launched daemon keeps writing after the desktop exits.
+This application log is separate from project/container logs; `porto logs` and
+the dashboard's project-log clearing controls do not modify it.
+
 ## Start the daemon automatically
 
 The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.
