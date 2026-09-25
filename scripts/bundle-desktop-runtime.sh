@@ -183,7 +183,12 @@ if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
   lima_runtime_version="v2.2.0+porto.1"
   download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz"
   verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
-  tar -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
+  # The release archive supplies templates; source-only aliases are not Go
+  # build inputs and cannot be extracted reliably by Windows tar.
+  tar --exclude='lima-2.2.0/templates/*' \
+    --exclude='lima-2.2.0/pkg/limayaml/default.yaml' \
+    --exclude='lima-2.2.0/pkg/cidata/cloud-config.yaml' \
+    -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
   lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
   (
     cd "$temporary/lima-2.2.0"
