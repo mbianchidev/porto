@@ -1,0 +1,205 @@
+Porto Windows force-stop fix for Lima v2.2.0 (Apache-2.0).
+
+SIGKILL must terminate the selected process tree, not send CTRL_BREAK_EVENT.
+Consoleless desktop processes cannot rely on console events, and surviving
+children can retain the host-agent log handles and block the next startup.
+Stop the host-agent tree before its driver to prevent orphaning children.
+Propagate failures before deleting PID files, restarting, or deleting a VM.
+Other signals retain upstream behavior.
+
+diff --git a/pkg/osutil/osutil_windows.go b/pkg/osutil/osutil_windows.go
+--- a/pkg/osutil/osutil_windows.go
++++ b/pkg/osutil/osutil_windows.go
+@@ -9,7 +9,11 @@ import (
+ 	"fmt"
+ 	"io/fs"
+ 	"os"
++	"os/exec"
++	"strconv"
++	"strings"
+ 	"syscall"
++	"time"
+ 
+ 	"golang.org/x/sys/windows"
+ )
+@@ -38,8 +42,53 @@ const SigKill = Signal(9)
+ 
+ type Signal int
+ 
+-func SysKill(pid int, _ Signal) error {
+-	return windows.GenerateConsoleCtrlEvent(syscall.CTRL_BREAK_EVENT, uint32(pid))
++func SysKill(pid int, sig Signal) error {
++	if sig != SigKill {
++		return windows.GenerateConsoleCtrlEvent(syscall.CTRL_BREAK_EVENT, uint32(pid))
++	}
++	if pid <= 0 {
++		return fmt.Errorf("cannot force stop invalid process ID %d", pid)
++	}
++	handle, err := windows.OpenProcess(windows.SYNCHRONIZE, false, uint32(pid))
++	if errors.Is(err, windows.ERROR_INVALID_PARAMETER) {
++		return nil
++	}
++	if err != nil {
++		return fmt.Errorf("open process %d for forced stop: %w", pid, err)
++	}
++	defer windows.CloseHandle(handle)
++
++	result, err := windows.WaitForSingleObject(handle, 0)
++	if err != nil {
++		return fmt.Errorf("inspect process %d before forced stop: %w", pid, err)
++	}
++	if result == windows.WAIT_OBJECT_0 {
++		return nil
++	}
++
++	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++	defer cancel()
++	cmd := exec.CommandContext(ctx, "taskkill.exe", "/PID", strconv.Itoa(pid), "/T", "/F")
++	cmd.SysProcAttr = &syscall.SysProcAttr{
++		HideWindow:    true,
++		CreationFlags: windows.CREATE_NO_WINDOW,
++	}
++	cmd.WaitDelay = 5 * time.Second
++	output, err := cmd.CombinedOutput()
++	if err != nil {
++		if ctx.Err() != nil {
++			err = ctx.Err()
++		}
++		return fmt.Errorf("force stop process tree %d: %w: %s", pid, err, strings.TrimSpace(string(output)))
++	}
++	result, err = windows.WaitForSingleObject(handle, 5000)
++	if err != nil {
++		return fmt.Errorf("wait for process %d to stop: %w", pid, err)
++	}
++	if result != windows.WAIT_OBJECT_0 {
++		return fmt.Errorf("wait for process %d to stop: %w", pid, context.DeadlineExceeded)
++	}
++	return nil
+ }
+ 
+ // ProcessAlive reports whether the process with the given PID is still running.
+diff --git a/pkg/instance/stop.go b/pkg/instance/stop.go
+--- a/pkg/instance/stop.go
++++ b/pkg/instance/stop.go
+@@ -9,6 +9,7 @@
+ 	"fmt"
+ 	"os"
+ 	"path/filepath"
++	"runtime"
+ 	"strings"
+ 	"time"
+ 
+@@ -107,11 +108,18 @@
+ 	}
+ }
+ 
+-func StopForcibly(inst *limatype.Instance) {
++func StopForcibly(inst *limatype.Instance) error {
++	// Stop the Windows tree before QEMU can exit and orphan the host agent's children.
++	if runtime.GOOS == "windows" && inst.HostAgentPID > 0 {
++		logrus.Infof("Force stopping the host agent process tree %d", inst.HostAgentPID)
++		if err := osutil.SysKill(inst.HostAgentPID, osutil.SigKill); err != nil {
++			return fmt.Errorf("force stop host agent: %w", err)
++		}
++	}
+ 	if inst.DriverPID > 0 {
+ 		logrus.Infof("Sending SIGKILL to the %s driver process %d", inst.VMType, inst.DriverPID)
+ 		if err := osutil.SysKill(inst.DriverPID, osutil.SigKill); err != nil {
+-			logrus.Error(err)
++			return fmt.Errorf("force stop %s driver: %w", inst.VMType, err)
+ 		}
+ 	} else {
+ 		logrus.Infof("The %s driver process seems already stopped", inst.VMType)
+@@ -132,12 +140,12 @@
+ 		}
+ 	}
+ 
+-	if inst.HostAgentPID > 0 {
++	if inst.HostAgentPID > 0 && runtime.GOOS != "windows" {
+ 		logrus.Infof("Sending SIGKILL to the host agent process %d", inst.HostAgentPID)
+ 		if err := osutil.SysKill(inst.HostAgentPID, osutil.SigKill); err != nil {
+-			logrus.Error(err)
++			return fmt.Errorf("force stop host agent: %w", err)
+ 		}
+-	} else {
++	} else if inst.HostAgentPID == 0 {
+ 		logrus.Info("The host agent process seems already stopped")
+ 	}
+ 
+@@ -146,8 +154,7 @@
+ 
+ 	fi, err := os.ReadDir(inst.Dir)
+ 	if err != nil {
+-		logrus.Error(err)
+-		return
++		return err
+ 	}
+ 	for _, f := range fi {
+ 		path := filepath.Join(inst.Dir, f.Name())
+@@ -158,10 +165,11 @@
+ 					if errors.Is(err, os.ErrNotExist) {
+ 						logrus.Debug(err.Error())
+ 					} else {
+-						logrus.Error(err)
++						return err
+ 					}
+ 				}
+ 			}
+ 		}
+ 	}
++	return nil
+ }
+diff --git a/pkg/instance/restart.go b/pkg/instance/restart.go
+--- a/pkg/instance/restart.go
++++ b/pkg/instance/restart.go
+@@ -42,7 +42,9 @@
+ 
+ func RestartForcibly(ctx context.Context, inst *limatype.Instance, showProgress bool) error {
+ 	logrus.Info("Restarting the instance forcibly")
+-	StopForcibly(inst)
++	if err := StopForcibly(inst); err != nil {
++		return err
++	}
+ 
+ 	if registered, err := autostart.IsRegistered(ctx, inst); err != nil && !errors.Is(err, autostart.ErrNotSupported) {
+ 		return fmt.Errorf("failed to check if the autostart entry for instance %#q is registered: %w", inst.Name, err)
+diff --git a/pkg/instance/delete.go b/pkg/instance/delete.go
+--- a/pkg/instance/delete.go
++++ b/pkg/instance/delete.go
+@@ -22,7 +22,9 @@
+ 		return fmt.Errorf("expected status %#q, got %#q", limatype.StatusStopped, inst.Status)
+ 	}
+ 
+-	StopForcibly(inst)
++	if err := StopForcibly(inst); err != nil {
++		return err
++	}
+ 
+ 	if len(inst.Errors) == 0 {
+ 		if err := unregister(ctx, inst); err != nil {
+diff --git a/cmd/limactl/factory-reset.go b/cmd/limactl/factory-reset.go
+--- a/cmd/limactl/factory-reset.go
++++ b/cmd/limactl/factory-reset.go
+@@ -51,7 +51,9 @@
+ 		return errors.New("instance is protected to prohibit accidental factory-reset (Hint: use `limactl unprotect`)")
+ 	}
+ 
+-	instance.StopForcibly(inst)
++	if err := instance.StopForcibly(inst); err != nil {
++		return err
++	}
+ 
+ 	fi, err := os.ReadDir(inst.Dir)
+ 	if err != nil {
+diff --git a/cmd/limactl/stop.go b/cmd/limactl/stop.go
+--- a/cmd/limactl/stop.go
++++ b/cmd/limactl/stop.go
+@@ -42,7 +42,7 @@
+ 		return err
+ 	}
+ 	if force {
+-		instance.StopForcibly(inst)
++		err = instance.StopForcibly(inst)
+ 	} else {
+ 		err = instance.StopGracefully(ctx, inst, false)
+ 	}

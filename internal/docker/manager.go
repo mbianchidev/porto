@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -236,7 +237,7 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			"--name="+engineInstanceName,
 			"--containerd=user",
 			"--mount-writable",
-			"template://default",
+			limaEngineTemplate(runtime.GOOS),
 		)
 	} else if !running {
 		_, err = m.runCommand(ctx, 5*time.Minute, "start Porto container runtime", nil, "limactl", "start", engineInstanceName)
@@ -349,6 +350,13 @@ func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string)
 		return fmt.Errorf("install Porto runtime helper in Lima: %w", err)
 	}
 	return nil
+}
+
+func limaEngineTemplate(goos string) string {
+	if goos == "windows" {
+		return "template://ubuntu-24.04"
+	}
+	return "template://default"
 }
 
 func (m *Manager) runtimeHelperPath() (string, error) {
@@ -1875,7 +1883,7 @@ func (m *Manager) verifyLimaOwnership(ctx context.Context, ownerID string) error
 		`cat "$HOME/.porto-engine-owner"`,
 	)
 	if err != nil {
-		return err
+		return withLimaGuestDiagnostics(err)
 	}
 	scanner := bufio.NewScanner(strings.NewReader(string(output)))
 	for scanner.Scan() {
