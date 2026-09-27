@@ -1974,12 +1974,20 @@ func (m *Manager) withLimaOwnershipProbe(ctx context.Context, operation func() e
 	if ctx == nil {
 		return errors.New("Porto engine ownership context is required")
 	}
+	acquired := false
 	select {
 	case m.ownershipProbe <- struct{}{}:
-		defer func() { <-m.ownershipProbe }()
-	case <-ctx.Done():
-		return context.Cause(ctx)
+		acquired = true
+	default:
 	}
+	if !acquired {
+		select {
+		case m.ownershipProbe <- struct{}{}:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+	defer func() { <-m.ownershipProbe }()
 	return operation()
 }
 
