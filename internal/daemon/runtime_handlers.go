@@ -34,6 +34,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
 	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
+	mux.HandleFunc("POST /api/docker/engine/prepare-update", s.prepareDockerEngineUpdate)
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
 	mux.HandleFunc("POST /api/docker/containers", s.requireRuntime("docker", s.createDockerContainer))
@@ -177,6 +178,25 @@ func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) installDockerEngine(w http.ResponseWriter, r *http.Request) {
 	status, err := s.docker.InstallEngine(r.Context())
 	writeRuntimeResult(w, status, err)
+}
+
+func (s *Server) prepareDockerEngineUpdate(w http.ResponseWriter, _ *http.Request) {
+	if !s.beginRuntimeOperation() {
+		http.Error(w, "Porto is shutting down; update preparation was not started", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endRuntimeOperation()
+	baseContext := s.runtimeContext
+	if baseContext == nil {
+		baseContext = context.Background()
+	}
+	ctx, cancel := context.WithTimeout(baseContext, 5*time.Minute)
+	defer cancel()
+	engineStopped, err := s.docker.PrepareEngineUpdate(ctx)
+	writeRuntimeResult(w, map[string]bool{
+		"prepared":      err == nil,
+		"engineStopped": engineStopped,
+	}, err)
 }
 
 func (s *Server) installDockerContext(w http.ResponseWriter, r *http.Request) {

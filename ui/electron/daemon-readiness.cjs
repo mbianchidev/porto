@@ -87,6 +87,28 @@ async function installDockerEngine({
   }
 }
 
+async function prepareDockerEngineUpdate({
+  daemonURL = DEFAULT_DAEMON_URL,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 5 * 60 * 1000,
+} = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(`${daemonURL}/api/docker/engine/prepare-update`, {
+      method: 'POST',
+      signal: controller.signal,
+    })
+    if (!response.ok) {
+      const message = typeof response.text === 'function' ? await response.text() : ''
+      throw new Error(message.trim() || `Porto update preparation returned HTTP ${response.status || 'error'}`)
+    }
+    return await response.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function waitForDockerEngine({
   daemonURL = DEFAULT_DAEMON_URL,
   fetchImpl = globalThis.fetch,
@@ -271,6 +293,7 @@ module.exports = {
   installDockerEngine,
   isDaemonReady,
   mergeExecutablePaths,
+  prepareDockerEngineUpdate,
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,

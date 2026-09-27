@@ -50,6 +50,57 @@ type cancellationCleanupRunner struct {
 	removed bool
 }
 
+type blockingOwnershipRunner struct {
+	started chan struct{}
+	release chan struct{}
+	once    sync.Once
+}
+
+type ownershipRecoveryRunner struct {
+	mu       sync.Mutex
+	attempts int
+	commands []string
+}
+
+func (r *blockingOwnershipRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	if command.Name != "limactl" ||
+		strings.Join(command.Args, " ") != `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"` {
+		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, strings.Join(command.Args, " "))
+	}
+	first := false
+	r.once.Do(func() {
+		first = true
+		close(r.started)
+	})
+	if first {
+		select {
+		case <-r.release:
+		case <-ctx.Done():
+			return nil, context.Cause(ctx)
+		}
+	}
+	return []byte("test-owner\n"), nil
+}
+
+func (r *ownershipRecoveryRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
+	joined := strings.Join(command.Args, " ")
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.commands = append(r.commands, joined)
+	switch joined {
+	case `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
+		r.attempts++
+		if r.attempts == 1 {
+			return []byte("ssh: connect to host 127.0.0.1: connection timed out"), context.DeadlineExceeded
+		}
+		return []byte("test-owner\n"), nil
+	case "stop porto-engine", "start porto-engine":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
+	}
+}
+
 func (r *cancellationCleanupRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
 	args := strings.Join(command.Args, " ")
 	switch args {
@@ -399,6 +450,48 @@ func TestEngineTimeoutIncludesCommandDiagnostics(t *testing.T) {
 		!strings.Contains(err.Error(), diagnostic) ||
 		!strings.Contains(err.Error(), "verify Porto engine ownership") {
 		t.Fatalf("timeout discarded the guest diagnostic: %v", err)
+	}
+}
+
+func TestEngineOwnershipProbeWaitIsCancellable(t *testing.T) {
+	runner := &blockingOwnershipRunner{
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	manager := New(runner)
+	firstDone := make(chan error, 1)
+	go func() {
+		firstDone <- manager.verifyLimaOwnership(context.Background(), "test-owner")
+	}()
+	<-runner.started
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.verifyLimaOwnership(ctx, "test-owner"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled ownership wait = %v, want context cancellation", err)
+	}
+
+	close(runner.release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first ownership probe failed: %v", err)
+	}
+}
+
+func TestEngineOwnershipTimeoutRecoversOwnedGuest(t *testing.T) {
+	runner := &ownershipRecoveryRunner{}
+	if err := New(runner).verifyOrRecoverLimaOwnership(context.Background(), "test-owner"); err != nil {
+		t.Fatalf("recover engine ownership: %v", err)
+	}
+
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if runner.attempts != 2 {
+		t.Fatalf("ownership attempts = %d, want 2", runner.attempts)
+	}
+	commands := strings.Join(runner.commands, "\n")
+	if !strings.Contains(commands, "stop porto-engine") ||
+		!strings.Contains(commands, "start porto-engine") {
+		t.Fatalf("recovery commands missing:\n%s", commands)
 	}
 }
 
@@ -997,6 +1090,34 @@ func TestStartEngineRefreshesInventory(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+			`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("test-owner\n"),
+		},
+	}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeEngineState(engineState{
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	stopped, err := manager.PrepareEngineUpdate(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !stopped {
+		t.Fatal("running Porto engine was not stopped for the update")
+	}
+	for _, command := range runner.commands {
+		if command.Name == "limactl" && strings.Join(command.Args, " ") == "stop porto-engine" {
+			return
+		}
+	}
+	t.Fatalf("engine stop command missing: %+v", runner.commands)
 }
 
 func TestEngineProvisioningRejectsForeignOwnership(t *testing.T) {

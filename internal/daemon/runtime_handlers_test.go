@@ -40,6 +40,25 @@ func TestDockerContainerSnapshotReportsUnavailableInventory(t *testing.T) {
 	}
 }
 
+func TestPrepareDockerEngineUpdateAllowsMissingEngine(t *testing.T) {
+	server := &Server{
+		docker:         portodocker.NewWithStateDir(nil, t.TempDir()),
+		runtimeContext: context.Background(),
+	}
+	mux := http.NewServeMux()
+	server.runtimeRoutes(mux)
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(
+		response,
+		httptest.NewRequest(http.MethodPost, "/api/docker/engine/prepare-update", nil),
+	)
+	if response.Code != http.StatusOK ||
+		!strings.Contains(response.Body.String(), `"prepared":true`) ||
+		!strings.Contains(response.Body.String(), `"engineStopped":false`) {
+		t.Fatalf("prepare update response = %d: %s", response.Code, response.Body.String())
+	}
+}
+
 func TestDockerContainerEventsSendsRevisionedSnapshot(t *testing.T) {
 	server := &Server{docker: portodocker.New(nil)}
 	response := httptest.NewRecorder()

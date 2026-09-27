@@ -15,6 +15,7 @@ const {
   installDockerContext,
   isDaemonReady,
   mergeExecutablePaths,
+  prepareDockerEngineUpdate,
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
@@ -176,6 +177,21 @@ test('installs the engine through the active daemon', async () => {
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
   assert.equal(status.available, true)
+})
+
+test('prepares the owned engine before a Windows desktop update', async () => {
+  let request = null
+  const result = await prepareDockerEngineUpdate({
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return response({ prepared: true, engineStopped: true })
+    },
+  })
+
+  assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/prepare-update')
+  assert.equal(request.options.method, 'POST')
+  assert.equal(result.prepared, true)
+  assert.equal(result.engineStopped, true)
 })
 
 test('waits for a fresh inventory beyond the old 15-second startup window', async () => {

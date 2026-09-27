@@ -56,6 +56,7 @@ type Manager struct {
 	directCLI           bool
 	dialBuildKit        func(context.Context) (net.Conn, error)
 	installMu           sync.Mutex
+	ownershipProbe      chan struct{}
 	cleanupMu           sync.Mutex
 	inventoryMu         sync.Mutex
 	inventory           *containerInventory
@@ -90,6 +91,7 @@ func New(runner runtimes.Runner) *Manager {
 			timeout:         defaultTimeout,
 			lookPath:        exec.LookPath,
 			directCLI:       true,
+			ownershipProbe:  make(chan struct{}, 1),
 			networkLocks:    newContainerMutexes(),
 			containerNameMu: &sync.Mutex{},
 		}
@@ -109,6 +111,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		timeout:         defaultTimeout,
 		stateDir:        stateDir,
 		lookPath:        exec.LookPath,
+		ownershipProbe:  make(chan struct{}, 1),
 		networkLocks:    newContainerMutexes(),
 		containerNameMu: &sync.Mutex{},
 	}
@@ -258,8 +261,16 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			cancel()
 			return Status{}, errors.Join(err, cleanupErr)
 		}
-	} else if err := m.verifyLimaOwnership(ctx, ownerID); err != nil {
-		return Status{}, err
+	} else {
+		var ownershipErr error
+		if running {
+			ownershipErr = m.verifyOrRecoverLimaOwnership(ctx, ownerID)
+		} else {
+			ownershipErr = m.verifyLimaOwnership(ctx, ownerID)
+		}
+		if ownershipErr != nil {
+			return Status{}, ownershipErr
+		}
 	}
 	if err := m.installLimaBinfmt(ctx); err != nil {
 		if created {
@@ -417,42 +428,93 @@ func (m *Manager) StartEngine(ctx context.Context) (err error) {
 			return err
 		}
 	}
-	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+	var ownershipErr error
+	if running {
+		ownershipErr = m.verifyOrRecoverLimaOwnership(ctx, state.OwnerID)
+	} else {
+		ownershipErr = m.verifyLimaOwnership(ctx, state.OwnerID)
+	}
+	if ownershipErr != nil {
 		if running {
-			return err
+			return ownershipErr
 		}
 		_, stopErr := m.runCommand(context.Background(), 5*time.Minute, "stop unowned Lima instance", nil, "limactl", "stop", state.Instance)
-		return errors.Join(err, stopErr)
+		return errors.Join(ownershipErr, stopErr)
 	}
 	return m.installLimaBinfmt(ctx)
 }
 
 func (m *Manager) StopEngine(ctx context.Context) error {
-	state, err := m.readEngineState()
-	if err != nil {
-		return fmt.Errorf("read Porto engine state: %w", err)
-	}
-	if state.Mode == "direct" {
-		return errors.New("the direct nerdctl backend is managed outside Porto")
-	}
-	exists, running, err := m.limaInstanceStatus(ctx)
-	if err != nil {
-		return err
-	}
-	if !exists {
-		return fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
-	}
-	if !running {
-		return nil
-	}
-	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
-		return err
-	}
-	_, err = m.runCommand(ctx, 5*time.Minute, "stop Porto container runtime", nil, "limactl", "stop", state.Instance)
+	_, err := m.stopEngine(ctx, false)
 	return err
 }
 
-func (m *Manager) RemoveEngine(ctx context.Context) error {
+func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
+	return m.stopEngine(ctx, true)
+}
+
+func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bool, err error) {
+	m.installMu.Lock()
+	defer m.installMu.Unlock()
+	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	if err != nil {
+		return false, fmt.Errorf("lock Porto container runtime shutdown: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, lock.Close())
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+	}()
+	state, err := m.readEngineState()
+	if allowMissing && errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read Porto engine state: %w", err)
+	}
+	if state.Mode == "direct" {
+		if allowMissing {
+			return false, nil
+		}
+		return false, errors.New("the direct nerdctl backend is managed outside Porto")
+	}
+	if state.Mode != "lima" {
+		return false, fmt.Errorf("Porto engine state has unsupported mode %q", state.Mode)
+	}
+	exists, running, err := m.limaInstanceStatus(ctx)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		if allowMissing {
+			return false, nil
+		}
+		return false, fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
+	}
+	if !running {
+		return false, nil
+	}
+	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+		return false, err
+	}
+	_, err = m.runCommand(ctx, 5*time.Minute, "stop Porto container runtime", nil, "limactl", "stop", state.Instance)
+	return err == nil, err
+}
+
+func (m *Manager) RemoveEngine(ctx context.Context) (err error) {
+	m.installMu.Lock()
+	defer m.installMu.Unlock()
+	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	if err != nil {
+		return fmt.Errorf("lock Porto container runtime removal: %w", err)
+	}
+	defer func() {
+		err = errors.Join(err, lock.Close())
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+	}()
 	state, err := m.readEngineState()
 	if err != nil {
 		return fmt.Errorf("read Porto engine state: %w", err)
@@ -1865,6 +1927,71 @@ func (m *Manager) writeLimaOwnership(ctx context.Context, ownerID string) error 
 }
 
 func (m *Manager) verifyLimaOwnership(ctx context.Context, ownerID string) error {
+	return m.withLimaOwnershipProbe(ctx, func() error {
+		return m.verifyLimaOwnershipUnlocked(ctx, ownerID)
+	})
+}
+
+func (m *Manager) verifyOrRecoverLimaOwnership(ctx context.Context, ownerID string) error {
+	return m.withLimaOwnershipProbe(ctx, func() error {
+		ownershipErr := m.verifyLimaOwnershipUnlocked(ctx, ownerID)
+		if ownershipErr == nil {
+			return nil
+		}
+		if !recoverableLimaOwnershipError(ownershipErr) {
+			return ownershipErr
+		}
+		if _, err := m.runCommand(
+			ctx,
+			5*time.Minute,
+			"stop unresponsive Porto container runtime",
+			nil,
+			"limactl",
+			"stop",
+			engineInstanceName,
+		); err != nil {
+			return errors.Join(ownershipErr, err)
+		}
+		if _, err := m.runCommand(
+			ctx,
+			5*time.Minute,
+			"restart Porto container runtime",
+			nil,
+			"limactl",
+			"start",
+			engineInstanceName,
+		); err != nil {
+			return errors.Join(ownershipErr, err)
+		}
+		if err := m.verifyLimaOwnershipUnlocked(ctx, ownerID); err != nil {
+			return fmt.Errorf("verify recovered Porto engine ownership: %w", err)
+		}
+		return nil
+	})
+}
+
+func (m *Manager) withLimaOwnershipProbe(ctx context.Context, operation func() error) error {
+	if ctx == nil {
+		return errors.New("Porto engine ownership context is required")
+	}
+	acquired := false
+	select {
+	case m.ownershipProbe <- struct{}{}:
+		acquired = true
+	default:
+	}
+	if !acquired {
+		select {
+		case m.ownershipProbe <- struct{}{}:
+		case <-ctx.Done():
+			return context.Cause(ctx)
+		}
+	}
+	defer func() { <-m.ownershipProbe }()
+	return operation()
+}
+
+func (m *Manager) verifyLimaOwnershipUnlocked(ctx context.Context, ownerID string) error {
 	if strings.TrimSpace(ownerID) == "" {
 		return errors.New("Porto engine ownership metadata is incomplete")
 	}
@@ -1895,6 +2022,25 @@ func (m *Manager) verifyLimaOwnership(ctx context.Context, ownerID string) error
 		return fmt.Errorf("read Porto engine ownership marker: %w", err)
 	}
 	return fmt.Errorf("refusing to manage Lima instance %q because its Porto ownership marker does not match", engineInstanceName)
+}
+
+func recoverableLimaOwnershipError(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, diagnostic := range []string{
+		"connection refused",
+		"connection timed out",
+		"failed to connect",
+		"host agent",
+		"ssh:",
+	} {
+		if strings.Contains(message, diagnostic) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) ensureLimaOwnership(ctx context.Context, state engineState) error {

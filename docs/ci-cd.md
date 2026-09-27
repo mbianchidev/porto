@@ -33,6 +33,9 @@ spaces, rather than only checking that its binaries exist. It also starts
 synthetic consoleless processes and verifies that a forced stop terminates the
 host agent and its descendants, releases the log files, and preserves VM data.
 A failed termination must return an error without removing the PID files.
+The same job runs the Windows update helper against that installed package,
+covering silent in-place replacement and NSIS installation paths containing
+spaces without launching the updated desktop.
 These checks do not boot a guest or prove guest-kernel compatibility.
 
 Native installers are retained for three days as the

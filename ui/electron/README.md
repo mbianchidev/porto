@@ -95,6 +95,12 @@ containers, images, or volumes. After the updated app launches, the existing
 daemon is reused when its bundled binary identity still matches, or replaced so
 the new dashboard can reconnect to the same managed resources.
 
+Windows updates stop the Porto-owned container engine cleanly before replacing
+the bundled runtime, then startup reconnects it to the same containers, images,
+and volumes. The installer helper refuses to force-kill QEMU; if another Porto
+VM or Kubernetes cluster is still using the bundled runtime, stop it before
+retrying the update.
+
 Updates require Porto to run from a user-writable installation. The standard
 installers use `~/Applications/Porto.app`, `%LOCALAPPDATA%\Programs\Porto`, and
 `~/.local/opt/porto`, which satisfy that requirement. A read-only or
