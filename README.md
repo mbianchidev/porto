@@ -63,6 +63,9 @@ See the [installation guide](docs/installation.md) for checksum verification, so
 
 CLI/web archives remain available for headless machines and servers.
 
+Open **Settings** to see the running Porto release version, including prerelease
+and build metadata.
+
 ### 2. Discover projects
 
 ```sh
@@ -82,6 +85,9 @@ Desktop and daemon diagnostics are saved to `logs/porto.log` under Porto's
 OS-specific data directory, with **debug** logging enabled by default. See
 [application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
 for exact paths and the `PORTO_LOG_LEVEL` setting.
+
+For a desktop crash before logging starts on macOS 27, see the temporary
+[power-notification recovery helper](docs/installation.md#macos-27-power-notification-crash).
 
 ### 4. Start a project
 

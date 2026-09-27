@@ -37,6 +37,11 @@ Keep the archive layout intact whenever the installation is moved or upgraded.
 
 ## Tune the desktop experience
 
+**Release version** at the top of Settings shows the installed desktop release
+or, in the web dashboard, the connected daemon's version. Prerelease and build
+metadata are preserved. Opening Settings reads the version locally without
+checking GitHub for updates; a failed read shows an error and **Retry version**.
+
 The Settings page persists interface density, reduced motion, terminal font
 size, terminal line height, cursor blinking, and terminal scrollback. Density
 and motion preferences apply across the dashboard after saving. Terminal

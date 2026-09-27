@@ -50,6 +50,17 @@ isolated test database to verify that early failures reach `logs/porto.log`
 at the default debug level, without duplicate records when stderr already
 points at that file. No user database or running daemon is used.
 
+macOS CI and DMG releases also run
+`hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
+ports, forces a failed power-registration call in an isolated Electron process,
+and verifies that a sandboxed renderer still loads with the temporary guard.
+An unguarded probe deliberately fails with removal instructions when the
+locked Electron no longer needs the workaround. Keep that retirement gate
+until the helper is removed; see
+[macOS 27 recovery](installation.md#macos-27-power-notification-crash).
+The native tests are skipped on Windows and Linux; no macOS library is built
+or added to their packages.
+
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
 ## Cutting a release
@@ -110,11 +121,13 @@ the daemon's `PATH`, so they do not need separate installation.
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch` and
 `scripts/patches/lima-2.2.0-windows-stop.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.2`. The PID change is an upstream backport; the
+`limactl.exe` as `v2.2.0+porto.3`. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
-It stops the host-agent tree before the driver can exit and orphan children;
-failed stops block PID cleanup, restart, and deletion. Other signals keep
+It stops the host-agent tree before the driver can exit and orphan children.
+If `taskkill.exe` reports an already-exited target, its process handle must
+confirm termination before the stop succeeds; other failures block PID cleanup,
+restart, and deletion. Other signals keep
 upstream behavior. Both patches and the Apache-2.0 license
 ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
 Other platforms keep their verified upstream binaries. Remove each patch

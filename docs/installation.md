@@ -67,14 +67,16 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.0+porto.2`: the stable 2.2.0 source with
+Windows packages bundle Lima `v2.2.0+porto.3`: the stable 2.2.0 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
 backported and a consoleless force-stop fix. After an interrupted shutdown,
 Lima removes stale host-agent and QEMU PID files when Windows reports that
 those processes no longer exist, instead of refusing to start with
 `OpenProcess: The parameter is incorrect`. Forced stops terminate the selected
 process tree instead of relying on a console event, allowing its log handles
-to close before the next startup. Live process IDs are not treated as stale;
+to close before the next startup. If a target exits while the stop command is
+running, Lima confirms its process handle has exited before accepting the stop.
+Live process IDs are not treated as stale;
 configuration errors and VM disks are preserved. macOS and Linux retain the
 unmodified upstream Lima binaries.
 
@@ -159,6 +161,46 @@ grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zprofile"
 exec zsh -l
 ```
+
+### macOS 27 power-notification crash
+
+On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
+notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
+before Porto starts or creates its diagnostic log. The failure may be transient;
+if Porto launches normally, no workaround is needed.
+
+Until the bundled Electron includes the
+[upstream Chromium fix](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
+for [issue 562777834](https://issues.chromium.org/issues/562777834), this repository
+includes an opt-in recovery helper. No matching Electron issue was found when
+the helper was added. From a source checkout, with Xcode Command Line Tools
+installed and the Porto desktop closed, run:
+
+```sh
+bash hacks/open-porto-macos-27.sh /Applications/Porto.app
+```
+
+Pass `$HOME/Applications/Porto.app` instead for a per-user installation. The
+launcher builds a universal Intel/Apple Silicon library in
+`~/Library/Caches/Porto/macos-power-notification`, then loads it only into that
+Porto desktop process. It preserves valid notification ports and uses an inert
+run-loop source only for a null port. If that fallback is needed, sleep/wake
+notifications are unavailable and the helper reports this to stderr.
+The loader environment is cleared before Porto launches child processes.
+
+This does not modify the installed application, daemon, VM disks, or macOS
+security settings. It is not bundled into release installers, is never enabled
+automatically, and refuses Windows, Linux, and other macOS versions. Do not
+disable SIP, Gatekeeper, or library validation if a signed application refuses
+the helper. Normal launches remain unchanged.
+
+**Removal requirement:** whenever Electron is upgraded, run
+`node --test hacks/macos-power-notification-compat.test.cjs` on macOS. The test
+forces power registration to fail without touching real app data. Once the
+locked Electron starts without the guard, the test fails with removal
+instructions: verify the upstream fix, delete the temporary helper and these
+recovery instructions, and keep the injected-failure case as an unguarded
+regression test. `AGENTS.md` records the same requirement for future agents.
 
 ### Manual archive installation
 

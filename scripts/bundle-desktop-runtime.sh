@@ -180,7 +180,7 @@ fi
 
 lima_runtime_version="$lima_version"
 if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
-  lima_runtime_version="v2.2.0+porto.2"
+  lima_runtime_version="v2.2.0+porto.3"
   download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz"
   verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
   # The release archive supplies templates; source-only aliases are not Go
