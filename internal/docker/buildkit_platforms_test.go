@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/containerd/containerd/v2/defaults"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	apitypes "github.com/moby/buildkit/api/types"
@@ -73,7 +74,10 @@ func (s *buildKitPlatformServer) ListenBuildHistory(request *controlapi.BuildHis
 func buildKitControlTestDialer(t *testing.T, service controlapi.ControlServer) func(context.Context) (net.Conn, error) {
 	t.Helper()
 	listener := bufconn.Listen(1024 * 1024)
-	server := grpc.NewServer()
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(defaults.DefaultMaxRecvMsgSize),
+		grpc.MaxSendMsgSize(defaults.DefaultMaxSendMsgSize),
+	)
 	controlapi.RegisterControlServer(server, service)
 	go func() { _ = server.Serve(listener) }()
 	t.Cleanup(func() {

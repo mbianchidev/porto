@@ -111,3 +111,98 @@ COPY --from=probe /architecture /target-platform /
 		t.Logf("%s executed as %s", target, strings.TrimSpace(string(architecture)))
 	}
 }
+
+func TestDockerMobyExporterIntegration(t *testing.T) {
+	if os.Getenv("PORTO_DOCKER_MOBY_EXPORTER_INTEGRATION") != "1" {
+		t.Skip("set PORTO_DOCKER_MOBY_EXPORTER_INTEGRATION=1 to test buildx load and Compose against a running Porto engine")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("this live Docker CLI test uses a host Unix socket")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+	manager := New(nil)
+	state, err := manager.readEngineState()
+	if err != nil || state.Mode != "lima" || state.Instance != engineInstanceName {
+		t.Fatalf("this test requires an existing Porto-owned Lima engine: %v", err)
+	}
+	exists, running, err := manager.limaInstanceStatus(ctx)
+	if err != nil || !exists || !running {
+		t.Fatalf("this test requires an already running engine: exists=%t, running=%t, error=%v", exists, running, err)
+	}
+
+	socketDirectory, err := os.MkdirTemp("/tmp", "porto-moby-exporter-integration-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(socketDirectory); err != nil {
+			t.Errorf("remove integration socket directory: %v", err)
+		}
+	})
+	socketPath := filepath.Join(socketDirectory, "docker.sock")
+	server := NewAPIServer(socketPath, NewAPI(manager, socketPath))
+	if err := server.Start(ctx); err != nil {
+		t.Fatalf("start test Docker API: %v", err)
+	}
+	t.Cleanup(func() {
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer closeCancel()
+		if err := server.Close(closeContext); err != nil {
+			t.Errorf("close test Docker API: %v", err)
+		}
+	})
+
+	buildDirectory := t.TempDir()
+	if err := os.WriteFile(filepath.Join(buildDirectory, "Dockerfile"), []byte(`FROM alpine:latest
+CMD ["sh", "-c", "echo porto-moby-ready; sleep 30"]
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDirectory, "compose.yaml"), []byte(`services:
+  app:
+    build: .
+    image: porto-compose-moby-test:latest
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	environment := process.WithEnvironment(os.Environ(),
+		"DOCKER_CONTEXT=",
+		"DOCKER_HOST="+EndpointURL(socketPath),
+		"BUILDX_CONFIG="+t.TempDir(),
+		"BUILDX_BUILDER=default",
+	)
+	runDocker := func(arguments ...string) []byte {
+		t.Helper()
+		command := process.NewCommand(ctx, buildDirectory, "docker", arguments...)
+		command.Env = environment
+		output, err := command.CombinedOutput()
+		if err != nil {
+			t.Fatalf("docker %s: %v: %s", strings.Join(arguments, " "), err, output)
+		}
+		return output
+	}
+	t.Cleanup(func() {
+		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cleanupCancel()
+		for _, arguments := range [][]string{
+			{"compose", "--project-name", "porto-moby-exporter-test", "down", "--volumes", "--remove-orphans"},
+			{"image", "rm", "--force", "porto-moby-exporter-test:latest", "porto-compose-moby-test:latest"},
+		} {
+			command := process.NewCommand(cleanupContext, buildDirectory, "docker", arguments...)
+			command.Env = environment
+			_, _ = command.CombinedOutput()
+		}
+	})
+
+	runDocker("buildx", "build", "--builder", "default", "--load", "--tag", "porto-moby-exporter-test:latest", ".")
+	if output := runDocker("image", "inspect", "--format", "{{.Id}}", "porto-moby-exporter-test:latest"); !strings.HasPrefix(strings.TrimSpace(string(output)), "sha256:") {
+		t.Fatalf("loaded image ID = %q", output)
+	}
+	runDocker("compose", "--project-name", "porto-moby-exporter-test", "build")
+	runDocker("compose", "--project-name", "porto-moby-exporter-test", "up", "--detach")
+	if output := runDocker("compose", "--project-name", "porto-moby-exporter-test", "ps", "--status", "running", "--quiet"); strings.TrimSpace(string(output)) == "" {
+		t.Fatal("Compose did not start the built image")
+	}
+}

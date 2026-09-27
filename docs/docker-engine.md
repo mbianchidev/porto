@@ -250,6 +250,20 @@ docker --context porto buildx build \
   --push .
 ```
 
+Porto accepts Buildx's internal `moby` exporter and delegates it to BuildKit's
+standard image exporter. The wrapper normalizes requested tags, stores the
+result in Porto Engine's containerd image store, and unpacks it by default.
+Builds without a tag retain a dangling image reference. This makes the default
+Buildx output, `--load`, `type=image`, registry pushes, `docker compose build`,
+and `docker compose up` use the native image store directly without a Docker or
+OCI tar export/import step:
+
+```sh
+docker --context porto buildx build --load --tag porto-test .
+docker --context porto image inspect porto-test
+docker --context porto compose up --build
+```
+
 Lima BuildKit tunnels, including build-history connections, stay alive until
 their connection closes. Completion of gRPC dialing does not stop the tunnel;
 finishing or canceling a history request still closes and reaps its subprocess.

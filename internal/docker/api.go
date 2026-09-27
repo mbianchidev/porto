@@ -180,7 +180,10 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"ContainersStopped": stopped,
 		"Images":            len(images),
 		"Driver":            "overlayfs",
-		"DriverStatus":      [][]string{{"Backing Filesystem", "extfs"}},
+		"DriverStatus": [][]string{
+			{"Backing Filesystem", "extfs"},
+			{"driver-type", "io.containerd.snapshotter.v1"},
+		},
 		"Plugins": map[string]any{
 			"Volume":        []string{"local"},
 			"Network":       []string{"bridge", "host", "none"},

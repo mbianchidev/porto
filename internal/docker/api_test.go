@@ -26,6 +26,7 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/test/bufconn"
 )
@@ -58,6 +59,20 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 	}
 	if document["ID"] != "porto" || document["ServerVersion"] == "" {
 		t.Fatalf("unexpected info: %+v", document)
+	}
+	driverStatus, ok := document["DriverStatus"].([]any)
+	if !ok {
+		t.Fatalf("driver status = %#v", document["DriverStatus"])
+	}
+	containerdSnapshotter := false
+	for _, raw := range driverStatus {
+		row, ok := raw.([]any)
+		if ok && len(row) == 2 && row[0] == "driver-type" && row[1] == "io.containerd.snapshotter.v1" {
+			containerdSnapshotter = true
+		}
+	}
+	if !containerdSnapshotter {
+		t.Fatalf("driver status does not advertise containerd image-store support: %#v", driverStatus)
 	}
 
 	containers := httptest.NewRecorder()
@@ -1718,20 +1733,66 @@ func TestDockerAPIBridgesBuildKitControlUpgrade(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix socket upgrade test")
 	}
+	upstream := &recordingBuildKitSolveServer{}
 	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
-	manager.dialBuildKit = func(context.Context) (net.Conn, error) {
-		client, backend := net.Pipe()
-		go func() {
-			defer backend.Close()
-			buffer := make([]byte, len("control"))
-			if _, err := io.ReadFull(backend, buffer); err == nil {
-				_, _ = backend.Write([]byte("ready"))
-			}
-		}()
-		return client, nil
-	}
-	if err := exerciseBuildKitUpgrade(t, manager, "/grpc", nil, "control", "ready"); err != nil {
+	manager.dialBuildKit = buildKitControlTestDialer(t, upstream)
+	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+	_, manager.inventoryCancel = context.WithCancel(context.Background())
+	defer manager.inventoryCancel()
+
+	socketDir, err := os.MkdirTemp("/tmp", "porto-buildkit-api-*")
+	if err != nil {
 		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
+	socketPath := filepath.Join(socketDir, "docker.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	apiServer := NewAPIServer(socketPath, NewAPI(manager, socketPath))
+	if err := apiServer.Start(ctx); err != nil {
+		cancel()
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		cancel()
+		closeContext, closeCancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer closeCancel()
+		_ = apiServer.Close(closeContext)
+	})
+
+	connection, err := grpc.NewClient(
+		"passthrough:///porto-buildkit",
+		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+			return dialDockerBuildKitUpgrade(ctx, socketPath, "/grpc", nil)
+		}),
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+
+	response, err := controlapi.NewControlClient(connection).Solve(context.Background(), &controlapi.SolveRequest{
+		FrontendAttrs: map[string]string{
+			"porto.test.large-message": strings.Repeat("x", 5<<20),
+		},
+		Exporters: []*controlapi.Exporter{{
+			Type:  "moby",
+			Attrs: map[string]string{"name": "porto-test"},
+		}},
+	})
+	if err != nil {
+		t.Fatalf("solve through Docker API: %v", err)
+	}
+	if got := response.ExporterResponse["image.name"]; got != "docker.io/library/porto-test:latest" {
+		t.Fatalf("image name response = %q", got)
+	}
+	if upstream.request == nil || upstream.request.Exporters[0].Type != "image" {
+		t.Fatalf("upstream request = %+v", upstream.request)
+	}
+	select {
+	case <-manager.inventory.refresh:
+	default:
+		t.Fatal("successful moby export did not refresh the image index")
 	}
 }
 
@@ -1914,6 +1975,51 @@ func exerciseBuildKitUpgrade(
 		return fmt.Errorf("tunnel response = %q, want %q", result, expected)
 	}
 	return nil
+}
+
+func dialDockerBuildKitUpgrade(
+	ctx context.Context,
+	socketPath,
+	endpoint string,
+	headers map[string]string,
+) (net.Conn, error) {
+	connection, err := (&net.Dialer{}).DialContext(ctx, "unix", socketPath)
+	if err != nil {
+		return nil, err
+	}
+	var request strings.Builder
+	fmt.Fprintf(&request, "POST %s HTTP/1.1\r\nHost: docker\r\nConnection: Upgrade\r\nUpgrade: h2c\r\nContent-Length: 0\r\n", endpoint)
+	for key, value := range headers {
+		fmt.Fprintf(&request, "%s: %s\r\n", key, value)
+	}
+	request.WriteString("\r\n")
+	if _, err := io.WriteString(connection, request.String()); err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("write upgrade request: %w", err)
+	}
+	reader := bufio.NewReader(connection)
+	response, err := http.ReadResponse(reader, &http.Request{Method: http.MethodPost})
+	if err != nil {
+		_ = connection.Close()
+		return nil, fmt.Errorf("read upgrade response: %w", err)
+	}
+	if response.StatusCode != http.StatusSwitchingProtocols {
+		_ = connection.Close()
+		return nil, fmt.Errorf("upgrade status = %d", response.StatusCode)
+	}
+	if reader.Buffered() > 0 {
+		return &bufferedReadConn{Conn: connection, reader: reader}, nil
+	}
+	return connection, nil
+}
+
+type bufferedReadConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedReadConn) Read(data []byte) (int, error) {
+	return c.reader.Read(data)
 }
 
 func containsArgumentSequence(arguments, sequence []string) bool {

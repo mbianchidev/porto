@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/containerd/containerd/v2/defaults"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -26,7 +27,7 @@ func (a *API) buildKitControl(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	a.hijackBuildKit(tunnelContext, w, r, backend, nil)
+	a.hijackBuildKitControl(tunnelContext, w, r, backend)
 }
 
 func (a *API) buildKitSession(w http.ResponseWriter, r *http.Request) {
@@ -108,6 +109,79 @@ func (a *API) hijackBuildKit(
 	if closeBackendClient != nil {
 		_ = closeBackendClient()
 	}
+}
+
+func (a *API) hijackBuildKitControl(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	backend net.Conn,
+) {
+	if !strings.EqualFold(r.Header.Get("Upgrade"), "h2c") {
+		_ = backend.Close()
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "BuildKit requires an h2c connection upgrade"})
+		return
+	}
+	hijacker, ok := w.(http.Hijacker)
+	if !ok {
+		_ = backend.Close()
+		writeDockerJSON(w, http.StatusInternalServerError, map[string]string{"message": "Docker API connection cannot be hijacked"})
+		return
+	}
+	client, buffered, err := hijacker.Hijack()
+	if err != nil {
+		_ = backend.Close()
+		return
+	}
+	if err := writeBuildKitUpgrade(buffered); err != nil {
+		_ = client.Close()
+		_ = backend.Close()
+		return
+	}
+
+	var backendMu sync.Mutex
+	firstBackend := backend
+	connection, err := newBuildKitControlConnection(func(dialContext context.Context) (net.Conn, error) {
+		backendMu.Lock()
+		if firstBackend != nil {
+			connection := firstBackend
+			firstBackend = nil
+			backendMu.Unlock()
+			return connection, nil
+		}
+		backendMu.Unlock()
+		return a.manager.DialBuildKit(dialContext)
+	})
+	if err != nil {
+		_ = client.Close()
+		_ = backend.Close()
+		return
+	}
+	defer connection.Close()
+	defer backend.Close()
+
+	listener := newSingleConnListener(client)
+	server := grpc.NewServer(
+		grpc.MaxRecvMsgSize(defaults.DefaultMaxRecvMsgSize),
+		grpc.MaxSendMsgSize(defaults.DefaultMaxSendMsgSize),
+		grpc.UnknownServiceHandler(transparentBuildKitHandler(connection)),
+	)
+	controlapi.RegisterControlServer(server, &buildKitControlProxy{
+		client:              controlapi.NewControlClient(connection),
+		containerdNamespace: configuredContainerdNamespace(),
+		imageExported:       a.manager.invalidateContainerInventory,
+	})
+	stopped := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			server.Stop()
+			_ = listener.Close()
+		case <-stopped:
+		}
+	}()
+	_ = server.Serve(listener)
+	close(stopped)
 }
 
 func writeBuildKitUpgrade(connection *bufio.ReadWriter) error {
