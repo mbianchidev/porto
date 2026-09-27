@@ -67,14 +67,16 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.0+porto.2`: the stable 2.2.0 source with
+Windows packages bundle Lima `v2.2.0+porto.3`: the stable 2.2.0 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
 backported and a consoleless force-stop fix. After an interrupted shutdown,
 Lima removes stale host-agent and QEMU PID files when Windows reports that
 those processes no longer exist, instead of refusing to start with
 `OpenProcess: The parameter is incorrect`. Forced stops terminate the selected
 process tree instead of relying on a console event, allowing its log handles
-to close before the next startup. Live process IDs are not treated as stale;
+to close before the next startup. If a target exits while the stop command is
+running, Lima confirms its process handle has exited before accepting the stop.
+Live process IDs are not treated as stale;
 configuration errors and VM disks are preserved. macOS and Linux retain the
 unmodified upstream Lima binaries.
 

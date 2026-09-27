@@ -4,6 +4,7 @@ SIGKILL must terminate the selected process tree, not send CTRL_BREAK_EVENT.
 Consoleless desktop processes cannot rely on console events, and surviving
 children can retain the host-agent log handles and block the next startup.
 Stop the host-agent tree before its driver to prevent orphaning children.
+Confirm an already-exited target through its process handle before accepting it.
 Propagate failures before deleting PID files, restarting, or deleting a VM.
 Other signals retain upstream behavior.
 
@@ -22,7 +23,7 @@ diff --git a/pkg/osutil/osutil_windows.go b/pkg/osutil/osutil_windows.go
  
  	"golang.org/x/sys/windows"
  )
-@@ -38,8 +42,53 @@ const SigKill = Signal(9)
+@@ -38,8 +42,64 @@ const SigKill = Signal(9)
  
  type Signal int
  
@@ -64,6 +65,17 @@ diff --git a/pkg/osutil/osutil_windows.go b/pkg/osutil/osutil_windows.go
 +	if err != nil {
 +		if ctx.Err() != nil {
 +			err = ctx.Err()
++		}
++		// The target may exit between the initial check and taskkill.
++		var exitErr *exec.ExitError
++		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
++			result, waitErr := windows.WaitForSingleObject(handle, 5000)
++			if waitErr != nil {
++				return fmt.Errorf("inspect process %d after failed forced stop: %w", pid, errors.Join(err, waitErr))
++			}
++			if result == windows.WAIT_OBJECT_0 {
++				return nil
++			}
 +		}
 +		return fmt.Errorf("force stop process tree %d: %w: %s", pid, err, strings.TrimSpace(string(output)))
 +	}
