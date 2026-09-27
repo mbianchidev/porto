@@ -50,6 +50,17 @@ isolated test database to verify that early failures reach `logs/porto.log`
 at the default debug level, without duplicate records when stderr already
 points at that file. No user database or running daemon is used.
 
+macOS CI and DMG releases also run
+`hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
+ports, forces a failed power-registration call in an isolated Electron process,
+and verifies that a sandboxed renderer still loads with the temporary guard.
+An unguarded probe deliberately fails with removal instructions when the
+locked Electron no longer needs the workaround. Keep that retirement gate
+until the helper is removed; see
+[macOS 27 recovery](installation.md#macos-27-power-notification-crash).
+The native tests are skipped on Windows and Linux; no macOS library is built
+or added to their packages.
+
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
 ## Cutting a release

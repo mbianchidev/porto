@@ -206,7 +206,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
-          node --test ui/electron/desktop-logging.test.cjs
+          node --test ui/electron/desktop-logging.test.cjs hacks/macos-power-notification-compat.test.cjs
 
       - name: Validate Windows update helper
         if: runner.os == 'Windows'

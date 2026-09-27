@@ -162,6 +162,46 @@ grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
 exec zsh -l
 ```
 
+### macOS 27 power-notification crash
+
+On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
+notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
+before Porto starts or creates its diagnostic log. The failure may be transient;
+if Porto launches normally, no workaround is needed.
+
+Until the bundled Electron includes the
+[upstream Chromium fix](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
+for [issue 562777834](https://issues.chromium.org/issues/562777834), this repository
+includes an opt-in recovery helper. No matching Electron issue was found when
+the helper was added. From a source checkout, with Xcode Command Line Tools
+installed and the Porto desktop closed, run:
+
+```sh
+bash hacks/open-porto-macos-27.sh /Applications/Porto.app
+```
+
+Pass `$HOME/Applications/Porto.app` instead for a per-user installation. The
+launcher builds a universal Intel/Apple Silicon library in
+`~/Library/Caches/Porto/macos-power-notification`, then loads it only into that
+Porto desktop process. It preserves valid notification ports and uses an inert
+run-loop source only for a null port. If that fallback is needed, sleep/wake
+notifications are unavailable and the helper reports this to stderr.
+The loader environment is cleared before Porto launches child processes.
+
+This does not modify the installed application, daemon, VM disks, or macOS
+security settings. It is not bundled into release installers, is never enabled
+automatically, and refuses Windows, Linux, and other macOS versions. Do not
+disable SIP, Gatekeeper, or library validation if a signed application refuses
+the helper. Normal launches remain unchanged.
+
+**Removal requirement:** whenever Electron is upgraded, run
+`node --test hacks/macos-power-notification-compat.test.cjs` on macOS. The test
+forces power registration to fail without touching real app data. Once the
+locked Electron starts without the guard, the test fails with removal
+instructions: verify the upstream fix, delete the temporary helper and these
+recovery instructions, and keep the injected-failure case as an unguarded
+regression test. `AGENTS.md` records the same requirement for future agents.
+
 ### Manual archive installation
 
 Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/mbianchidev/porto/releases). Verify the download, then unpack it:
