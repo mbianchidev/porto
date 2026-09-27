@@ -3,7 +3,8 @@ param(
     [Parameter(Mandatory = $true)][string]$PackagePath,
     [Parameter(Mandatory = $true)][string]$InstallDirectory,
     [Parameter(Mandatory = $true)][string]$ExecutablePath,
-    [Parameter(Mandatory = $true)][string]$ErrorFile
+    [Parameter(Mandatory = $true)][string]$ErrorFile,
+    [switch]$SkipRestart
 )
 
 $ErrorActionPreference = "Stop"
@@ -14,8 +15,24 @@ function Write-UpdateLog([string]$Message) {
 }
 
 function Restart-ExistingPorto {
-    if (Test-Path -LiteralPath $ExecutablePath) {
+    if (-not $SkipRestart -and (Test-Path -LiteralPath $ExecutablePath)) {
         Start-Process -FilePath $ExecutablePath
+    }
+}
+
+function Get-InstalledPortoProcesses([string]$InstallPrefix) {
+    try {
+        return @(
+            Get-CimInstance Win32_Process | Where-Object {
+                $_.ExecutablePath -and $_.ExecutablePath.StartsWith(
+                    $InstallPrefix,
+                    [System.StringComparison]::OrdinalIgnoreCase
+                )
+            }
+        )
+    }
+    catch {
+        throw "Unable to inspect running Porto processes. $($_.Exception.Message)"
     }
 }
 
@@ -38,24 +55,33 @@ try {
     }
 
     $InstallPrefix = [System.IO.Path]::GetFullPath($InstallDirectory).TrimEnd("\") + "\"
-    $InstalledProcesses = Get-CimInstance Win32_Process | Where-Object {
-        $_.ExecutablePath -and $_.ExecutablePath.StartsWith(
-            $InstallPrefix,
-            [System.StringComparison]::OrdinalIgnoreCase
-        )
+    $InstalledProcesses = @()
+    for ($Attempt = 0; $Attempt -lt 50; $Attempt++) {
+        $InstalledProcesses = @(Get-InstalledPortoProcesses $InstallPrefix)
+        if (-not $InstalledProcesses) {
+            break
+        }
+        foreach ($Process in $InstalledProcesses) {
+            if ($Process.Name -like "qemu-system-*.exe") {
+                continue
+            }
+            Write-UpdateLog "Stopping installed Porto process $($Process.ProcessId) $($Process.ExecutablePath)"
+            Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
+        }
+        Start-Sleep -Milliseconds 100
     }
-    foreach ($Process in $InstalledProcesses) {
-        Write-UpdateLog "Stopping installed Porto process $($Process.ProcessId)"
-        Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
-    }
+    $InstalledProcesses = @(Get-InstalledPortoProcesses $InstallPrefix)
     if ($InstalledProcesses) {
-        Start-Sleep -Seconds 1
+        $BlockingProcesses = ($InstalledProcesses | ForEach-Object {
+            "$($_.Name) (PID $($_.ProcessId))"
+        }) -join ", "
+        throw "Porto runtime processes are still using the installation: $BlockingProcesses. Stop running Porto VMs and Kubernetes clusters, then retry the update."
     }
 
     Write-UpdateLog "Installing $PackagePath into $InstallDirectory"
     $Installer = Start-Process `
         -FilePath $PackagePath `
-        -ArgumentList @("/S", "/D=$InstallDirectory") `
+        -ArgumentList "/S /D=$InstallDirectory" `
         -Wait `
         -PassThru
     if ($Installer.ExitCode -ne 0) {

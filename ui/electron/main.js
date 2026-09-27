@@ -23,6 +23,7 @@ const {
   installDockerContext,
   installDockerEngine,
   mergeExecutablePaths,
+  prepareDockerEngineUpdate,
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
@@ -208,14 +209,33 @@ function handleDesktopUpdateStatus(status) {
 async function restartAndInstallUpdate() {
   if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
   const update = await desktopUpdater.downloadedUpdate()
-  await launchDownloadedUpdate({
-    platform: process.platform,
-    executablePath: app.getPath('exe'),
-    packagePath: update.packagePath,
-    downloadsDirectory: path.dirname(update.packagePath),
-    errorFile: updateInstallErrorPath,
-    helperDirectory: process.resourcesPath,
-  })
+  let windowsEngineStopped = false
+  try {
+    if (process.platform === 'win32') {
+      console.debug('Stopping the Porto engine before installing the Windows update')
+      const preparation = await prepareDockerEngineUpdate({ daemonURL: DAEMON_URL })
+      windowsEngineStopped = preparation.engineStopped === true
+    }
+    await launchDownloadedUpdate({
+      platform: process.platform,
+      executablePath: app.getPath('exe'),
+      packagePath: update.packagePath,
+      downloadsDirectory: path.dirname(update.packagePath),
+      errorFile: updateInstallErrorPath,
+      helperDirectory: process.resourcesPath,
+    })
+  } catch (error) {
+    if (windowsEngineStopped) {
+      try {
+        console.debug('Restarting the Porto engine after the update helper failed to launch')
+        await installDockerEngine({ daemonURL: DAEMON_URL })
+      } catch (restoreError) {
+        console.error('Unable to restart the Porto engine after the update launch failed', restoreError)
+        throw new Error(`${error.message}; Porto also could not restart its container engine: ${restoreError.message}`)
+      }
+    }
+    throw error
+  }
   desktopUpdater.markInstalling()
   quitting = true
   app.quit()

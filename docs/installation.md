@@ -122,6 +122,10 @@ on **Settings** to skip the download prompt. Porto never restarts itself: after
 verification it waits for **Restart and update**. That restart replaces the
 desktop package and reconnects the bundled daemon without deleting or
 recreating existing VMs, Kubernetes clusters, containers, images, or volumes.
+On Windows, Porto first stops its owned container engine cleanly and starts it
+again after the updated desktop launches. If another Porto VM or Kubernetes
+cluster still has the bundled QEMU runtime open, the update aborts instead of
+force-killing that workload; stop it and retry the update.
 
 In-app installation requires the current application directory to be writable
 by the user. The one-line installers use writable per-user locations by default.

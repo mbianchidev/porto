@@ -291,6 +291,25 @@ jobs:
           finally {
             Remove-Item Env:PORTO_TEST_DAEMON
           }
+          $updatePackage = Join-Path $env:RUNNER_TEMP 'Porto update package.exe'
+          $updateError = Join-Path $env:RUNNER_TEMP 'Porto update error.txt'
+          Copy-Item $installer.FullName $updatePackage
+          & pwsh -NoProfile -NonInteractive -File ./ui/electron/apply-update.ps1 `
+            -ParentPid 2147483647 `
+            -PackagePath $updatePackage `
+            -InstallDirectory $installRoot `
+            -ExecutablePath (Join-Path $installRoot 'Porto.exe') `
+            -ErrorFile $updateError `
+            -SkipRestart
+          if ($LASTEXITCODE -ne 0) {
+            throw "In-place update helper exited with code $LASTEXITCODE."
+          }
+          if (Test-Path $updateError) {
+            throw "In-place update helper reported: $(Get-Content -Raw $updateError)"
+          }
+          if (-not (Test-Path (Join-Path $installRoot 'Porto.exe'))) {
+            throw 'In-place update helper removed Porto.exe.'
+          }
           $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $uninstaller) {
             throw 'Installer did not create an uninstaller.'
