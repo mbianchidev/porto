@@ -63,6 +63,9 @@ See the [installation guide](docs/installation.md) for checksum verification, so
 
 CLI/web archives remain available for headless machines and servers.
 
+Open **Settings** to see the running Porto release version, including prerelease
+and build metadata.
+
 ### 2. Discover projects
 
 ```sh

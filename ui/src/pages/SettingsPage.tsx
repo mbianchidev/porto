@@ -1,10 +1,11 @@
 import { useRef, useState } from 'react'
-import { apiSend, errorMessage } from '../api'
+import { apiGet, apiSend, errorMessage } from '../api'
 import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
 import { DockerCleanupSettings } from '../components/DockerCleanupSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
 import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
 import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../experiencePreferences'
+import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import type { IntegrationStatus, KillSwitchCleanupResult, KillSwitchStatus, RuntimeFeatureName, RuntimeFeatures, Settings } from '../types'
 
@@ -34,6 +35,16 @@ export function SettingsPage({
   onIntegrationsChanged: () => void
 }) {
   const { notifyError, notifyNotice } = useMessages()
+  const releaseVersion = usePolledResource(async (signal) => {
+    const desktop = window.portoDesktop
+    const version = desktop
+      ? (await desktop.getUpdateStatus()).currentVersion
+      : (await apiGet<{ version: string }>('/api/health', signal)).version
+    if (typeof version !== 'string' || version.trim() === '') {
+      throw new Error('Porto did not report its release version.')
+    }
+    return version
+  }, 0, [])
   const [priorSettings, setPriorSettings] = useState(settings)
   const [draft, setDraft] = useState<Settings | null>(() => editableSettings(settings))
   const [protectedBranches, setProtectedBranches] = useState(settings?.protectedBranches.join(', ') ?? '')
@@ -185,6 +196,17 @@ export function SettingsPage({
         <div>
           <h1>System settings</h1>
           <p>Configure the desktop experience, runtime access, registries, cleanup, and optional integrations.</p>
+          <p role={releaseVersion.error ? 'alert' : 'status'}>
+            <strong>Release version:</strong>{' '}
+            {releaseVersion.error
+              ? `Unavailable. ${releaseVersion.error}`
+              : releaseVersion.loading
+                ? 'Loading...'
+                : <code>{releaseVersion.data}</code>}
+          </p>
+          {releaseVersion.error && (
+            <button type="button" onClick={releaseVersion.reload}>Retry version</button>
+          )}
         </div>
         <a className="buttonLink" href="#/localhost-ing">Back to localhost-ing</a>
       </header>
