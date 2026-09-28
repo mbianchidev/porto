@@ -54,12 +54,28 @@ macOS CI and DMG releases also run
 `hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
 ports, forces a failed power-registration call in an isolated Electron process,
 and verifies that a sandboxed renderer still loads with the temporary guard.
+It also packages a real macOS app and replaces its application archive with
+an isolated synthetic fixture before launching it. The packaged executable
+must render and exit cleanly with failed power registration without an
+external guard, preserve Electron Node mode and its executable path, and
+repair closed standard streams. `PORTO_TEST_MACOS_APP=/path/to/Porto.app`
+runs these checks on a temporary copy of an already-built app instead;
+the original bundle and user data are never modified.
 An unguarded probe deliberately fails with removal instructions when the
 locked Electron no longer needs the workaround. Keep that retirement gate
 until the helper is removed; see
 [macOS 27 recovery](installation.md#macos-27-power-notification-crash).
 The native tests are skipped on Windows and Linux; no macOS library is built
 or added to their packages.
+
+Both macOS DMGs and desktop tar archives are built on macOS from the same
+guarded app. `scripts/macos-desktop-bootstrap.cjs` links the shared guard into
+a native entry point that preserves Electron's fuse-aware Node dispatch and
+stdio initialization. It checks the original bootstrap imports, target
+architectures, linked guard, and interposition section, and must run before
+any future code signing/notarization. Cross-packaging macOS desktop apps on
+Linux fails explicitly; CLI archives can still be cross-built. macOS tar
+archives omit AppleDouble metadata and retain the existing release layout.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 

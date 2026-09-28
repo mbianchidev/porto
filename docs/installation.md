@@ -166,14 +166,26 @@ exec zsh -l
 
 On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
 notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
-before Porto starts or creates its diagnostic log. The failure may be transient;
-if Porto launches normally, no workaround is needed.
+before Porto starts or creates its diagnostic log. This was reproduced in the
+bundled v1.2.12 release, and Electron 44.4.5 still crashes when registration
+fails. Removing quarantine does not fix this native crash.
 
 Until the bundled Electron includes the
 [upstream Chromium fix](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
-for [issue 562777834](https://issues.chromium.org/issues/562777834), this repository
-includes an opt-in recovery helper. No matching Electron issue was found when
-the helper was added. From a source checkout, with Xcode Command Line Tools
+for [issue 562777834](https://issues.chromium.org/issues/562777834), new macOS
+DMGs and desktop archives include a temporary native guard. Install the
+package and launch Porto normally; no source checkout, compiler, or recovery
+command is required. The guard is linked only to Porto's macOS main executable,
+not to Windows/Linux builds or Electron helper processes. It does not set
+`DYLD_INSERT_LIBRARIES` or change system security settings.
+
+Valid notification ports pass through unchanged. Only a null port receives an
+inert run-loop source. If this fallback is needed, sleep/wake notifications
+are unavailable for that Porto process, and the guard reports this to stderr.
+Battery and thermal monitoring remain independent.
+
+For **older releases without the bundled guard**, an opt-in recovery launcher
+remains available. From a source checkout, with Xcode Command Line Tools
 installed and the Porto desktop closed, run:
 
 ```sh
@@ -188,19 +200,20 @@ run-loop source only for a null port. If that fallback is needed, sleep/wake
 notifications are unavailable and the helper reports this to stderr.
 The loader environment is cleared before Porto launches child processes.
 
-This does not modify the installed application, daemon, VM disks, or macOS
-security settings. It is not bundled into release installers, is never enabled
-automatically, and refuses Windows, Linux, and other macOS versions. Do not
-disable SIP, Gatekeeper, or library validation if a signed application refuses
-the helper. Normal launches remain unchanged.
+The recovery launcher does not modify the installed application, daemon, VM
+disks, or macOS security settings. The script itself is not bundled and refuses
+Windows, Linux, and other macOS versions. Do not disable SIP, Gatekeeper, or
+library validation if a signed application refuses the helper.
 
 **Removal requirement:** whenever Electron is upgraded, run
 `node --test hacks/macos-power-notification-compat.test.cjs` on macOS. The test
 forces power registration to fail without touching real app data. Once the
 locked Electron starts without the guard, the test fails with removal
-instructions: verify the upstream fix, delete the temporary helper and these
-recovery instructions, and keep the injected-failure case as an unguarded
-regression test. `AGENTS.md` records the same requirement for future agents.
+instructions: verify the upstream fix, delete the temporary helpers and
+packaged native bootstrap, remove their packaging hooks and these recovery
+instructions, and keep the injected-failure case as an unguarded regression
+test. Preserve the packaged-app rendering and clean-shutdown checks.
+`AGENTS.md` records the same requirement for future agents.
 
 ### Manual archive installation
 

@@ -1,10 +1,20 @@
 # Temporary macOS 27 Electron workaround
 
-When changing Electron dependencies, inspect the opt-in recovery helper in
-`hacks/macos-power-notification-compat.c` and `hacks/open-porto-macos-27.sh`.
-It works around a failed `IORegisterForSystemPower` call followed by a null-port
-dereference, observed on macOS 27. It must not enter Windows/Linux packages or
-be enabled globally.
+When changing Electron dependencies, inspect the temporary guard in
+`hacks/macos-power-notification-compat.c`, its recovery launcher
+`hacks/open-porto-macos-27.sh`, and the packaged bootstrap in
+`scripts/macos-desktop-bootstrap.cjs` and `scripts/macos-desktop-main.cc`.
+They work around a failed `IORegisterForSystemPower` call followed by a
+null-port dereference, observed in release v1.2.12 on macOS 27.
+Electron 44.4.5 still fails the injected-failure probe without the guard.
+
+macOS packages link the guard into their main executable through a bundled
+dylib, before Electron starts; no user command or loader environment is needed.
+Preserve Electron's fuse-aware Node dispatch and closed-stdio repair when
+changing the native entry point. Perform native edits before code signing.
+Build both macOS desktop archives and DMGs on macOS; fail rather than publish
+an unguarded cross-built package. Never add the guard to Windows/Linux
+packages, propagate it to helper processes, or enable it system-wide.
 
 The verified upstream fix is [Chromium 69403d85](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
 ([issue 562777834](https://issues.chromium.org/issues/562777834)); no matching
@@ -13,7 +23,9 @@ Electron issue was found when this workaround was added.
 Run `node --test hacks/macos-power-notification-compat.test.cjs` on macOS after
 upgrading Electron. Its unguarded, injected-failure probe deliberately fails
 with removal instructions once Electron no longer needs the guard. Verify the
-fixed locked Electron version, remove both helper files and their recovery
-documentation, and retain the injected-failure scenario as a passing unguarded
-regression test. Do not disable the probe or weaken its assertions to retain an
-obsolete workaround. Update this instruction when the workaround is removed.
+fixed locked Electron version, remove both helper files, the native bootstrap
+and its packaging hooks, and their recovery documentation. Retain the
+injected-failure scenario as a passing unguarded regression test, including
+packaged-app rendering and clean shutdown. Do not disable the probe or weaken
+its assertions to retain an obsolete workaround. Update this instruction when
+the workaround is removed.

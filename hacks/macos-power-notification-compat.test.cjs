@@ -6,6 +6,8 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
+const { installMacOSBootstrap } = require('../scripts/macos-desktop-bootstrap.cjs')
+
 const launcher = path.join(__dirname, 'open-porto-macos-27.sh')
 const guardSource = path.join(__dirname, 'macos-power-notification-compat.c')
 const fallbackMessage = 'Porto: macOS power notifications are unavailable.'
@@ -17,6 +19,12 @@ test('the recovery launcher refuses non-macOS hosts before building anything', {
   assert.ifError(result.error)
   assert.equal(result.status, 1)
   assert.match(result.stderr, /only supports macOS 27/)
+})
+
+test('macOS packaging refuses to omit the native guard on other hosts', {
+  skip: process.platform === 'darwin',
+}, () => {
+  assert.throws(() => installMacOSBootstrap('Synthetic Porto.app'), /on a macOS host/)
 })
 
 test('macOS power-notification workaround and upstream removal gate', {
@@ -152,12 +160,18 @@ test('macOS power-notification workaround and upstream removal gate', {
   const application = path.join(directory, 'smoke.cjs')
   fs.writeFileSync(application, `
     const { app, BrowserWindow } = require('electron')
+    const { realpathSync } = require('node:fs')
     const timeout = setTimeout(() => {
       console.error('Timed out before rendering')
       app.exit(1)
     }, 30000)
     app.whenReady().then(async () => {
+      if (process.env.PORTO_TEST_APP_PATH &&
+          realpathSync(app.getAppPath()) !== realpathSync(process.env.PORTO_TEST_APP_PATH)) {
+        throw new Error('The packaged test must use only the synthetic application')
+      }
       console.log('PORTO_TEST_GUARD_INHERITED=' + Boolean(process.env.DYLD_INSERT_LIBRARIES))
+      console.log('PORTO_TEST_PACKAGED=' + app.isPackaged)
       const window = new BrowserWindow({
         show: false,
         webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
@@ -182,7 +196,7 @@ test('macOS power-notification workaround and upstream removal gate', {
       encoding: 'utf8', timeout: 45000,
       env: { ...environment, DYLD_INSERT_LIBRARIES: libraries },
     })
-    assert.ifError(result.error)
+    assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)
     assert.match(result.stderr, /PORTO_TEST_POWER_UNAVAILABLE/, 'Failure injection was not exercised')
     return result
   }
@@ -199,9 +213,84 @@ test('macOS power-notification workaround and upstream removal gate', {
     const result = launch('unguarded', failure)
     assert.notEqual(result.status, 0,
       `Electron ${electronVersion} now handles failed power registration without the guard. ` +
-      'Follow AGENTS.md and docs/installation.md: verify the upstream fix, remove the temporary macOS 27 helper, ' +
+      'Follow AGENTS.md and docs/installation.md: verify the upstream fix, remove the temporary macOS 27 helpers and packaged bootstrap, ' +
       'and retain this injected-failure case as a passing, unguarded regression test.')
     assert.equal(result.signal, 'SIGSEGV',
       `Unexpected unguarded startup failure; do not treat it as proof the shim is needed:\n${result.stderr}`)
+  })
+
+  await t.test('the packaged macOS app preserves native startup without a recovery launcher', async (t) => {
+    const output = path.join(directory, 'packaged output')
+    const bundle = path.join(output, `Porto-darwin-${process.arch}`, 'Porto.app')
+    if (environment.PORTO_TEST_MACOS_APP) {
+      fs.cpSync(environment.PORTO_TEST_MACOS_APP, bundle, { recursive: true, verbatimSymlinks: true })
+    } else {
+      const packaged = spawnSync(process.execPath, [
+        path.join(__dirname, '..', 'ui', 'electron', 'package.cjs'),
+        '--platform=darwin', `--arch=${process.arch}`, `--out=${output}`,
+      ], { encoding: 'utf8', env: environment, timeout: 120000 })
+      assert.ifError(packaged.error)
+      assert.equal(packaged.status, 0, `${packaged.stdout}\n${packaged.stderr}`)
+    }
+    await t.test('accepts an already guarded app in a shared packaging directory', () => {
+      assert.doesNotThrow(() => installMacOSBootstrap(bundle))
+    })
+    const resources = path.join(bundle, 'Contents', 'Resources')
+    const archive = path.join(resources, 'app.asar')
+    assert.equal(fs.statSync(archive).isFile(), true)
+    fs.unlinkSync(archive)
+    const fixture = path.join(resources, 'app')
+    fs.mkdirSync(fixture)
+    fs.writeFileSync(path.join(fixture, 'package.json'), JSON.stringify({
+      name: 'synthetic-porto-startup', version: '1.0.0', main: 'main.cjs',
+    }))
+    fs.copyFileSync(application, path.join(fixture, 'main.cjs'))
+    const executable = path.join(bundle, 'Contents', 'MacOS', 'Porto')
+    const packagedEnvironment = { ...environment, PORTO_TEST_APP_PATH: fixture }
+
+    for (const injectFailure of [true, false]) {
+      await t.test(injectFailure ? 'renders and exits after failed power registration' : 'renders and exits with no injected environment', () => {
+        const result = spawnSync(executable, [
+          `--user-data-dir=${path.join(directory, `packaged profile ${injectFailure}`)}`, '--disable-breakpad',
+        ], {
+          encoding: 'utf8', timeout: 45000,
+          env: { ...packagedEnvironment, ...(injectFailure ? { DYLD_INSERT_LIBRARIES: failure } : {}) },
+        })
+        assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)
+        if (injectFailure) {
+          assert.match(result.stderr, /PORTO_TEST_POWER_UNAVAILABLE/, 'Failure injection was not exercised')
+          assert.match(result.stderr, /Continuing without sleep\/wake events/)
+        }
+        assert.equal(result.status, 0, `Packaged startup failed (${result.signal}):\n${result.stderr}`)
+        assert.match(result.stdout, /PORTO_TEST_RENDERED/)
+        assert.match(result.stdout, /PORTO_TEST_PACKAGED=true/)
+        assert.match(result.stdout, /PORTO_TEST_GUARD_INHERITED=false/)
+      })
+    }
+
+    await t.test('preserves Electron Node mode and the executable path', () => {
+      const result = spawnSync(executable, ['-e', 'console.log(process.execPath)'], {
+        encoding: 'utf8', timeout: 10000,
+        env: { ...packagedEnvironment, ELECTRON_RUN_AS_NODE: '1' },
+      })
+      assert.ifError(result.error)
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(fs.realpathSync(result.stdout.trim()), fs.realpathSync(executable))
+    })
+
+    await t.test('restores closed standard streams before starting Node', () => {
+      const marker = path.join(directory, 'stdio restored')
+      const result = spawnSync('/bin/sh', [
+        '-c', 'exec "$@" 0<&- 1>&- 2>&-', 'porto-stdio-check', executable, '-e',
+        'console.log("synthetic stdout"); console.error("synthetic stderr"); require("node:fs").writeFileSync(process.argv[1], "restored")',
+        marker,
+      ], {
+        encoding: 'utf8', timeout: 10000,
+        env: { ...packagedEnvironment, ELECTRON_RUN_AS_NODE: '1' },
+      })
+      assert.ifError(result.error)
+      assert.equal(result.status, 0, result.stderr)
+      assert.equal(fs.readFileSync(marker, 'utf8'), 'restored')
+    })
   })
 })

@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { normalizeElectronRuntimeSymlinks } = require('../../scripts/desktop-runtime-symlinks.cjs')
+const { installMacOSBootstrap } = require('../../scripts/macos-desktop-bootstrap.cjs')
 const { parseSemver, RELEASE_VERSION_FILE } = require('./desktop-updater.cjs')
 
 const packagerEntry = path.join(path.dirname(require.resolve('@electron/packager')), '..', 'bin', 'electron-packager.mjs')
@@ -77,11 +78,13 @@ if (result.error) {
     }
     for (const packagedApp of packagedApps) {
       normalizeElectronRuntimeSymlinks(packagedApp)
+      const macOSBundles = fs.readdirSync(packagedApp, { withFileTypes: true })
+        .filter((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
+        .map((entry) => path.join(packagedApp, entry.name))
+      for (const bundle of macOSBundles) installMacOSBootstrap(bundle)
       const resourceRoots = [
         path.join(packagedApp, 'resources'),
-        ...fs.readdirSync(packagedApp, { withFileTypes: true })
-          .filter((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
-          .map((entry) => path.join(packagedApp, entry.name, 'Contents', 'Resources')),
+        ...macOSBundles.map((bundle) => path.join(bundle, 'Contents', 'Resources')),
       ]
       const resources = resourceRoots.find((candidate) => (
         fs.existsSync(path.join(candidate, 'app.asar'))
@@ -101,7 +104,7 @@ if (result.error) {
       }
     }
   } catch (error) {
-    console.error(`Unable to normalize packaged runtime symlinks: ${error.message}`)
+    console.error(`Unable to finalize packaged Porto application: ${error.message}`)
     process.exitCode = 1
   }
 }

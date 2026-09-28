@@ -145,6 +145,7 @@ jobs:
           node --check electron/package.cjs
           bash -n electron/apply-update.sh
           node --check ../scripts/desktop-runtime-symlinks.cjs
+          node --check ../scripts/macos-desktop-bootstrap.cjs
 
       - name: Audit desktop dependencies
         if: matrix.node == '24'
@@ -233,6 +234,7 @@ jobs:
         run: |
           set -euo pipefail
           test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "2"
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "2"
           for image in dist/*.dmg; do
             hdiutil verify "$image"
           done
@@ -326,5 +328,6 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.tar.gz
           if-no-files-found: error
           retention-days: 3
