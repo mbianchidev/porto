@@ -152,9 +152,11 @@ type ContainerSnapshot struct {
 
 type Image struct {
 	ID         string            `json:"id"`
+	Name       string            `json:"name,omitempty"`
 	Repository string            `json:"repository"`
 	Tag        string            `json:"tag"`
 	Digest     string            `json:"digest"`
+	Platform   string            `json:"platform,omitempty"`
 	Size       string            `json:"size"`
 	CreatedAt  string            `json:"createdAt"`
 	Labels     map[string]string `json:"labels,omitempty"`

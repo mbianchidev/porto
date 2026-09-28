@@ -920,7 +920,7 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) inspectImage(w http.ResponseWriter, r *http.Request) {
-	value, err := a.manager.InspectImage(r.Context(), r.PathValue("id"))
+	value, err := a.manager.InspectImage(r.Context(), r.PathValue("id"), r.URL.Query().Get("platform"))
 	writeDockerRaw(w, value, err)
 }
 

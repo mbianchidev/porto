@@ -384,7 +384,7 @@ func (s *Server) dockerImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dockerImage(w http.ResponseWriter, r *http.Request) {
-	value, err := s.docker.InspectImage(r.Context(), r.PathValue("id"))
+	value, err := s.docker.InspectImage(r.Context(), r.PathValue("id"), r.URL.Query().Get("platform"))
 	writeRuntimeResult(w, value, err)
 }
 

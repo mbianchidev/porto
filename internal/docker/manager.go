@@ -907,9 +907,11 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 	return decodeLines(output, func(item map[string]string) Image {
 		return Image{
 			ID:         first(item, "ID", "Id"),
+			Name:       item["Name"],
 			Repository: item["Repository"],
 			Tag:        item["Tag"],
 			Digest:     item["Digest"],
+			Platform:   item["Platform"],
 			Size:       item["Size"],
 			CreatedAt:  first(item, "CreatedAt", "CreatedSince", "Created"),
 			Labels:     parseLabels(item["Labels"]),
@@ -1336,6 +1338,21 @@ func (state containerWaitState) active() bool {
 	return state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "pausing"
 }
 
+func (state containerWaitState) normalized() containerWaitState {
+	if state.Status != "" {
+		return state
+	}
+	switch {
+	case state.Running:
+		state.Status = "running"
+	case state.StartedAt == "" && state.FinishedAt == "":
+		state.Status = "created"
+	default:
+		state.Status = "exited"
+	}
+	return state
+}
+
 func (m *Manager) waitForNextContainerExit(
 	ctx context.Context,
 	id string,
@@ -1386,7 +1403,7 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return containerWaitState{}, fmt.Errorf("decode container wait state: %w", err)
 	}
-	return inspected.State, nil
+	return inspected.State.normalized(), nil
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
@@ -1501,8 +1518,67 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 	return stats, nil
 }
 
-func (m *Manager) InspectImage(ctx context.Context, id string) (json.RawMessage, error) {
-	return m.inspect(ctx, "image", normalizeNerdctlReference(id))
+func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
+	normalized := normalizeNerdctlReference(id)
+	if platform == "" {
+		var err error
+		platform, err = m.imagePlatform(ctx, normalized)
+		if err != nil {
+			return nil, err
+		}
+	}
+	options := appendStringFlag(nil, "--platform", platform)
+	return m.inspect(ctx, "image", normalized, options...)
+}
+
+func (m *Manager) imagePlatform(ctx context.Context, id string) (string, error) {
+	images, err := m.Images(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve Porto image platform: %w", err)
+	}
+	for _, image := range images {
+		if imageMatchesIdentifier(image, id) {
+			return image.Platform, nil
+		}
+	}
+	return "", nil
+}
+
+func imageMatchesIdentifier(image Image, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	references := []string{image.Name, image.ID, image.Digest}
+	if image.Repository != "" && image.Tag != "" && image.Tag != "<none>" {
+		references = append(references, image.Repository+":"+image.Tag)
+	}
+	if image.Repository != "" && image.Digest != "" && image.Digest != "<none>" {
+		references = append(references, image.Repository+"@"+image.Digest)
+	}
+	if image.Repository != "" && image.Tag == "latest" {
+		references = append(references, image.Repository)
+	}
+	for _, reference := range references {
+		if id == reference {
+			return true
+		}
+		if strings.HasPrefix(reference, "docker.io/library/") &&
+			id == strings.TrimPrefix(reference, "docker.io/library/") {
+			return true
+		}
+	}
+	digest := strings.TrimPrefix(id, "sha256:")
+	if len(digest) < 12 {
+		return false
+	}
+	for _, candidate := range []string{image.ID, image.Digest} {
+		candidate = strings.TrimPrefix(candidate, "sha256:")
+		if strings.HasPrefix(candidate, digest) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) InspectNetwork(ctx context.Context, id string) (json.RawMessage, error) {
@@ -1579,11 +1655,14 @@ func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {
 	return err
 }
 
-func (m *Manager) inspect(ctx context.Context, kind, id string) (json.RawMessage, error) {
+func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
-	output, err := m.run(ctx, "inspect Porto "+kind, kind, "inspect", id)
+	args := []string{kind, "inspect"}
+	args = append(args, options...)
+	args = append(args, id)
+	output, err := m.run(ctx, "inspect Porto "+kind, args...)
 	if err != nil {
 		return nil, err
 	}

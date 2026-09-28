@@ -729,7 +729,7 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 			stateMu.Unlock()
 			switch current {
 			case "created":
-				return []byte(`[{"Id":"container-id","State":{"Status":"created","Running":false},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false}}]`), nil
 			case "running":
 				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false}}]`), nil
 			default:
@@ -1524,7 +1524,9 @@ func TestDockerComposeUpUsesPortoNativeSocket(t *testing.T) {
 		case strings.HasPrefix(args, "volume create "):
 			volumeExists = true
 			return []byte("compose-test_data\n"), nil
-		case strings.HasPrefix(args, "image inspect alpine:latest"):
+		case args == "images --digests --no-trunc --format {{json .}}":
+			return []byte(`{"ID":"sha256:alpine-index","Repository":"alpine","Tag":"latest","Digest":"sha256:alpine-index","Name":"docker.io/library/alpine:latest","Platform":"linux/arm64"}` + "\n"), nil
+		case args == "image inspect --platform linux/arm64 alpine:latest":
 			return []byte(`[{"Id":"sha256:alpine","RepoTags":["alpine:latest"],"RepoDigests":[],"Config":{},"Architecture":"arm64","Os":"linux","Size":1}]`), nil
 		case strings.HasPrefix(args, "network create "):
 			fields := strings.Fields(args)

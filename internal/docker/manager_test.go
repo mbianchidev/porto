@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -524,6 +525,31 @@ func TestManagerStatusAndInventory(t *testing.T) {
 	}
 	if len(images) != 1 || images[0].Digest != "sha256:2" {
 		t.Fatalf("unexpected images: %+v", images)
+	}
+}
+
+func TestInspectImageUsesStoredPlatform(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl images --digests --no-trunc --format {{json .}}":  []byte(`{"ID":"sha256:index","Repository":"alpine","Tag":"3.22","Digest":"sha256:index","Name":"docker.io/library/alpine:3.22","Platform":"linux/amd64"}` + "\n"),
+			"nerdctl image inspect --platform linux/amd64 alpine:3.22": []byte(`[{"Id":"sha256:config","RepoTags":["alpine:3.22"],"Architecture":"amd64","Os":"linux"}]`),
+		},
+		errors: map[string]error{},
+	}
+
+	document, err := New(runner).InspectImage(context.Background(), "alpine:3.22", "")
+	if err != nil {
+		t.Fatalf("inspect image: %v", err)
+	}
+	var inspected struct {
+		Architecture string `json:"Architecture"`
+		OS           string `json:"Os"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		t.Fatalf("decode image inspect: %v", err)
+	}
+	if inspected.Architecture != "amd64" || inspected.OS != "linux" {
+		t.Fatalf("unexpected image platform: %+v", inspected)
 	}
 }
 

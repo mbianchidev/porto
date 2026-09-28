@@ -287,6 +287,15 @@ gain multi-platform support without recreating the VM.
 Porto also enables packaged 32-bit ARM/x86 handlers that distributions omit
 because they assume native compatibility; Apple Silicon cannot execute
 32-bit ARM binaries natively.
+
+`linux/amd64` is supported on ARM64 hosts. Porto builds and runs AMD64
+containers through QEMU/binfmt, and `uname -m` inside the container reports
+`x86_64`. Image inspect selects the platform stored for the local image so
+Compose validates AMD64 images correctly, while attached starts normalize
+containerd's empty pre-start status before the Docker hijack handshake. An
+image-inspect JSON error or failed stream upgrade is therefore a Docker API
+compatibility defect, not evidence that AMD64 emulation is unavailable.
+
 The first setup needs package-repository access; subsequent launches reuse the
 installed packages and repair missing or disabled registrations without
 downloading them again. Provisioning failures are reported instead of claiming
