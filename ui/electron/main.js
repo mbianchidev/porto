@@ -11,7 +11,12 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { promisify } = require('node:util')
 
-const { attachRendererLogging, installDesktopLogging, resolveLogPath } = require('./desktop-logging.cjs')
+const {
+  attachRendererLogging,
+  installDesktopLogging,
+  openDaemonBootstrapLog,
+  resolveLogPath,
+} = require('./desktop-logging.cjs')
 const {
   bundledExecutablePaths,
   daemonBinaryIdentity,
@@ -431,6 +436,7 @@ async function portoEnvironment() {
     existsImpl: fs.existsSync,
   })
   if (dashboard !== '') environment.PORTO_UI_DIR = dashboard
+  environment.PORTO_LOG_MIRROR_STDERR = 'false'
   return environment
 }
 
@@ -450,16 +456,28 @@ function normalizedExecutablePath(value) {
 // tracked or killed on app quit.
 async function startDaemon() {
   const environment = await portoEnvironment()
+  const bootstrapLog = openDaemonBootstrapLog(desktopLogging.path)
   console.debug('Starting bundled daemon: %s', portoBinary())
   return new Promise((resolve, reject) => {
-    const child = spawn(portoBinary(), ['daemon', 'start'], {
-      detached: true,
-      env: environment,
-      stdio: ['ignore', desktopLogging.fd, desktopLogging.fd],
-      windowsHide: true,
+    let child
+    try {
+      child = spawn(portoBinary(), ['daemon', 'start'], {
+        detached: true,
+        env: environment,
+        stdio: ['ignore', bootstrapLog.fd, bootstrapLog.fd],
+        windowsHide: true,
+      })
+    } catch (error) {
+      bootstrapLog.close()
+      reject(error)
+      return
+    }
+    child.once('error', (error) => {
+      bootstrapLog.close()
+      reject(error)
     })
-    child.once('error', reject)
     child.once('spawn', () => {
+      bootstrapLog.close()
       console.debug('Daemon process started: pid=%d', child.pid)
       child.unref()
       resolve()

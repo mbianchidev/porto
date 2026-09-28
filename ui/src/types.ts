@@ -46,6 +46,7 @@ export type Settings = {
   terminalLineHeight: number
   terminalCursorBlink: boolean
   terminalScrollback: number
+  logRetentionDays: number
 }
 
 export type RegistryProvider = 'docker-hub' | 'github' | 'gitlab' | 'custom'

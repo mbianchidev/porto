@@ -38,17 +38,17 @@ func TestFileLoggingLevelsAndLegacyLogger(t *testing.T) {
 			defer stderr.Close()
 			path := filepath.Join(directory, "logs", "porto.log")
 			previous := slog.Default()
-			closeLog, err := Open(path, test.level, stderr)
+			diagnostics, err := Open(path, test.level, stderr)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer closeLog()
+			defer diagnostics.Close()
 			slog.Debug("synthetic debug")
 			slog.Info("synthetic info")
 			slog.Warn("synthetic warning")
 			slog.Error("synthetic error")
 			log.Print("synthetic legacy log")
-			if err := closeLog(); err != nil {
+			if err := diagnostics.Close(); err != nil {
 				t.Fatal(err)
 			}
 			if slog.Default() != previous {
@@ -97,15 +97,15 @@ func TestFileLoggingAvoidsDuplicatingRedirectedStderrAndAppends(t *testing.T) {
 	}
 	defer stderr.Close()
 	for _, message := range []string{"first synthetic launch", "second synthetic launch"} {
-		closeLog, err := Open(path, "", stderr)
+		diagnostics, err := Open(path, "", stderr)
 		if err != nil {
 			t.Fatal(err)
 		}
 		slog.Debug(message)
-		if err := closeLog(); err != nil {
+		if err := diagnostics.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if err := closeLog(); err != nil {
+		if err := diagnostics.Close(); err != nil {
 			t.Fatalf("closing twice: %v", err)
 		}
 	}
@@ -120,6 +120,39 @@ func TestFileLoggingAvoidsDuplicatingRedirectedStderrAndAppends(t *testing.T) {
 		if count := strings.Count(string(contents), message); count != 1 {
 			t.Errorf("%q appears %d times, want exactly once: %s", message, count, contents)
 		}
+	}
+}
+
+func TestFileLoggingCanDisableStderrMirroringForDesktopDaemon(t *testing.T) {
+	t.Setenv(MirrorStderrEnv, "false")
+	directory := t.TempDir()
+	path := filepath.Join(directory, "porto.log")
+	stderr, err := os.Create(filepath.Join(directory, "daemon-startup.log"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stderr.Close()
+	diagnostics, err := Open(path, "", stderr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	slog.Info("desktop-managed daemon")
+	if err := diagnostics.Close(); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(contents), "desktop-managed daemon") {
+		t.Fatalf("log is missing daemon message: %s", contents)
+	}
+	bootstrap, err := os.ReadFile(stderr.Name())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(bootstrap) != 0 {
+		t.Fatalf("desktop bootstrap log duplicated daemon output: %s", bootstrap)
 	}
 }
 
@@ -154,8 +187,17 @@ func TestFileWriterReportsWriteFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer stderr.Close()
-	writer := &fileWriter{file: file, stderr: stderr, mirror: true}
-	if _, err := writer.Write([]byte("original synthetic diagnostic\n")); !errors.Is(err, os.ErrClosed) {
+	session := &Session{
+		path:           file.Name(),
+		file:           file,
+		stderr:         stderr,
+		mirror:         true,
+		activeDate:     time.Now().Format(dateLayout),
+		now:            time.Now,
+		archiveDelay:   time.Minute,
+		renameAttempts: 1,
+	}
+	if _, err := session.Write([]byte("original synthetic diagnostic\n")); !errors.Is(err, os.ErrClosed) {
 		t.Fatalf("write failure = %v", err)
 	}
 	contents, err := os.ReadFile(stderr.Name())

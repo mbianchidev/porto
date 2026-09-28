@@ -49,7 +49,7 @@ func run(args []string) (err error) {
 	if err != nil {
 		return err
 	}
-	closeLog, err := logging.Open(path, os.Getenv(logging.LevelEnv), os.Stderr)
+	diagnostics, err := logging.Open(path, os.Getenv(logging.LevelEnv), os.Stderr)
 	if err != nil {
 		return err
 	}
@@ -59,13 +59,17 @@ func run(args []string) (err error) {
 		} else {
 			slog.Info("Daemon stopped")
 		}
-		err = errors.Join(err, closeLog())
+		err = errors.Join(err, diagnostics.Close())
 	}()
 	slog.Debug("Starting Porto daemon", "version", config.Version, "os", runtime.GOOS, "arch", runtime.GOARCH)
-	return runCommand(args)
+	return runCommandWithDiagnostics(args, diagnostics)
 }
 
 func runCommand(args []string) error {
+	return runCommandWithDiagnostics(args, nil)
+}
+
+func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) error {
 	if err := configureBundledRuntimePath(); err != nil {
 		return err
 	}
@@ -116,7 +120,7 @@ func runCommand(args []string) error {
 	case "container", "containers", "image", "images", "build", "builds", "network", "networks", "volume", "volumes":
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
-		return daemonCmd(db, args[1:])
+		return daemonCmd(db, args[1:], diagnostics)
 	case "version", "--version":
 		fmt.Println(config.Version)
 		return nil
@@ -562,7 +566,7 @@ func sendboxAction(args []string) error {
 	return api("POST", fmt.Sprintf("/api/projects/%s/sendbox/%s", args[1], args[0]), nil, os.Stdout)
 }
 
-func daemonCmd(st *store.Store, args []string) error {
+func daemonCmd(st *store.Store, args []string, diagnostics *logging.Session) error {
 	if len(args) == 0 {
 		return fmt.Errorf("usage: porto daemon start|status")
 	}
@@ -570,7 +574,29 @@ func daemonCmd(st *store.Store, args []string) error {
 	case "start":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
-		return daemon.New(st, dashboardFS()).Run(ctx)
+		settings, err := st.Settings(ctx)
+		if err != nil {
+			return fmt.Errorf("load diagnostic log retention: %w", err)
+		}
+		if settings.LogRetentionDays == 0 {
+			settings.LogRetentionDays = app.DefaultLogRetentionDays
+		}
+		if settings.LogRetentionDays < 1 || settings.LogRetentionDays > app.MaximumLogRetentionDays {
+			return fmt.Errorf(
+				"stored log retention must be between 1 and %d days",
+				app.MaximumLogRetentionDays,
+			)
+		}
+		server := daemon.New(st, dashboardFS())
+		if diagnostics != nil {
+			if err := diagnostics.SetRetentionDays(settings.LogRetentionDays); err != nil {
+				slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+			}
+			server.SetLogRetentionUpdater(diagnostics.SetRetentionDays)
+			go diagnostics.RunMaintenance(ctx)
+			slog.Debug("Configured diagnostic log retention", "days", settings.LogRetentionDays)
+		}
+		return server.Run(ctx)
 	case "status":
 		if daemonUp() {
 			fmt.Println("running")
