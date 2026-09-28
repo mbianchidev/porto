@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -61,6 +62,9 @@ func TestDisabledRuntimeGateIsHealthy(t *testing.T) {
 }
 
 func TestDockerSocketCheckRejectsStaleRegularFile(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows Docker endpoints use named pipes")
+	}
 	socketPath := filepath.Join(t.TempDir(), "docker.sock")
 	if err := os.WriteFile(socketPath, []byte("stale"), 0o600); err != nil {
 		t.Fatal(err)

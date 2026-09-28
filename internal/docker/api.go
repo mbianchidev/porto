@@ -795,7 +795,11 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 		if chunk.Stream == "stderr" {
 			stream = 2
 		}
-		_, writeErr := w.Write(dockerStreamFrame(stream, chunk.Data))
+		frame, frameErr := dockerStreamFrame(stream, chunk.Data)
+		if frameErr != nil {
+			return frameErr
+		}
+		_, writeErr := w.Write(frame)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
@@ -1093,13 +1097,17 @@ func dockerTimestamp(value string) string {
 	return value
 }
 
-func dockerStreamFrame(stream byte, output []byte) []byte {
+func dockerStreamFrame(stream byte, output []byte) ([]byte, error) {
 	if len(output) == 0 {
-		return nil
+		return nil, nil
+	}
+	maxInt := int(^uint(0) >> 1)
+	if len(output) > maxInt-8 || uint64(len(output)) > uint64(^uint32(0)) {
+		return nil, fmt.Errorf("Docker stream payload is too large: %d bytes", len(output))
 	}
 	frame := make([]byte, 8+len(output))
 	frame[0] = stream
 	binary.BigEndian.PutUint32(frame[4:8], uint32(len(output)))
 	copy(frame[8:], output)
-	return frame
+	return frame, nil
 }
