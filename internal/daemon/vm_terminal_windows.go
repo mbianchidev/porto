@@ -28,3 +28,7 @@ func bridgePodTerminal(w http.ResponseWriter, _ *http.Request, _ []string) {
 func bridgeK9sTerminal(w http.ResponseWriter, _ *http.Request, _ kubernetes.Cluster) {
 	http.Error(w, "embedded k9s terminals require a PTY-capable host; use 'porto kubernetes terminal <cluster>'", http.StatusNotImplemented)
 }
+
+func bridgeDiveTerminal(w http.ResponseWriter, _ *http.Request, _, _, _ string) {
+	http.Error(w, "embedded Dive requires a PTY-capable host; use 'porto docker dive <image>'", http.StatusNotImplemented)
+}

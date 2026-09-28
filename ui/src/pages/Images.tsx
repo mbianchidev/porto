@@ -1,10 +1,11 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
-import { Inspector } from '../components/Inspector'
+import { DiveTerminal } from '../components/DiveTerminal'
+import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -12,12 +13,20 @@ import type { DockerImage, DockerStatus, RegistryProfile } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(200px,1.4fr) minmax(90px,0.5fr) minmax(200px,1.3fr) minmax(90px,0.5fr)'
 
+function imageReference(image: DockerImage) {
+  return image.repository && image.repository !== '<none>' && image.tag && image.tag !== '<none>'
+    ? `${image.repository}:${image.tag}`
+    : image.id
+}
+
 export function Images() {
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
+  const [imageTab, setImageTab] = useState('overview')
   const [pullReference, setPullReference] = useState('')
   const [pulling, setPulling] = useState(false)
+  const inspectorTrigger = useRef<HTMLElement | null>(null)
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const images = usePolledResource<DockerImage[]>((signal) => apiGet('/api/docker/images', signal), 8000, [], 'docker:images')
@@ -30,6 +39,19 @@ export function Images() {
   const imageKey = (image: DockerImage) => `${image.repository}:${image.tag}:${image.digest || image.id}`
   const selected = items.find((image) => imageKey(image) === selectedID) ?? null
   const available = status.data?.available ?? false
+
+  function openImage(image: DockerImage, tab: 'overview' | 'layers') {
+    if (document.activeElement instanceof HTMLElement) inspectorTrigger.current = document.activeElement
+    setSelectedID(imageKey(image))
+    setImageTab(tab)
+  }
+
+  function closeInspector() {
+    setSelectedID(null)
+    requestAnimationFrame(() => {
+      if (inspectorTrigger.current?.isConnected) inspectorTrigger.current.focus()
+    })
+  }
 
   async function pullImage(event: FormEvent) {
     event.preventDefault()
@@ -49,9 +71,7 @@ export function Images() {
   }
 
   async function removeImage(image: DockerImage, force: boolean) {
-    const reference = image.repository && image.repository !== '<none>' && image.tag && image.tag !== '<none>'
-      ? `${image.repository}:${image.tag}`
-      : image.id
+    const reference = imageReference(image)
     if (!window.confirm(`${force ? 'Force-remove' : 'Remove'} image ${reference}?`)) return
     try {
       await apiSend(`/api/docker/images/${encodeURIComponent(reference)}${force ? '?force=true' : ''}`, 'DELETE')
@@ -100,7 +120,7 @@ export function Images() {
             getKey={imageKey}
             columnsTemplate={COLUMNS_TEMPLATE}
             selectedKey={selectedID}
-            onSelect={(image) => setSelectedID(imageKey(image))}
+            onSelect={(image) => openImage(image, 'overview')}
             ariaLabel="Docker images"
             emptyMessage={images.error || 'No images found.'}
             columns={[
@@ -110,27 +130,44 @@ export function Images() {
               { header: 'Size', className: 'mono', render: (image) => image.size },
             ]}
             renderActions={(image) => (
-              <ActionButton className="removeButton" label="Remove image" icon="remove" onClick={() => removeImage(image, false)} />
+              <>
+                <ActionButton label="Inspect image layers" icon="terminal" onClick={() => openImage(image, 'layers')} />
+                <ActionButton className="removeButton" label="Remove image" icon="remove" onClick={() => removeImage(image, false)} />
+              </>
             )}
           />
         )}
         {selected && (
-          <Inspector title={`${selected.repository}:${selected.tag}`} subtitle={selected.id} onClose={() => setSelectedID(null)}>
-            <section className="drawerPanel">
-              <h3>Image detail</h3>
-              <dl className="runtimeGrid">
-                <div><dt>Digest</dt><dd>{selected.digest || '—'}</dd></div>
-                <div><dt>Size</dt><dd>{selected.size}</dd></div>
-                <div><dt>Created</dt><dd>{selected.createdAt || '—'}</dd></div>
-              </dl>
-            </section>
-            <div className="maintenanceBar">
-              <span>Maintenance controls</span>
-              <div className="actions">
-                <ActionButton className="removeButton" label="Remove image" icon="remove" onClick={() => removeImage(selected, false)} />
-                <ActionButton className="removeButton" label="Force remove image" icon="kill" onClick={() => removeImage(selected, true)} />
-              </div>
-            </div>
+          <Inspector title={imageReference(selected)} subtitle={selected.id} onClose={closeInspector}>
+            <InspectorTabs
+              tabs={[
+                { id: 'overview', label: 'Overview' },
+                { id: 'layers', label: 'Layers' },
+              ]}
+              activeID={imageTab}
+              onSelect={setImageTab}
+            />
+            {imageTab === 'overview' && (
+              <>
+                <section className="drawerPanel">
+                  <h3>Image detail</h3>
+                  <dl className="runtimeGrid">
+                    <div><dt>Digest</dt><dd>{selected.digest || '—'}</dd></div>
+                    <div><dt>Size</dt><dd>{selected.size}</dd></div>
+                    <div><dt>Created</dt><dd>{selected.createdAt || '—'}</dd></div>
+                  </dl>
+                </section>
+                <div className="maintenanceBar">
+                  <span>Maintenance controls</span>
+                  <div className="actions">
+                    <ActionButton label="Inspect image layers" icon="terminal" onClick={() => setImageTab('layers')} />
+                    <ActionButton className="removeButton" label="Remove image" icon="remove" onClick={() => removeImage(selected, false)} />
+                    <ActionButton className="removeButton" label="Force remove image" icon="kill" onClick={() => removeImage(selected, true)} />
+                  </div>
+                </div>
+              </>
+            )}
+            {imageTab === 'layers' && <DiveTerminal image={imageReference(selected)} />}
           </Inspector>
         )}
       </div>

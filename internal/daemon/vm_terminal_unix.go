@@ -62,6 +62,12 @@ func bridgeK9sTerminal(w http.ResponseWriter, r *http.Request, cluster kubernete
 	}, "k9s failed")
 }
 
+func bridgeDiveTerminal(w http.ResponseWriter, r *http.Request, divePath, image, socketPath string) {
+	bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+		return diveTerminalCommand(ctx, divePath, image, socketPath), nil
+	}, "Dive image inspector failed")
+}
+
 func bridgePTYTerminal(
 	w http.ResponseWriter,
 	r *http.Request,

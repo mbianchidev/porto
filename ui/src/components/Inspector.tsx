@@ -1,5 +1,5 @@
 import { Component, useEffect, useRef, useState } from 'react'
-import type { ErrorInfo, ReactNode } from 'react'
+import type { ErrorInfo, KeyboardEvent as ReactKeyboardEvent, ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { ActionButton } from './ActionButton'
 
@@ -57,6 +57,7 @@ export function Inspector({ title, subtitle, onClose, children }: InspectorProps
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (event.key !== 'Escape') return
+      if (event.target instanceof Element && event.target.closest('.xterm')) return
       if (maximized) {
         setMaximized(false)
       } else {
@@ -99,16 +100,31 @@ export function InspectorTabs({
   activeID: string
   onSelect: (id: string) => void
 }) {
+  function moveFocus(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
+    let nextIndex: number | null = null
+    if (event.key === 'ArrowRight') nextIndex = (index + 1) % tabs.length
+    if (event.key === 'ArrowLeft') nextIndex = (index - 1 + tabs.length) % tabs.length
+    if (event.key === 'Home') nextIndex = 0
+    if (event.key === 'End') nextIndex = tabs.length - 1
+    if (nextIndex === null) return
+    event.preventDefault()
+    onSelect(tabs[nextIndex].id)
+    const buttons = event.currentTarget.parentElement?.querySelectorAll<HTMLButtonElement>('[role="tab"]')
+    buttons?.[nextIndex]?.focus()
+  }
+
   return (
     <div className="inspectorTabs" role="tablist" aria-label="Inspector sections">
-      {tabs.map((tab) => (
+      {tabs.map((tab, index) => (
         <button
           type="button"
           role="tab"
           key={tab.id}
           aria-selected={activeID === tab.id}
+          tabIndex={activeID === tab.id ? 0 : -1}
           className={activeID === tab.id ? 'active' : ''}
           onClick={() => onSelect(tab.id)}
+          onKeyDown={(event) => moveFocus(event, index)}
         >
           {tab.label}
         </button>

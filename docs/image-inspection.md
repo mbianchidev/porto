@@ -4,6 +4,14 @@ Porto desktop packages include [Dive](https://github.com/wagoodman/dive), a
 terminal interface for exploring an image's read-only layer stack and the files
 added, modified, or removed by each build step.
 
+In Porto desktop, select an image and open the **Layers** tab, or use the
+**Inspect image layers** action beside an image or container. Dive runs inside
+Porto's embedded terminal and targets the selected image through Porto's Docker
+endpoint.
+
+The embedded terminal currently requires a PTY-capable macOS or Linux host. On
+Windows, use `porto docker dive IMAGE` in a terminal.
+
 Run Dive through Porto so it always targets Porto's Docker endpoint:
 
 ```sh
