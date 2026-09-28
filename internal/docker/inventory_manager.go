@@ -95,16 +95,26 @@ func (m *Manager) ContainerSnapshot() ContainerSnapshot {
 }
 
 func (m *Manager) SubscribeContainerSnapshots() (<-chan ContainerSnapshot, func()) {
+	channel, _, unsubscribe := m.SubscribeContainerSnapshotsWithInitial()
+	return channel, unsubscribe
+}
+
+func (m *Manager) SubscribeContainerSnapshotsWithInitial() (
+	<-chan ContainerSnapshot,
+	ContainerSnapshot,
+	func(),
+) {
 	m.inventoryMu.Lock()
 	inventory := m.inventory
 	m.inventoryMu.Unlock()
 	if inventory == nil {
 		channel := make(chan ContainerSnapshot, 1)
-		channel <- m.ContainerSnapshot()
+		initial := m.ContainerSnapshot()
+		channel <- initial
 		close(channel)
-		return channel, func() {}
+		return channel, initial, func() {}
 	}
-	return inventory.subscribe()
+	return inventory.subscribeWithSnapshot()
 }
 
 func (m *Manager) activeContainerInventory() *containerInventory {

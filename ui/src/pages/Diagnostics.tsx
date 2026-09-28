@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -42,14 +42,27 @@ export function Diagnostics() {
   const [previewBusy, setPreviewBusy] = useState(false)
   const [downloadBusy, setDownloadBusy] = useState(false)
   const [repairBusy, setRepairBusy] = useState('')
+  const recordedReport = useRef('')
   const reportResource = usePolledResource<DiagnosticReport>(
     (signal) => apiGet('/api/diagnostics', signal),
-    15000,
+    0,
     [],
     'diagnostics:report',
   )
   const report = reportResource.data
   const filteredChecks = report?.checks.filter((check) => filter === 'all' || check.state === filter) ?? []
+
+  useEffect(() => {
+    if (!report || recordedReport.current === report.generatedAt) return
+    recordedReport.current = report.generatedAt
+    const level = report.overall === 'healthy' ? 'info' : report.overall === 'degraded' ? 'notice' : 'error'
+    recordActivity(
+      level,
+      'diagnostics',
+      `Diagnostics ${report.overall}: ${report.summary.healthy} healthy, ${report.summary.degraded} degraded, ${report.summary.unavailable} unavailable, ${report.summary.unsafe} unsafe.`,
+      report.generatedAt,
+    )
+  }, [recordActivity, report])
 
   async function loadPreview() {
     setPreviewBusy(true)

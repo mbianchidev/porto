@@ -30,6 +30,9 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Local diagnostics and repair.** Run `porto diagnose` or use the Diagnostics page to inspect runtime health, preview a redacted local bundle, and apply confirmed Porto-owned repairs.
 - **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.
 
+See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
+for supported, partial, capability-gated, and explicitly unsupported operations.
+
 ## Quickstart
 
 ### 1. Install Porto

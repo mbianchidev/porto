@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"runtime"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -59,6 +60,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("HEAD /_ping", a.ping)
 	a.mux.HandleFunc("GET /version", a.version)
 	a.mux.HandleFunc("GET /info", a.info)
+	a.mux.HandleFunc("GET /events", a.events)
 	a.mux.HandleFunc("POST /grpc", a.buildKitControl)
 	a.mux.HandleFunc("POST /session", a.buildKitSession)
 
@@ -77,11 +79,13 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /containers/{id}/checkpoint", a.checkpointContainer)
 	a.mux.HandleFunc("POST /containers/{id}/restore", a.restoreContainer)
 	a.mux.HandleFunc("GET /containers/{id}/logs", a.containerLogs)
+	a.mux.HandleFunc("GET /containers/{id}/stats", a.containerStats)
 	a.mux.HandleFunc("POST /containers/{id}/attach", a.attachContainer)
 	a.mux.HandleFunc("POST /containers/{id}/exec", a.createExec)
 	a.mux.HandleFunc("GET /containers/{id}/archive", a.containerArchive)
 	a.mux.HandleFunc("HEAD /containers/{id}/archive", a.containerArchive)
 	a.mux.HandleFunc("PUT /containers/{id}/archive", a.putContainerArchive)
+	a.mux.HandleFunc("GET /containers/{id}/export", a.exportContainer)
 	a.mux.HandleFunc("DELETE /containers/{id}", a.deleteContainer)
 	a.mux.HandleFunc("POST /exec/{id}/start", a.startExec)
 	a.mux.HandleFunc("GET /exec/{id}/json", a.inspectExec)
@@ -89,10 +93,13 @@ func (a *API) routes() {
 
 	a.mux.HandleFunc("GET /images/json", a.images)
 	a.mux.HandleFunc("GET /images/get", a.getImages)
+	a.mux.HandleFunc("POST /images/load", a.loadImages)
 	a.mux.HandleFunc("GET /images/{id...}", a.inspectImagePath)
+	a.mux.HandleFunc("POST /images/{id...}", a.mutateImagePath)
 	a.mux.HandleFunc("POST /images/create", a.pullImage)
 	a.mux.HandleFunc("DELETE /images/{id...}", a.deleteImage)
 	a.mux.HandleFunc("POST /build", a.buildImage)
+	a.mux.HandleFunc("POST /commit", a.commitContainer)
 
 	a.mux.HandleFunc("GET /networks", a.networks)
 	a.mux.HandleFunc("POST /networks/create", a.createNetwork)
@@ -148,6 +155,11 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 	containers, containerErr := a.manager.Containers(r.Context())
 	images, imageErr := a.manager.Images(r.Context())
 	warnings := make([]string, 0, 3)
+	backendInfo := BackendInfo{}
+	var backendInfoErr error
+	if status.Available {
+		backendInfo, backendInfoErr = a.manager.BackendInfo(r.Context())
+	}
 	if status.Message != "" {
 		warnings = append(warnings, status.Message)
 	}
@@ -157,6 +169,10 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 	if imageErr != nil && status.Available {
 		warnings = append(warnings, imageErr.Error())
 	}
+	if backendInfoErr != nil {
+		warnings = append(warnings, backendInfoErr.Error())
+	}
+	warnings = append(warnings, backendInfo.Warnings...)
 	running, paused, stopped := 0, 0, 0
 	for _, container := range containers {
 		switch strings.ToLower(container.State) {
@@ -168,9 +184,17 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 			stopped++
 		}
 	}
-	securityOptions := []string{"name=seccomp,profile=builtin"}
-	if strings.Contains(strings.ToLower(status.Backend), "lima") {
+	securityOptions := append([]string(nil), backendInfo.SecurityOptions...)
+	if len(securityOptions) == 0 {
+		securityOptions = []string{"name=seccomp,profile=builtin"}
+	}
+	if strings.Contains(strings.ToLower(status.Backend), "lima") &&
+		!slices.Contains(securityOptions, "name=rootless") {
 		securityOptions = append(securityOptions, "name=rootless")
+	}
+	ncpu := backendInfo.NCPU
+	if ncpu <= 0 {
+		ncpu = runtime.NumCPU()
 	}
 	writeDockerJSON(w, http.StatusOK, map[string]any{
 		"ID":                "porto",
@@ -179,7 +203,7 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"ContainersPaused":  paused,
 		"ContainersStopped": stopped,
 		"Images":            len(images),
-		"Driver":            "overlayfs",
+		"Driver":            firstNonEmpty(backendInfo.Driver, "overlayfs"),
 		"DriverStatus": [][]string{
 			{"Backing Filesystem", "extfs"},
 			{"driver-type", "io.containerd.snapshotter.v1"},
@@ -190,32 +214,32 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 			"Authorization": nil,
 			"Log":           []string{"json-file"},
 		},
-		"MemoryLimit":        true,
-		"SwapLimit":          true,
-		"CpuCfsPeriod":       true,
-		"CpuCfsQuota":        true,
-		"CPUShares":          true,
-		"CPUSet":             true,
-		"PidsLimit":          true,
-		"IPv4Forwarding":     true,
+		"MemoryLimit":        backendInfo.MemoryLimit,
+		"SwapLimit":          backendInfo.SwapLimit,
+		"CpuCfsPeriod":       backendInfo.CPUPeriod,
+		"CpuCfsQuota":        backendInfo.CPUQuota,
+		"CPUShares":          backendInfo.CPUShares,
+		"CPUSet":             backendInfo.CPUSet,
+		"PidsLimit":          backendInfo.PIDsLimit,
+		"IPv4Forwarding":     backendInfo.IPv4Forwarding,
 		"Debug":              false,
 		"NFd":                0,
-		"OomKillDisable":     true,
+		"OomKillDisable":     backendInfo.OomKillDisable,
 		"NGoroutines":        0,
-		"SystemTime":         time.Now().UTC().Format(time.RFC3339Nano),
-		"LoggingDriver":      "json-file",
-		"CgroupDriver":       "systemd",
-		"CgroupVersion":      "2",
+		"SystemTime":         firstNonEmpty(backendInfo.SystemTime, time.Now().UTC().Format(time.RFC3339Nano)),
+		"LoggingDriver":      firstNonEmpty(backendInfo.LoggingDriver, "json-file"),
+		"CgroupDriver":       firstNonEmpty(backendInfo.CgroupDriver, "systemd"),
+		"CgroupVersion":      backendInfo.CgroupVersion,
 		"SecurityOptions":    securityOptions,
 		"NEventsListener":    0,
-		"KernelVersion":      "",
-		"OperatingSystem":    "Porto Engine",
+		"KernelVersion":      backendInfo.KernelVersion,
+		"OperatingSystem":    firstNonEmpty(backendInfo.OperatingSystem, "Porto Engine"),
 		"OSVersion":          config.Version,
-		"OSType":             "linux",
-		"Architecture":       runtime.GOARCH,
-		"NCPU":               runtime.NumCPU(),
-		"MemTotal":           0,
-		"Name":               "porto",
+		"OSType":             firstNonEmpty(backendInfo.OSType, "linux"),
+		"Architecture":       firstNonEmpty(backendInfo.Architecture, runtime.GOARCH),
+		"NCPU":               ncpu,
+		"MemTotal":           backendInfo.MemTotal,
+		"Name":               firstNonEmpty(backendInfo.Name, "porto"),
 		"ServerVersion":      config.Version,
 		"DockerRootDir":      "porto://containerd",
 		"IndexServerAddress": "https://index.docker.io/v1/",
@@ -272,7 +296,7 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			"ImageID": container.ImageID,
 			"Command": container.Command,
 			"Created": parseDockerTime(container.CreatedAt),
-			"Ports":   []any{},
+			"Ports":   dockerContainerPorts(container),
 			"Labels":  container.Labels,
 			"State":   container.State,
 			"Status":  container.Status,
@@ -280,7 +304,7 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 				"NetworkMode": firstNonEmpty(container.Networks, "default"),
 			},
 			"NetworkSettings": map[string]any{"Networks": map[string]any{}},
-			"Mounts":          []any{},
+			"Mounts":          dockerContainerMounts(container),
 		})
 	}
 	writeDockerJSON(w, http.StatusOK, response)
@@ -314,12 +338,12 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		AttachStdout    bool `json:"AttachStdout"`
 		AttachStderr    bool `json:"AttachStderr"`
 		HostConfig      struct {
-			Binds        []string `json:"Binds"`
-			Mounts       []any    `json:"Mounts"`
-			AutoRemove   bool     `json:"AutoRemove"`
-			NetworkMode  string   `json:"NetworkMode"`
-			Privileged   bool     `json:"Privileged"`
-			ReadonlyRoot bool     `json:"ReadonlyRootfs"`
+			Binds        []string                `json:"Binds"`
+			Mounts       []dockerStructuredMount `json:"Mounts"`
+			AutoRemove   bool                    `json:"AutoRemove"`
+			NetworkMode  string                  `json:"NetworkMode"`
+			Privileged   bool                    `json:"Privileged"`
+			ReadonlyRoot bool                    `json:"ReadonlyRootfs"`
 			PortBindings map[string][]struct {
 				HostIP   string `json:"HostIp"`
 				HostPort string `json:"HostPort"`
@@ -409,9 +433,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(request.HostConfig.DeviceCgroupRules) > 0 {
 		unsupported = append(unsupported, "DeviceCgroupRules")
-	}
-	if len(request.HostConfig.Mounts) > 0 {
-		unsupported = append(unsupported, "Mounts")
 	}
 	if len(request.HostConfig.CapAdd) > 0 {
 		unsupported = append(unsupported, "CapAdd")
@@ -556,7 +577,16 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if len(networks) == 0 && request.HostConfig.NetworkMode != "" {
 		networks = append(networks, ContainerNetwork{Name: request.HostConfig.NetworkMode})
 	}
+	structuredVolumes, tmpfs, err := structuredMountArguments(
+		request.HostConfig.Mounts,
+		request.HostConfig.Tmpfs,
+	)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	volumes := append([]string(nil), request.HostConfig.Binds...)
+	volumes = append(volumes, structuredVolumes...)
 	for target := range request.Volumes {
 		if strings.TrimSpace(target) == "" || strings.ContainsAny(target, "\r\n\x00") {
 			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid anonymous volume target"})
@@ -591,8 +621,12 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 			Retries:       request.Healthcheck.Retries,
 		}
 	}
+	containerName := r.URL.Query().Get("name")
+	if containerName == "" {
+		containerName = composeContainerName(request.Labels, networks)
+	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
-		Name:        r.URL.Query().Get("name"),
+		Name:        containerName,
 		Image:       request.Image,
 		Platform:    r.URL.Query().Get("platform"),
 		Command:     request.Cmd,
@@ -607,7 +641,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		Healthcheck: healthcheck,
 		Privileged:  request.HostConfig.Privileged,
 		SecurityOpt: request.HostConfig.SecurityOpt,
-		Tmpfs:       request.HostConfig.Tmpfs,
+		Tmpfs:       tmpfs,
 		Sysctls:     request.HostConfig.Sysctls,
 		Devices:     devices,
 		Cgroupns:    request.HostConfig.CgroupnsMode,
@@ -627,6 +661,22 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": []string{}})
+}
+
+func composeContainerName(labels map[string]string, networks []ContainerNetwork) string {
+	if labels["com.docker.compose.project"] == "" || labels["com.docker.compose.service"] == "" {
+		return ""
+	}
+	for _, network := range networks {
+		if len(network.Aliases) == 0 {
+			continue
+		}
+		candidate := strings.TrimPrefix(strings.TrimSpace(network.Aliases[0]), "/")
+		if validateObjectID(candidate) == nil {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
@@ -913,9 +963,9 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 			"RepoTags":    tags,
 			"RepoDigests": digests,
 			"Created":     parseDockerTime(image.CreatedAt),
-			"Size":        int64(0),
+			"Size":        image.SizeBytes,
 			"SharedSize":  int64(-1),
-			"VirtualSize": int64(0),
+			"VirtualSize": image.SizeBytes,
 			"Labels":      image.Labels,
 			"Containers":  int64(-1),
 		})
@@ -939,6 +989,10 @@ func (a *API) inspectImagePath(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) pullImage(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("fromSrc") != "" {
+		a.importImage(w, r)
+		return
+	}
 	reference := r.URL.Query().Get("fromImage")
 	if tag := r.URL.Query().Get("tag"); tag != "" && !strings.Contains(reference, "@") {
 		separator := ":"
@@ -1088,6 +1142,58 @@ func dockerVolume(volume Volume) map[string]any {
 		"Options":    map[string]string{},
 		"Scope":      firstNonEmpty(volume.Scope, "local"),
 	}
+}
+
+func dockerContainerPorts(container Container) []map[string]any {
+	ports := make([]map[string]any, 0)
+	for _, network := range container.NetworkDetails {
+		if network.ContainerPort <= 0 {
+			continue
+		}
+		port := map[string]any{
+			"PrivatePort": network.ContainerPort,
+			"Type":        firstNonEmpty(network.Protocol, "tcp"),
+		}
+		if network.HostPort > 0 {
+			port["PublicPort"] = network.HostPort
+			port["IP"] = network.HostIP
+		}
+		ports = append(ports, port)
+	}
+	return ports
+}
+
+func dockerContainerMounts(container Container) []map[string]any {
+	mounts := make([]map[string]any, 0, len(container.MountDetails))
+	for _, mount := range container.MountDetails {
+		readOnly := false
+		propagation := ""
+		for _, option := range mount.Options {
+			switch option {
+			case "ro":
+				readOnly = true
+			case "rprivate", "private", "rshared", "shared", "rslave", "slave":
+				propagation = option
+			}
+		}
+		item := map[string]any{
+			"Type":        firstNonEmpty(mount.Type, "bind"),
+			"Source":      mount.Source,
+			"Destination": mount.Destination,
+			"Mode":        strings.Join(mount.Options, ","),
+			"RW":          !readOnly,
+			"Propagation": propagation,
+		}
+		if mount.Type == "volume" {
+			item["Name"] = mount.Source
+			item["Driver"] = "local"
+		} else {
+			item["Name"] = ""
+			item["Driver"] = ""
+		}
+		mounts = append(mounts, item)
+	}
+	return mounts
 }
 
 func dockerTimestamp(value string) string {

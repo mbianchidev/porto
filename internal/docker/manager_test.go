@@ -557,7 +557,7 @@ func TestManagerStatusAndInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list images: %v", err)
 	}
-	if len(images) != 1 || images[0].Digest != "sha256:2" {
+	if len(images) != 1 || images[0].Digest != "sha256:2" || images[0].SizeBytes != 42_000_000 {
 		t.Fatalf("unexpected images: %+v", images)
 	}
 }
@@ -604,6 +604,53 @@ func TestContainerHostnameRejectsUnrepresentableAliases(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+}
+
+func TestCompatibilityContainerCreationUsesComposeServiceAliasAsHostname(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		for _, expected := range []string{
+			"--network project_default",
+			"--hostname api",
+		} {
+			if !strings.Contains(joined, expected) {
+				return nil, fmt.Errorf("missing %q in %s", expected, joined)
+			}
+		}
+		return []byte("container-id\n"), nil
+	}
+	id, err := New(runner).CreateContainer(context.Background(), CreateContainerRequest{
+		Name:  "project-api-1",
+		Image: "alpine:latest",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api"},
+		}},
+	})
+	if err != nil || id != "container-id" {
+		t.Fatalf("create compatibility container = %q, %v", id, err)
+	}
+}
+
+func TestCompatibilityContainerCreationRejectsExtraAliasesBeforeMutation(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	_, err := New(runner).CreateContainer(context.Background(), CreateContainerRequest{
+		Name:  "project-api-1",
+		Image: "alpine:latest",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api", "api.internal"},
+		}},
+	})
+	if err == nil || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported aliases mutated runtime: %+v", runner.commands)
 	}
 }
 

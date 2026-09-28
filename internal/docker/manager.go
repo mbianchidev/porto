@@ -69,6 +69,7 @@ type Manager struct {
 	operationsConnector containerOperationsConnector
 	execConnector       execOperationsConnector
 	networkConnector    networkOperationsConnector
+	metricReader        func(context.Context, string) (ContainerMetricSample, error)
 	networkLocks        *containerMutexes
 	containerNameMu     *sync.Mutex
 	registryAuthMu      sync.RWMutex
@@ -96,6 +97,7 @@ func New(runner runtimes.Runner) *Manager {
 			containerNameMu: &sync.Mutex{},
 		}
 		manager.runtimeConnector = manager.connectContainerRuntime
+		manager.metricReader = manager.readContainerMetric
 		return manager
 	}
 	stateDir, _ := config.DockerEngineDir()
@@ -116,6 +118,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		containerNameMu: &sync.Mutex{},
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
+	manager.metricReader = manager.readContainerMetric
 	manager.creationConnector = manager.connectContainerCreation
 	manager.operationsConnector = manager.connectContainerOperations
 	manager.execConnector = manager.connectExecOperations
@@ -177,6 +180,18 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 		status.ServerVersion = version
 	}
 	return status
+}
+
+func (m *Manager) BackendInfo(ctx context.Context) (BackendInfo, error) {
+	output, err := m.run(ctx, "inspect Porto container runtime information", "info", "--format", "{{json .}}")
+	if err != nil {
+		return BackendInfo{}, err
+	}
+	var info BackendInfo
+	if err := json.Unmarshal(output, &info); err != nil {
+		return BackendInfo{}, fmt.Errorf("decode Porto container runtime information: %w", err)
+	}
+	return info, nil
 }
 
 func (m *Manager) EngineOwnershipStatus(ctx context.Context) EngineOwnershipStatus {
@@ -687,7 +702,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		}
 		return id, err
 	}
-	hostname, err := containerHostname(request)
+	hostname, err := compatibilityContainerHostname(request)
 	if err != nil {
 		return "", err
 	}
@@ -828,21 +843,9 @@ func createdContainerID(output []byte) (string, error) {
 }
 
 func containerHostname(request CreateContainerRequest) (string, error) {
-	aliases := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, network := range request.Networks {
-		for _, alias := range network.Aliases {
-			if err := validateObjectID(alias); err != nil {
-				return "", fmt.Errorf("network alias: %w", err)
-			}
-			if alias == request.Name {
-				continue
-			}
-			if _, ok := seen[alias]; !ok {
-				seen[alias] = struct{}{}
-				aliases = append(aliases, alias)
-			}
-		}
+	aliases, err := containerAliases(request)
+	if err != nil {
+		return "", err
 	}
 	if request.Hostname != "" {
 		for _, alias := range aliases {
@@ -853,12 +856,62 @@ func containerHostname(request CreateContainerRequest) (string, error) {
 		return request.Hostname, nil
 	}
 	if len(aliases) > 1 {
-		return "", fmt.Errorf("%w: multiple network aliases", ErrUnsupported)
+		return "", fmt.Errorf("%w: multiple network aliases %v", ErrUnsupported, aliases)
 	}
 	if len(aliases) == 1 {
 		return aliases[0], nil
 	}
 	return "", nil
+}
+
+func compatibilityContainerHostname(request CreateContainerRequest) (string, error) {
+	aliases, err := containerAliases(request)
+	if err != nil {
+		return "", err
+	}
+	if request.Hostname != "" {
+		for _, alias := range aliases {
+			if alias != request.Hostname {
+				return "", fmt.Errorf("%w: network aliases with an explicit hostname", ErrUnsupported)
+			}
+		}
+		return request.Hostname, nil
+	}
+	if len(aliases) > 1 {
+		return "", fmt.Errorf(
+			"%w: compatibility runtime supports one network alias, received %v for container name %q and Compose service %q",
+			ErrUnsupported,
+			aliases,
+			request.Name,
+			request.Labels["com.docker.compose.service"],
+		)
+	}
+	if len(aliases) == 1 {
+		return aliases[0], nil
+	}
+	return "", nil
+}
+
+func containerAliases(request CreateContainerRequest) ([]string, error) {
+	aliases := make([]string, 0)
+	seen := make(map[string]struct{})
+	composeRequest := request.Labels["com.docker.compose.project"] != "" &&
+		request.Labels["com.docker.compose.service"] != ""
+	for _, network := range request.Networks {
+		for index, alias := range network.Aliases {
+			if err := validateObjectID(alias); err != nil {
+				return nil, fmt.Errorf("network alias: %w", err)
+			}
+			if alias == request.Name || (composeRequest && index == 0) {
+				continue
+			}
+			if _, ok := seen[alias]; !ok {
+				seen[alias] = struct{}{}
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	return aliases, nil
 }
 
 func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]string, error) {
@@ -966,6 +1019,10 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 		return nil, err
 	}
 	return decodeLines(output, func(item map[string]string) Image {
+		sizeBytes, err := resources.ParseBytes(item["Size"])
+		if err != nil {
+			sizeBytes = -1
+		}
 		return Image{
 			ID:         first(item, "ID", "Id"),
 			Name:       item["Name"],
@@ -974,6 +1031,7 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 			Digest:     item["Digest"],
 			Platform:   item["Platform"],
 			Size:       item["Size"],
+			SizeBytes:  sizeBytes,
 			CreatedAt:  first(item, "CreatedAt", "CreatedSince", "Created"),
 			Labels:     parseLabels(item["Labels"]),
 		}
@@ -1579,6 +1637,36 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 	return stats, nil
 }
 
+func (m *Manager) ContainerMetric(ctx context.Context, id string) (ContainerMetricSample, error) {
+	if m.metricReader == nil {
+		return ContainerMetricSample{}, fmt.Errorf("%w: raw container metrics", ErrUnsupported)
+	}
+	return m.metricReader(ctx, id)
+}
+
+func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample ContainerMetricSample, err error) {
+	if err := validateObjectID(id); err != nil {
+		return ContainerMetricSample{}, err
+	}
+	if m.runtimeConnector == nil {
+		return ContainerMetricSample{}, fmt.Errorf("%w: direct container metrics", ErrUnsupported)
+	}
+	runtimeClient, err := m.runtimeConnector(ctx)
+	if err != nil {
+		return ContainerMetricSample{}, err
+	}
+	defer func() {
+		err = errors.Join(err, runtimeClient.Close())
+	}()
+	provider, ok := runtimeClient.(interface {
+		ContainerMetric(context.Context, string) (ContainerMetricSample, error)
+	})
+	if !ok {
+		return ContainerMetricSample{}, fmt.Errorf("%w: direct container metrics", ErrUnsupported)
+	}
+	return provider.ContainerMetric(ctx, id)
+}
+
 func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
 	normalized := normalizeNerdctlReference(id)
 	if platform == "" {
@@ -1922,18 +2010,27 @@ func (m *Manager) runBackendStreamingInput(
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
+	return m.runStreamingCommand(ctx, timeout, action, runtimes.Command{
+		Name:        backend.name,
+		Args:        append(append([]string(nil), backend.prefix...), args...),
+		Stdin:       stdin,
+		StdinReader: stdinReader,
+	}, emit)
+}
+
+func (m *Manager) runStreamingCommand(
+	ctx context.Context,
+	timeout time.Duration,
+	action string,
+	command runtimes.Command,
+	emit func(runtimes.OutputChunk) error,
+) error {
 	runner, ok := m.runner.(streamingRunner)
 	if !ok {
 		return fmt.Errorf("%w: streaming stdout and stderr capture", ErrUnsupported)
 	}
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := runtimes.Command{
-		Name:        backend.name,
-		Args:        append(append([]string(nil), backend.prefix...), args...),
-		Stdin:       stdin,
-		StdinReader: stdinReader,
-	}
 	output, runErr := runner.RunStreaming(commandContext, command, emit)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return runtimes.CommandError(
