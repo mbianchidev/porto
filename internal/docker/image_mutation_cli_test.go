@@ -27,8 +27,9 @@ func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
 	}
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
-		switch strings.Join(command.Args, " ") {
-		case "tag alpine:latest docker.io/example/app:v1":
+		joined := strings.Join(command.Args, " ")
+		switch joined {
+		case "tag alpine:latest docker.io/example/app:v1", "tag alpine:latest example/app:v1":
 			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected image command: %v", command.Args)

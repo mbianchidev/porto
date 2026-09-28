@@ -52,10 +52,14 @@ func (a *API) containerStats(w http.ResponseWriter, r *http.Request) {
 }
 
 func dockerStatsDocument(current ContainerMetricSample, previous *ContainerMetricSample) map[string]any {
+	name := current.Name
+	if name != "" && name[0] != '/' {
+		name = "/" + name
+	}
 	document := map[string]any{
 		"read": current.Read.UTC().Format(time.RFC3339Nano),
 		"id":   current.ID,
-		"name": current.Name,
+		"name": name,
 	}
 	if previous != nil {
 		document["preread"] = previous.Read.UTC().Format(time.RFC3339Nano)
