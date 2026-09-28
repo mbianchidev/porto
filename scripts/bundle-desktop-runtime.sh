@@ -16,6 +16,10 @@ kind_version="${KIND_VERSION:-v0.33.0}"
 k9s_version="${K9S_VERSION:-v0.50.18}"
 lima_version="${LIMA_VERSION:-v2.2.0}"
 docker_version="29.7.2"
+docker_git_commit="a7dcaa6fdb6ed04aacbfdc76357fdae01605609e"
+docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0a3cbf54a"
+compose_version="v5.5.1"
+buildx_version="v0.37.1"
 qemu_version="11.1.0"
 qemu_build="20260811"
 
@@ -30,7 +34,7 @@ esac
 temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT
 rm -rf "$destination"
-mkdir -p "$destination/bin" "$destination/lima" "$destination/licenses"
+mkdir -p "$destination/bin" "$destination/docker/cli-plugins" "$destination/lima" "$destination/licenses"
 destination="$(cd "$destination" && pwd -P)"
 
 download() {
@@ -39,20 +43,11 @@ download() {
   curl --fail --location --retry 4 --retry-all-errors --silent --show-error "$url" --output "$output"
 }
 
-sha256_file() {
-  node -e 'const fs=require("node:fs");const crypto=require("node:crypto");const file=process.argv[1];const hash=crypto.createHash("sha256");hash.update(fs.readFileSync(file));process.stdout.write(hash.digest("hex"))' "$1"
-}
-
 verify() {
   local expected
   expected="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -d '[:space:]')"
   local file="$2"
-  local actual
-  actual="$(sha256_file "$file")"
-  if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
-    echo "checksum mismatch for $(basename "$file"): expected $expected, got $actual" >&2
-    exit 1
-  fi
+  node "$script_directory/verify-runtime-checksum.cjs" --verify "$expected" "$file"
 }
 
 manifest_checksum() {
@@ -72,55 +67,77 @@ download "$kubectl_url" "$destination/bin/$kubectl_asset"
 download "${kubectl_url}.sha256" "$temporary/kubectl.sha256"
 verify "$(cat "$temporary/kubectl.sha256")" "$destination/bin/$kubectl_asset"
 
-docker_bundled=false
-docker_extension="tgz"
-case "$goos/$goarch" in
-  darwin/arm64)
-    docker_os="mac"
-    docker_arch="aarch64"
-    docker_checksum="b8683ed19d1f06048a496f9b8429e2c71d0b088d475b7487c054ea3666c02a3c"
-    ;;
-  darwin/amd64)
-    docker_os="mac"
-    docker_arch="x86_64"
-    docker_checksum="fb1f1aa7ac7af4364165b9eadfda92e96c8ced508fca74f53079719891367438"
-    ;;
-  linux/arm64)
-    docker_os="linux"
-    docker_arch="aarch64"
-    docker_checksum="43d143448adf2c2787704e7d7704fd6d62d367a54c5edaef0a3f75509cb0938d"
-    ;;
-  linux/amd64)
-    docker_os="linux"
-    docker_arch="x86_64"
-    docker_checksum="803d433f226db4776e1768fd319fc6c6e4935a456acf84fcc0080818b854bc8f"
-    ;;
-  windows/amd64)
-    docker_os="win"
-    docker_arch="x86_64"
-    docker_extension="zip"
-    docker_checksum="ed9222f478a5d143ac90e8e2fd3209b5076382cdb4b210321f97aa4b68bc6811"
-    ;;
-  windows/arm64)
-    docker_os=""
-    docker_arch=""
-    docker_checksum=""
-    ;;
-esac
-if [ -n "$docker_os" ]; then
-  docker_asset="docker-${docker_version}.${docker_extension}"
-  docker_url="https://download.docker.com/${docker_os}/static/stable/${docker_arch}/${docker_asset}"
-  download "$docker_url" "$temporary/$docker_asset"
-  verify "$docker_checksum" "$temporary/$docker_asset"
-  mkdir -p "$temporary/docker"
-  if [ "$docker_extension" = "zip" ]; then
-    unzip -q "$temporary/$docker_asset" "docker/docker.exe" -d "$temporary/docker"
-    mv "$temporary/docker/docker/docker.exe" "$destination/bin/docker.exe"
-  else
-    tar -xzf "$temporary/$docker_asset" -C "$temporary/docker" docker/docker
-    mv "$temporary/docker/docker/docker" "$destination/bin/docker"
-  fi
-  docker_bundled=true
+docker_source_asset="docker-cli-v${docker_version}.tar.gz"
+download \
+  "https://github.com/docker/cli/archive/refs/tags/v${docker_version}.tar.gz" \
+  "$temporary/$docker_source_asset"
+verify "$docker_source_checksum" "$temporary/$docker_source_asset"
+tar -xzf "$temporary/$docker_source_asset" -C "$temporary"
+docker_source_directory="$temporary/cli-${docker_version}"
+docker_plugin_patch="$script_directory/patches/docker-cli-29.7.2-bundled-plugins.patch"
+(
+  cd "$docker_source_directory"
+  git apply --check "$docker_plugin_patch"
+  git apply "$docker_plugin_patch"
+  cp vendor.mod go.mod
+  cp vendor.sum go.sum
+  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOWORK=off GO111MODULE=on \
+    go build -mod=vendor -buildvcs=false -trimpath \
+      -ldflags "-s -w -X github.com/docker/cli/cli/version.PlatformName=Porto -X github.com/docker/cli/cli/version.Version=${docker_version} -X github.com/docker/cli/cli/version.GitCommit=${docker_git_commit} -X github.com/docker/cli/cli/version.BuildTime=2026-08-05T17:34:15Z" \
+      -o "$destination/bin/docker${binary_suffix}" ./cmd/docker
+)
+docker_bundled=true
+docker_asset="${docker_source_asset}+porto-bundled-plugins.patch"
+
+docker_plugins_bundled=false
+compose_checksum=""
+buildx_checksum=""
+if [ "$docker_bundled" = "true" ]; then
+  case "$goos/$goarch" in
+    darwin/arm64)
+      compose_arch="aarch64"
+      compose_checksum="998735c9b6fe68a4f05895e6ea73d71ad06f9fc7046383ad89e47346781b6af5"
+      buildx_checksum="c3cbbc820d578b0aa8158dd62ef1af25a0c8a75ef53331dbe4e219471e1dbe8c"
+      ;;
+    darwin/amd64)
+      compose_arch="x86_64"
+      compose_checksum="a264d61e824bf08a78867e59cdf32eb09f0aee9ecdf9f6ebfa43f76dc52880f1"
+      buildx_checksum="7003a7bae20e7741283db1e23dafdcb957776a8be85de3f459630b1dd4c19db0"
+      ;;
+    linux/arm64)
+      compose_arch="aarch64"
+      compose_checksum="732e3a84c1a0f67256ce80bc2598a24546b10ca05f9faa97efceb1171ece2ef7"
+      buildx_checksum="e5cc9fe3bbff5cbc91230981f7860e06076110730a2db997082652199042a1f2"
+      ;;
+    linux/amd64)
+      compose_arch="x86_64"
+      compose_checksum="db1889184726840f75c4f9c001048430d4f25b3be3cb084d3ddd762bc0aed576"
+      buildx_checksum="9447199cdb435f25880548343c128a4b6650e8891ee598905d8d29d39a8e359b"
+      ;;
+    windows/amd64)
+      compose_arch="x86_64"
+      compose_checksum="a3c0c73033eaede90210345d0cc2233edf4fab8fe0282a91dad8fd8436809d2f"
+      buildx_checksum="3904abb2802f9bd83a2bf483b35bba81c57a4e0baff981e6886564c461f908b3"
+      ;;
+    windows/arm64)
+      compose_arch="aarch64"
+      compose_checksum="4bbb5d1ecc75bde1a9ca4afac43f5907c0d3bd0f88c7f00bf481ee7c8c1737be"
+      buildx_checksum="bdf356a5f2c8f3efd8a357b1f044860216e15e654a9a7105ca4e5dd5b5697ee4"
+      ;;
+  esac
+  compose_asset="docker-compose-${goos}-${compose_arch}${binary_suffix}"
+  buildx_asset="buildx-${buildx_version}.${goos}-${goarch}${binary_suffix}"
+  download \
+    "https://github.com/docker/compose/releases/download/${compose_version}/${compose_asset}" \
+    "$temporary/$compose_asset"
+  download \
+    "https://github.com/docker/buildx/releases/download/${buildx_version}/${buildx_asset}" \
+    "$temporary/$buildx_asset"
+  verify "$compose_checksum" "$temporary/$compose_asset"
+  verify "$buildx_checksum" "$temporary/$buildx_asset"
+  mv "$temporary/$compose_asset" "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
+  mv "$temporary/$buildx_asset" "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
+  docker_plugins_bundled=true
 fi
 
 kind_bundled=false
@@ -269,8 +286,15 @@ download "https://raw.githubusercontent.com/kubernetes/kubernetes/${kubectl_vers
 download "https://raw.githubusercontent.com/kubernetes-sigs/kind/${kind_version}/LICENSE" "$destination/licenses/kind.txt"
 download "https://raw.githubusercontent.com/derailed/k9s/${k9s_version}/LICENSE" "$destination/licenses/k9s.txt"
 if [ "$docker_bundled" = "true" ]; then
-  download "https://raw.githubusercontent.com/docker/cli/v${docker_version}/LICENSE" "$destination/licenses/docker-cli.txt"
-  download "https://raw.githubusercontent.com/docker/cli/v${docker_version}/NOTICE" "$destination/licenses/docker-cli-NOTICE.txt"
+  cp "$docker_source_directory/LICENSE" "$destination/licenses/docker-cli.txt"
+  cp "$docker_source_directory/NOTICE" "$destination/licenses/docker-cli-NOTICE.txt"
+  cp "$docker_plugin_patch" "$destination/licenses/docker-cli-bundled-plugins.patch"
+fi
+if [ "$docker_plugins_bundled" = "true" ]; then
+  download "https://raw.githubusercontent.com/docker/compose/${compose_version}/LICENSE" "$destination/licenses/docker-compose.txt"
+  download "https://raw.githubusercontent.com/docker/compose/${compose_version}/NOTICE" "$destination/licenses/docker-compose-NOTICE.txt"
+  download "https://raw.githubusercontent.com/docker/buildx/${buildx_version}/LICENSE" "$destination/licenses/docker-buildx.txt"
+  download "https://raw.githubusercontent.com/docker/buildx/${buildx_version}/AUTHORS" "$destination/licenses/docker-buildx-AUTHORS.txt"
 fi
 if [ "$qemu_bundled" = "true" ]; then
   download "https://raw.githubusercontent.com/qemu/qemu/v${qemu_version}/COPYING" "$destination/licenses/qemu.txt"
@@ -282,7 +306,11 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
 if [ "$goos" != "windows" ]; then
   chmod 0755 "$destination/bin/kubectl"
   chmod 0755 "$destination/bin/porto-runtime-helper"
-  [ "$docker_bundled" = "true" ] && chmod 0755 "$destination/bin/docker"
+  if [ "$docker_bundled" = "true" ]; then
+    chmod 0755 "$destination/bin/docker"
+    chmod 0755 "$destination/docker/cli-plugins/docker-compose"
+    chmod 0755 "$destination/docker/cli-plugins/docker-buildx"
+  fi
   [ "$kind_bundled" = "true" ] && chmod 0755 "$destination/bin/kind"
   chmod 0755 "$destination/bin/k9s"
   chmod 0755 "$destination/lima/bin/limactl"
@@ -290,7 +318,9 @@ fi
 
 cat > "$destination/VERSIONS" <<EOF
 kubectl ${kubectl_version}
-docker $([ "$docker_bundled" = "true" ] && printf '%s' "$docker_version" || printf 'not available for %s/%s' "$goos" "$goarch")
+docker $([ "$docker_bundled" = "true" ] && printf '%s (%s, sha256:%s, commit %s)' "$docker_version" "$docker_asset" "$docker_source_checksum" "$docker_git_commit" || printf 'not available for %s/%s' "$goos" "$goarch")
+docker-compose $([ "$docker_plugins_bundled" = "true" ] && printf '%s (%s, sha256:%s)' "$compose_version" "$compose_asset" "$compose_checksum" || printf 'not available because Docker CLI is not bundled for %s/%s' "$goos" "$goarch")
+docker-buildx $([ "$docker_plugins_bundled" = "true" ] && printf '%s (%s, sha256:%s)' "$buildx_version" "$buildx_asset" "$buildx_checksum" || printf 'not available because Docker CLI is not bundled for %s/%s' "$goos" "$goarch")
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_runtime_version}
@@ -298,4 +328,22 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_ver
 porto-runtime-helper 1
 EOF
 
+if [ "$docker_bundled" = "true" ]; then
+  test -f "$destination/bin/docker${binary_suffix}"
+  test -f "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
+  test -f "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
+  test -f "$destination/licenses/docker-cli-bundled-plugins.patch"
+  test -f "$destination/licenses/docker-compose.txt"
+  test -f "$destination/licenses/docker-compose-NOTICE.txt"
+  test -f "$destination/licenses/docker-buildx.txt"
+  test -f "$destination/licenses/docker-buildx-AUTHORS.txt"
+else
+  test ! -e "$destination/bin/docker${binary_suffix}"
+  test ! -e "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
+  test ! -e "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
+fi
+
 node "$(dirname "$0")/desktop-runtime-symlinks.cjs" --validate "$destination"
+if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
+  node "$script_directory/docker-toolchain-smoke.cjs" "$destination"
+fi

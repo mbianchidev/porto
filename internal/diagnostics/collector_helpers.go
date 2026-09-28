@@ -2,9 +2,11 @@ package diagnostics
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/dockercli"
 	"github.com/mbianchidev/porto/internal/providers"
 )
 
@@ -79,7 +81,8 @@ func providerChecks(settings app.Settings, statuses []providers.Status) []Check 
 			continue
 		}
 		check.Summary = status.Message
-		required := settings.VMsEnabled && (name == "lima" || name == "qemu")
+		required := settings.VMsEnabled &&
+			(name == "lima" || (name == "qemu" && runtime.GOOS != "darwin"))
 		relevant := settings.DockerEnabled || settings.KubernetesEnabled || settings.VMsEnabled
 		switch {
 		case required:
@@ -88,6 +91,51 @@ func providerChecks(settings app.Settings, statuses []providers.Status) []Check 
 			check.State = StateDegraded
 		default:
 			check.Summary = "Not installed; not required by enabled runtimes"
+		}
+		checks = append(checks, check)
+	}
+	return checks
+}
+
+func dockerToolchainChecks(statuses []dockercli.Status) []Check {
+	checks := make([]Check, 0, len(statuses))
+	for _, status := range statuses {
+		name := status.Name
+		if name == "docker" {
+			name = "Docker CLI"
+		} else {
+			name = "Docker " + strings.ToUpper(name[:1]) + name[1:]
+		}
+		check := Check{
+			ID:       "docker-tool-" + status.Name,
+			Category: "tools",
+			Name:     name,
+			State:    StateHealthy,
+			Summary:  status.Version,
+			Detail:   status.Path,
+		}
+		switch {
+		case !status.Supported:
+			check.Summary = status.Message
+		case status.Installed && status.Message == "":
+			if check.Summary == "" {
+				check.Summary = "Installed"
+			}
+		case status.Installed:
+			check.State = StateDegraded
+			check.Summary = status.Message
+		case status.BundledExpected:
+			check.State = StateUnavailable
+			check.Summary = status.Message
+			if check.Summary == "" {
+				check.Summary = "Promised bundled executable is missing"
+			}
+		default:
+			check.State = StateDegraded
+			check.Summary = status.Message
+			if check.Summary == "" {
+				check.Summary = "Not installed"
+			}
 		}
 		checks = append(checks, check)
 	}

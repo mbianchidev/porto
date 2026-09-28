@@ -23,6 +23,7 @@ import (
 	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/dockercli"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/localhttps"
 	"github.com/mbianchidev/porto/internal/providers"
@@ -170,6 +171,9 @@ func (c *Collector) Collect(ctx context.Context) Report {
 		checks = append(checks, providerChecks(settings, c.Providers.Status(probeContext))...)
 		cancel()
 	}
+	toolchainContext, cancel := context.WithTimeout(ctx, diagnosticProbeTimeout)
+	checks = append(checks, dockerToolchainChecks(dockercli.Inspect(toolchainContext, c.runtimeManifestPath()))...)
+	cancel()
 	checks = append(checks, c.certificateCheck())
 	checks = append(checks, c.localHTTPSCheck())
 	checks = append(checks, c.dockerChecks(ctx, settings, settingsAvailable)...)

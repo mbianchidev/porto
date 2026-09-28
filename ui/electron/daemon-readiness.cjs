@@ -204,6 +204,75 @@ function bundledExecutablePaths(resourcesPath, {
   ].filter((candidate) => existsImpl(candidate))
 }
 
+function parseRuntimeVersions(contents) {
+  const versions = new Map()
+  for (const line of contents.split(/\r?\n/)) {
+    const separator = line.indexOf(' ')
+    if (separator <= 0) continue
+    versions.set(line.slice(0, separator), line.slice(separator + 1).trim())
+  }
+  return versions
+}
+
+function runtimeVersionToken(value) {
+  return String(value || '').split(/[ (]/, 1)[0].replace(/^v/, '')
+}
+
+async function inspectBundledDockerToolchain({
+  resourcesPath,
+  platform = process.platform,
+  environment = process.env,
+  existsImpl = fs.existsSync,
+  readFileImpl = fs.readFileSync,
+  execFileImpl = execFileAsync,
+} = {}) {
+  const runtimeRoot = path.join(resourcesPath, 'runtime')
+  const versionsPath = path.join(runtimeRoot, 'VERSIONS')
+  if (!existsImpl(versionsPath)) {
+    throw new Error(`Bundled runtime version manifest is missing: ${versionsPath}`)
+  }
+  const versions = parseRuntimeVersions(readFileImpl(versionsPath, 'utf8'))
+  const dockerVersion = versions.get('docker') || ''
+  if (dockerVersion.startsWith('not available')) {
+    return { supported: false, message: dockerVersion, versions: Object.fromEntries(versions) }
+  }
+  const suffix = platform === 'win32' ? '.exe' : ''
+  const launcher = path.join(runtimeRoot, 'bin', `docker${suffix}`)
+  for (const required of [
+    launcher,
+    path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-compose${suffix}`),
+    path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-buildx${suffix}`),
+  ]) {
+    if (!existsImpl(required)) throw new Error(`Bundled Docker toolchain is missing ${required}`)
+  }
+  const commands = [
+    ['docker', ['--version'], dockerVersion],
+    ['compose', ['compose', 'version', '--short'], versions.get('docker-compose')],
+    ['buildx', ['buildx', 'version'], versions.get('docker-buildx')],
+  ]
+  const reported = {}
+  for (const [name, args, expected] of commands) {
+    let result
+    try {
+      result = await execFileImpl(launcher, args, {
+        env: environment,
+        timeout: 30000,
+        maxBuffer: 1024 * 1024,
+        windowsHide: true,
+      })
+    } catch (error) {
+      throw new Error(`Bundled Docker ${name} check failed: ${error.message}`)
+    }
+    const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim()
+    const version = runtimeVersionToken(expected)
+    if (version === '' || !output.includes(version)) {
+      throw new Error(`Bundled Docker ${name} reported ${JSON.stringify(output)}; expected ${version || 'version metadata'}`)
+    }
+    reported[name] = output
+  }
+  return { supported: true, launcher, reported, versions: Object.fromEntries(versions) }
+}
+
 function daemonExecutable(command) {
   const match = command.match(/\s+daemon\s+start\s*$/)
   if (!match) return null
@@ -291,6 +360,7 @@ module.exports = {
   inspectDockerStatus,
   installDockerContext,
   installDockerEngine,
+  inspectBundledDockerToolchain,
   isDaemonReady,
   mergeExecutablePaths,
   prepareDockerEngineUpdate,

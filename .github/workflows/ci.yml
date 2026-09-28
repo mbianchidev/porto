@@ -75,6 +75,10 @@ jobs:
           if ($command -ne '"C:\Program Files\Porto\resources\porto.exe" %*') {
             throw "Invalid porto.cmd wrapper: $command"
           }
+          $dockerCommand = '"{0}" %*' -f (Join-Path $installRoot 'resources\runtime\bin\docker.exe')
+          if ($dockerCommand -ne '"C:\Program Files\Porto\resources\runtime\bin\docker.exe" %*') {
+            throw "Invalid docker.cmd wrapper: $dockerCommand"
+          }
 
   cross-build:
     name: Cross build
@@ -100,6 +104,40 @@ jobs:
             GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/porto
             echo "::endgroup::"
           done
+
+  linux-toolchain:
+    name: Linux Docker toolchain (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [amd64, arm64]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+
+      - name: Build checksum-pinned runtime
+        run: bash scripts/bundle-desktop-runtime.sh linux "${{ matrix.arch }}" "$RUNNER_TEMP/runtime"
+
+      - name: Run clean Compose smoke
+        if: matrix.arch == 'amd64'
+        env:
+          DOCKER_CONFIG: ${{ runner.temp }}/clean-docker-config
+        run: |
+          mkdir -p "$DOCKER_CONFIG"
+          PATH="$RUNNER_TEMP/runtime/bin:$PATH" \
+            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
 
   ui:
     name: UI (Node ${{ matrix.node }})
@@ -266,6 +304,27 @@ jobs:
           }
           if (-not (Test-Path (Join-Path $installRoot 'resources/runtime/VERSIONS'))) {
             throw 'Installer did not include the desktop runtime.'
+          }
+          $docker = Join-Path $installRoot 'resources/runtime/bin/docker.exe'
+          $dockerConfig = Join-Path $env:RUNNER_TEMP 'Porto clean Docker config'
+          New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
+          $oldDockerConfig = $env:DOCKER_CONFIG
+          $oldPath = $env:PATH
+          $env:DOCKER_CONFIG = $dockerConfig
+          $env:PATH = "$(Split-Path $docker);$oldPath"
+          try {
+            & $docker --version | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Docker CLI failed.' }
+            & $docker compose version --short | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose plugin failed.' }
+            & $docker buildx version | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Buildx plugin failed.' }
+            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose failed the Porto API smoke test.' }
+          }
+          finally {
+            $env:DOCKER_CONFIG = $oldDockerConfig
+            $env:PATH = $oldPath
           }
           $qemuImg = Join-Path $installRoot 'resources/runtime/qemu/qemu-img.exe'
           $qemuSystem = Join-Path $installRoot 'resources/runtime/qemu/qemu-system-x86_64.exe'

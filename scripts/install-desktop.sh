@@ -81,6 +81,42 @@ fi
 bin_dir="${PORTO_BIN_DIR:-$HOME/.local/bin}"
 mkdir -p "$bin_dir"
 
+install_optional_link() {
+  target="$1"
+  link="$2"
+  name="$3"
+  [ -x "$target" ] || return 0
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    echo "Preserving existing $name at $link; use 'porto docker cli' for Porto's bundled toolchain." >&2
+    return 0
+  fi
+  if [ -L "$link" ]; then
+    existing="$(readlink "$link" 2>/dev/null || true)"
+    if [ "$existing" != "$target" ]; then
+      case "$existing" in
+        */Porto.app/Contents/Resources/runtime/bin/docker|*/porto/resources/runtime/bin/docker)
+          ;;
+        *)
+          echo "Preserving existing $name symlink at $link; use 'porto docker cli' for Porto's bundled toolchain." >&2
+          return 0
+          ;;
+      esac
+    fi
+  fi
+  ln -sfn "$target" "$link"
+}
+
+install_bundled_docker_link() {
+  target="$1"
+  link="$bin_dir/docker"
+  existing_command="$(command -v docker 2>/dev/null || true)"
+  if [ -n "$existing_command" ] && [ "$existing_command" != "$link" ]; then
+    echo "Preserving existing Docker command at $existing_command; use 'porto docker cli' for Porto's bundled toolchain." >&2
+    return 0
+  fi
+  install_optional_link "$target" "$link" "Docker CLI"
+}
+
 run_as_root() {
   if [ "$(id -u)" -eq 0 ]; then
     "$@"
@@ -149,6 +185,7 @@ if [ "$goos" = "darwin" ]; then
   hdiutil detach "$mounted_volume" -quiet
   mounted_volume=""
   ln -sf "$install_root/Porto.app/Contents/Resources/porto" "$bin_dir/porto"
+  install_bundled_docker_link "$install_root/Porto.app/Contents/Resources/runtime/bin/docker"
   echo "Installed Porto at $install_root/Porto.app"
   echo "Until releases are signed, macOS may require: xattr -drs com.apple.quarantine \"$install_root/Porto.app\""
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
@@ -166,6 +203,7 @@ else
   cp -a "$source_dir" "$install_root"
   ln -sf "$install_root/Porto" "$bin_dir/porto-desktop"
   ln -sf "$install_root/resources/porto" "$bin_dir/porto"
+  install_bundled_docker_link "$install_root/resources/runtime/bin/docker"
   mkdir -p "$HOME/.local/share/applications"
   cat > "$HOME/.local/share/applications/porto.desktop" <<EOF
 [Desktop Entry]
@@ -200,5 +238,5 @@ fi
 
 case ":$PATH:" in
   *":$bin_dir:"*) ;;
-  *) echo "Add $bin_dir to PATH to use the porto CLI." ;;
+  *) echo "Add $bin_dir to PATH to use the Porto and bundled Docker CLIs." ;;
 esac

@@ -10,6 +10,7 @@ const {
   daemonProcesses,
   dashboardLoadAction,
   dockerBootstrapCommand,
+  inspectBundledDockerToolchain,
   inspectDaemon,
   installDockerEngine,
   installDockerContext,
@@ -307,6 +308,77 @@ test('resolves every packaged runtime executable directory that exists', () => {
   assert.deepEqual(bundledExecutablePaths(resourcesPath, {
     existsImpl: (candidate) => candidate !== qemuPath,
   }), expected.slice(0, 2))
+})
+
+test('validates bundled Docker plugins from paths with spaces and non-ASCII characters', async () => {
+  const resourcesPath = path.join('/Applications', 'Porto ü.app', 'Contents', 'Resources')
+  const runtimeRoot = path.join(resourcesPath, 'runtime')
+  const existing = new Set([
+    path.join(runtimeRoot, 'VERSIONS'),
+    path.join(runtimeRoot, 'bin', 'docker'),
+    path.join(runtimeRoot, 'docker', 'cli-plugins', 'docker-compose'),
+    path.join(runtimeRoot, 'docker', 'cli-plugins', 'docker-buildx'),
+  ])
+  const calls = []
+  const status = await inspectBundledDockerToolchain({
+    resourcesPath,
+    platform: 'darwin',
+    environment: { PATH: '/clean/path' },
+    existsImpl: (file) => existing.has(file),
+    readFileImpl: () => [
+      'docker 29.7.2',
+      'docker-compose v5.5.1 (asset)',
+      'docker-buildx v0.37.1 (asset)',
+    ].join('\n'),
+    execFileImpl: async (file, args, options) => {
+      calls.push({ file, args, options })
+      const command = args.join(' ')
+      if (command === '--version') return { stdout: 'Docker version 29.7.2', stderr: '' }
+      if (command === 'compose version --short') return { stdout: '5.5.1', stderr: '' }
+      if (command === 'buildx version') return { stdout: 'github.com/docker/buildx v0.37.1', stderr: '' }
+      throw new Error(`unexpected command ${command}`)
+    },
+  })
+
+  assert.equal(status.supported, true)
+  assert.equal(calls.length, 3)
+  assert.equal(calls[0].file, path.join(runtimeRoot, 'bin', 'docker'))
+  assert.equal(calls[0].options.env.PATH, '/clean/path')
+})
+
+test('rejects a packaged Docker toolchain with a missing plugin', async () => {
+  const resourcesPath = '/Applications/Porto.app/Contents/Resources'
+  await assert.rejects(
+    inspectBundledDockerToolchain({
+      resourcesPath,
+      platform: 'darwin',
+      existsImpl: (file) => !file.endsWith('docker-buildx'),
+      readFileImpl: () => 'docker 29.7.2\ndocker-compose v5.5.1\ndocker-buildx v0.37.1\n',
+    }),
+    /missing .*docker-buildx/,
+  )
+})
+
+test('validates the source-built Windows ARM64 Docker toolchain', async () => {
+  const commands = []
+  const status = await inspectBundledDockerToolchain({
+    resourcesPath: 'C:\\Program Files\\Porto\\resources',
+    platform: 'win32',
+    existsImpl: () => true,
+    readFileImpl: () => [
+      'docker 29.7.2 (source)',
+      'docker-compose v5.5.1 (asset)',
+      'docker-buildx v0.37.1 (asset)',
+    ].join('\n'),
+    execFileImpl: async (_file, args) => {
+      commands.push(args.join(' '))
+      if (args[0] === '--version') return { stdout: 'Docker version 29.7.2', stderr: '' }
+      if (args[0] === 'compose') return { stdout: '5.5.1', stderr: '' }
+      return { stdout: 'github.com/docker/buildx v0.37.1', stderr: '' }
+    },
+  })
+  assert.equal(status.supported, true)
+  assert.deepEqual(commands, ['--version', 'compose version --short', 'buildx version'])
 })
 
 test('resolves the packaged dashboard beside the bundled daemon', () => {

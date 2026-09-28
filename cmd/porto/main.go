@@ -673,6 +673,7 @@ Commands:
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
+  porto docker cli <args...>
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker containers|images|builds|networks|volumes
   porto docker context-install|activate|deactivate

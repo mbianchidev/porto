@@ -18,6 +18,7 @@ const {
   daemonProcesses,
   dashboardLoadAction,
   dockerBootstrapCommand,
+  inspectBundledDockerToolchain,
   inspectDaemon,
   inspectDockerStatus,
   installDockerContext,
@@ -614,6 +615,22 @@ async function ensureDaemonRunning() {
 
 async function ensureDockerEngine() {
   console.debug('Checking container runtime readiness')
+  if (app.isPackaged) {
+    const toolchain = await inspectBundledDockerToolchain({
+      resourcesPath: process.resourcesPath,
+      environment: await portoEnvironment(),
+    })
+    if (!toolchain.supported) {
+      console.warn('Bundled Docker toolchain is unavailable on this platform: %s', toolchain.message)
+    } else {
+      console.debug(
+        'Bundled Docker toolchain ready: docker=%s compose=%s buildx=%s',
+        toolchain.reported.docker,
+        toolchain.reported.compose,
+        toolchain.reported.buildx,
+      )
+    }
+  }
   let status = await inspectDockerStatus({ daemonURL: DAEMON_URL })
   if (!status.enabled) return
   const command = dockerBootstrapCommand(status, {

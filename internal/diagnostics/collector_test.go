@@ -13,6 +13,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/dockercli"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/providers"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -45,10 +46,15 @@ func TestProviderChecksRespectEnabledRuntimeRequirements(t *testing.T) {
 	if len(checks) != 2 {
 		t.Fatalf("provider checks = %d, want 2", len(checks))
 	}
-	for _, check := range checks {
-		if check.State != StateUnavailable {
-			t.Fatalf("%s state = %q, want unavailable", check.ID, check.State)
-		}
+	if checks[0].State != StateUnavailable {
+		t.Fatalf("Lima state = %q, want unavailable", checks[0].State)
+	}
+	qemuState := StateUnavailable
+	if runtime.GOOS == "darwin" {
+		qemuState = StateDegraded
+	}
+	if checks[1].State != qemuState {
+		t.Fatalf("QEMU state = %q, want %q", checks[1].State, qemuState)
 	}
 }
 
@@ -58,6 +64,27 @@ func TestDisabledRuntimeGateIsHealthy(t *testing.T) {
 		if check.State != StateHealthy || check.Summary != "Disabled by settings" {
 			t.Fatalf("unexpected disabled runtime check: %+v", check)
 		}
+	}
+}
+
+func TestDockerToolchainChecksFailMissingPromisedPlugin(t *testing.T) {
+	checks := dockerToolchainChecks([]dockercli.Status{{
+		Name: "compose", Supported: true, BundledExpected: true,
+		Message: "docker compose failed: executable not found",
+	}})
+	if len(checks) != 1 || checks[0].State != StateUnavailable {
+		t.Fatalf("unexpected Docker toolchain check: %+v", checks)
+	}
+}
+
+func TestDockerToolchainChecksExplainUnsupportedPlatform(t *testing.T) {
+	checks := dockerToolchainChecks([]dockercli.Status{{
+		Name: "buildx", Supported: false,
+		Message: "not available because Docker CLI is not bundled for windows/arm64",
+	}})
+	if len(checks) != 1 || checks[0].State != StateHealthy ||
+		!strings.Contains(checks[0].Summary, "windows/arm64") {
+		t.Fatalf("unexpected unsupported toolchain check: %+v", checks)
 	}
 }
 

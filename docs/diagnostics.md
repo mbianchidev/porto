@@ -30,6 +30,8 @@ The current checks cover:
 - daemon, HTTP router, and HTTPS router ports plus local hostname resolution
 - certificate lifetime and optional portless HTTPS trust/listening state
 - runtime feature gates and Lima, QEMU, kind, k9s, and k0s provider versions
+- Docker CLI, Compose, and Buildx availability, packaged-version drift, and
+  explicit unsupported-platform metadata
 - Docker socket, engine ownership marker, containerd inventory, BuildKit, and CNI
 - kubeconfig parsing, Kubernetes API access, Metrics API, and Gateway API add-ons
 - Lima VM provider availability

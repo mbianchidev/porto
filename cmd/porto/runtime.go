@@ -85,9 +85,22 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return errors.New("usage: porto docker cli <args...>|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
+	case "cli":
+		if len(args) == 1 {
+			return errors.New("usage: porto docker cli <args...>")
+		}
+		command := exec.Command("docker", args[1:]...)
+		command.Env = os.Environ()
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("run bundled Docker CLI: %w", err)
+		}
+		return nil
 	case "status":
 		if daemonUp() {
 			return api("GET", "/api/docker/status", nil, os.Stdout)

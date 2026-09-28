@@ -37,14 +37,27 @@ Additional runtime features require:
 
 | Capability | Requirement |
 | --- | --- |
-| Docker client compatibility | Docker CLI or another Docker Engine API client |
+| Docker client compatibility | Desktop packages bundle Docker CLI, Compose, and Buildx; source builds may use another Docker Engine API client |
 | Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` plus QEMU for Porto-managed containerd and BuildKit; Windows desktop releases bundle both |
-| Compose project orchestration | Docker CLI with Compose, using Porto's native Docker endpoint |
+| Compose project orchestration | Bundled Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | `limactl`, QEMU, and host virtualization support; Windows desktop releases bundle Lima and QEMU |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
+
+For an installed desktop package, use either the non-conflicting `docker`
+command created by the install script or the explicit bundled entry point:
+
+```sh
+porto docker cli --context porto info
+porto docker cli --context porto compose up --detach
+porto docker cli --context porto buildx build --load --tag demo .
+```
+
+The bundled CLI loads Porto's pinned plugins before user and system plugins,
+while preserving the user's Docker contexts, credentials, plugin files, and
+Buildx state.
 
 Inspect or install provider tools:
 
