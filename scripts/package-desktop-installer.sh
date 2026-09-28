@@ -103,6 +103,11 @@ if [ "$goos" = "darwin" ]; then
     echo "Electron Packager produced no macOS application bundle." >&2
     exit 1
   fi
+  desktop_name="porto-desktop_${version}_${goos}_${goarch}"
+  mv "$packaged_app" "$temporary/$desktop_name"
+  packaged_app="$temporary/$desktop_name"
+  builder_input="$packaged_app/Porto.app"
+  node scripts/macos-desktop-bootstrap.cjs --verify "$builder_input"
 fi
 
 if [ "$goos" = "darwin" ]; then
@@ -144,3 +149,10 @@ fi
 asset="porto-desktop_${version}_${goos}_${goarch}.${extension}"
 cp "$installer" "$output_directory/$asset"
 echo "$output_directory/$asset"
+
+if [ "$goos" = "darwin" ]; then
+  node scripts/macos-desktop-bootstrap.cjs --verify "$builder_input"
+  COPYFILE_DISABLE=1 tar --no-mac-metadata -czf "$output_directory/$desktop_name.tar.gz" \
+    -C "$temporary" "$desktop_name"
+  echo "$output_directory/$desktop_name.tar.gz"
+fi

@@ -86,8 +86,9 @@ OS-specific data directory, with **debug** logging enabled by default. See
 [application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
 for exact paths and the `PORTO_LOG_LEVEL` setting.
 
-For a desktop crash before logging starts on macOS 27, see the temporary
-[power-notification recovery helper](docs/installation.md#macos-27-power-notification-crash).
+macOS desktop packages include a temporary native guard for a macOS 27
+power-notification startup crash. No recovery command is needed for new
+packages; see [compatibility and older-release recovery](docs/installation.md#macos-27-power-notification-crash).
 
 ### 4. Start a project
 
