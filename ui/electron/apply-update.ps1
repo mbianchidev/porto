@@ -4,18 +4,29 @@ param(
     [Parameter(Mandatory = $true)][string]$InstallDirectory,
     [Parameter(Mandatory = $true)][string]$ExecutablePath,
     [Parameter(Mandatory = $true)][string]$ErrorFile,
+    [Parameter(Mandatory = $true)][string]$ReadyFile,
+    [Parameter(Mandatory = $true)][string]$ProceedFile,
     [switch]$SkipRestart
 )
 
 $ErrorActionPreference = "Stop"
 $LogFile = "$PackagePath.install.log"
+$Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
 
 function Write-UpdateLog([string]$Message) {
-    Add-Content -LiteralPath $LogFile -Value "$(Get-Date -Format o) $Message"
+    [System.IO.File]::AppendAllText(
+        $LogFile,
+        "$(Get-Date -Format o) $Message`r`n",
+        $Utf8NoBom
+    )
 }
 
 function Restart-ExistingPorto {
-    if (-not $SkipRestart -and (Test-Path -LiteralPath $ExecutablePath)) {
+    if (
+        -not $SkipRestart `
+        -and -not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue) `
+        -and (Test-Path -LiteralPath $ExecutablePath)
+    ) {
         Start-Process -FilePath $ExecutablePath
     }
 }
@@ -43,6 +54,22 @@ try {
     if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
         throw "Downloaded Porto installer is missing: $PackagePath"
     }
+
+    Remove-Item -LiteralPath $ProceedFile -Force -ErrorAction SilentlyContinue
+    Write-UpdateLog "Updater helper is ready and waiting for Porto to exit."
+    [System.IO.File]::WriteAllText($ReadyFile, "ready`r`n", $Utf8NoBom)
+
+    for ($Attempt = 0; $Attempt -lt 200; $Attempt++) {
+        if (Test-Path -LiteralPath $ProceedFile -PathType Leaf) {
+            break
+        }
+        Start-Sleep -Milliseconds 50
+    }
+    if (-not (Test-Path -LiteralPath $ProceedFile -PathType Leaf)) {
+        throw "Porto did not confirm the downloaded update."
+    }
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ProceedFile -Force -ErrorAction SilentlyContinue
 
     for ($Attempt = 0; $Attempt -lt 120; $Attempt++) {
         if (-not (Get-Process -Id $ParentPid -ErrorAction SilentlyContinue)) {
@@ -97,9 +124,11 @@ try {
     Write-UpdateLog "Porto update installed successfully."
 }
 catch {
+    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
+    Remove-Item -LiteralPath $ProceedFile -Force -ErrorAction SilentlyContinue
     $Message = "Porto could not install the downloaded update. $($_.Exception.Message) See $LogFile for details."
     Write-UpdateLog $Message
-    Set-Content -LiteralPath $ErrorFile -Value $Message
+    [System.IO.File]::WriteAllText($ErrorFile, "$Message`r`n", $Utf8NoBom)
     Restart-ExistingPorto
     exit 1
 }

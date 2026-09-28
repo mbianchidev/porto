@@ -6,9 +6,11 @@ const path = require('node:path')
 const test = require('node:test')
 
 const {
+  UPDATE_HELPER_READY_TIMEOUT,
   currentInstallation,
   installerCommand,
   launchDownloadedUpdate,
+  waitForUpdateHelperReady,
 } = require('./desktop-update-install.cjs')
 
 test('resolves the replaceable desktop installation from the running executable', () => {
@@ -75,6 +77,8 @@ test('builds detached helper commands without interpolating paths into shell cod
     executable: 'C:\\Users\\test\\AppData\\Local\\Programs\\Porto\\Porto.exe',
     errorFile: 'C:\\Users\\test\\AppData\\Local\\Porto\\update-error.txt',
     archiveRootName: '',
+    readyFile: 'C:\\Users\\test\\AppData\\Local\\Porto\\apply-update.ready',
+    proceedFile: 'C:\\Users\\test\\AppData\\Local\\Porto\\apply-update.proceed',
   })
   assert.equal(windows.command, 'powershell.exe')
   assert.deepEqual(windows.args.slice(0, 5), [
@@ -86,6 +90,45 @@ test('builds detached helper commands without interpolating paths into shell cod
   ])
   assert.ok(windows.args.includes(windows.packagePath))
   assert.ok(windows.args.includes(windows.destination))
+  assert.ok(windows.args.includes(windows.readyFile))
+  assert.ok(windows.args.includes(windows.proceedFile))
+})
+
+test('waits for the Windows update helper to become ready', async () => {
+  const child = { exitCode: null }
+  let checks = 0
+  await waitForUpdateHelperReady(child, 'ready', {
+    timeoutMs: 100,
+    nowImpl: () => checks * 10,
+    existsImpl: () => {
+      checks += 1
+      return checks === 3
+    },
+    delayImpl: async () => {},
+  })
+  assert.equal(checks, 3)
+})
+
+test('rejects a Windows update helper that exits or times out before readiness', async () => {
+  await assert.rejects(
+    waitForUpdateHelperReady({ exitCode: 7 }, 'ready', {
+      existsImpl: () => false,
+    }),
+    /exited before becoming ready with code 7/i,
+  )
+  let now = 0
+  await assert.rejects(
+    waitForUpdateHelperReady({ exitCode: null }, 'ready', {
+      timeoutMs: 100,
+      nowImpl: () => now,
+      existsImpl: () => false,
+      delayImpl: async () => {
+        now += 50
+      },
+    }),
+    /did not become ready within 0.1s/i,
+  )
+  assert.equal(UPDATE_HELPER_READY_TIMEOUT, 15 * 1000)
 })
 
 test('stages a detached installer helper beside a verified update', async () => {
@@ -113,6 +156,7 @@ test('stages a detached installer helper beside a verified update', async () => 
       spawnImpl: (command, args, options) => {
         invocation = { command, args, options }
         const child = new EventEmitter()
+        child.pid = 314
         child.unref = () => {
           unrefCalled = true
         }
@@ -121,14 +165,15 @@ test('stages a detached installer helper beside a verified update', async () => 
       },
     })
 
-    assert.deepEqual(installation, {
-      destination: installDirectory,
-      executable: executablePath,
-    })
+    assert.equal(installation.destination, installDirectory)
+    assert.equal(installation.executable, executablePath)
+    assert.equal(installation.helperPid, 314)
     assert.equal(invocation.command, '/bin/bash')
     assert.equal(invocation.options.detached, true)
     assert.equal(invocation.options.stdio, 'ignore')
+    assert.equal(invocation.options.cwd, downloadsDirectory)
     assert.equal(unrefCalled, true)
+    assert.equal(typeof installation.proceed, 'function')
     const helperPath = invocation.args[0]
     assert.equal(fs.existsSync(helperPath), true)
     if (process.platform !== 'win32') {

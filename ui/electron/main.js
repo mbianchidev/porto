@@ -216,7 +216,7 @@ async function restartAndInstallUpdate() {
       const preparation = await prepareDockerEngineUpdate({ daemonURL: DAEMON_URL })
       windowsEngineStopped = preparation.engineStopped === true
     }
-    await launchDownloadedUpdate({
+    const installation = await launchDownloadedUpdate({
       platform: process.platform,
       executablePath: app.getPath('exe'),
       packagePath: update.packagePath,
@@ -224,6 +224,10 @@ async function restartAndInstallUpdate() {
       errorFile: updateInstallErrorPath,
       helperDirectory: process.resourcesPath,
     })
+    console.debug('Porto update helper is ready: pid=%d destination=%s', installation.helperPid, installation.destination)
+    installation.proceed()
+    desktopUpdater.markInstalling()
+    quitting = true
   } catch (error) {
     if (windowsEngineStopped) {
       try {
@@ -236,10 +240,16 @@ async function restartAndInstallUpdate() {
     }
     throw error
   }
-  desktopUpdater.markInstalling()
-  quitting = true
-  app.quit()
-  return desktopUpdater.getStatus()
+  const status = desktopUpdater.getStatus()
+  setImmediate(() => {
+    if (process.platform === 'win32') {
+      console.debug('Exiting Porto desktop immediately so the Windows update helper can replace the application')
+      app.exit(0)
+      return
+    }
+    app.quit()
+  })
+  return status
 }
 
 async function presentPendingUpdatePrompt(window = mainWindow()) {

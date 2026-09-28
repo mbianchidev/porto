@@ -295,16 +295,40 @@ jobs:
           }
           $updatePackage = Join-Path $env:RUNNER_TEMP 'Porto update package.exe'
           $updateError = Join-Path $env:RUNNER_TEMP 'Porto update error.txt'
+          $updateReady = Join-Path $env:RUNNER_TEMP 'Porto update ready.txt'
+          $updateProceed = Join-Path $env:RUNNER_TEMP 'Porto update proceed.txt'
           Copy-Item $installer.FullName $updatePackage
-          & pwsh -NoProfile -NonInteractive -File ./ui/electron/apply-update.ps1 `
-            -ParentPid 2147483647 `
-            -PackagePath $updatePackage `
-            -InstallDirectory $installRoot `
-            -ExecutablePath (Join-Path $installRoot 'Porto.exe') `
-            -ErrorFile $updateError `
-            -SkipRestart
-          if ($LASTEXITCODE -ne 0) {
-            throw "In-place update helper exited with code $LASTEXITCODE."
+          Remove-Item $updateReady, $updateProceed -Force -ErrorAction SilentlyContinue
+          $scriptPath = (Resolve-Path './ui/electron/apply-update.ps1').Path
+          $updateArguments = @(
+            '-NoProfile',
+            '-NonInteractive',
+            '-ExecutionPolicy', 'Bypass',
+            '-File', "`"$scriptPath`"",
+            '-ParentPid', '2147483647',
+            '-PackagePath', "`"$updatePackage`"",
+            '-InstallDirectory', "`"$installRoot`"",
+            '-ExecutablePath', "`"$(Join-Path $installRoot 'Porto.exe')`"",
+            '-ErrorFile', "`"$updateError`"",
+            '-ReadyFile', "`"$updateReady`"",
+            '-ProceedFile', "`"$updateProceed`"",
+            '-SkipRestart'
+          )
+          $updateProcess = Start-Process powershell.exe -ArgumentList $updateArguments -PassThru -WindowStyle Hidden
+          for ($attempt = 0; $attempt -lt 300 -and -not (Test-Path $updateReady); $attempt++) {
+            if ($updateProcess.HasExited) {
+              throw "In-place update helper exited before readiness with code $($updateProcess.ExitCode)."
+            }
+            Start-Sleep -Milliseconds 50
+          }
+          if (-not (Test-Path $updateReady)) {
+            Stop-Process -Id $updateProcess.Id -Force -ErrorAction SilentlyContinue
+            throw 'In-place update helper did not become ready.'
+          }
+          Set-Content $updateProceed 'proceed'
+          $updateProcess.WaitForExit()
+          if ($updateProcess.ExitCode -ne 0) {
+            throw "In-place update helper exited with code $($updateProcess.ExitCode)."
           }
           if (Test-Path $updateError) {
             throw "In-place update helper reported: $(Get-Content -Raw $updateError)"

@@ -1,6 +1,9 @@
 const { spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
+const { setTimeout: delay } = require('node:timers/promises')
+
+const UPDATE_HELPER_READY_TIMEOUT = 15 * 1000
 
 function currentInstallation(platform, executablePath) {
   if (typeof executablePath !== 'string' || executablePath === '') {
@@ -49,6 +52,8 @@ function installerCommand({
   executable,
   errorFile,
   archiveRootName,
+  readyFile,
+  proceedFile,
 }) {
   if (platform === 'win32') {
     return {
@@ -70,12 +75,18 @@ function installerCommand({
         executable,
         '-ErrorFile',
         errorFile,
+        '-ReadyFile',
+        readyFile,
+        '-ProceedFile',
+        proceedFile,
       ],
       helperPath,
       packagePath,
       destination,
       executable,
       errorFile,
+      readyFile,
+      proceedFile,
     }
   }
   return {
@@ -96,6 +107,24 @@ function installerCommand({
     executable,
     errorFile,
   }
+}
+
+async function waitForUpdateHelperReady(child, readyFile, {
+  timeoutMs = UPDATE_HELPER_READY_TIMEOUT,
+  existsImpl = fs.existsSync,
+  delayImpl = delay,
+  nowImpl = Date.now,
+} = {}) {
+  const deadline = nowImpl() + timeoutMs
+  while (nowImpl() < deadline) {
+    if (existsImpl(readyFile)) return
+    if (child.exitCode != null || child.signalCode != null) {
+      const outcome = child.exitCode != null ? `code ${child.exitCode}` : `signal ${child.signalCode}`
+      throw new Error(`Porto update helper exited before becoming ready with ${outcome}`)
+    }
+    await delayImpl(50)
+  }
+  throw new Error(`Porto update helper did not become ready within ${timeoutMs / 1000}s`)
 }
 
 function expectedExtension(platform) {
@@ -142,6 +171,12 @@ async function launchDownloadedUpdate({
   )
   fs.copyFileSync(sourceHelper, helperPath)
   if (platform !== 'win32') fs.chmodSync(helperPath, 0o700)
+  const readyFile = platform === 'win32' ? `${helperPath}.ready` : ''
+  const proceedFile = platform === 'win32' ? `${helperPath}.proceed` : ''
+  if (platform === 'win32') {
+    fs.rmSync(readyFile, { force: true })
+    fs.rmSync(proceedFile, { force: true })
+  }
 
   const packageName = platform === 'win32' ? path.win32.basename(packagePath) : path.posix.basename(packagePath)
   const archiveRootName = platform === 'linux' ? packageName.slice(0, -extension.length) : ''
@@ -157,8 +192,11 @@ async function launchDownloadedUpdate({
     executable: installation.executable,
     errorFile,
     archiveRootName,
+    readyFile,
+    proceedFile,
   })
   const child = spawnImpl(invocation.command, invocation.args, {
+    cwd: downloadsDirectory,
     detached: true,
     stdio: 'ignore',
     windowsHide: true,
@@ -167,12 +205,37 @@ async function launchDownloadedUpdate({
     child.once('error', reject)
     child.once('spawn', resolve)
   })
+  if (platform === 'win32') {
+    try {
+      await waitForUpdateHelperReady(child, readyFile)
+    } catch (error) {
+      try {
+        child.kill()
+      } catch (killError) {
+        throw new Error(
+          `${error.message}; unable to stop failed update helper: ${killError.message}`,
+          { cause: error },
+        )
+      }
+      throw error
+    }
+  }
   child.unref()
-  return installation
+  return {
+    ...installation,
+    helperPid: child.pid,
+    proceed() {
+      if (platform === 'win32') {
+        fs.writeFileSync(proceedFile, 'proceed\n', { encoding: 'utf8', mode: 0o600 })
+      }
+    },
+  }
 }
 
 module.exports = {
+  UPDATE_HELPER_READY_TIMEOUT,
   currentInstallation,
   installerCommand,
   launchDownloadedUpdate,
+  waitForUpdateHelperReady,
 }
