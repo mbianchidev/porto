@@ -3,6 +3,11 @@
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
 
+> [!WARNING]
+> **Porto is not production-ready.** Use it for local development and experimentation only, not production or critical workloads.
+>
+> **Releases are not code-signed**, and macOS builds are not notarized. Your operating system may display security warnings or block installation or launch.
+
 Porto is an open-source desktop (and optionally web) control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
 
 It provides a portable, open-source alternative to proprietary desktop container managers while keeping standard Docker clients and Compose workflows.
