@@ -37,7 +37,12 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "porto:", err)
-		os.Exit(1)
+		exitCode := 1
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) && coded.ExitCode() > 0 {
+			exitCode = coded.ExitCode()
+		}
+		os.Exit(exitCode)
 	}
 }
 
@@ -80,6 +85,13 @@ func runCommand(args []string) error {
 	}
 	if args[0] == "https" {
 		return httpsAction(args[1:])
+	}
+	if args[0] == "diagnose" || args[0] == "diagnostics" {
+		db, dbErr := openStore()
+		if db != nil {
+			defer db.Close()
+		}
+		return diagnoseCmd(db, dbErr, args[1:])
 	}
 	db, err := openStore()
 	if err != nil {
@@ -673,5 +685,8 @@ Commands:
   porto kubernetes cluster create|start|stop|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
   porto runtime providers|install <lima|qemu|kind|k9s|k0s>
+  porto diagnose [--json]
+  porto diagnose bundle [--preview] [--output path]
+  porto diagnose repair <action> [--target name] --confirm
   porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

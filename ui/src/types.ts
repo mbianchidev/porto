@@ -807,6 +807,7 @@ export type RouteID =
   | 'nodes'
   | 'databases'
   | 'machines'
+  | 'diagnostics'
   | 'activity'
   | 'settings'
 
@@ -849,3 +850,43 @@ export type ActivityResourceSnapshot = {
 }
 
 export type LampState = 'running' | 'starting' | 'stopped' | 'crashed' | 'neutral'
+
+export type DiagnosticState = 'healthy' | 'degraded' | 'unavailable' | 'unsafe'
+
+export type DiagnosticRepair = {
+  id: string
+  label: string
+  description: string
+  target?: string
+  confirmation: string
+}
+
+export type DiagnosticCheck = {
+  id: string
+  category: string
+  name: string
+  state: DiagnosticState
+  summary: string
+  detail?: string
+  repair?: DiagnosticRepair
+}
+
+export type DiagnosticReport = {
+  generatedAt: string
+  version: string
+  overall: DiagnosticState
+  summary: Record<DiagnosticState, number>
+  checks: DiagnosticCheck[]
+}
+
+export type DiagnosticBundleEntry = {
+  name: string
+  description: string
+  size: number
+  redactions: number
+}
+
+export type DiagnosticBundlePreview = {
+  entries: DiagnosticBundleEntry[]
+  warnings?: string[]
+}

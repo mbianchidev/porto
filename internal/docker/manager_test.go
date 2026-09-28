@@ -496,6 +496,40 @@ func TestEngineOwnershipTimeoutRecoversOwnedGuest(t *testing.T) {
 	}
 }
 
+func TestEngineOwnershipStatusReportsMarkerCollisionWithoutRecovery(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "list porto-engine --json":
+			return []byte(`{"name":"porto-engine","status":"Running"}` + "\n"), nil
+		case `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
+			return []byte("different-owner\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s %v", command.Name, command.Args)
+		}
+	}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeEngineState(engineState{
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "expected-owner", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("write engine state: %v", err)
+	}
+
+	status := manager.EngineOwnershipStatus(context.Background())
+	if !status.Configured || !status.Conflict || status.Verified {
+		t.Fatalf("unexpected ownership status: %+v", status)
+	}
+	if !strings.Contains(status.Message, "does not match") {
+		t.Fatalf("ownership collision message = %q", status.Message)
+	}
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, " ")
+		if joined == "stop porto-engine" || joined == "start porto-engine" {
+			t.Fatalf("ownership diagnosis changed guest lifecycle: %s", joined)
+		}
+	}
+}
+
 func TestManagerStatusAndInventory(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{

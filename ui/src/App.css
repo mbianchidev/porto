@@ -2430,6 +2430,134 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr);
 }
 
+.diagnosticsWorkArea {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+}
+
+.diagnosticChecks {
+  display: grid;
+  gap: 7px;
+}
+
+.diagnosticCheck,
+.diagnosticBundle {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  background: var(--panel);
+  box-shadow: 1px 1px 0 rgba(52, 56, 50, 0.18);
+}
+
+.diagnosticCheck {
+  overflow: hidden;
+}
+
+.diagnosticCheck > header {
+  display: grid;
+  grid-template-columns: minmax(110px, 0.35fr) minmax(180px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+  background: var(--panel-raised);
+}
+
+.diagnosticCheck > header span {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink-soft);
+  font: 700 10px/1 var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.diagnosticCheck > header strong {
+  font-size: 13px;
+}
+
+.diagnosticCheck > header em {
+  color: var(--ink-soft);
+  font: 700 10px/1 var(--mono);
+  text-transform: uppercase;
+}
+
+.diagnosticCheck > p,
+.diagnosticCheck > pre,
+.diagnosticBundle > p {
+  margin: 0;
+  padding: 9px 10px;
+}
+
+.diagnosticCheck > pre {
+  overflow: auto;
+  border-top: 1px dashed var(--line);
+  color: var(--ink-soft);
+  font: 10px/1.5 var(--mono);
+  white-space: pre-wrap;
+}
+
+.diagnostic-unsafe {
+  border-color: #8d3d34;
+}
+
+.diagnostic-degraded {
+  border-color: #8a7439;
+}
+
+.diagnosticRepair {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  border-top: 1px solid var(--line);
+  padding: 8px 10px;
+  background: rgba(172, 159, 112, 0.12);
+}
+
+.diagnosticRepair span {
+  color: var(--ink-soft);
+  font-size: 11px;
+}
+
+.diagnosticRepair button {
+  flex: 0 0 auto;
+}
+
+.diagnosticBundle {
+  padding: 12px;
+}
+
+.diagnosticBundle dl {
+  display: grid;
+  margin: 10px 0 0;
+}
+
+.diagnosticBundle dl > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding: 8px 0;
+}
+
+.diagnosticBundle dt {
+  font: 700 11px/1.4 var(--mono);
+}
+
+.diagnosticBundle dt small {
+  display: block;
+  color: var(--ink-soft);
+  font: 11px/1.4 var(--sans);
+}
+
+.diagnosticBundle dd {
+  margin: 0;
+  color: var(--ink-soft);
+  font: 10px/1.4 var(--mono);
+  white-space: nowrap;
+}
+
 .databasesWorkArea {
   grid-template-columns: minmax(0, 1fr);
 }
@@ -2752,6 +2880,27 @@ button:disabled {
   .statusFilters button {
     flex: 1 0 auto;
     justify-content: center;
+  }
+
+  .diagnosticCheck > header {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .diagnosticCheck > header span {
+    grid-column: 1 / -1;
+  }
+
+  .diagnosticBundle dl > div {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .diagnosticRepair {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .diagnosticRepair button {
+    width: 100%;
   }
 
   .filterResultCount {

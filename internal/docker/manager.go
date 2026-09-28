@@ -179,6 +179,67 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 	return status
 }
 
+func (m *Manager) EngineOwnershipStatus(ctx context.Context) EngineOwnershipStatus {
+	state, err := m.readEngineState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return EngineOwnershipStatus{Message: "Porto-managed container engine metadata does not exist"}
+		}
+		return EngineOwnershipStatus{
+			Configured: true,
+			Conflict:   true,
+			Message:    err.Error(),
+		}
+	}
+	status := EngineOwnershipStatus{
+		Configured: true,
+		Mode:       state.Mode,
+		Instance:   state.Instance,
+	}
+	switch state.Mode {
+	case "direct":
+		status.Owned = true
+		status.Verified = true
+		status.Message = "External containerd ownership is controlled by its administrator"
+		return status
+	case "lima":
+		if state.Instance != engineInstanceName || strings.TrimSpace(state.OwnerID) == "" {
+			status.Conflict = true
+			status.Message = "Porto engine ownership metadata is incomplete or targets an unexpected instance"
+			return status
+		}
+	default:
+		status.Conflict = true
+		status.Message = fmt.Sprintf("Porto engine ownership mode %q is invalid", state.Mode)
+		return status
+	}
+	status.Owned = true
+	exists, running, err := m.limaInstanceStatus(ctx)
+	if err != nil {
+		status.Message = err.Error()
+		return status
+	}
+	if !exists {
+		status.Owned = false
+		status.Message = fmt.Sprintf("Porto-owned Lima instance %q is missing", state.Instance)
+		return status
+	}
+	if !running {
+		status.Message = "Porto-owned engine is stopped; the guest ownership marker was not verified"
+		return status
+	}
+	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+		status.Owned = false
+		status.Conflict = strings.Contains(strings.ToLower(err.Error()), "does not match") ||
+			strings.Contains(strings.ToLower(err.Error()), "refusing")
+		status.Message = err.Error()
+		return status
+	}
+	status.Verified = true
+	status.Message = "Porto engine ownership metadata and guest marker match"
+	return status
+}
+
 func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) {
 	m.installMu.Lock()
 	defer m.installMu.Unlock()

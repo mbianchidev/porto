@@ -46,6 +46,7 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'System',
     collapsible: true,
     items: [
+      { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
       { id: 'activity', label: 'Activity', icon: 'activity' },
       { id: 'settings', label: 'Settings', icon: 'settings' },
     ],

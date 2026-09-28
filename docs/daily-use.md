@@ -116,6 +116,9 @@ stderr, and a desktop-launched daemon keeps writing after the desktop exits.
 This application log is separate from project/container logs; `porto logs` and
 the dashboard's project-log clearing controls do not modify it.
 
+For cross-runtime health checks, redacted local support bundles, and narrowly
+scoped repairs, see [Diagnostics and repair](diagnostics.md).
+
 ## Start the daemon automatically
 
 The daemon runs in the foreground and gracefully stops its managed projects when it receives an interrupt or termination signal. Use the service manager for your platform rather than leaving a terminal open.

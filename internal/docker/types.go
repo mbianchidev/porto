@@ -27,6 +27,16 @@ type Status struct {
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 }
 
+type EngineOwnershipStatus struct {
+	Configured bool   `json:"configured"`
+	Owned      bool   `json:"owned"`
+	Verified   bool   `json:"verified"`
+	Conflict   bool   `json:"conflict"`
+	Mode       string `json:"mode,omitempty"`
+	Instance   string `json:"instance,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
 type Container struct {
 	ID                string                    `json:"id"`
 	Name              string                    `json:"name"`
