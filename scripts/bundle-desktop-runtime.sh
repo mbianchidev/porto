@@ -20,6 +20,7 @@ docker_git_commit="a7dcaa6fdb6ed04aacbfdc76357fdae01605609e"
 docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0a3cbf54a"
 compose_version="v5.5.1"
 buildx_version="v0.37.1"
+dive_version="v0.13.1"
 qemu_version="11.1.0"
 qemu_build="20260811"
 
@@ -139,6 +140,30 @@ if [ "$docker_bundled" = "true" ]; then
   mv "$temporary/$buildx_asset" "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
   docker_plugins_bundled=true
 fi
+
+case "$goos/$goarch" in
+  darwin/amd64) dive_checksum="04e4c1bac21be3aef99799cf0e470149a072ea4786be50718aa846cd13746523" ;;
+  darwin/arm64) dive_checksum="38b7fa95a13e7f4d0b3060c875fe7427c2a0613ecff674bb45156eb34bca0b09" ;;
+  linux/amd64) dive_checksum="0970549eb4a306f8825a84145a2534153badb4d7dcf3febd1967c706367c3d0e" ;;
+  linux/arm64) dive_checksum="2fcd2cf20f634ccdb41efac44048b204bfc867c115641f37a7420693ed480a18" ;;
+  windows/amd64) dive_checksum="3e764ff28c7b89f4da679deac80483249fbbae3a1d512c103d54609eec09086a" ;;
+  windows/arm64) dive_checksum="de298f2edeffeac3e4c715eb516eab8075b50a7c8fce28194f730f2a384d4dc9" ;;
+esac
+dive_extension="tar.gz"
+if [ "$goos" = "windows" ]; then
+  dive_extension="zip"
+fi
+dive_asset="dive_${dive_version#v}_${goos}_${goarch}.${dive_extension}"
+download "https://github.com/wagoodman/dive/releases/download/${dive_version}/${dive_asset}" "$temporary/$dive_asset"
+verify "$dive_checksum" "$temporary/$dive_asset"
+mkdir -p "$temporary/dive"
+if [ "$dive_extension" = "zip" ]; then
+  unzip -q "$temporary/$dive_asset" "dive.exe" "LICENSE" -d "$temporary/dive"
+else
+  tar -xzf "$temporary/$dive_asset" -C "$temporary/dive" dive LICENSE
+fi
+mv "$temporary/dive/dive${binary_suffix}" "$destination/bin/dive${binary_suffix}"
+cp "$temporary/dive/LICENSE" "$destination/licenses/dive.txt"
 
 kind_bundled=false
 if [ "$goos/$goarch" != "windows/arm64" ]; then
@@ -306,6 +331,7 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
 if [ "$goos" != "windows" ]; then
   chmod 0755 "$destination/bin/kubectl"
   chmod 0755 "$destination/bin/porto-runtime-helper"
+  chmod 0755 "$destination/bin/dive"
   if [ "$docker_bundled" = "true" ]; then
     chmod 0755 "$destination/bin/docker"
     chmod 0755 "$destination/docker/cli-plugins/docker-compose"
@@ -321,6 +347,7 @@ kubectl ${kubectl_version}
 docker $([ "$docker_bundled" = "true" ] && printf '%s (%s, sha256:%s, commit %s)' "$docker_version" "$docker_asset" "$docker_source_checksum" "$docker_git_commit" || printf 'not available for %s/%s' "$goos" "$goarch")
 docker-compose $([ "$docker_plugins_bundled" = "true" ] && printf '%s (%s, sha256:%s)' "$compose_version" "$compose_asset" "$compose_checksum" || printf 'not available because Docker CLI is not bundled for %s/%s' "$goos" "$goarch")
 docker-buildx $([ "$docker_plugins_bundled" = "true" ] && printf '%s (%s, sha256:%s)' "$buildx_version" "$buildx_asset" "$buildx_checksum" || printf 'not available because Docker CLI is not bundled for %s/%s' "$goos" "$goarch")
+dive ${dive_version} (${dive_asset}, sha256:${dive_checksum})
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_runtime_version}
@@ -342,6 +369,8 @@ else
   test ! -e "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
   test ! -e "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
 fi
+test -f "$destination/bin/dive${binary_suffix}"
+test -f "$destination/licenses/dive.txt"
 
 node "$(dirname "$0")/desktop-runtime-symlinks.cjs" --validate "$destination"
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

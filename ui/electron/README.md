@@ -31,7 +31,7 @@ npm start
 
 Development runs require the daemon binary (`porto`) on `PATH`. Release
 packages bundle the daemon and portable runtime clients, so users do not need a
-separate Porto, Docker CLI, Compose, Buildx, Lima, `kubectl`, or `kind` installation. Windows
+separate Porto, Docker CLI, Compose, Buildx, Dive, Lima, `kubectl`, or `kind` installation. Windows
 packages also bundle QEMU for the managed container runtime and virtual machines.
 Windows ARM64 excludes KinD because upstream does not publish a native binary;
 Porto builds Docker CLI from its pinned official source and bundles native

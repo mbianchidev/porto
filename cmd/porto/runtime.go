@@ -85,7 +85,7 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker cli <args...>|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return errors.New("usage: porto docker cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
 	case "cli":
@@ -99,6 +99,54 @@ func dockerCmd(args []string) error {
 		command.Stderr = os.Stderr
 		if err := command.Run(); err != nil {
 			return fmt.Errorf("run bundled Docker CLI: %w", err)
+		}
+		return nil
+	case "dive":
+		if len(args) == 1 {
+			return errors.New("usage: porto docker dive [--container name] <image> [dive args...]")
+		}
+		endpoint, err := config.DockerEndpoint()
+		if err != nil {
+			return err
+		}
+		environment := process.WithEnvironment(
+			os.Environ(),
+			"DOCKER_HOST="+endpoint,
+			"DOCKER_CONTEXT=",
+		)
+		diveArgs := append([]string(nil), args[1:]...)
+		if diveArgs[0] == "--container" {
+			if len(diveArgs) < 2 || strings.TrimSpace(diveArgs[1]) == "" {
+				return errors.New("usage: porto docker dive --container <name> [dive args...]")
+			}
+			inspect := exec.Command(
+				"docker", "--host", endpoint,
+				"container", "inspect", "--format", "{{.Config.Image}}",
+				diveArgs[1],
+			)
+			inspect.Env = environment
+			output, err := inspect.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf(
+					"resolve image for Porto container %q: %w: %s",
+					diveArgs[1],
+					err,
+					strings.TrimSpace(string(output)),
+				)
+			}
+			image := strings.TrimSpace(string(output))
+			if image == "" {
+				return fmt.Errorf("Porto container %q did not report an image", diveArgs[1])
+			}
+			diveArgs = append([]string{image}, diveArgs[2:]...)
+		}
+		command := exec.Command("dive", diveArgs...)
+		command.Env = environment
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("inspect Porto image layers: %w", err)
 		}
 		return nil
 	case "status":

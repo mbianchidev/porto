@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -24,6 +26,66 @@ func TestParseInterspersedAllowsFlagsAfterPositionals(t *testing.T) {
 	}
 	if fs.NArg() != 2 || fs.Arg(0) != "cluster" || fs.Arg(1) != "workers" {
 		t.Fatalf("positionals = %v", fs.Args())
+	}
+}
+
+func TestDockerDiveTargetsPortoEndpoint(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "dive.txt")
+	dockerCapture := filepath.Join(t.TempDir(), "docker.txt")
+	dive := filepath.Join(bin, "dive")
+	if err := os.WriteFile(
+		dive,
+		[]byte("#!/bin/sh\nprintf '%s\\n%s\\n%s\\n' \"$DOCKER_HOST\" \"$DOCKER_CONTEXT\" \"$*\" > \"$DIVE_CAPTURE\"\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(
+		filepath.Join(bin, "docker"),
+		[]byte("#!/bin/sh\nprintf '%s\\n' \"$*\" > \"$DOCKER_CAPTURE\"\nprintf '%s\\n' 'node:22-alpine'\n"),
+		0o700,
+	); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PORTO_HOME", t.TempDir())
+	t.Setenv("DIVE_CAPTURE", capture)
+	t.Setenv("DOCKER_CAPTURE", dockerCapture)
+	t.Setenv("DOCKER_HOST", "unix:///wrong.sock")
+	t.Setenv("DOCKER_CONTEXT", "wrong")
+
+	if err := dockerCmd([]string{"dive", "alpine:latest", "--source", "docker"}); err != nil {
+		t.Fatalf("docker dive: %v", err)
+	}
+	data, err := os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) != 3 || !strings.Contains(lines[0], "/run/docker.sock") ||
+		lines[1] != "" || lines[2] != "alpine:latest --source docker" {
+		t.Fatalf("unexpected Dive environment: %q", data)
+	}
+	if err := dockerCmd([]string{"dive", "--container", "demo", "--source", "docker"}); err != nil {
+		t.Fatalf("docker dive container: %v", err)
+	}
+	data, err = os.ReadFile(capture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(strings.TrimSpace(string(data)), "node:22-alpine --source docker") {
+		t.Fatalf("container image was not forwarded to Dive: %q", data)
+	}
+	dockerArgs, err := os.ReadFile(dockerCapture)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(dockerArgs), "container inspect --format {{.Config.Image}} demo") {
+		t.Fatalf("unexpected Docker inspect arguments: %q", dockerArgs)
 	}
 }
 

@@ -19,6 +19,7 @@ function toolchainLayout(runtimeRoot, platform = process.platform) {
     launcher: path.join(runtimeRoot, 'bin', `docker${suffix}`),
     compose: path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-compose${suffix}`),
     buildx: path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-buildx${suffix}`),
+    dive: path.join(runtimeRoot, 'bin', `dive${suffix}`),
   }
 }
 
@@ -33,16 +34,22 @@ function validateToolchainLayout(runtimeRoot, {
   const dockerVersion = versions.get('docker') || ''
   const supported = !dockerVersion.startsWith('not available')
   const layout = toolchainLayout(runtimeRoot, platform)
+  const mode = platform === 'win32' ? fs.constants.F_OK : fs.constants.F_OK | fs.constants.X_OK
+  try {
+    accessImpl(layout.dive, mode)
+  } catch (error) {
+    throw new Error(`Bundled image-layer tool is missing executable dive at ${layout.dive}: ${error.message}`)
+  }
   if (!supported) {
-    for (const file of Object.values(layout)) {
+    for (const file of [layout.launcher, layout.compose, layout.buildx]) {
       if (existsImpl(file)) {
         throw new Error(`Unsupported Docker toolchain unexpectedly contains ${file}`)
       }
     }
     return { supported: false, versions, layout, reason: dockerVersion }
   }
-  const mode = platform === 'win32' ? fs.constants.F_OK : fs.constants.F_OK | fs.constants.X_OK
   for (const [name, file] of Object.entries(layout)) {
+    if (name === 'dive') continue
     try {
       accessImpl(file, mode)
     } catch (error) {
@@ -57,6 +64,7 @@ function validateToolchainLayout(runtimeRoot, {
     'docker-compose-NOTICE.txt',
     'docker-buildx.txt',
     'docker-buildx-AUTHORS.txt',
+    'dive.txt',
   ]) {
     const file = path.join(runtimeRoot, 'licenses', license)
     if (!existsImpl(file)) throw new Error(`Bundled Docker toolchain is missing ${file}`)
@@ -130,10 +138,12 @@ function smoke(runtimeRoot, options = {}) {
     const dockerOutput = execute(inspection.layout.launcher, ['--version'], { env: environment })
     const composeOutput = execute(inspection.layout.launcher, ['compose', 'version', '--short'], { env: environment })
     const buildxOutput = execute(inspection.layout.launcher, ['buildx', 'version'], { env: environment })
+    const diveOutput = execute(inspection.layout.dive, ['--version'], { env: environment })
     for (const [name, output, expected] of [
       ['docker', dockerOutput, versionToken(inspection.versions.get('docker'))],
       ['compose', composeOutput, versionToken(inspection.versions.get('docker-compose'))],
       ['buildx', buildxOutput, versionToken(inspection.versions.get('docker-buildx'))],
+      ['dive', diveOutput, versionToken(inspection.versions.get('dive'))],
     ]) {
       if (!output.includes(expected)) {
         throw new Error(`${name} reported ${output}; expected version ${expected}`)
@@ -142,7 +152,7 @@ function smoke(runtimeRoot, options = {}) {
     if (fs.readFileSync(configPath, 'utf8') !== config) {
       throw new Error('Bundled Docker launcher modified the user Docker config')
     }
-    process.stdout.write(`Docker ${dockerOutput}; Compose ${composeOutput}; Buildx ${buildxOutput}\n`)
+    process.stdout.write(`Docker ${dockerOutput}; Compose ${composeOutput}; Buildx ${buildxOutput}; Dive ${diveOutput}\n`)
     return inspection
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true })

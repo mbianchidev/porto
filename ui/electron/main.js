@@ -624,10 +624,11 @@ async function ensureDockerEngine() {
       console.warn('Bundled Docker toolchain is unavailable on this platform: %s', toolchain.message)
     } else {
       console.debug(
-        'Bundled Docker toolchain ready: docker=%s compose=%s buildx=%s',
+        'Bundled Docker toolchain ready: docker=%s compose=%s buildx=%s dive=%s',
         toolchain.reported.docker,
         toolchain.reported.compose,
         toolchain.reported.buildx,
+        toolchain.reported.dive,
       )
     }
   }

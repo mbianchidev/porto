@@ -40,7 +40,8 @@ detached daemon's output. See [application diagnostic logs](daily-use.md#applica
 for platform paths and verbosity settings.
 
 Desktop archives contain Porto, its dashboard, the Docker CLI with Compose and
-Buildx, `kubectl`, `k9s`, Lima, and the supported `kind` binary for that platform. Windows packages also
+Buildx, Dive for terminal image-layer inspection, `kubectl`, `k9s`, Lima, and
+the supported `kind` binary for that platform. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
 system installation. Windows ARM64 excludes KinD because upstream does not
 publish a native binary; Porto builds its Docker CLI from Docker's pinned
@@ -65,6 +66,8 @@ The always-available explicit form is:
 porto docker cli --version
 porto docker cli compose version
 porto docker cli buildx version
+porto docker dive alpine:latest
+porto docker dive --container running-api
 ```
 
 Porto's Docker CLI discovers the plugins shipped beside it before user and
@@ -176,6 +179,9 @@ mkdir -p "$HOME/.local/bin"
 ln -sfn "/Applications/Porto.app/Contents/Resources/porto" "$HOME/.local/bin/porto"
 if [ ! -e "$HOME/.local/bin/docker" ] && [ ! -L "$HOME/.local/bin/docker" ]; then
   ln -s "/Applications/Porto.app/Contents/Resources/runtime/bin/docker" "$HOME/.local/bin/docker"
+fi
+if [ ! -e "$HOME/.local/bin/dive" ] && [ ! -L "$HOME/.local/bin/dive" ]; then
+  ln -s "/Applications/Porto.app/Contents/Resources/runtime/bin/dive" "$HOME/.local/bin/dive"
 fi
 grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zprofile"
@@ -289,7 +295,7 @@ Source builds use standard host tools:
 - `qemu-system-*` for snapshot-capable Lima VMs
 - `kind` for Kubernetes-in-Porto clusters
 
-Release desktop apps bundle Docker, Compose, Buildx, kubectl, k9s, and Lima.
+Release desktop apps bundle Docker, Compose, Buildx, Dive, kubectl, k9s, and Lima.
 Kind is bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
 not because upstream does not publish relocatable binaries and package-manager
 builds have large architecture-specific dynamic library closures. On macOS, run

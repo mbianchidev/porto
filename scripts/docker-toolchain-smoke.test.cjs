@@ -17,20 +17,37 @@ function temporaryRuntime(t) {
   return root
 }
 
+function writeLicenses(root) {
+  for (const license of [
+    'docker-cli.txt',
+    'docker-cli-NOTICE.txt',
+    'docker-cli-bundled-plugins.patch',
+    'docker-compose.txt',
+    'docker-compose-NOTICE.txt',
+    'docker-buildx.txt',
+    'docker-buildx-AUTHORS.txt',
+    'dive.txt',
+  ]) {
+    fs.writeFileSync(path.join(root, 'licenses', license), 'license')
+  }
+}
+
 test('parses version metadata with platform limitation details', () => {
-  const versions = parseVersions('docker 29.7.2\ndocker-compose not available because Docker CLI is not bundled for windows/arm64\n')
+  const versions = parseVersions('docker 29.7.2\ndocker-compose not available because Docker CLI is not bundled for windows/arm64\ndive v0.13.1\n')
   assert.equal(versions.get('docker'), '29.7.2')
   assert.match(versions.get('docker-compose'), /windows\/arm64/)
+  assert.equal(versions.get('dive'), 'v0.13.1')
 })
 
 test('rejects a supported bundle with a missing plugin', (t) => {
   const root = temporaryRuntime(t)
-  fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker 29.7.2\n')
+  fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker 29.7.2\ndive v0.13.1\n')
   const layout = toolchainLayout(root, 'linux')
-  for (const file of [layout.launcher, layout.compose]) {
+  for (const file of [layout.launcher, layout.compose, layout.dive]) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
     fs.writeFileSync(file, 'synthetic', { mode: 0o700 })
   }
+  writeLicenses(root)
   assert.throws(
     () => validateToolchainLayout(root, { platform: 'linux' }),
     /missing executable buildx/,
@@ -39,8 +56,10 @@ test('rejects a supported bundle with a missing plugin', (t) => {
 
 test('rejects Docker files on an explicitly unsupported platform', (t) => {
   const root = temporaryRuntime(t)
-  fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker not available for windows/arm64\n')
+  fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker not available for windows/arm64\ndive v0.13.1\n')
   const layout = toolchainLayout(root, 'win32')
+  fs.mkdirSync(path.dirname(layout.dive), { recursive: true })
+  fs.writeFileSync(layout.dive, 'dive')
   fs.mkdirSync(path.dirname(layout.launcher), { recursive: true })
   fs.writeFileSync(layout.launcher, 'unexpected')
   assert.throws(

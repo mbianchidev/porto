@@ -52,29 +52,28 @@ func inspect(
 ) []Status {
 	versions := readVersions(manifestPath)
 	components := []struct {
-		name    string
-		command string
-		args    []string
+		name         string
+		manifestName string
+		binary       string
+		command      string
+		args         []string
 	}{
-		{name: "docker", command: "docker", args: []string{"--version"}},
-		{name: "compose", command: "docker compose", args: []string{"compose", "version", "--short"}},
-		{name: "buildx", command: "docker buildx", args: []string{"buildx", "version"}},
+		{name: "docker", manifestName: "docker", binary: "docker", command: "docker", args: []string{"--version"}},
+		{name: "compose", manifestName: "docker-compose", binary: "docker", command: "docker compose", args: []string{"compose", "version", "--short"}},
+		{name: "buildx", manifestName: "docker-buildx", binary: "docker", command: "docker buildx", args: []string{"buildx", "version"}},
+		{name: "dive", manifestName: "dive", binary: "dive", command: "dive", args: []string{"--version"}},
 	}
-	dockerPath, pathErr := lookPath("docker")
 	statuses := make([]Status, 0, len(components))
 	for _, component := range components {
-		manifestName := component.name
-		if component.name != "docker" {
-			manifestName = "docker-" + component.name
-		}
-		expected := versions[manifestName]
+		expected := versions[component.manifestName]
+		path, pathErr := lookPath(component.binary)
 		status := Status{
 			Name:            component.name,
 			Command:         component.command,
 			Supported:       !strings.HasPrefix(expected, "not available"),
 			BundledExpected: expected != "" && !strings.HasPrefix(expected, "not available"),
 			ExpectedVersion: versionToken(expected),
-			Path:            dockerPath,
+			Path:            path,
 		}
 		if expected != "" && !status.Supported {
 			status.Message = expected
@@ -83,11 +82,11 @@ func inspect(
 		}
 		if pathErr != nil {
 			status.Supported = true
-			status.Message = "Docker CLI is not installed"
+			status.Message = component.command + " is not installed"
 			statuses = append(statuses, status)
 			continue
 		}
-		output, err := run(ctx, dockerPath, component.args...)
+		output, err := run(ctx, path, component.args...)
 		status.Version = strings.TrimSpace(string(output))
 		if err != nil {
 			status.Message = fmt.Sprintf("%s failed: %v", component.command, err)

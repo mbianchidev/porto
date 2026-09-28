@@ -14,22 +14,34 @@ func TestInspectReportsExplicitUnsupportedPlatform(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte(
 		"docker not available for windows/arm64\n"+
 			"docker-compose not available because Docker CLI is not bundled for windows/arm64\n"+
-			"docker-buildx not available because Docker CLI is not bundled for windows/arm64\n",
+			"docker-buildx not available because Docker CLI is not bundled for windows/arm64\n"+
+			"dive v0.13.1\n",
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	statuses := inspect(
 		context.Background(),
 		manifest,
-		func(string) (string, error) { return "", errors.New("must not be required") },
-		func(context.Context, string, ...string) ([]byte, error) {
-			return nil, errors.New("must not run")
+		func(name string) (string, error) {
+			if name == "dive" {
+				return "/porto/runtime/bin/dive", nil
+			}
+			return "", errors.New("Docker CLI unavailable")
+		},
+		func(_ context.Context, name string, _ ...string) ([]byte, error) {
+			if strings.HasSuffix(name, "dive") {
+				return []byte("dive 0.13.1"), nil
+			}
+			return nil, errors.New("must not run Docker")
 		},
 	)
-	for _, status := range statuses {
+	for _, status := range statuses[:3] {
 		if status.Supported || status.Installed || !strings.Contains(status.Message, "windows/arm64") {
 			t.Fatalf("unexpected unsupported status: %+v", status)
 		}
+	}
+	if !statuses[3].Supported || !statuses[3].Installed {
+		t.Fatalf("Dive status = %+v", statuses[3])
 	}
 }
 
@@ -38,15 +50,19 @@ func TestInspectChecksBundledPluginVersions(t *testing.T) {
 	if err := os.WriteFile(manifest, []byte(
 		"docker 29.7.2\n"+
 			"docker-compose v5.5.1 (asset)\n"+
-			"docker-buildx v0.37.1 (asset)\n",
+			"docker-buildx v0.37.1 (asset)\n"+
+			"dive v0.13.1 (asset)\n",
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	statuses := inspect(
 		context.Background(),
 		manifest,
-		func(string) (string, error) { return "/porto/runtime/bin/docker", nil },
-		func(_ context.Context, _ string, args ...string) ([]byte, error) {
+		func(name string) (string, error) { return "/porto/runtime/bin/" + name, nil },
+		func(_ context.Context, name string, args ...string) ([]byte, error) {
+			if strings.HasSuffix(name, "/dive") {
+				return []byte("dive 0.13.1"), nil
+			}
 			switch strings.Join(args, " ") {
 			case "--version":
 				return []byte("Docker version 29.7.2"), nil

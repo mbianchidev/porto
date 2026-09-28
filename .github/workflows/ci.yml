@@ -79,6 +79,10 @@ jobs:
           if ($dockerCommand -ne '"C:\Program Files\Porto\resources\runtime\bin\docker.exe" %*') {
             throw "Invalid docker.cmd wrapper: $dockerCommand"
           }
+          $diveCommand = '"{0}" %*' -f (Join-Path $installRoot 'resources\runtime\bin\dive.exe')
+          if ($diveCommand -ne '"C:\Program Files\Porto\resources\runtime\bin\dive.exe" %*') {
+            throw "Invalid dive.cmd wrapper: $diveCommand"
+          }
 
   cross-build:
     name: Cross build
@@ -319,6 +323,9 @@ jobs:
             if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose plugin failed.' }
             & $docker buildx version | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Buildx plugin failed.' }
+            $dive = Join-Path $installRoot 'resources/runtime/bin/dive.exe'
+            & $dive --version | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'Installed Dive image inspector failed.' }
             go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
             if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose failed the Porto API smoke test.' }
           }

@@ -87,7 +87,7 @@ install_optional_link() {
   name="$3"
   [ -x "$target" ] || return 0
   if [ -e "$link" ] && [ ! -L "$link" ]; then
-    echo "Preserving existing $name at $link; use 'porto docker cli' for Porto's bundled toolchain." >&2
+    echo "Preserving existing $name at $link; use the Porto CLI for its bundled tool." >&2
     return 0
   fi
   if [ -L "$link" ]; then
@@ -97,7 +97,7 @@ install_optional_link() {
         */Porto.app/Contents/Resources/runtime/bin/docker|*/porto/resources/runtime/bin/docker)
           ;;
         *)
-          echo "Preserving existing $name symlink at $link; use 'porto docker cli' for Porto's bundled toolchain." >&2
+          echo "Preserving existing $name symlink at $link; use the Porto CLI for its bundled tool." >&2
           return 0
           ;;
       esac
@@ -106,15 +106,22 @@ install_optional_link() {
   ln -sfn "$target" "$link"
 }
 
-install_bundled_docker_link() {
-  target="$1"
-  link="$bin_dir/docker"
-  existing_command="$(command -v docker 2>/dev/null || true)"
+install_bundled_tool_link() {
+  command_name="$1"
+  target="$2"
+  display_name="$3"
+  link="$bin_dir/$command_name"
+  existing_command="$(command -v "$command_name" 2>/dev/null || true)"
   if [ -n "$existing_command" ] && [ "$existing_command" != "$link" ]; then
-    echo "Preserving existing Docker command at $existing_command; use 'porto docker cli' for Porto's bundled toolchain." >&2
+    echo "Preserving existing $display_name at $existing_command; use the Porto CLI for its bundled tool." >&2
     return 0
   fi
-  install_optional_link "$target" "$link" "Docker CLI"
+  install_optional_link "$target" "$link" "$display_name"
+}
+
+install_bundled_docker_link() {
+  target="$1"
+  install_bundled_tool_link "docker" "$target" "Docker CLI"
 }
 
 run_as_root() {
@@ -186,6 +193,10 @@ if [ "$goos" = "darwin" ]; then
   mounted_volume=""
   ln -sf "$install_root/Porto.app/Contents/Resources/porto" "$bin_dir/porto"
   install_bundled_docker_link "$install_root/Porto.app/Contents/Resources/runtime/bin/docker"
+  install_bundled_tool_link \
+    "dive" \
+    "$install_root/Porto.app/Contents/Resources/runtime/bin/dive" \
+    "Dive image inspector"
   echo "Installed Porto at $install_root/Porto.app"
   echo "Until releases are signed, macOS may require: xattr -drs com.apple.quarantine \"$install_root/Porto.app\""
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
@@ -204,6 +215,7 @@ else
   ln -sf "$install_root/Porto" "$bin_dir/porto-desktop"
   ln -sf "$install_root/resources/porto" "$bin_dir/porto"
   install_bundled_docker_link "$install_root/resources/runtime/bin/docker"
+  install_bundled_tool_link "dive" "$install_root/resources/runtime/bin/dive" "Dive image inspector"
   mkdir -p "$HOME/.local/share/applications"
   cat > "$HOME/.local/share/applications/porto.desktop" <<EOF
 [Desktop Entry]

@@ -103,6 +103,8 @@ func dockerToolchainChecks(statuses []dockercli.Status) []Check {
 		name := status.Name
 		if name == "docker" {
 			name = "Docker CLI"
+		} else if name == "dive" {
+			name = "Dive image layers"
 		} else {
 			name = "Docker " + strings.ToUpper(name[:1]) + name[1:]
 		}

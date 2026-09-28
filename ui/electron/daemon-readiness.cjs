@@ -238,23 +238,26 @@ async function inspectBundledDockerToolchain({
   }
   const suffix = platform === 'win32' ? '.exe' : ''
   const launcher = path.join(runtimeRoot, 'bin', `docker${suffix}`)
+  const dive = path.join(runtimeRoot, 'bin', `dive${suffix}`)
   for (const required of [
     launcher,
+    dive,
     path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-compose${suffix}`),
     path.join(runtimeRoot, 'docker', 'cli-plugins', `docker-buildx${suffix}`),
   ]) {
     if (!existsImpl(required)) throw new Error(`Bundled Docker toolchain is missing ${required}`)
   }
   const commands = [
-    ['docker', ['--version'], dockerVersion],
-    ['compose', ['compose', 'version', '--short'], versions.get('docker-compose')],
-    ['buildx', ['buildx', 'version'], versions.get('docker-buildx')],
+    ['docker', launcher, ['--version'], dockerVersion],
+    ['compose', launcher, ['compose', 'version', '--short'], versions.get('docker-compose')],
+    ['buildx', launcher, ['buildx', 'version'], versions.get('docker-buildx')],
+    ['dive', dive, ['--version'], versions.get('dive')],
   ]
   const reported = {}
-  for (const [name, args, expected] of commands) {
+  for (const [name, executable, args, expected] of commands) {
     let result
     try {
-      result = await execFileImpl(launcher, args, {
+      result = await execFileImpl(executable, args, {
         env: environment,
         timeout: 30000,
         maxBuffer: 1024 * 1024,
@@ -270,7 +273,7 @@ async function inspectBundledDockerToolchain({
     }
     reported[name] = output
   }
-  return { supported: true, launcher, reported, versions: Object.fromEntries(versions) }
+  return { supported: true, launcher, dive, reported, versions: Object.fromEntries(versions) }
 }
 
 function daemonExecutable(command) {
