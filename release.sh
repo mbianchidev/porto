@@ -3,19 +3,18 @@
 set -euo pipefail
 
 usage() {
-  cat <<'EOF'
-Usage: ./release.sh [--dry-run] [--push] <version>
-
-Prepare a Porto release from main. The version may be written as 0.2.0 or
-v0.2.0. By default the release commit and annotated tag are created locally.
-Pass --push to atomically push main and the tag to origin.
-
-Options:
-  --dry-run  Run preflight checks and validation without changing versions,
-             creating a commit or tag, fetching, or pushing.
-  --push     Push the prepared release commit and tag to origin.
-  -h, --help Show this help.
-EOF
+  printf '%s\n' \
+    'Usage: ./release.sh [--dry-run] [--push] <version>' \
+    '' \
+    'Prepare a Porto release from main. The version may be written as 0.2.0 or' \
+    'v0.2.0. By default the release commit and annotated tag are created locally.' \
+    'Pass --push to atomically push main and the tag to origin.' \
+    '' \
+    'Options:' \
+    '  --dry-run  Run preflight checks and validation without changing versions,' \
+    '             creating a commit or tag, fetching, or pushing.' \
+    '  --push     Push the prepared release commit and tag to origin.' \
+    '  -h, --help Show this help.'
 }
 
 fail() {
@@ -28,7 +27,6 @@ is_strict_semver() {
   local identifier
   local prerelease
   local version_without_build
-  local -a prerelease_identifiers
 
   if [[ ! "$candidate" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?(\+([0-9A-Za-z-]+)(\.[0-9A-Za-z-]+)*)?$ ]]; then
     return 1
@@ -40,58 +38,24 @@ is_strict_semver() {
   fi
 
   prerelease="${version_without_build#*-}"
-  IFS='.' read -r -a prerelease_identifiers <<< "$prerelease"
-  for identifier in "${prerelease_identifiers[@]}"; do
+  while true; do
+    identifier="${prerelease%%.*}"
     if [[ "$identifier" =~ ^[0-9]+$ && "$identifier" != "0" && "$identifier" == 0* ]]; then
       return 1
     fi
+    [ "$identifier" != "$prerelease" ] || break
+    prerelease="${prerelease#*.}"
   done
 }
 
+# Bash 5.3 can deadlock on macOS when a heredoc exceeds PIPE_BUF.
 verify_release_versions() {
-  EXPECTED_VERSION="$version" node <<'NODE'
-const fs = require("node:fs");
-
-const expected = process.env.EXPECTED_VERSION;
-const configSource = fs.readFileSync("internal/config/config.go", "utf8");
-const configVersion = configSource.match(/^var Version = "([^"]+)"$/m)?.[1];
-const packageJson = JSON.parse(fs.readFileSync("ui/package.json", "utf8"));
-const packageLock = JSON.parse(fs.readFileSync("ui/package-lock.json", "utf8"));
-const electronPackageJson = JSON.parse(fs.readFileSync("ui/electron/package.json", "utf8"));
-const electronPackageLock = JSON.parse(fs.readFileSync("ui/electron/package-lock.json", "utf8"));
-const versions = [
-  ["internal/config/config.go", configVersion],
-  ["ui/package.json", packageJson.version],
-  ["ui/package-lock.json", packageLock.version],
-  ['ui/package-lock.json packages[""]', packageLock.packages?.[""]?.version],
-  ["ui/electron/package.json", electronPackageJson.version],
-  ["ui/electron/package-lock.json", electronPackageLock.version],
-  ['ui/electron/package-lock.json packages[""]', electronPackageLock.packages?.[""]?.version],
-];
-
-for (const [source, actual] of versions) {
-  if (actual !== expected) {
-    console.error(`${source} has version ${JSON.stringify(actual)}; expected ${expected}`);
-    process.exit(1);
-  }
-}
-NODE
+  echo "Verifying release metadata"
+  node scripts/release-version.cjs verify "$version"
 }
 
 update_release_versions() {
-  EXPECTED_VERSION="$version" node <<'NODE'
-const fs = require("node:fs");
-
-const expected = process.env.EXPECTED_VERSION;
-const configPath = "internal/config/config.go";
-const source = fs.readFileSync(configPath, "utf8");
-const pattern = /^(var Version = ")[^"]+(")$/m;
-if (!pattern.test(source)) {
-  console.error(`${configPath} does not contain the expected Version declaration`);
-  process.exit(1);
-}
-fs.writeFileSync(configPath, source.replace(pattern, (_, prefix, suffix) => `${prefix}${expected}${suffix}`));
-NODE
+  node scripts/release-version.cjs update-go "$version"
 
   (
     cd ui
@@ -128,6 +92,7 @@ run_validation() {
   node --check ui/electron/desktop-updater.cjs
   node --check ui/electron/preload.js
   node --check ui/electron/package.cjs
+  node --check scripts/release-version.cjs
   bash -n ui/electron/apply-update.sh
   node --check scripts/desktop-runtime-symlinks.cjs
   bash -n scripts/bundle-desktop-runtime.sh

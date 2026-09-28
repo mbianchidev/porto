@@ -2,7 +2,7 @@
   "name": "porto",
   "productName": "Porto",
   "private": true,
-  "version": "1.2.12",
+  "version": "1.2.13",
   "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
   "author": "Porto",
   "repository": "https://github.com/mbianchidev/porto",
@@ -10,7 +10,7 @@
   "scripts": {
     "start": "electron .",
     "package": "node package.cjs",
-    "test": "node --test daemon-readiness.test.cjs desktop-logging.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs windows-installer.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs ../../scripts/docker-toolchain-smoke.test.cjs ../../scripts/verify-runtime-checksum.test.cjs ../../hacks/macos-power-notification-compat.test.cjs"
+    "test": "node --test daemon-readiness.test.cjs desktop-logging.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs windows-installer.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs ../../scripts/docker-toolchain-smoke.test.cjs ../../scripts/verify-runtime-checksum.test.cjs ../../scripts/release-version.test.cjs ../../hacks/macos-power-notification-compat.test.cjs"
   },
   "build": {
     "appId": "dev.mbianchi.porto",
