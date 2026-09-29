@@ -95,6 +95,7 @@ run_validation() {
   node --check scripts/release-version.cjs
   bash -n ui/electron/apply-update.sh
   node --check scripts/desktop-runtime-symlinks.cjs
+  bash -n scripts/download-file.sh
   bash -n scripts/bundle-desktop-runtime.sh
   bash -n scripts/package-desktop-installer.sh
   sh -n scripts/install-desktop.sh
