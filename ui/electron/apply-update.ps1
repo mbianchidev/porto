@@ -47,12 +47,28 @@ function Get-InstalledPortoProcesses([string]$InstallPrefix) {
     }
 }
 
+function Format-PortoProcesses([object[]]$Processes) {
+    return ($Processes | ForEach-Object {
+        "$($_.Name) (PID $($_.ProcessId))"
+    }) -join ", "
+}
+
 try {
     if (-not [System.IO.Path]::IsPathRooted($InstallDirectory)) {
         throw "Refusing to replace a relative Porto installation path."
     }
     if (-not (Test-Path -LiteralPath $PackagePath -PathType Leaf)) {
         throw "Downloaded Porto installer is missing: $PackagePath"
+    }
+
+    $InstallPrefix = [System.IO.Path]::GetFullPath($InstallDirectory).TrimEnd("\") + "\"
+    $BlockingProcesses = @(
+        Get-InstalledPortoProcesses $InstallPrefix | Where-Object {
+            $_.Name -like "qemu-system-*.exe"
+        }
+    )
+    if ($BlockingProcesses) {
+        throw "Stop running Porto VMs and Kubernetes clusters before updating: $(Format-PortoProcesses $BlockingProcesses)."
     }
 
     Remove-Item -LiteralPath $ProceedFile -Force -ErrorAction SilentlyContinue
@@ -81,7 +97,6 @@ try {
         throw "Porto did not exit before the update timeout."
     }
 
-    $InstallPrefix = [System.IO.Path]::GetFullPath($InstallDirectory).TrimEnd("\") + "\"
     $InstalledProcesses = @()
     for ($Attempt = 0; $Attempt -lt 50; $Attempt++) {
         $InstalledProcesses = @(Get-InstalledPortoProcesses $InstallPrefix)
@@ -99,16 +114,13 @@ try {
     }
     $InstalledProcesses = @(Get-InstalledPortoProcesses $InstallPrefix)
     if ($InstalledProcesses) {
-        $BlockingProcesses = ($InstalledProcesses | ForEach-Object {
-            "$($_.Name) (PID $($_.ProcessId))"
-        }) -join ", "
-        throw "Porto runtime processes are still using the installation: $BlockingProcesses. Stop running Porto VMs and Kubernetes clusters, then retry the update."
+        throw "Porto runtime processes are still using the installation: $(Format-PortoProcesses $InstalledProcesses). Stop running Porto VMs and Kubernetes clusters, then retry the update."
     }
 
     Write-UpdateLog "Installing $PackagePath into $InstallDirectory"
     $Installer = Start-Process `
         -FilePath $PackagePath `
-        -ArgumentList "/S /D=$InstallDirectory" `
+        -ArgumentList "--updated /S /D=$InstallDirectory" `
         -Wait `
         -PassThru
     if ($Installer.ExitCode -ne 0) {

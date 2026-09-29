@@ -1,5 +1,22 @@
 $ErrorActionPreference = "Stop"
 
+function Get-InstalledPortoProcesses([string]$InstallPrefix) {
+    return @(
+        Get-CimInstance Win32_Process | Where-Object {
+            $_.ExecutablePath -and $_.ExecutablePath.StartsWith(
+                $InstallPrefix,
+                [System.StringComparison]::OrdinalIgnoreCase
+            )
+        }
+    )
+}
+
+function Format-PortoProcesses([object[]]$Processes) {
+    return ($Processes | ForEach-Object {
+        "$($_.Name) (PID $($_.ProcessId))"
+    }) -join ", "
+}
+
 $Repository = if ($env:PORTO_REPOSITORY) { $env:PORTO_REPOSITORY } else { "mbianchidev/porto" }
 $Tag = $env:PORTO_VERSION
 if (-not $Tag) {
@@ -39,29 +56,45 @@ try {
     }
 
     $InstallRoot = if ($env:PORTO_INSTALL_DIR) { $env:PORTO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\Porto" }
-    if (Test-Path $InstallRoot) {
-        $InstallPath = [System.IO.Path]::GetFullPath($InstallRoot)
-        $Processes = Get-CimInstance Win32_Process | Where-Object {
-            $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallPath, [System.StringComparison]::OrdinalIgnoreCase)
+    $IsUpdate = Test-Path $InstallRoot
+    if ($IsUpdate) {
+        $PortoCli = Join-Path $InstallRoot "resources\porto.exe"
+        if (Test-Path -LiteralPath $PortoCli -PathType Leaf) {
+            & $PortoCli docker engine-stop
+            if ($LASTEXITCODE -ne 0) {
+                Write-Warning "Porto could not stop its container engine cleanly; checking for locked runtime processes."
+            }
         }
+
+        $InstallPrefix = [System.IO.Path]::GetFullPath($InstallRoot).TrimEnd("\") + "\"
+        $Processes = @(Get-InstalledPortoProcesses $InstallPrefix)
+        $BlockingProcesses = @($Processes | Where-Object {
+            $_.Name -like "qemu-system-*.exe"
+        })
+        if ($BlockingProcesses) {
+            throw "Stop running Porto VMs and Kubernetes clusters before updating: $(Format-PortoProcesses $BlockingProcesses)."
+        }
+
         foreach ($Process in $Processes) {
-            Stop-Process -Id $Process.ProcessId -Force
+            if ($Process.Name -like "qemu-system-*.exe") {
+                continue
+            }
+            Stop-Process -Id $Process.ProcessId -Force -ErrorAction SilentlyContinue
         }
         for ($Attempt = 0; $Attempt -lt 50; $Attempt++) {
-            $Remaining = Get-CimInstance Win32_Process | Where-Object {
-                $_.ExecutablePath -and $_.ExecutablePath.StartsWith($InstallPath, [System.StringComparison]::OrdinalIgnoreCase)
-            }
+            $Remaining = @(Get-InstalledPortoProcesses $InstallPrefix)
             if (-not $Remaining) {
                 break
             }
             Start-Sleep -Milliseconds 100
         }
         if ($Remaining) {
-            throw "Porto is still running from $InstallRoot. Close it and retry the installation."
+            throw "Porto is still running from $InstallRoot: $(Format-PortoProcesses $Remaining). Close it and retry the installation."
         }
     }
 
-    $InstallProcess = Start-Process $Installer -ArgumentList "/S /D=$InstallRoot" -Wait -PassThru
+    $InstallerArguments = if ($IsUpdate) { "--updated /S /D=$InstallRoot" } else { "/S /D=$InstallRoot" }
+    $InstallProcess = Start-Process $Installer -ArgumentList $InstallerArguments -Wait -PassThru
     if ($InstallProcess.ExitCode -ne 0) {
         throw "Porto installer exited with code $($InstallProcess.ExitCode)."
     }
