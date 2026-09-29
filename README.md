@@ -12,7 +12,7 @@ Porto is an open-source desktop (and optionally web) control plane for developme
 
 It provides a portable, open-source alternative to proprietary desktop container managers while keeping standard Docker clients and Compose workflows.
 
-![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/30783f51-f44e-48fa-b91a-5e57ca222130)
+![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/ed553cf3-1714-431b-83b7-f9443d8a3dab)
 
 ## Why Porto
 
