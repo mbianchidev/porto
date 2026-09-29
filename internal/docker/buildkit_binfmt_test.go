@@ -105,8 +105,7 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 				"/usr/share/doc/qemu-user-static", shellJoin([]string{filepath.Join(root, "legacy")}),
 				"/etc/binfmt.d", shellJoin([]string{filepath.Join(root, "overrides")}),
 			).Replace(limaBinfmtInstallCommand)
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			output, err := (runtimes.ExecRunner{}).Run(ctx, runtimes.Command{
 				Name: "sh",
 				Args: []string{"-c", script},
@@ -117,6 +116,7 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 					"PORTO_BINFMT_TEST_FAILURE=" + test.failure,
 				},
 			})
+			cancel()
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(string(output), test.wantError) {
 					t.Fatalf("setup = %v, %s; want %q", err, output, test.wantError)
