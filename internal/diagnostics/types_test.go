@@ -8,6 +8,7 @@ import (
 func TestNewReportUsesHighestSeverity(t *testing.T) {
 	report := NewReport("1.2.12", time.Unix(1, 0).UTC(), []Check{
 		{ID: "healthy", State: StateHealthy},
+		{ID: "neutral", State: StateNeutral},
 		{ID: "degraded", State: StateDegraded},
 		{ID: "unavailable", State: StateUnavailable},
 		{ID: "unsafe", State: StateUnsafe},
@@ -16,7 +17,7 @@ func TestNewReportUsesHighestSeverity(t *testing.T) {
 	if report.Overall != StateUnsafe {
 		t.Fatalf("overall = %q, want %q", report.Overall, StateUnsafe)
 	}
-	if report.Summary.Healthy != 1 || report.Summary.Degraded != 1 ||
+	if report.Summary.Healthy != 1 || report.Summary.Neutral != 1 || report.Summary.Degraded != 1 ||
 		report.Summary.Unavailable != 1 || report.Summary.Unsafe != 1 {
 		t.Fatalf("unexpected summary: %+v", report.Summary)
 	}

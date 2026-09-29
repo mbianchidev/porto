@@ -185,8 +185,9 @@ func writeDiagnosticReport(writer io.Writer, report diagnostics.Report) {
 	fmt.Fprintf(writer, "Porto diagnostics: %s\n", strings.ToUpper(string(report.Overall)))
 	fmt.Fprintf(
 		writer,
-		"healthy=%d degraded=%d unavailable=%d unsafe=%d\n\n",
+		"healthy=%d neutral=%d degraded=%d unavailable=%d unsafe=%d\n\n",
 		report.Summary.Healthy,
+		report.Summary.Neutral,
 		report.Summary.Degraded,
 		report.Summary.Unavailable,
 		report.Summary.Unsafe,

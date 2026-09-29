@@ -102,6 +102,52 @@ func TestDockerSocketCheckRejectsStaleRegularFile(t *testing.T) {
 	}
 }
 
+func TestDockerContextCheckMatchesRepairScope(t *testing.T) {
+	expected := "unix:///tmp/porto.sock"
+	healthy := dockerContextCheck(portodocker.ContextStatus{
+		Installed: true, Endpoint: expected, ExpectedEndpoint: expected, Matches: true,
+	})
+	if healthy.State != StateHealthy || healthy.Repair != nil {
+		t.Fatalf("healthy context check = %+v", healthy)
+	}
+	degraded := dockerContextCheck(portodocker.ContextStatus{
+		ExpectedEndpoint: expected,
+		Message:          "Porto Docker context is missing",
+	})
+	if degraded.State != StateDegraded || degraded.Repair == nil ||
+		degraded.Repair.ID != "reinstall-docker-context" {
+		t.Fatalf("degraded context check = %+v", degraded)
+	}
+}
+
+func TestCanonicalDockerEndpointOwnedElsewhereIsNeutral(t *testing.T) {
+	check := canonicalDockerEndpointCheck(portodocker.Status{
+		CanonicalPath: "/var/run/docker.sock",
+		CanonicalLink: "/another/runtime/docker.sock",
+	})
+	if check.State != StateNeutral || check.Repair != nil {
+		t.Fatalf("canonical endpoint check = %+v", check)
+	}
+}
+
+func TestKubernetesChecksAreNeutralWithoutConfiguredClusters(t *testing.T) {
+	collector := &Collector{
+		Kubernetes: kubernetes.NewWithKubeconfigRoot(diagnosticRunner{}, t.TempDir()),
+	}
+	checks := collector.kubernetesChecks(
+		context.Background(),
+		app.Settings{KubernetesEnabled: true},
+		true,
+	)
+	states := make(map[string]State)
+	for _, check := range checks {
+		states[check.ID] = check.State
+	}
+	if states["kubernetes-api"] != StateNeutral || states["kubeconfigs"] != StateNeutral {
+		t.Fatalf("Kubernetes empty-state checks = %+v", checks)
+	}
+}
+
 func TestKubernetesChecksSurfaceBrokenManagedKubeconfig(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "broken.yaml"), []byte("not: valid"), 0o600); err != nil {

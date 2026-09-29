@@ -12,9 +12,10 @@ porto diagnose --json
 ```
 
 Checks are grouped across Porto, the host, networking, container runtimes,
-Kubernetes, virtual machines, and bundled tools. Results use four states:
+Kubernetes, virtual machines, and bundled tools. Results use five states:
 
 - **healthy**: available and consistent
+- **neutral**: intentionally not configured or owned by another selected tool
 - **degraded**: usable, but a capability or optional integration needs attention
 - **unavailable**: a required enabled component cannot be reached
 - **unsafe**: ownership, disk, socket, or package state makes automatic repair unsafe
@@ -89,3 +90,21 @@ records the result in Activity.
 Porto refuses Docker repairs when the host engine metadata and guest ownership
 marker disagree. Diagnostics never adopt, reset, or delete ambiguous external
 state.
+
+Verify the named context independently from any canonical `/var/run/docker.sock`
+link:
+
+```sh
+docker context inspect porto --format '{{ (index .Endpoints "docker").Host }}'
+docker --context porto info --format 'Porto server {{.ServerVersion}}'
+```
+
+The first command must print Porto's endpoint. The second must return a server
+version. A canonical Docker socket owned by another runtime is reported as
+neutral and is not replaced by the context repair.
+
+For Porto's rootless Lima engine, CNI configuration is discovered from the
+containerd namespace under `~/.config/cni/net.d` before system paths. Porto
+retries an unavailable CNI capability probe every 30 seconds and the dashboard
+refreshes diagnostics automatically. Porto does not install or replace a host or
+cluster CNI globally.

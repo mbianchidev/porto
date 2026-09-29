@@ -4,13 +4,11 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
-	"slices"
 	"strings"
 
 	gocni "github.com/containerd/go-cni"
@@ -25,9 +23,12 @@ var cniPluginDirectories = []string{
 
 func probeRuntime() runtimeProbe {
 	probe := runtimeProbe{}
-	configDirectory := cniConfigDirectory()
-	if _, err := os.Stat(configDirectory); err != nil {
-		probe.CNIReason = fmt.Sprintf("CNI configuration directory %s: %v", configDirectory, err)
+	configDirectories := cniConfigDirectories()
+	if !hasCNIConfig(configDirectories) {
+		probe.CNIReason = fmt.Sprintf(
+			"no CNI network configuration is available (checked %s)",
+			strings.Join(configDirectories, ", "),
+		)
 	} else {
 		for _, directory := range cniPluginDirectories {
 			if info, err := os.Stat(directory); err == nil && info.IsDir() {
@@ -109,7 +110,7 @@ func checkCNI(ctx context.Context, request cniRequest) error {
 }
 
 func loadCNI(request cniRequest) (gocni.CNI, map[string]string, error) {
-	configPath, list, err := findCNIConfig(cniConfigDirectory(), request.Network)
+	configPath, list, err := findCNIConfig(cniConfigDirectories(), request.Network)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -148,46 +149,4 @@ func loadCNI(request cniRequest) (gocni.CNI, map[string]string, error) {
 		labels["K8S_POD_NAME"] = request.Aliases[0]
 	}
 	return plugin, labels, nil
-}
-
-func cniConfigDirectory() string {
-	if directory := strings.TrimSpace(os.Getenv("CNI_NET_DIR")); directory != "" {
-		return directory
-	}
-	return gocni.DefaultNetDir
-}
-
-func findCNIConfig(directory, network string) (string, bool, error) {
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		return "", false, fmt.Errorf("read CNI configuration directory %s: %w", directory, err)
-	}
-	slices.SortFunc(entries, func(left, right os.DirEntry) int {
-		return strings.Compare(left.Name(), right.Name())
-	})
-	for _, entry := range entries {
-		if entry.IsDir() {
-			continue
-		}
-		extension := filepath.Ext(entry.Name())
-		if extension != ".conf" && extension != ".conflist" && extension != ".json" {
-			continue
-		}
-		path := filepath.Join(directory, entry.Name())
-		document, err := os.ReadFile(path)
-		if err != nil {
-			return "", false, fmt.Errorf("read CNI configuration %s: %w", path, err)
-		}
-		var metadata struct {
-			Name    string            `json:"name"`
-			Plugins []json.RawMessage `json:"plugins"`
-		}
-		if err := json.Unmarshal(document, &metadata); err != nil {
-			continue
-		}
-		if metadata.Name == network {
-			return path, len(metadata.Plugins) > 0 || extension == ".conflist", nil
-		}
-	}
-	return "", false, fmt.Errorf("CNI network %q was not found in %s", network, directory)
 }

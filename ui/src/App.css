@@ -2505,6 +2505,10 @@ button:disabled {
   border-color: #8a7439;
 }
 
+.diagnostic-neutral {
+  border-color: var(--line);
+}
+
 .diagnosticRepair {
   display: flex;
   align-items: center;

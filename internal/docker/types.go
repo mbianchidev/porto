@@ -27,6 +27,15 @@ type Status struct {
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 }
 
+type ContextStatus struct {
+	Name             string `json:"name"`
+	Installed        bool   `json:"installed"`
+	Endpoint         string `json:"endpoint,omitempty"`
+	ExpectedEndpoint string `json:"expectedEndpoint"`
+	Matches          bool   `json:"matches"`
+	Message          string `json:"message,omitempty"`
+}
+
 type BackendInfo struct {
 	Driver          string   `json:"Driver"`
 	MemoryLimit     bool     `json:"MemoryLimit"`

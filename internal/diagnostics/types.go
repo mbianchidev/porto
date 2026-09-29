@@ -6,6 +6,7 @@ type State string
 
 const (
 	StateHealthy     State = "healthy"
+	StateNeutral     State = "neutral"
 	StateDegraded    State = "degraded"
 	StateUnavailable State = "unavailable"
 	StateUnsafe      State = "unsafe"
@@ -31,6 +32,7 @@ type Check struct {
 
 type Summary struct {
 	Healthy     int `json:"healthy"`
+	Neutral     int `json:"neutral"`
 	Degraded    int `json:"degraded"`
 	Unavailable int `json:"unavailable"`
 	Unsafe      int `json:"unsafe"`
@@ -59,6 +61,8 @@ func NewReport(version string, generatedAt time.Time, checks []Check) Report {
 			report.Summary.Unavailable++
 		case StateDegraded:
 			report.Summary.Degraded++
+		case StateNeutral:
+			report.Summary.Neutral++
 		default:
 			report.Summary.Healthy++
 		}

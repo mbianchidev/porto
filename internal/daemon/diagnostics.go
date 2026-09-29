@@ -139,11 +139,13 @@ func (s *Server) diagnosticsRepair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	log.Printf("diagnostic repair %s completed", action)
+	report := s.diagnosticsCollector().Collect(r.Context())
 	writeJSON(w, map[string]any{
 		"action":      action,
 		"target":      request.Target,
 		"status":      "completed",
 		"completedAt": time.Now().UTC(),
+		"report":      report,
 	})
 }
 

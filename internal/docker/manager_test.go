@@ -399,6 +399,7 @@ func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
 			!reflect.DeepEqual(command.Args[:3], []string{"shell", "--workdir=/", engineInstanceName}) {
 			return nil, fmt.Errorf("probe depends on the mounted host working directory: %v", command.Args)
 		}
+
 		switch command.Args[len(command.Args)-1] {
 		case `cat "$HOME/.porto-engine-owner"`:
 			return []byte("test-owner\n"), nil
@@ -434,6 +435,31 @@ func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestLimaRuntimeHelperReceivesContainerdNamespace(t *testing.T) {
+	var command runtimes.Command
+	runner := &fakeRunner{handler: func(received runtimes.Command) ([]byte, error) {
+		command = received
+		return []byte(`{"cni":true}`), nil
+	}}
+	client := grpcContainerRuntime{
+		lima:      engineInstanceName,
+		namespace: "porto",
+		runner:    runner,
+	}
+
+	if _, err := client.runRuntimeHelper(context.Background(), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"shell", "--workdir=/", engineInstanceName, "--", "sh", "-c",
+		`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+		"porto-runtime-helper", "porto", "probe",
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("runtime helper args = %q, want %q", command.Args, want)
+	}
 }
 
 func TestEngineTimeoutIncludesCommandDiagnostics(t *testing.T) {
@@ -584,6 +610,61 @@ func TestInspectImageUsesStoredPlatform(t *testing.T) {
 	}
 	if inspected.Architecture != "amd64" || inspected.OS != "linux" {
 		t.Fatalf("unexpected image platform: %+v", inspected)
+	}
+}
+
+func TestDockerContextStatusVerifiesNamedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto docker.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"` + endpoint + `"}}}]`,
+			),
+		},
+		errors: map[string]error{},
+	}
+
+	status := New(runner).ContextStatus(context.Background(), socketPath)
+	if !status.Installed || !status.Matches || status.Endpoint != endpoint {
+		t.Fatalf("Docker context status = %+v", status)
+	}
+}
+
+func TestInstallDockerContextVerifiesUpdatedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"` + endpoint + `"}}}]`,
+			),
+			"docker context update porto --docker host=" + endpoint: nil,
+		},
+		errors: map[string]error{},
+	}
+
+	if err := New(runner).InstallContext(context.Background(), socketPath); err != nil {
+		t.Fatalf("install Docker context: %v", err)
+	}
+}
+
+func TestInstallDockerContextRejectsUnchangedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"unix:///tmp/other.sock"}}}]`,
+			),
+			"docker context update porto --docker host=" + endpoint: nil,
+		},
+		errors: map[string]error{},
+	}
+
+	err := New(runner).InstallContext(context.Background(), socketPath)
+	if err == nil || !strings.Contains(err.Error(), "instead of") {
+		t.Fatalf("install Docker context error = %v", err)
 	}
 }
 

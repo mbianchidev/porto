@@ -11,9 +11,10 @@ import type {
   LampState,
 } from '../types'
 
-const STATES: DiagnosticState[] = ['healthy', 'degraded', 'unavailable', 'unsafe']
+const STATES: DiagnosticState[] = ['healthy', 'neutral', 'degraded', 'unavailable', 'unsafe']
 const STATE_LAMP: Record<DiagnosticState, LampState> = {
   healthy: 'running',
+  neutral: 'neutral',
   degraded: 'starting',
   unavailable: 'stopped',
   unsafe: 'crashed',
@@ -45,7 +46,7 @@ export function Diagnostics() {
   const recordedReport = useRef('')
   const reportResource = usePolledResource<DiagnosticReport>(
     (signal) => apiGet('/api/diagnostics', signal),
-    0,
+    15000,
     [],
     'diagnostics:report',
   )
@@ -55,11 +56,11 @@ export function Diagnostics() {
   useEffect(() => {
     if (!report || recordedReport.current === report.generatedAt) return
     recordedReport.current = report.generatedAt
-    const level = report.overall === 'healthy' ? 'info' : report.overall === 'degraded' ? 'notice' : 'error'
+    const level = report.overall === 'healthy' || report.overall === 'neutral' ? 'info' : report.overall === 'degraded' ? 'notice' : 'error'
     recordActivity(
       level,
       'diagnostics',
-      `Diagnostics ${report.overall}: ${report.summary.healthy} healthy, ${report.summary.degraded} degraded, ${report.summary.unavailable} unavailable, ${report.summary.unsafe} unsafe.`,
+      `Diagnostics ${report.overall}: ${report.summary.healthy} healthy, ${report.summary.neutral ?? 0} neutral, ${report.summary.degraded} degraded, ${report.summary.unavailable} unavailable, ${report.summary.unsafe} unsafe.`,
       report.generatedAt,
     )
   }, [recordActivity, report])
@@ -108,12 +109,12 @@ export function Diagnostics() {
     const key = repairKey(check)
     setRepairBusy(key)
     try {
-      await apiSend(`/api/diagnostics/repair/${repair.id}`, 'POST', {
+      const result = await apiSend<{ report: DiagnosticReport }>(`/api/diagnostics/repair/${repair.id}`, 'POST', {
         confirm: true,
         target: repair.target ?? '',
       })
       notifyNotice('diagnostics', `${repair.label} completed.`)
-      reportResource.reload()
+      reportResource.update(() => result.report)
     } catch (err) {
       notifyError('diagnostics', errorMessage(err, `${repair.label} failed`))
     } finally {

@@ -1797,11 +1797,54 @@ func (m *Manager) PullImageWithAuth(
 func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {
 	endpoint := dockerEndpoint(socketPath)
 	if _, err := m.runDockerCLI(ctx, "inspect Porto Docker context", "context", "inspect", "porto"); err == nil {
-		_, err = m.runDockerCLI(ctx, "update Porto Docker context", "context", "update", "porto", "--docker", "host="+endpoint)
+		if _, err = m.runDockerCLI(ctx, "update Porto Docker context", "context", "update", "porto", "--docker", "host="+endpoint); err != nil {
+			return err
+		}
+	} else if _, err = m.runDockerCLI(ctx, "create Porto Docker context", "context", "create", "porto", "--docker", "host="+endpoint); err != nil {
 		return err
 	}
-	_, err := m.runDockerCLI(ctx, "create Porto Docker context", "context", "create", "porto", "--docker", "host="+endpoint)
-	return err
+	status := m.ContextStatus(ctx, socketPath)
+	if !status.Matches {
+		return fmt.Errorf("verify Porto Docker context: %s", status.Message)
+	}
+	return nil
+}
+
+func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextStatus {
+	status := ContextStatus{Name: "porto", ExpectedEndpoint: dockerEndpoint(socketPath)}
+	output, err := m.runDockerCLI(ctx, "inspect Porto Docker context", "context", "inspect", "porto")
+	if err != nil {
+		status.Message = err.Error()
+		return status
+	}
+	var documents []struct {
+		Name      string `json:"Name"`
+		Endpoints struct {
+			Docker struct {
+				Host string `json:"Host"`
+			} `json:"docker"`
+		} `json:"Endpoints"`
+	}
+	if err := json.Unmarshal(output, &documents); err != nil || len(documents) != 1 {
+		if err == nil {
+			err = fmt.Errorf("expected one context document, got %d", len(documents))
+		}
+		status.Message = fmt.Sprintf("decode Porto Docker context: %v", err)
+		return status
+	}
+	status.Installed = true
+	status.Endpoint = strings.TrimSpace(documents[0].Endpoints.Docker.Host)
+	status.Matches = status.Endpoint == status.ExpectedEndpoint
+	if status.Matches {
+		status.Message = "Porto Docker context points to Porto"
+	} else {
+		status.Message = fmt.Sprintf(
+			"Porto Docker context points to %q instead of %q",
+			status.Endpoint,
+			status.ExpectedEndpoint,
+		)
+	}
+	return status
 }
 
 func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {

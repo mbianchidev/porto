@@ -577,7 +577,7 @@ func (c *Collector) dockerChecks(ctx context.Context, settings app.Settings, set
 	if !settingsAvailable || c.Docker == nil {
 		return nil
 	}
-	checks := make([]Check, 0, 5)
+	checks := make([]Check, 0, 7)
 	ownershipContext, cancel := context.WithTimeout(ctx, diagnosticProbeTimeout)
 	ownership := c.Docker.EngineOwnershipStatus(ownershipContext)
 	cancel()
@@ -607,22 +607,12 @@ func (c *Collector) dockerChecks(ctx context.Context, settings app.Settings, set
 		dockerCheck.Repair = dockerRuntimeRepair()
 	}
 	checks = append(checks, dockerCheck)
+	contextContext, cancel := context.WithTimeout(ctx, diagnosticProbeTimeout)
+	contextStatus := c.Docker.ContextStatus(contextContext, c.DockerSocket)
+	cancel()
+	checks = append(checks, dockerContextCheck(contextStatus))
 	if status.CanonicalPath != "" {
-		contextCheck := Check{
-			ID: "docker-context", Category: "containers", Name: "Canonical Docker endpoint",
-			State: StateHealthy, Summary: "Canonical endpoint points to Porto", Detail: status.CanonicalPath,
-		}
-		if !status.Canonical {
-			contextCheck.State = StateDegraded
-			contextCheck.Summary = "Canonical Docker endpoint does not point to Porto"
-			contextCheck.Detail = status.CanonicalLink
-			contextCheck.Repair = &Repair{
-				ID: "reinstall-docker-context", Label: "Reinstall Porto Docker context",
-				Description:  "Update only the named Porto Docker context to use Porto's endpoint.",
-				Confirmation: "Reinstall the Porto Docker context for the current user?",
-			}
-		}
-		checks = append(checks, contextCheck)
+		checks = append(checks, canonicalDockerEndpointCheck(status))
 	}
 	checks = append(checks, c.dockerSocketCheck(status))
 	if status.Available {
@@ -741,7 +731,7 @@ func (c *Collector) kubernetesChecks(ctx context.Context, settings app.Settings,
 		statusCheck.State = StateUnavailable
 		statusCheck.Summary = "No reachable Kubernetes API"
 		if strings.Contains(status.Message, "No Porto-managed Kubernetes cluster exists") {
-			statusCheck.State = StateDegraded
+			statusCheck.State = StateNeutral
 			statusCheck.Summary = "No Kubernetes cluster is configured"
 		}
 		statusCheck.Detail = status.Message
@@ -757,7 +747,7 @@ func (c *Collector) kubernetesChecks(ctx context.Context, settings app.Settings,
 		})
 	} else if len(contexts) == 0 {
 		checks = append(checks, Check{
-			ID: "kubeconfigs", Category: "kubernetes", Name: "Kubeconfigs", State: StateDegraded,
+			ID: "kubeconfigs", Category: "kubernetes", Name: "Kubeconfigs", State: StateNeutral,
 			Summary: "No Kubernetes contexts were found",
 		})
 	} else {
@@ -785,6 +775,44 @@ func (c *Collector) kubernetesChecks(ctx context.Context, settings app.Settings,
 		}
 	}
 	return checks
+}
+
+func dockerContextCheck(status portodocker.ContextStatus) Check {
+	check := Check{
+		ID: "docker-context", Category: "containers", Name: "Porto Docker context",
+		State: StateHealthy, Summary: "Named context points to Porto", Detail: status.Endpoint,
+	}
+	if status.Matches {
+		return check
+	}
+	check.State = StateDegraded
+	check.Summary = "Named Porto Docker context needs repair"
+	check.Detail = status.Message
+	check.Repair = &Repair{
+		ID: "reinstall-docker-context", Label: "Reinstall Porto Docker context",
+		Description:  "Create or update only the named Porto Docker context, then verify its endpoint.",
+		Confirmation: "Reinstall and verify the Porto Docker context for the current user?",
+	}
+	return check
+}
+
+func canonicalDockerEndpointCheck(status portodocker.Status) Check {
+	if status.Canonical {
+		return Check{
+			ID: "docker-canonical-endpoint", Category: "containers", Name: "Canonical Docker endpoint",
+			State: StateHealthy, Summary: "Canonical endpoint points to Porto", Detail: status.CanonicalPath,
+		}
+	}
+	summary := "Canonical endpoint is not assigned to Porto"
+	detail := status.CanonicalPath
+	if status.CanonicalLink != "" {
+		summary = "Canonical endpoint is managed outside Porto"
+		detail = status.CanonicalLink
+	}
+	return Check{
+		ID: "docker-canonical-endpoint", Category: "containers", Name: "Canonical Docker endpoint",
+		State: StateNeutral, Summary: summary, Detail: detail,
+	}
 }
 
 func (c *Collector) kubernetesAddonCheck(ctx context.Context, cluster kubernetes.Cluster) Check {

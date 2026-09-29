@@ -852,7 +852,7 @@ export type ActivityResourceSnapshot = {
 
 export type LampState = 'running' | 'starting' | 'stopped' | 'crashed' | 'neutral'
 
-export type DiagnosticState = 'healthy' | 'degraded' | 'unavailable' | 'unsafe'
+export type DiagnosticState = 'healthy' | 'neutral' | 'degraded' | 'unavailable' | 'unsafe'
 
 export type DiagnosticRepair = {
   id: string
