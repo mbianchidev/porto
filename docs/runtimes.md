@@ -125,6 +125,10 @@ Writing `/var/run/docker.sock` normally requires administrator privileges. When 
 porto docker deactivate
 ```
 
+See [Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
+for the named-context default, canonical-socket verification, sudo retry, and
+restoration workflow.
+
 The Porto-owned API socket uses mode `0600`. Treat access to any Docker socket as host-administrator access.
 
 Windows clients use the named `porto` Docker context. Canonical

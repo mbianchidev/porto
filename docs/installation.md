@@ -190,6 +190,59 @@ grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
 exec zsh -l
 ```
 
+### Make Porto the default Docker engine
+
+Porto automatically creates and repairs the named `porto` Docker context. Make
+that context the default for the current user without administrator privileges:
+
+```sh
+docker context use porto
+docker context show
+docker info --format 'Porto server {{.ServerVersion}}'
+```
+
+Some tools ignore Docker contexts and connect directly to
+`/var/run/docker.sock`. On macOS and Linux, expose Porto through that canonical
+path with:
+
+```sh
+porto docker activate
+```
+
+If another runtime already owns a symbolic link there, replacement requires
+explicit intent:
+
+```sh
+porto docker activate --replace
+```
+
+Writing `/var/run/docker.sock` usually requires administrator privileges. Porto
+prints an exact retry command that preserves the current user's Porto state.
+For the default macOS installation, the equivalent command is:
+
+```sh
+sudo env PORTO_HOME="$HOME/Library/Application Support/porto" \
+  "$(command -v porto)" docker activate --replace
+```
+
+Verify the canonical endpoint independently of the selected Docker context:
+
+```sh
+readlink /var/run/docker.sock
+docker --host unix:///var/run/docker.sock info \
+  --format 'Porto server {{.ServerVersion}}'
+```
+
+Porto records the previous symbolic-link target. Restore it with
+`porto docker deactivate`; if required, rerun the administrator command printed
+by Porto with `docker deactivate` as the final arguments.
+
+Canonical activation is optional: Porto Desktop and
+`docker --context porto ...` work without it. It is intended for tools that
+hardcode the canonical Unix socket. The Porto socket remains mode `0600`, so
+this does not grant other operating-system users access. Windows uses only the
+named `porto` context because named-pipe takeover cannot be reversed safely.
+
 ### macOS 27 power-notification crash
 
 On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
