@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"os"
 	"path/filepath"
@@ -13,6 +14,26 @@ import (
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 )
+
+func TestDockerPrivilegeHintPreservesRequestedOperation(t *testing.T) {
+	t.Setenv("PORTO_HOME", filepath.Join(t.TempDir(), "Porto state"))
+	activate := dockerPrivilegeHint(
+		errors.New("remove previous Docker endpoint link: permission denied"),
+		"activate",
+		"--replace",
+	)
+	if !strings.Contains(activate.Error(), "docker activate --replace") ||
+		strings.Contains(activate.Error(), "docker deactivate") {
+		t.Fatalf("activate privilege hint = %q", activate)
+	}
+	deactivate := dockerPrivilegeHint(
+		errors.New("remove Porto Docker endpoint: permission denied"),
+		"deactivate",
+	)
+	if !strings.Contains(deactivate.Error(), "docker deactivate") {
+		t.Fatalf("deactivate privilege hint = %q", deactivate)
+	}
+}
 
 func TestParseInterspersedAllowsFlagsAfterPositionals(t *testing.T) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)

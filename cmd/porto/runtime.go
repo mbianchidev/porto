@@ -236,7 +236,11 @@ func dockerCmd(args []string) error {
 		}
 		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, statePath, *replace)
 		if err != nil {
-			return dockerPrivilegeHint(err)
+			retryArguments := []string{"activate"}
+			if *replace {
+				retryArguments = append(retryArguments, "--replace")
+			}
+			return dockerPrivilegeHint(err, retryArguments...)
 		}
 		return writeOutput(state)
 	case "deactivate":
@@ -251,7 +255,7 @@ func dockerCmd(args []string) error {
 			return err
 		}
 		if err := portodocker.DeactivateEndpoint(statePath); err != nil {
-			return dockerPrivilegeHint(err)
+			return dockerPrivilegeHint(err, "deactivate")
 		}
 		return writeOutput(map[string]string{"status": "deactivated"})
 	case "container":
@@ -719,7 +723,7 @@ func dockerEndpointPaths() (string, string, error) {
 	return socketPath, statePath, nil
 }
 
-func dockerPrivilegeHint(err error) error {
+func dockerPrivilegeHint(err error, arguments ...string) error {
 	message := strings.ToLower(err.Error())
 	if !strings.Contains(message, "permission denied") && !strings.Contains(message, "operation not permitted") {
 		return err
@@ -729,19 +733,16 @@ func dockerPrivilegeHint(err error) error {
 		executable = "porto"
 	}
 	home, _ := config.Dir()
+	displayArguments := make([]string, len(arguments))
+	for index, argument := range arguments {
+		displayArguments[index] = shellDisplay(argument)
+	}
 	return fmt.Errorf("%w; retry with administrator privileges while preserving Porto state: sudo PORTO_HOME=%s %s docker %s",
 		err,
 		shellDisplay(home),
 		shellDisplay(filepath.Clean(executable)),
-		activationVerb(err),
+		strings.Join(displayArguments, " "),
 	)
-}
-
-func activationVerb(err error) string {
-	if strings.Contains(strings.ToLower(err.Error()), "remove") {
-		return "deactivate"
-	}
-	return "activate"
 }
 
 func shellDisplay(value string) string {
