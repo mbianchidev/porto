@@ -11,7 +11,12 @@ const fs = require('node:fs')
 const path = require('node:path')
 const { promisify } = require('node:util')
 
-const { attachRendererLogging, installDesktopLogging, resolveLogPath } = require('./desktop-logging.cjs')
+const {
+  attachRendererLogging,
+  installDesktopLogging,
+  openDaemonBootstrapLog,
+  resolveLogPath,
+} = require('./desktop-logging.cjs')
 const {
   bundledExecutablePaths,
   daemonBinaryIdentity,
@@ -217,7 +222,7 @@ async function restartAndInstallUpdate() {
       const preparation = await prepareDockerEngineUpdate({ daemonURL: DAEMON_URL })
       windowsEngineStopped = preparation.engineStopped === true
     }
-    await launchDownloadedUpdate({
+    const installation = await launchDownloadedUpdate({
       platform: process.platform,
       executablePath: app.getPath('exe'),
       packagePath: update.packagePath,
@@ -225,6 +230,10 @@ async function restartAndInstallUpdate() {
       errorFile: updateInstallErrorPath,
       helperDirectory: process.resourcesPath,
     })
+    console.debug('Porto update helper is ready: pid=%d destination=%s', installation.helperPid, installation.destination)
+    installation.proceed()
+    desktopUpdater.markInstalling()
+    quitting = true
   } catch (error) {
     if (windowsEngineStopped) {
       try {
@@ -237,10 +246,16 @@ async function restartAndInstallUpdate() {
     }
     throw error
   }
-  desktopUpdater.markInstalling()
-  quitting = true
-  app.quit()
-  return desktopUpdater.getStatus()
+  const status = desktopUpdater.getStatus()
+  setImmediate(() => {
+    if (process.platform === 'win32') {
+      console.debug('Exiting Porto desktop immediately so the Windows update helper can replace the application')
+      app.exit(0)
+      return
+    }
+    app.quit()
+  })
+  return status
 }
 
 async function presentPendingUpdatePrompt(window = mainWindow()) {
@@ -422,6 +437,7 @@ async function portoEnvironment() {
     existsImpl: fs.existsSync,
   })
   if (dashboard !== '') environment.PORTO_UI_DIR = dashboard
+  environment.PORTO_LOG_MIRROR_STDERR = 'false'
   return environment
 }
 
@@ -441,16 +457,28 @@ function normalizedExecutablePath(value) {
 // tracked or killed on app quit.
 async function startDaemon() {
   const environment = await portoEnvironment()
+  const bootstrapLog = openDaemonBootstrapLog(desktopLogging.path)
   console.debug('Starting bundled daemon: %s', portoBinary())
   return new Promise((resolve, reject) => {
-    const child = spawn(portoBinary(), ['daemon', 'start'], {
-      detached: true,
-      env: environment,
-      stdio: ['ignore', desktopLogging.fd, desktopLogging.fd],
-      windowsHide: true,
+    let child
+    try {
+      child = spawn(portoBinary(), ['daemon', 'start'], {
+        detached: true,
+        env: environment,
+        stdio: ['ignore', bootstrapLog.fd, bootstrapLog.fd],
+        windowsHide: true,
+      })
+    } catch (error) {
+      bootstrapLog.close()
+      reject(error)
+      return
+    }
+    child.once('error', (error) => {
+      bootstrapLog.close()
+      reject(error)
     })
-    child.once('error', reject)
     child.once('spawn', () => {
+      bootstrapLog.close()
       console.debug('Daemon process started: pid=%d', child.pid)
       child.unref()
       resolve()

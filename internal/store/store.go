@@ -123,7 +123,8 @@ CREATE TABLE IF NOT EXISTS settings (
  terminal_font_size INTEGER NOT NULL DEFAULT 12,
  terminal_line_height REAL NOT NULL DEFAULT 1.35,
  terminal_cursor_blink INTEGER NOT NULL DEFAULT 1,
- terminal_scrollback INTEGER NOT NULL DEFAULT 5000
+ terminal_scrollback INTEGER NOT NULL DEFAULT 5000,
+ log_retention_days INTEGER NOT NULL DEFAULT 7
 );
 CREATE TABLE IF NOT EXISTS docker_cleanup_schedule (
  id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -196,6 +197,9 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("terminal_scrollback", "INTEGER NOT NULL DEFAULT 5000"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("log_retention_days", "INTEGER NOT NULL DEFAULT 7"); err != nil {
 		return err
 	}
 	for name, definition := range map[string]string{
@@ -504,7 +508,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
@@ -523,6 +527,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 			&settings.TerminalLineHeight,
 			&terminalCursorBlink,
 			&settings.TerminalScrollback,
+			&settings.LogRetentionDays,
 		)
 	if err != nil {
 		return settings, err
@@ -558,6 +563,9 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if settings.TerminalScrollback == 0 {
 		settings.TerminalScrollback = app.DefaultTerminalScrollback
 	}
+	if settings.LogRetentionDays == 0 {
+		settings.LogRetentionDays = app.DefaultLogRetentionDays
+	}
 	protected, err := json.Marshal(settings.ProtectedBranches)
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
@@ -571,7 +579,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=? WHERE id=1`,
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -589,6 +597,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		settings.TerminalLineHeight,
 		boolInt(settings.TerminalCursorBlink),
 		settings.TerminalScrollback,
+		settings.LogRetentionDays,
 	)
 	if err != nil {
 		return err

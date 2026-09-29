@@ -98,6 +98,20 @@ so initialization failures are retained. Unix directory/file permissions are
 `0700`/`0600`; Windows uses the user-profile directory's inherited permissions.
 Keep a custom `PORTO_HOME` private to your user.
 
+At the first maintenance pass after local midnight, Porto closes and renames the
+completed file, immediately reopens a fresh `porto.log`, then compresses the
+completed day as `porto-YYYY-MM-DD.zip`. Each archive contains one
+`porto-YYYY-MM-DD.log` entry. A short-lived uncompressed daily file can remain
+for up to one minute so desktop writes already in flight finish before ZIP
+creation. The desktop daemon bootstrap uses `daemon-startup.log`, which is
+overwritten on each daemon launch instead of accumulating.
+
+Porto keeps **7 calendar days** of diagnostic logs by default, including the
+current day. Change **System settings → Keep diagnostic logs for** to retain
+between 1 and 365 days. Completed archives older than the configured window are
+deleted automatically; changing the setting to a shorter window triggers an
+immediate cleanup pass.
+
 The default level is **debug**. Set `PORTO_LOG_LEVEL` to `debug`, `info`, `warn`,
 or `error` in the environment that launches Porto to change verbosity. Restart
 both the desktop and daemon after changing it; closing the desktop does not
@@ -111,8 +125,9 @@ durations, and exit errors, but not command arguments, environment values, or
 input/output payloads. Existing error messages and renderer output can still
 contain local paths or other diagnostic details; review logs before sharing.
 
-Logs append across restarts. Foreground daemon diagnostics remain visible on
-stderr, and a desktop-launched daemon keeps writing after the desktop exits.
+The active day's log appends across restarts. Foreground daemon diagnostics
+remain visible on stderr, and a desktop-launched daemon keeps writing after the
+desktop exits.
 This application log is separate from project/container logs; `porto logs` and
 the dashboard's project-log clearing controls do not modify it.
 

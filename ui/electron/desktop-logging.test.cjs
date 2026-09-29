@@ -6,7 +6,13 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 
-const { attachRendererLogging, installDesktopLogging, resolveLogPath } = require('./desktop-logging.cjs')
+const {
+  attachRendererLogging,
+  initializeLogDateState,
+  installDesktopLogging,
+  openDaemonBootstrapLog,
+  resolveLogPath,
+} = require('./desktop-logging.cjs')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-logging-'))
@@ -43,6 +49,21 @@ test('places logs beside Porto state in each operating system', () => {
     appDataPath: 'C:\\Users\\synthetic\\AppData\\Roaming',
     environment: { PORTO_HOME: 'D:\\Synthetic Porto' },
   }), 'D:\\Synthetic Porto\\logs\\porto.log')
+})
+
+test('preserves the existing log date before the desktop appends', (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-log-date-'))
+  t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
+  const logPath = path.join(directory, 'logs', 'porto.log')
+  fs.mkdirSync(path.dirname(logPath), { recursive: true })
+  fs.writeFileSync(logPath, 'previous day\n')
+  const previous = new Date(2026, 8, 28, 12, 0, 0)
+  fs.utimesSync(logPath, previous, previous)
+  initializeLogDateState(logPath)
+  assert.equal(
+    fs.readFileSync(path.join(path.dirname(logPath), '.porto-log-date'), 'utf8').trim(),
+    '2026-09-28',
+  )
 })
 
 test('defaults to debug and persists desktop errors without replacing console output', (t) => {
@@ -100,7 +121,7 @@ test('reports file-write failures through the original console', (t) => {
   const logger = options.open('debug')
   const append = fs.appendFileSync
   t.mock.method(fs, 'appendFileSync', (file, ...args) => {
-    if (file === logger.fd) throw new Error('synthetic disk full')
+    if (file === logger.path) throw new Error('synthetic disk full')
     return append(file, ...args)
   })
   options.consoleImpl.error('original diagnostic')
@@ -132,9 +153,9 @@ test('captures renderer messages with their severity and unexpected exits', (t) 
   assert.match(contents, /level=DEBUG.*Renderer exited: reason=clean-exit exitCode=0/)
 })
 
-test('captures daemon stdout and stderr after the desktop closes its log handle', async (t) => {
+test('captures daemon startup output after the desktop closes its bootstrap handle', async (t) => {
   const options = fixture(t)
-  const logger = options.open('debug')
+  const bootstrap = openDaemonBootstrapLog(options.logPath)
   const child = spawn(process.execPath, ['-e', `
     process.stdin.resume()
     process.stdin.on('end', () => {
@@ -143,18 +164,18 @@ test('captures daemon stdout and stderr after the desktop closes its log handle'
       process.exitCode = 7
     })
   `], {
-    stdio: ['pipe', logger.fd, logger.fd],
+    stdio: ['pipe', bootstrap.fd, bootstrap.fd],
     timeout: 5000,
     windowsHide: true,
   })
   const exited = once(child, 'exit')
   await once(child, 'spawn')
-  logger.close()
+  bootstrap.close()
   child.stdin.end()
   const [code, signal] = await exited
   assert.equal(signal, null)
   assert.equal(code, 7)
-  const contents = fs.readFileSync(options.logPath, 'utf8')
+  const contents = fs.readFileSync(bootstrap.path, 'utf8')
   assert.match(contents, /synthetic daemon stdout/)
   assert.match(contents, /synthetic daemon startup failure/)
 })
@@ -166,13 +187,22 @@ test('the installed daemon logs startup failures once through desktop stdio', {
   const home = path.dirname(path.dirname(options.logPath))
   fs.mkdirSync(path.join(home, 'porto.db'))
   const logger = options.open('')
+  const bootstrap = openDaemonBootstrapLog(options.logPath)
   const child = spawn(process.env.PORTO_TEST_DAEMON, ['daemon', 'start'], {
-    env: { ...process.env, PORTO_HOME: home, PORTO_LOG_LEVEL: '' },
-    stdio: ['ignore', logger.fd, logger.fd],
+    env: {
+      ...process.env,
+      PORTO_HOME: home,
+      PORTO_LOG_LEVEL: '',
+      PORTO_LOG_MIRROR_STDERR: 'false',
+    },
+    stdio: ['ignore', bootstrap.fd, bootstrap.fd],
     timeout: 20000,
     windowsHide: true,
   })
-  const [code, signal] = await once(child, 'exit')
+  const exited = once(child, 'exit')
+  await once(child, 'spawn')
+  bootstrap.close()
+  const [code, signal] = await exited
   logger.close()
 
   assert.equal(signal, null)
@@ -181,5 +211,5 @@ test('the installed daemon logs startup failures once through desktop stdio', {
   assert.match(contents, /level=DEBUG.*Starting Porto daemon/)
   assert.match(contents, /level=ERROR.*Daemon stopped/)
   assert.equal(contents.match(/Starting Porto daemon/g)?.length, 1)
-  assert.match(contents, /porto:/)
+  assert.match(fs.readFileSync(bootstrap.path, 'utf8'), /porto:/)
 })

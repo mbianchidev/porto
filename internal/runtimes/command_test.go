@@ -22,11 +22,11 @@ func TestRuntimeDebugLoggingDoesNotExposeCommandPayloads(t *testing.T) {
 			}
 			defer stderr.Close()
 			logPath := filepath.Join(directory, "porto.log")
-			closeLog, err := logging.Open(logPath, "", stderr)
+			diagnostics, err := logging.Open(logPath, "", stderr)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer closeLog()
+			defer diagnostics.Close()
 			command := Command{
 				Name:  os.Args[0],
 				Args:  []string{"-test.run=^TestCommandInputHelper$", "--", "synthetic-private-argument"},

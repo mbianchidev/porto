@@ -11,6 +11,7 @@ import (
 	"io"
 	"io/fs"
 	"log"
+	"log/slog"
 	"math"
 	"net"
 	"net/http"
@@ -60,59 +61,60 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
-	store             *store.Store
-	mu                sync.Mutex
-	running           map[int64]*projectProcess
-	stopping          map[int64]bool
-	settingUp         map[int64]bool
-	deleting          map[int64]bool
-	sendboxRunning    map[int64]*exec.Cmd
-	sendboxStates     map[int64]string
-	sendboxMessages   map[int64]string
-	composePorts      map[int64][]int
-	kubeForwards      map[string]*kubeForward
-	kubeForwardMu     sync.Mutex
-	kubeAddons        map[string]bool
-	kubeOperationMu   sync.Mutex
-	kubeOperations    map[string]string
-	kubeOpGates       map[string]chan struct{}
-	ui                fs.FS
-	sendbox           sendboxIntegration
-	compose           composeIntegration
-	setupRunner       projectSetupRunner
-	healthClient      *http.Client
-	readinessDelay    time.Duration
-	sqnsl             *sqnsl.Manager
-	killSwitch        *killswitch.Manager
-	tlsCertificates   *certificates.Manager
-	userHomeDir       func() (string, error)
-	docker            *portodocker.Manager
-	dockerAPI         *portodocker.APIServer
-	cleanupMu         sync.Mutex
-	cleanupRunner     func(context.Context) (app.DockerCleanupResult, error)
-	cleanupNow        func() time.Time
-	cleanupCancel     context.CancelFunc
-	cleanupDone       chan struct{}
-	cleanupUnstored   *app.DockerCleanupRun
-	runtimeMu         sync.Mutex
-	runtimeContext    context.Context
-	runtimeOps        sync.WaitGroup
-	runtimeOpsMu      sync.Mutex
-	runtimeClosing    bool
-	runtimeActive     int
-	kubernetes        *kubernetes.Manager
-	clusters          *kubernetes.ClusterProvisioner
-	kubeconfigErr     error
-	vms               *vm.Manager
-	providers         *providers.Manager
-	dockerSocket      string
-	daemonIdentity    string
-	identityErr       error
-	registryVault     *registries.Vault
-	registryMu        sync.RWMutex
-	registryConfigMu  sync.Mutex
-	registryConfigKey string
-	registryConfig    []byte
+	store              *store.Store
+	mu                 sync.Mutex
+	running            map[int64]*projectProcess
+	stopping           map[int64]bool
+	settingUp          map[int64]bool
+	deleting           map[int64]bool
+	sendboxRunning     map[int64]*exec.Cmd
+	sendboxStates      map[int64]string
+	sendboxMessages    map[int64]string
+	composePorts       map[int64][]int
+	kubeForwards       map[string]*kubeForward
+	kubeForwardMu      sync.Mutex
+	kubeAddons         map[string]bool
+	kubeOperationMu    sync.Mutex
+	kubeOperations     map[string]string
+	kubeOpGates        map[string]chan struct{}
+	ui                 fs.FS
+	sendbox            sendboxIntegration
+	compose            composeIntegration
+	setupRunner        projectSetupRunner
+	healthClient       *http.Client
+	readinessDelay     time.Duration
+	sqnsl              *sqnsl.Manager
+	killSwitch         *killswitch.Manager
+	tlsCertificates    *certificates.Manager
+	userHomeDir        func() (string, error)
+	docker             *portodocker.Manager
+	dockerAPI          *portodocker.APIServer
+	cleanupMu          sync.Mutex
+	cleanupRunner      func(context.Context) (app.DockerCleanupResult, error)
+	cleanupNow         func() time.Time
+	cleanupCancel      context.CancelFunc
+	cleanupDone        chan struct{}
+	cleanupUnstored    *app.DockerCleanupRun
+	runtimeMu          sync.Mutex
+	runtimeContext     context.Context
+	runtimeOps         sync.WaitGroup
+	runtimeOpsMu       sync.Mutex
+	runtimeClosing     bool
+	runtimeActive      int
+	kubernetes         *kubernetes.Manager
+	clusters           *kubernetes.ClusterProvisioner
+	kubeconfigErr      error
+	vms                *vm.Manager
+	providers          *providers.Manager
+	dockerSocket       string
+	daemonIdentity     string
+	identityErr        error
+	registryVault      *registries.Vault
+	registryMu         sync.RWMutex
+	registryConfigMu   sync.Mutex
+	registryConfigKey  string
+	registryConfig     []byte
+	updateLogRetention func(int) error
 }
 
 var (
@@ -202,6 +204,10 @@ func New(st *store.Store, ui fs.FS) *Server {
 	dockerManager.SetRegistryAuthResolver(server.registryAuthForImage)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
 	return server
+}
+
+func (s *Server) SetLogRetentionUpdater(update func(int) error) {
+	s.updateLogRetention = update
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -689,6 +695,11 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if settings.LogRetentionDays != current.LogRetentionDays && s.updateLogRetention != nil {
+		if err := s.updateLogRetention(settings.LogRetentionDays); err != nil {
+			slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+		}
+	}
 	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
 		s.syncSQLNotSoLite(r.Context())
 	}
@@ -727,6 +738,12 @@ func normalizeSettings(settings app.Settings) (app.Settings, error) {
 	}
 	if settings.TerminalScrollback < 1000 || settings.TerminalScrollback > 50000 {
 		return settings, errors.New("terminal scrollback must be between 1000 and 50000 lines")
+	}
+	if settings.LogRetentionDays == 0 {
+		settings.LogRetentionDays = app.DefaultLogRetentionDays
+	}
+	if settings.LogRetentionDays < 1 || settings.LogRetentionDays > app.MaximumLogRetentionDays {
+		return settings, fmt.Errorf("log retention must be between 1 and %d days", app.MaximumLogRetentionDays)
 	}
 	return settings, nil
 }

@@ -53,6 +53,7 @@ type Settings struct {
 	TerminalLineHeight     float64  `json:"terminalLineHeight"`
 	TerminalCursorBlink    bool     `json:"terminalCursorBlink"`
 	TerminalScrollback     int      `json:"terminalScrollback"`
+	LogRetentionDays       int      `json:"logRetentionDays"`
 }
 
 const (
@@ -60,6 +61,8 @@ const (
 	DefaultTerminalFontSize   = 12
 	DefaultTerminalLineHeight = 1.35
 	DefaultTerminalScrollback = 5000
+	DefaultLogRetentionDays   = 7
+	MaximumLogRetentionDays   = 365
 )
 
 type RegistryProfile struct {

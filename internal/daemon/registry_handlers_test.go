@@ -132,12 +132,18 @@ func TestNormalizeSettingsDefaultsAndValidatesExperience(t *testing.T) {
 	if normalized.InterfaceDensity != app.DefaultInterfaceDensity ||
 		normalized.TerminalFontSize != app.DefaultTerminalFontSize ||
 		normalized.TerminalLineHeight != app.DefaultTerminalLineHeight ||
-		normalized.TerminalScrollback != app.DefaultTerminalScrollback {
+		normalized.TerminalScrollback != app.DefaultTerminalScrollback ||
+		normalized.LogRetentionDays != app.DefaultLogRetentionDays {
 		t.Fatalf("normalized settings = %+v", normalized)
 	}
 	normalized.TerminalFontSize = 25
 	if _, err := normalizeSettings(normalized); err == nil || !strings.Contains(err.Error(), "font size") {
 		t.Fatalf("invalid font size error = %v", err)
+	}
+	normalized.TerminalFontSize = app.DefaultTerminalFontSize
+	normalized.LogRetentionDays = app.MaximumLogRetentionDays + 1
+	if _, err := normalizeSettings(normalized); err == nil || !strings.Contains(err.Error(), "log retention") {
+		t.Fatalf("invalid log retention error = %v", err)
 	}
 }
 
