@@ -74,6 +74,24 @@ type blockedCapabilityRuntime struct {
 	*fakeContainerRuntime
 }
 
+type recoveringCapabilityRuntime struct {
+	*fakeContainerRuntime
+	mu    sync.Mutex
+	calls int
+}
+
+func (r *recoveringCapabilityRuntime) Capabilities(context.Context) ContainerCapabilities {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.calls++
+	capabilities := containerCapabilities()
+	capabilities.NetworkUpdates = RuntimeCapability{
+		Supported: r.calls > 1,
+		Reason:    "synthetic CNI probe",
+	}
+	return capabilities
+}
+
 func (r *blockedCapabilityRuntime) Capabilities(ctx context.Context) ContainerCapabilities {
 	<-ctx.Done()
 	return ContainerCapabilities{
@@ -102,6 +120,44 @@ func TestContainerInventoryBoundsGuestCapabilityProbe(t *testing.T) {
 	})
 	if snapshot.Capabilities.NetworkUpdates.Reason != context.DeadlineExceeded.Error() {
 		t.Fatalf("capability probe did not retain its timeout: %+v", snapshot.Capabilities)
+	}
+}
+
+func TestContainerInventoryReprobesCNIUntilHealthy(t *testing.T) {
+	client := &recoveringCapabilityRuntime{
+		fakeContainerRuntime: newFakeContainerRuntime([]Container{{ID: "test-container"}}),
+	}
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return client, nil },
+		inventoryOptions{
+			debounce:          time.Millisecond,
+			reconcileInterval: 5 * time.Millisecond,
+			connectBackoff:    time.Millisecond,
+			maxBackoff:        time.Millisecond,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		inventory.run(ctx)
+		close(done)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+
+	snapshot := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available && snapshot.Capabilities.NetworkUpdates.Supported
+	})
+	if !snapshot.Capabilities.NetworkUpdates.Supported {
+		t.Fatalf("network capability did not recover: %+v", snapshot.Capabilities)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.calls < 2 {
+		t.Fatalf("capability calls = %d, want at least 2", client.calls)
 	}
 }
 

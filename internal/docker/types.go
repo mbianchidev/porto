@@ -27,6 +27,51 @@ type Status struct {
 	UpdatedAt     string `json:"updatedAt,omitempty"`
 }
 
+type ContextStatus struct {
+	Name             string `json:"name"`
+	Installed        bool   `json:"installed"`
+	Endpoint         string `json:"endpoint,omitempty"`
+	ExpectedEndpoint string `json:"expectedEndpoint"`
+	Matches          bool   `json:"matches"`
+	Message          string `json:"message,omitempty"`
+}
+
+type BackendInfo struct {
+	Driver          string   `json:"Driver"`
+	MemoryLimit     bool     `json:"MemoryLimit"`
+	SwapLimit       bool     `json:"SwapLimit"`
+	CPUPeriod       bool     `json:"CpuCfsPeriod"`
+	CPUQuota        bool     `json:"CpuCfsQuota"`
+	CPUShares       bool     `json:"CPUShares"`
+	CPUSet          bool     `json:"CPUSet"`
+	PIDsLimit       bool     `json:"PidsLimit"`
+	IPv4Forwarding  bool     `json:"IPv4Forwarding"`
+	OomKillDisable  bool     `json:"OomKillDisable"`
+	SystemTime      string   `json:"SystemTime"`
+	LoggingDriver   string   `json:"LoggingDriver"`
+	CgroupDriver    string   `json:"CgroupDriver"`
+	CgroupVersion   string   `json:"CgroupVersion"`
+	KernelVersion   string   `json:"KernelVersion"`
+	OperatingSystem string   `json:"OperatingSystem"`
+	OSType          string   `json:"OSType"`
+	Architecture    string   `json:"Architecture"`
+	NCPU            int      `json:"NCPU"`
+	MemTotal        int64    `json:"MemTotal"`
+	Name            string   `json:"Name"`
+	SecurityOptions []string `json:"SecurityOptions"`
+	Warnings        []string `json:"Warnings"`
+}
+
+type EngineOwnershipStatus struct {
+	Configured bool   `json:"configured"`
+	Owned      bool   `json:"owned"`
+	Verified   bool   `json:"verified"`
+	Conflict   bool   `json:"conflict"`
+	Mode       string `json:"mode,omitempty"`
+	Instance   string `json:"instance,omitempty"`
+	Message    string `json:"message,omitempty"`
+}
+
 type Container struct {
 	ID                string                    `json:"id"`
 	Name              string                    `json:"name"`
@@ -152,10 +197,13 @@ type ContainerSnapshot struct {
 
 type Image struct {
 	ID         string            `json:"id"`
+	Name       string            `json:"name,omitempty"`
 	Repository string            `json:"repository"`
 	Tag        string            `json:"tag"`
 	Digest     string            `json:"digest"`
+	Platform   string            `json:"platform,omitempty"`
 	Size       string            `json:"size"`
+	SizeBytes  int64             `json:"sizeBytes"`
 	CreatedAt  string            `json:"createdAt"`
 	Labels     map[string]string `json:"labels,omitempty"`
 }
@@ -216,6 +264,61 @@ type ContainerStats struct {
 	PIDs          string `json:"pids"`
 	CPUMillicores int64  `json:"cpuMillicores"`
 	MemoryBytes   int64  `json:"memoryBytes"`
+}
+
+type ContainerMetricSample struct {
+	ID       string
+	Name     string
+	Read     time.Time
+	CPU      *ContainerMetricCPU
+	Memory   *ContainerMetricMemory
+	PIDs     *ContainerMetricPIDs
+	Networks map[string]ContainerMetricNetwork
+	BlockIO  []ContainerMetricBlockIO
+}
+
+type ContainerMetricCPU struct {
+	TotalUsage  uint64
+	UserUsage   uint64
+	SystemUsage uint64
+	PerCPUUsage []uint64
+	Throttling  ContainerMetricThrottling
+}
+
+type ContainerMetricThrottling struct {
+	Periods          uint64
+	ThrottledPeriods uint64
+	ThrottledTime    uint64
+}
+
+type ContainerMetricMemory struct {
+	Usage    *uint64
+	MaxUsage *uint64
+	Limit    *uint64
+	Stats    map[string]uint64
+}
+
+type ContainerMetricPIDs struct {
+	Current uint64
+	Limit   uint64
+}
+
+type ContainerMetricNetwork struct {
+	RxBytes   uint64
+	RxPackets uint64
+	RxErrors  uint64
+	RxDropped uint64
+	TxBytes   uint64
+	TxPackets uint64
+	TxErrors  uint64
+	TxDropped uint64
+}
+
+type ContainerMetricBlockIO struct {
+	Major uint64
+	Minor uint64
+	Op    string
+	Value uint64
 }
 
 type CreateNetworkRequest struct {

@@ -41,11 +41,14 @@ Porto keeps seven days by default and exposes retention in System settings. See
 [application diagnostic logs](daily-use.md#application-diagnostic-logs) for
 platform paths, rotation, retention, and verbosity settings.
 
-Desktop archives contain Porto, its dashboard, the Docker CLI, `kubectl`, `k9s`,
-Lima, and the supported `kind` binary for that platform. Windows packages also
+Desktop archives contain Porto, its dashboard, the Docker CLI with Compose and
+Buildx, Dive for terminal image-layer inspection, `kubectl`, `k9s`, Lima, and
+the supported `kind` binary for that platform. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
-system installation. Windows ARM64 excludes the Docker CLI and KinD because
-upstream standalone binaries are unavailable. Linux installation installs QEMU
+system installation. Windows ARM64 excludes KinD because upstream does not
+publish a native binary; Porto builds its Docker CLI from Docker's pinned
+official source and bundles upstream Windows ARM64 Compose and Buildx plugins.
+Linux installation installs QEMU
 through `apt`, `dnf`, `pacman`, or `zypper` when it is missing. Set
 `PORTO_SKIP_PREREQS=1` to skip that Linux prerequisite step.
 
@@ -56,6 +59,23 @@ login-shell `PATH`, so project commands can find package managers and language
 toolchains installed outside the system paths available to graphical applications.
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
+
+The install scripts add a `docker` command beside `porto` only when that name is
+unused or already points to Porto. Existing user-managed commands are preserved.
+The always-available explicit form is:
+
+```sh
+porto docker cli --version
+porto docker cli compose version
+porto docker cli buildx version
+porto docker dive alpine:latest
+porto docker dive --container running-api
+```
+
+Porto's Docker CLI discovers the plugins shipped beside it before user and
+system plugin directories. It still reads the user's original Docker config,
+contexts, credential helpers, and Buildx state directly; Porto does not rewrite
+`~/.docker/config.json` or delete existing plugins.
 
 On Windows, Porto connects to the guest containerd socket through its bundled
 Linux helper over Lima's standard-input/output transport, without forwarding a
@@ -159,10 +179,69 @@ Then enable the CLI with:
 ```sh
 mkdir -p "$HOME/.local/bin"
 ln -sfn "/Applications/Porto.app/Contents/Resources/porto" "$HOME/.local/bin/porto"
+if [ ! -e "$HOME/.local/bin/docker" ] && [ ! -L "$HOME/.local/bin/docker" ]; then
+  ln -s "/Applications/Porto.app/Contents/Resources/runtime/bin/docker" "$HOME/.local/bin/docker"
+fi
+if [ ! -e "$HOME/.local/bin/dive" ] && [ ! -L "$HOME/.local/bin/dive" ]; then
+  ln -s "/Applications/Porto.app/Contents/Resources/runtime/bin/dive" "$HOME/.local/bin/dive"
+fi
 grep -qxF 'export PATH="$HOME/.local/bin:$PATH"' "$HOME/.zprofile" ||
   echo 'export PATH="$HOME/.local/bin:$PATH"' >> "$HOME/.zprofile"
 exec zsh -l
 ```
+
+### Make Porto the default Docker engine
+
+Porto automatically creates and repairs the named `porto` Docker context. Make
+that context the default for the current user without administrator privileges:
+
+```sh
+docker context use porto
+docker context show
+docker info --format 'Porto server {{.ServerVersion}}'
+```
+
+Some tools ignore Docker contexts and connect directly to
+`/var/run/docker.sock`. On macOS and Linux, expose Porto through that canonical
+path with:
+
+```sh
+porto docker activate
+```
+
+If another runtime already owns a symbolic link there, replacement requires
+explicit intent:
+
+```sh
+porto docker activate --replace
+```
+
+Writing `/var/run/docker.sock` usually requires administrator privileges. Porto
+prints an exact retry command that preserves the current user's Porto state.
+For the default macOS installation, the equivalent command is:
+
+```sh
+sudo env PORTO_HOME="$HOME/Library/Application Support/porto" \
+  "$(command -v porto)" docker activate --replace
+```
+
+Verify the canonical endpoint independently of the selected Docker context:
+
+```sh
+readlink /var/run/docker.sock
+docker --host unix:///var/run/docker.sock info \
+  --format 'Porto server {{.ServerVersion}}'
+```
+
+Porto records the previous symbolic-link target. Restore it with
+`porto docker deactivate`; if required, rerun the administrator command printed
+by Porto with `docker deactivate` as the final arguments.
+
+Canonical activation is optional: Porto Desktop and
+`docker --context porto ...` work without it. It is intended for tools that
+hardcode the canonical Unix socket. The Porto socket remains mode `0600`, so
+this does not grant other operating-system users access. Windows uses only the
+named `porto` context because named-pipe takeover cannot be reversed safely.
 
 ### macOS 27 power-notification crash
 
@@ -271,8 +350,8 @@ Source builds use standard host tools:
 - `qemu-system-*` for snapshot-capable Lima VMs
 - `kind` for Kubernetes-in-Porto clusters
 
-Release desktop apps bundle kubectl, k9s, and Lima. Docker and kind are also
-bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
+Release desktop apps bundle Docker, Compose, Buildx, Dive, kubectl, k9s, and Lima.
+Kind is bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
 not because upstream does not publish relocatable binaries and package-manager
 builds have large architecture-specific dynamic library closures. On macOS, run
 `brew install qemu` and restart Porto. Source builds can install the other

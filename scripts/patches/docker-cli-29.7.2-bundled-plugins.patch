@@ -1,0 +1,20 @@
+diff --git a/cli-plugins/manager/manager.go b/cli-plugins/manager/manager.go
+index 2bf7af1a..44ecff2f 100644
+--- a/cli-plugins/manager/manager.go
++++ b/cli-plugins/manager/manager.go
+@@ -54,6 +54,15 @@ import (
+ // [ConfigFile.CLIPluginsExtraDirs]: https://pkg.go.dev/github.com/docker/cli@v26.1.4+incompatible/cli/config/configfile#ConfigFile.CLIPluginsExtraDirs
+ func getPluginDirs(cfg *configfile.ConfigFile) []string {
+ 	var pluginDirs []string
++	if executable, err := os.Executable(); err == nil {
++		if resolved, resolveErr := filepath.EvalSymlinks(executable); resolveErr == nil {
++			executable = resolved
++		}
++		pluginDirs = append(
++			pluginDirs,
++			filepath.Clean(filepath.Join(filepath.Dir(executable), "..", "docker", "cli-plugins")),
++		)
++	}
+ 
+ 	if cfg != nil {
+ 		pluginDirs = append(pluginDirs, cfg.CLIPluginsExtraDirs...)

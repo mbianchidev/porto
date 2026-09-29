@@ -2,7 +2,10 @@ package docker
 
 import (
 	"context"
+	"fmt"
 	"maps"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -183,14 +186,22 @@ CMD ["sh", "-c", "echo porto-moby-ready; sleep 30"]
 		}
 		return output
 	}
+	registryImage := ""
+	registryName := fmt.Sprintf("porto-api-registry-%d", time.Now().UnixNano())
 	t.Cleanup(func() {
 		cleanupContext, cleanupCancel := context.WithTimeout(context.Background(), 2*time.Minute)
 		defer cleanupCancel()
 		for _, arguments := range [][]string{
 			{"compose", "--project-name", "porto-moby-exporter-test", "down", "--volumes", "--remove-orphans"},
-			{"image", "rm", "--force", "porto-moby-exporter-test:latest", "porto-compose-moby-test:latest"},
+			{"rm", "--force", registryName},
+			{"image", "rm", "--force", "porto-moby-exporter-test:latest", "porto-compose-moby-test:latest", "registry:2"},
 		} {
 			command := process.NewCommand(cleanupContext, buildDirectory, "docker", arguments...)
+			command.Env = environment
+			_, _ = command.CombinedOutput()
+		}
+		if registryImage != "" {
+			command := process.NewCommand(cleanupContext, buildDirectory, "docker", "image", "rm", "--force", registryImage)
 			command.Env = environment
 			_, _ = command.CombinedOutput()
 		}
@@ -204,5 +215,44 @@ CMD ["sh", "-c", "echo porto-moby-ready; sleep 30"]
 	runDocker("compose", "--project-name", "porto-moby-exporter-test", "up", "--detach")
 	if output := runDocker("compose", "--project-name", "porto-moby-exporter-test", "ps", "--status", "running", "--quiet"); strings.TrimSpace(string(output)) == "" {
 		t.Fatal("Compose did not start the built image")
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve registry port: %v", err)
+	}
+	registryPort := listener.Addr().(*net.TCPAddr).Port
+	_ = listener.Close()
+	runDocker(
+		"run", "--detach", "--name", registryName,
+		"--publish", fmt.Sprintf("127.0.0.1:%d:5000", registryPort),
+		"registry:2",
+	)
+	registryURL := fmt.Sprintf("http://127.0.0.1:%d/v2/", registryPort)
+	registryReady := false
+	registryClient := &http.Client{Timeout: 500 * time.Millisecond}
+	for attempt := 0; attempt < 60; attempt++ {
+		response, requestErr := registryClient.Get(registryURL)
+		if requestErr == nil {
+			_ = response.Body.Close()
+			if response.StatusCode == http.StatusOK {
+				registryReady = true
+				break
+			}
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+	if !registryReady {
+		t.Fatalf("disposable registry did not become ready at %s", registryURL)
+	}
+	registryImage = fmt.Sprintf("127.0.0.1:%d/porto-api-test:v1", registryPort)
+	runDocker("tag", "porto-moby-exporter-test:latest", registryImage)
+	runDocker("push", registryImage)
+	archivePath := filepath.Join(t.TempDir(), "porto-api-test.tar")
+	runDocker("save", "--output", archivePath, "porto-moby-exporter-test:latest")
+	runDocker("image", "rm", "--force", "porto-moby-exporter-test:latest")
+	runDocker("load", "--input", archivePath)
+	if output := runDocker("image", "inspect", "--format", "{{.Id}}", "porto-moby-exporter-test:latest"); !strings.HasPrefix(strings.TrimSpace(string(output)), "sha256:") {
+		t.Fatalf("loaded archive image ID = %q", output)
 	}
 }

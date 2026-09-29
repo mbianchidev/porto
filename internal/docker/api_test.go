@@ -37,6 +37,7 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 			"nerdctl version": []byte("nerdctl version 2.1.0\n"),
 			"nerdctl ps -a --no-trunc --format {{json .}}":            nil,
 			"nerdctl images --digests --no-trunc --format {{json .}}": nil,
+			"nerdctl info --format {{json .}}":                        []byte(`{"Driver":"overlayfs","MemoryLimit":true,"SwapLimit":true,"CpuCfsPeriod":true,"CpuCfsQuota":true,"CPUShares":true,"CPUSet":true,"PidsLimit":true,"IPv4Forwarding":true,"OomKillDisable":true,"KernelVersion":"7.0-test","OperatingSystem":"Porto Test Linux","OSType":"linux","Architecture":"amd64","NCPU":4,"MemTotal":4294967296,"CgroupDriver":"systemd","CgroupVersion":"2","LoggingDriver":"json-file"}`),
 		},
 		errors: map[string]error{},
 	})
@@ -60,6 +61,9 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 	if document["ID"] != "porto" || document["ServerVersion"] == "" {
 		t.Fatalf("unexpected info: %+v", document)
 	}
+	if document["KernelVersion"] != "7.0-test" || document["MemTotal"] != float64(4294967296) || document["NCPU"] != float64(4) {
+		t.Fatalf("backend info was not reconciled: %+v", document)
+	}
 	driverStatus, ok := document["DriverStatus"].([]any)
 	if !ok {
 		t.Fatalf("driver status = %#v", document["DriverStatus"])
@@ -71,6 +75,7 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 			containerdSnapshotter = true
 		}
 	}
+
 	if !containerdSnapshotter {
 		t.Fatalf("driver status does not advertise containerd image-store support: %#v", driverStatus)
 	}
@@ -79,6 +84,44 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 	handler.ServeHTTP(containers, httptest.NewRequest(http.MethodGet, "/v1.47/containers/json?all=1&size=0", nil))
 	if containers.Code != http.StatusOK {
 		t.Fatalf("containers = %d: %s", containers.Code, containers.Body.String())
+	}
+}
+
+func TestDockerContainerListMetadataUsesInventoryPortsAndMounts(t *testing.T) {
+	container := Container{
+		NetworkDetails: []ContainerNetworkState{{
+			ContainerPort: 8080, HostPort: 18080, HostIP: "127.0.0.1", Protocol: "tcp",
+		}},
+		MountDetails: []ContainerMount{{
+			Type: "volume", Source: "data", Destination: "/data", Options: []string{"ro"},
+		}},
+	}
+
+	ports := dockerContainerPorts(container)
+	if len(ports) != 1 || ports[0]["PrivatePort"] != int32(8080) || ports[0]["PublicPort"] != int32(18080) {
+		t.Fatalf("unexpected ports: %+v", ports)
+	}
+	mounts := dockerContainerMounts(container)
+	if len(mounts) != 1 || mounts[0]["Name"] != "data" || mounts[0]["RW"] != false {
+		t.Fatalf("unexpected mounts: %+v", mounts)
+	}
+}
+
+func TestComposeContainerNameUsesCanonicalFirstAlias(t *testing.T) {
+	name := composeContainerName(
+		map[string]string{
+			"com.docker.compose.project": "demo",
+			"com.docker.compose.service": "api",
+		},
+		[]ContainerNetwork{{
+			Name: "demo_default", Aliases: []string{"demo-api-1", "api"},
+		}},
+	)
+	if name != "demo-api-1" {
+		t.Fatalf("Compose container name = %q", name)
+	}
+	if name := composeContainerName(nil, []ContainerNetwork{{Aliases: []string{"untrusted"}}}); name != "" {
+		t.Fatalf("non-Compose aliases inferred a name: %q", name)
 	}
 }
 
@@ -237,7 +280,7 @@ func TestDockerAPICreatesPrivilegedKindContainer(t *testing.T) {
 func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/events", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/system/df", nil))
 	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "does not support") {
 		t.Fatalf("unsupported = %d: %s", response.Code, response.Body.String())
 	}
@@ -729,7 +772,7 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 			stateMu.Unlock()
 			switch current {
 			case "created":
-				return []byte(`[{"Id":"container-id","State":{"Status":"created","Running":false},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false}}]`), nil
 			case "running":
 				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false}}]`), nil
 			default:
@@ -1323,9 +1366,9 @@ func TestDockerAPIRejectsUnsupportedMountSemanticsAndFollowsLogs(t *testing.T) {
 	handler.ServeHTTP(create, httptest.NewRequest(
 		http.MethodPost,
 		"/v1.47/containers/create",
-		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data"}]}}`),
+		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data","BindOptions":{"NonRecursive":true}}]}}`),
 	))
-	if create.Code != http.StatusNotImplemented || !strings.Contains(create.Body.String(), "Mounts") {
+	if create.Code != http.StatusNotImplemented || !strings.Contains(create.Body.String(), "recursive bind") {
 		t.Fatalf("mount response = %d: %s", create.Code, create.Body.String())
 	}
 	logRunner := &fakeRunner{
@@ -1524,7 +1567,9 @@ func TestDockerComposeUpUsesPortoNativeSocket(t *testing.T) {
 		case strings.HasPrefix(args, "volume create "):
 			volumeExists = true
 			return []byte("compose-test_data\n"), nil
-		case strings.HasPrefix(args, "image inspect alpine:latest"):
+		case args == "images --digests --no-trunc --format {{json .}}":
+			return []byte(`{"ID":"sha256:alpine-index","Repository":"alpine","Tag":"latest","Digest":"sha256:alpine-index","Name":"docker.io/library/alpine:latest","Platform":"linux/arm64"}` + "\n"), nil
+		case args == "image inspect --platform linux/arm64 alpine:latest":
 			return []byte(`[{"Id":"sha256:alpine","RepoTags":["alpine:latest"],"RepoDigests":[],"Config":{},"Architecture":"arm64","Os":"linux","Size":1}]`), nil
 		case strings.HasPrefix(args, "network create "):
 			fields := strings.Fields(args)

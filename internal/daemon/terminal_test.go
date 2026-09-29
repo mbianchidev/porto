@@ -3,10 +3,13 @@ package daemon
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"testing"
 
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 )
 
@@ -52,6 +55,69 @@ func TestK9sTerminalCommandScopesManagedCluster(t *testing.T) {
 	}
 	if !slices.Contains(command.Env, "TERM=xterm-256color") || !slices.Contains(command.Env, "COLORTERM=truecolor") {
 		t.Fatalf("command environment does not contain terminal capabilities: %q", command.Env)
+	}
+}
+
+func TestDiveTerminalCommandTargetsPortoSocket(t *testing.T) {
+	command := diveTerminalCommand(context.Background(), "/opt/porto/dive", "example/app:v1", "/tmp/porto docker.sock")
+	want := []string{"/opt/porto/dive", "example/app:v1", "--source", "docker"}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("command args = %q, want %q", command.Args, want)
+	}
+	for _, expected := range []string{
+		"DOCKER_HOST=" + portodocker.EndpointURL("/tmp/porto docker.sock"),
+		"DOCKER_CONTEXT=",
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	} {
+		if !slices.Contains(command.Env, expected) {
+			t.Fatalf("command environment missing %q: %q", expected, command.Env)
+		}
+	}
+}
+
+func TestDockerImageDiveTerminalRejectsUnsafeImageReference(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/api/docker/images/invalid/dive", nil)
+	request.SetPathValue("id", "-invalid")
+	response := httptest.NewRecorder()
+
+	(&Server{}).dockerImageDiveTerminal(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusBadRequest)
+	}
+}
+
+func TestDockerImageDiveTerminalReportsMissingDive(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+	request := httptest.NewRequest(http.MethodGet, "/api/docker/images/alpine/dive", nil)
+	request.SetPathValue("id", "alpine:latest")
+	response := httptest.NewRecorder()
+
+	(&Server{}).dockerImageDiveTerminal(response, request)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusServiceUnavailable)
+	}
+}
+
+func TestDiveTerminalRoutePreservesSlashedImageReference(t *testing.T) {
+	mux := http.NewServeMux()
+	var image string
+	mux.HandleFunc("GET /api/docker/images/{id}/dive", func(w http.ResponseWriter, r *http.Request) {
+		image = r.PathValue("id")
+		w.WriteHeader(http.StatusNoContent)
+	})
+	request := httptest.NewRequest(http.MethodGet, "/api/docker/images/example%2Fapp%3Av1/dive", nil)
+	response := httptest.NewRecorder()
+
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("status = %d, want %d", response.Code, http.StatusNoContent)
+	}
+	if image != "example/app:v1" {
+		t.Fatalf("image = %q, want %q", image, "example/app:v1")
 	}
 }
 

@@ -158,15 +158,7 @@ func (i *containerInventory) run(ctx context.Context) {
 			backoff = min(backoff*2, i.options.maxBackoff)
 			continue
 		}
-		capabilities := containerCapabilities()
-		if provider, ok := runtimeClient.(interface {
-			Capabilities(context.Context) ContainerCapabilities
-		}); ok {
-			probeContext, cancel := context.WithTimeout(ctx, i.options.operationTimeout)
-			capabilities = provider.Capabilities(probeContext)
-			cancel()
-		}
-		i.setCapabilities(capabilities)
+		i.probeCapabilities(ctx, runtimeClient)
 
 		backoff = i.options.connectBackoff
 		err = i.runConnected(ctx, runtimeClient)
@@ -190,6 +182,24 @@ func (i *containerInventory) setCapabilities(capabilities ContainerCapabilities)
 	i.capabilities = capabilities
 	i.snapshot.Capabilities = capabilities
 	i.mu.Unlock()
+}
+
+func (i *containerInventory) probeCapabilities(ctx context.Context, runtimeClient containerRuntime) {
+	capabilities := containerCapabilities()
+	if provider, ok := runtimeClient.(interface {
+		Capabilities(context.Context) ContainerCapabilities
+	}); ok {
+		probeContext, cancel := context.WithTimeout(ctx, i.options.operationTimeout)
+		capabilities = provider.Capabilities(probeContext)
+		cancel()
+	}
+	i.setCapabilities(capabilities)
+}
+
+func (i *containerInventory) needsNetworkCapabilityProbe() bool {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	return !i.capabilities.NetworkUpdates.Supported
 }
 
 func (i *containerInventory) runConnected(ctx context.Context, runtimeClient containerRuntime) error {
@@ -247,6 +257,9 @@ func (i *containerInventory) runConnected(ctx context.Context, runtimeClient con
 		case <-i.refresh:
 			scheduleRefresh(0)
 		case <-reconcile.C:
+			if i.needsNetworkCapabilityProbe() {
+				i.probeCapabilities(ctx, runtimeClient)
+			}
 			scheduleRefresh(0)
 		case <-debounceChannel:
 			debounceChannel = nil

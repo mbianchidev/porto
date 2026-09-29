@@ -26,8 +26,15 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
 - **Friendly local URLs.** Open projects and managed Kubernetes Services through stable zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
 - **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
-- **Docker and Compose native.** Use the `porto` Docker context for Compose projects and BuildKit multi-platform image builds. Porto's managed engine sets up CPU emulation automatically, without proxying another Docker engine.
+- **Docker, Compose, and Buildx included.** Desktop packages ship a pinned Docker CLI plus Compose and Buildx for the `porto` context. Porto's managed engine sets up CPU emulation automatically, without proxying another Docker engine.
+- **Image layers in the terminal.** Run `porto docker dive IMAGE` with the bundled Dive client to inspect layer contents, file changes, and wasted space.
+- **Local diagnostics and repair.** Run `porto diagnose` or use the Diagnostics page to inspect runtime health, preview a redacted local bundle, and apply confirmed Porto-owned repairs.
 - **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.
+
+See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
+for supported, partial, capability-gated, and explicitly unsupported operations.
+See [image layer inspection](docs/image-inspection.md) for Dive usage and the
+separate local Grype/SBOM roadmap.
 
 ## Quickstart
 

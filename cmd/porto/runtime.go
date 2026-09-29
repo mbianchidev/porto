@@ -85,9 +85,70 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return errors.New("usage: porto docker cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
+	case "cli":
+		if len(args) == 1 {
+			return errors.New("usage: porto docker cli <args...>")
+		}
+		command := exec.Command("docker", args[1:]...)
+		command.Env = os.Environ()
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("run bundled Docker CLI: %w", err)
+		}
+		return nil
+	case "dive":
+		if len(args) == 1 {
+			return errors.New("usage: porto docker dive [--container name] <image> [dive args...]")
+		}
+		endpoint, err := config.DockerEndpoint()
+		if err != nil {
+			return err
+		}
+		environment := process.WithEnvironment(
+			os.Environ(),
+			"DOCKER_HOST="+endpoint,
+			"DOCKER_CONTEXT=",
+		)
+		diveArgs := append([]string(nil), args[1:]...)
+		if diveArgs[0] == "--container" {
+			if len(diveArgs) < 2 || strings.TrimSpace(diveArgs[1]) == "" {
+				return errors.New("usage: porto docker dive --container <name> [dive args...]")
+			}
+			inspect := exec.Command(
+				"docker", "--host", endpoint,
+				"container", "inspect", "--format", "{{.Config.Image}}",
+				diveArgs[1],
+			)
+			inspect.Env = environment
+			output, err := inspect.CombinedOutput()
+			if err != nil {
+				return fmt.Errorf(
+					"resolve image for Porto container %q: %w: %s",
+					diveArgs[1],
+					err,
+					strings.TrimSpace(string(output)),
+				)
+			}
+			image := strings.TrimSpace(string(output))
+			if image == "" {
+				return fmt.Errorf("Porto container %q did not report an image", diveArgs[1])
+			}
+			diveArgs = append([]string{image}, diveArgs[2:]...)
+		}
+		command := exec.Command("dive", diveArgs...)
+		command.Env = environment
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		if err := command.Run(); err != nil {
+			return fmt.Errorf("inspect Porto image layers: %w", err)
+		}
+		return nil
 	case "status":
 		if daemonUp() {
 			return api("GET", "/api/docker/status", nil, os.Stdout)
@@ -175,7 +236,11 @@ func dockerCmd(args []string) error {
 		}
 		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, statePath, *replace)
 		if err != nil {
-			return dockerPrivilegeHint(err)
+			retryArguments := []string{"activate"}
+			if *replace {
+				retryArguments = append(retryArguments, "--replace")
+			}
+			return dockerPrivilegeHint(err, retryArguments...)
 		}
 		return writeOutput(state)
 	case "deactivate":
@@ -190,7 +255,7 @@ func dockerCmd(args []string) error {
 			return err
 		}
 		if err := portodocker.DeactivateEndpoint(statePath); err != nil {
-			return dockerPrivilegeHint(err)
+			return dockerPrivilegeHint(err, "deactivate")
 		}
 		return writeOutput(map[string]string{"status": "deactivated"})
 	case "container":
@@ -658,7 +723,7 @@ func dockerEndpointPaths() (string, string, error) {
 	return socketPath, statePath, nil
 }
 
-func dockerPrivilegeHint(err error) error {
+func dockerPrivilegeHint(err error, arguments ...string) error {
 	message := strings.ToLower(err.Error())
 	if !strings.Contains(message, "permission denied") && !strings.Contains(message, "operation not permitted") {
 		return err
@@ -668,19 +733,16 @@ func dockerPrivilegeHint(err error) error {
 		executable = "porto"
 	}
 	home, _ := config.Dir()
+	displayArguments := make([]string, len(arguments))
+	for index, argument := range arguments {
+		displayArguments[index] = shellDisplay(argument)
+	}
 	return fmt.Errorf("%w; retry with administrator privileges while preserving Porto state: sudo PORTO_HOME=%s %s docker %s",
 		err,
 		shellDisplay(home),
 		shellDisplay(filepath.Clean(executable)),
-		activationVerb(err),
+		strings.Join(displayArguments, " "),
 	)
-}
-
-func activationVerb(err error) string {
-	if strings.Contains(strings.ToLower(err.Error()), "remove") {
-		return "deactivate"
-	}
-	return "activate"
 }
 
 func shellDisplay(value string) string {

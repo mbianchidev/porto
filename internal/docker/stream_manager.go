@@ -110,7 +110,7 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 	return containerAttachDetails{
 		ID:    inspected.ID,
 		TTY:   inspected.Config.TTY,
-		State: inspected.State,
+		State: inspected.State.normalized(),
 	}, nil
 }
 

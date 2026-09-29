@@ -883,7 +883,11 @@ func (w *dockerProcessWriter) Write(data []byte) (int, error) {
 	defer w.mu.Unlock()
 	output := data
 	if !w.tty {
-		output = dockerStreamFrame(w.stream, data)
+		var err error
+		output, err = dockerStreamFrame(w.stream, data)
+		if err != nil {
+			return 0, err
+		}
 	}
 	if _, err := w.connection.Write(output); err != nil {
 		return 0, err

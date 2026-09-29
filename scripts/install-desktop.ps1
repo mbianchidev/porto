@@ -82,6 +82,36 @@ try {
     New-Item -ItemType Directory -Force -Path $BinDirectory | Out-Null
     $Command = '"{0}" %*' -f (Join-Path $InstallRoot "resources\porto.exe")
     $Command | Set-Content -Encoding ASCII (Join-Path $BinDirectory "porto.cmd")
+    $DockerCommandPath = Join-Path $BinDirectory "docker.cmd"
+    $DockerCommand = '"{0}" %*' -f (Join-Path $InstallRoot "resources\runtime\bin\docker.exe")
+    $ExistingDocker = Get-Command docker -ErrorAction SilentlyContinue
+    if ($ExistingDocker -and $ExistingDocker.Source -ne $DockerCommandPath) {
+        Write-Warning "Preserving existing Docker command at $($ExistingDocker.Source); use 'porto docker cli' for Porto's bundled toolchain."
+    }
+    elseif (-not (Test-Path $DockerCommandPath)) {
+        $DockerCommand | Set-Content -Encoding ASCII $DockerCommandPath
+    }
+    elseif ((Get-Content -Raw $DockerCommandPath) -match [regex]::Escape("\resources\runtime\bin\docker.exe")) {
+        $DockerCommand | Set-Content -Encoding ASCII $DockerCommandPath
+    }
+    else {
+        Write-Warning "Preserving existing Docker command at $DockerCommandPath; use 'porto docker cli' for Porto's bundled toolchain."
+    }
+    $DiveCommandPath = Join-Path $BinDirectory "dive.cmd"
+    $DiveCommand = '"{0}" %*' -f (Join-Path $InstallRoot "resources\runtime\bin\dive.exe")
+    $ExistingDive = Get-Command dive -ErrorAction SilentlyContinue
+    if ($ExistingDive -and $ExistingDive.Source -ne $DiveCommandPath) {
+        Write-Warning "Preserving existing Dive command at $($ExistingDive.Source); use 'porto docker dive' for Porto's bundled image inspector."
+    }
+    elseif (-not (Test-Path $DiveCommandPath)) {
+        $DiveCommand | Set-Content -Encoding ASCII $DiveCommandPath
+    }
+    elseif ((Get-Content -Raw $DiveCommandPath) -match [regex]::Escape("\resources\runtime\bin\dive.exe")) {
+        $DiveCommand | Set-Content -Encoding ASCII $DiveCommandPath
+    }
+    else {
+        Write-Warning "Preserving existing Dive command at $DiveCommandPath; use 'porto docker dive' for Porto's bundled image inspector."
+    }
     $UserPath = [Environment]::GetEnvironmentVariable("Path", "User")
     if (($UserPath -split ";") -notcontains $BinDirectory) {
         [Environment]::SetEnvironmentVariable("Path", "$BinDirectory;$UserPath", "User")

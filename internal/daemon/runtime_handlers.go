@@ -30,6 +30,10 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
 	mux.HandleFunc("POST /api/runtime/providers/{provider}/install", s.installRuntimeProvider)
 	mux.HandleFunc("GET /api/activity/resources", s.activityResources)
+	mux.HandleFunc("GET /api/diagnostics", s.diagnosticsReport)
+	mux.HandleFunc("GET /api/diagnostics/bundle/preview", s.diagnosticsBundlePreview)
+	mux.HandleFunc("GET /api/diagnostics/bundle", s.diagnosticsBundle)
+	mux.HandleFunc("POST /api/diagnostics/repair/{action}", s.diagnosticsRepair)
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
 	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
 	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
@@ -47,6 +51,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
 	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
 	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
+	mux.HandleFunc("GET /api/docker/images/{id}/dive", s.requireRuntime("docker", s.dockerImageDiveTerminal))
 	mux.HandleFunc("GET /api/docker/images/{id}", s.requireRuntime("docker", s.dockerImage))
 	mux.HandleFunc("POST /api/docker/images/pull", s.requireRuntime("docker", s.dockerPullImage))
 	mux.HandleFunc("DELETE /api/docker/images/{id}", s.requireRuntime("docker", s.dockerRemoveImage))
@@ -384,7 +389,7 @@ func (s *Server) dockerImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) dockerImage(w http.ResponseWriter, r *http.Request) {
-	value, err := s.docker.InspectImage(r.Context(), r.PathValue("id"))
+	value, err := s.docker.InspectImage(r.Context(), r.PathValue("id"), r.URL.Query().Get("platform"))
 	writeRuntimeResult(w, value, err)
 }
 

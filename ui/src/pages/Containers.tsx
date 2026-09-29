@@ -1,9 +1,10 @@
-import { lazy, Suspense, useState, type FormEvent, type ReactNode } from 'react'
+import { lazy, Suspense, useRef, useState, type FormEvent, type ReactNode } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
+import { DiveTerminal } from '../components/DiveTerminal'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -112,6 +113,7 @@ export function Containers() {
   const [creating, setCreating] = useState(false)
   const [createDraft, setCreateDraft] = useState(EMPTY_CREATE_DRAFT)
   const [containerTab, setContainerTab] = useState('overview')
+  const inspectorTrigger = useRef<HTMLElement | null>(null)
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const containers = useContainerSnapshots(status.data?.enabled ?? false)
@@ -163,6 +165,21 @@ export function Containers() {
     .filter((image) => image.repository && image.repository !== '<none>')
     .map((image) => image.tag && image.tag !== '<none>' ? `${image.repository}:${image.tag}` : image.repository))]
 
+  function openContainer(container: DockerContainer, tab: 'overview' | 'terminal' | 'layers' = 'overview') {
+    if (document.activeElement instanceof HTMLElement && !document.activeElement.closest('.inspector')) {
+      inspectorTrigger.current = document.activeElement
+    }
+    setSelectedID(container.id)
+    setContainerTab(tab)
+  }
+
+  function closeInspector() {
+    setSelectedID(null)
+    requestAnimationFrame(() => {
+      if (inspectorTrigger.current?.isConnected) inspectorTrigger.current.focus()
+    })
+  }
+
   async function createContainer(event: FormEvent<HTMLFormElement>) {
     event.preventDefault()
     const hostPort = Number.parseInt(createDraft.hostPort, 10) || 0
@@ -207,6 +224,7 @@ export function Containers() {
     const active = isActive(container)
     return (
       <>
+        <ActionButton label="Inspect image layers" icon="terminal" onClick={() => openContainer(container, 'layers')} />
         <ActionButton label="Start container" icon="play" disabled={!isStartable(container)} onClick={() => containerAction(container, 'start')} />
         <ActionButton label="Resume container" icon="play" disabled={!paused} onClick={() => containerAction(container, 'unpause')} />
         <ActionButton label="Stop container" icon="stop" disabled={!active} onClick={() => containerAction(container, 'stop')} />
@@ -346,7 +364,7 @@ export function Containers() {
                 project={group.project}
                 containers={group.containers}
                 selectedID={selectedID}
-                onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                onSelect={(container) => openContainer(container)}
                 renderActions={containerActions}
                 key={group.project}
               />
@@ -365,7 +383,7 @@ export function Containers() {
                   getLamp={(container) => lampStateFor(container.state)}
                   getLampLabel={(container) => container.state}
                   selectedKey={selectedID}
-                  onSelect={(container) => { setSelectedID(container.id); setContainerTab('overview') }}
+                  onSelect={(container) => openContainer(container)}
                   ariaLabel="Standalone Docker containers"
                   emptyMessage={containers.error || 'No standalone containers found.'}
                   columns={containerColumns(false)}
@@ -378,11 +396,12 @@ export function Containers() {
         )}
 
         {selected && (
-          <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={() => setSelectedID(null)}>
+          <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={closeInspector}>
             <InspectorTabs
               tabs={[
                 { id: 'overview', label: 'Overview' },
                 { id: 'terminal', label: 'Terminal' },
+                { id: 'layers', label: 'Layers' },
               ]}
               activeID={containerTab}
               onSelect={setContainerTab}
@@ -463,6 +482,7 @@ export function Containers() {
               </>
             )}
             {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
+            {containerTab === 'layers' && <DiveTerminal image={selected.image} />}
           </Inspector>
         )}
       </div>

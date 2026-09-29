@@ -131,8 +131,22 @@ The daemon resolves the dashboard from `$PORTO_UI_DIR`, `ui/dist` in the working
 
 Each target also produces `porto-desktop_<version>_<os>_<arch>`. Desktop
 archives bundle the matching Porto binary, dashboard, icon, `kubectl`, Lima,
-`k9s`, and supported `kind` clients. The app prepends those bundled tools to
+`k9s`, Docker CLI, Compose, Buildx, Dive, and supported `kind` clients. The app prepends those bundled tools to
 the daemon's `PATH`, so they do not need separate installation.
+
+The Docker CLI is rebuilt from the checksum-pinned official `v29.7.2` source
+with one packaged-path patch:
+`scripts/patches/docker-cli-29.7.2-bundled-plugins.patch`. The patch adds the
+adjacent `runtime/docker/cli-plugins` directory as the highest-priority plugin
+location without changing the user's Docker config directory. Compose `v5.5.1`
+and Buildx `v0.37.1` are downloaded from their upstream releases with exact
+per-platform SHA-256 pins. Their licenses/notices, the Docker patch, asset
+names, versions, and digests ship under `runtime/licenses` and
+`runtime/VERSIONS`.
+
+Dive `v0.13.1` is checksum-pinned for every supported desktop architecture.
+Its MIT license and version metadata ship beside the other runtime tools, and
+native packaging smoke tests execute `dive --version`.
 
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch` and

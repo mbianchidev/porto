@@ -37,7 +37,12 @@ import (
 func main() {
 	if err := run(os.Args[1:]); err != nil {
 		fmt.Fprintln(os.Stderr, "porto:", err)
-		os.Exit(1)
+		exitCode := 1
+		var coded interface{ ExitCode() int }
+		if errors.As(err, &coded) && coded.ExitCode() > 0 {
+			exitCode = coded.ExitCode()
+		}
+		os.Exit(exitCode)
 	}
 }
 
@@ -84,6 +89,13 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	}
 	if args[0] == "https" {
 		return httpsAction(args[1:])
+	}
+	if args[0] == "diagnose" || args[0] == "diagnostics" {
+		db, dbErr := openStore()
+		if db != nil {
+			defer db.Close()
+		}
+		return diagnoseCmd(db, dbErr, args[1:])
 	}
 	db, err := openStore()
 	if err != nil {
@@ -687,6 +699,8 @@ Commands:
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
+  porto docker cli <args...>
+  porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker containers|images|builds|networks|volumes
   porto docker context-install|activate|deactivate
@@ -699,5 +713,8 @@ Commands:
   porto kubernetes cluster create|start|stop|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
   porto runtime providers|install <lima|qemu|kind|k9s|k0s>
+  porto diagnose [--json]
+  porto diagnose bundle [--preview] [--output path]
+  porto diagnose repair <action> [--target name] --confirm
   porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/process"
 )
@@ -66,6 +67,24 @@ func (s *Server) dockerContainerTerminal(w http.ResponseWriter, r *http.Request)
 		return
 	}
 	bridgeContainerTerminal(w, r, s.docker, id, shell, queryBool(r, "debug"))
+}
+
+func (s *Server) dockerImageDiveTerminal(w http.ResponseWriter, r *http.Request) {
+	image := strings.TrimSpace(r.PathValue("id"))
+	if image == "" || strings.HasPrefix(image, "-") || strings.ContainsAny(image, "\x00\r\n") {
+		http.Error(w, "invalid Docker image reference", http.StatusBadRequest)
+		return
+	}
+	divePath, err := exec.LookPath("dive")
+	if err != nil {
+		http.Error(w, "Dive is not installed; reinstall Porto's desktop runtime", http.StatusServiceUnavailable)
+		return
+	}
+	if _, err := s.docker.InspectImage(r.Context(), image, ""); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	bridgeDiveTerminal(w, r, divePath, image, s.dockerSocket)
 }
 
 func containerTerminalReady(document json.RawMessage) (bool, error) {
@@ -147,6 +166,18 @@ func k9sTerminalCommand(ctx context.Context, cluster kubernetes.Cluster) *exec.C
 	command.Env = process.WithEnvironment(
 		os.Environ(),
 		"KUBECONFIG="+cluster.KubeconfigPath,
+		"TERM=xterm-256color",
+		"COLORTERM=truecolor",
+	)
+	return command
+}
+
+func diveTerminalCommand(ctx context.Context, divePath, image, socketPath string) *exec.Cmd {
+	command := exec.CommandContext(ctx, divePath, image, "--source", "docker")
+	command.Env = process.WithEnvironment(
+		os.Environ(),
+		"DOCKER_HOST="+portodocker.EndpointURL(socketPath),
+		"DOCKER_CONTEXT=",
 		"TERM=xterm-256color",
 		"COLORTERM=truecolor",
 	)

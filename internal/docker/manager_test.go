@@ -3,6 +3,7 @@ package docker
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -398,6 +399,7 @@ func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
 			!reflect.DeepEqual(command.Args[:3], []string{"shell", "--workdir=/", engineInstanceName}) {
 			return nil, fmt.Errorf("probe depends on the mounted host working directory: %v", command.Args)
 		}
+
 		switch command.Args[len(command.Args)-1] {
 		case `cat "$HOME/.porto-engine-owner"`:
 			return []byte("test-owner\n"), nil
@@ -433,6 +435,31 @@ func TestEngineGuestProbesDoNotEnterHostMounts(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+}
+
+func TestLimaRuntimeHelperReceivesContainerdNamespace(t *testing.T) {
+	var command runtimes.Command
+	runner := &fakeRunner{handler: func(received runtimes.Command) ([]byte, error) {
+		command = received
+		return []byte(`{"cni":true}`), nil
+	}}
+	client := grpcContainerRuntime{
+		lima:      engineInstanceName,
+		namespace: "porto",
+		runner:    runner,
+	}
+
+	if _, err := client.runRuntimeHelper(context.Background(), "probe"); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"shell", "--workdir=/", engineInstanceName, "--", "sh", "-c",
+		`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+		"porto-runtime-helper", "porto", "probe",
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("runtime helper args = %q, want %q", command.Args, want)
+	}
 }
 
 func TestEngineTimeoutIncludesCommandDiagnostics(t *testing.T) {
@@ -495,6 +522,40 @@ func TestEngineOwnershipTimeoutRecoversOwnedGuest(t *testing.T) {
 	}
 }
 
+func TestEngineOwnershipStatusReportsMarkerCollisionWithoutRecovery(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "list porto-engine --json":
+			return []byte(`{"name":"porto-engine","status":"Running"}` + "\n"), nil
+		case `shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`:
+			return []byte("different-owner\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s %v", command.Name, command.Args)
+		}
+	}
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeEngineState(engineState{
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "expected-owner", CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("write engine state: %v", err)
+	}
+
+	status := manager.EngineOwnershipStatus(context.Background())
+	if !status.Configured || !status.Conflict || status.Verified {
+		t.Fatalf("unexpected ownership status: %+v", status)
+	}
+	if !strings.Contains(status.Message, "does not match") {
+		t.Fatalf("ownership collision message = %q", status.Message)
+	}
+	for _, command := range runner.commands {
+		joined := strings.Join(command.Args, " ")
+		if joined == "stop porto-engine" || joined == "start porto-engine" {
+			t.Fatalf("ownership diagnosis changed guest lifecycle: %s", joined)
+		}
+	}
+}
+
 func TestManagerStatusAndInventory(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
@@ -522,8 +583,88 @@ func TestManagerStatusAndInventory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("list images: %v", err)
 	}
-	if len(images) != 1 || images[0].Digest != "sha256:2" {
+	if len(images) != 1 || images[0].Digest != "sha256:2" || images[0].SizeBytes != 42_000_000 {
 		t.Fatalf("unexpected images: %+v", images)
+	}
+}
+
+func TestInspectImageUsesStoredPlatform(t *testing.T) {
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"nerdctl images --digests --no-trunc --format {{json .}}":  []byte(`{"ID":"sha256:index","Repository":"alpine","Tag":"3.22","Digest":"sha256:index","Name":"docker.io/library/alpine:3.22","Platform":"linux/amd64"}` + "\n"),
+			"nerdctl image inspect --platform linux/amd64 alpine:3.22": []byte(`[{"Id":"sha256:config","RepoTags":["alpine:3.22"],"Architecture":"amd64","Os":"linux"}]`),
+		},
+		errors: map[string]error{},
+	}
+
+	document, err := New(runner).InspectImage(context.Background(), "alpine:3.22", "")
+	if err != nil {
+		t.Fatalf("inspect image: %v", err)
+	}
+	var inspected struct {
+		Architecture string `json:"Architecture"`
+		OS           string `json:"Os"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		t.Fatalf("decode image inspect: %v", err)
+	}
+	if inspected.Architecture != "amd64" || inspected.OS != "linux" {
+		t.Fatalf("unexpected image platform: %+v", inspected)
+	}
+}
+
+func TestDockerContextStatusVerifiesNamedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto docker.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"` + endpoint + `"}}}]`,
+			),
+		},
+		errors: map[string]error{},
+	}
+
+	status := New(runner).ContextStatus(context.Background(), socketPath)
+	if !status.Installed || !status.Matches || status.Endpoint != endpoint {
+		t.Fatalf("Docker context status = %+v", status)
+	}
+}
+
+func TestInstallDockerContextVerifiesUpdatedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"` + endpoint + `"}}}]`,
+			),
+			"docker context update porto --docker host=" + endpoint: nil,
+		},
+		errors: map[string]error{},
+	}
+
+	if err := New(runner).InstallContext(context.Background(), socketPath); err != nil {
+		t.Fatalf("install Docker context: %v", err)
+	}
+}
+
+func TestInstallDockerContextRejectsUnchangedEndpoint(t *testing.T) {
+	socketPath := "/tmp/porto.sock"
+	endpoint := EndpointURL(socketPath)
+	runner := &fakeRunner{
+		outputs: map[string][]byte{
+			"docker context inspect porto": []byte(
+				`[{"Name":"porto","Endpoints":{"docker":{"Host":"unix:///tmp/other.sock"}}}]`,
+			),
+			"docker context update porto --docker host=" + endpoint: nil,
+		},
+		errors: map[string]error{},
+	}
+
+	err := New(runner).InstallContext(context.Background(), socketPath)
+	if err == nil || !strings.Contains(err.Error(), "instead of") {
+		t.Fatalf("install Docker context error = %v", err)
 	}
 }
 
@@ -544,6 +685,53 @@ func TestContainerHostnameRejectsUnrepresentableAliases(t *testing.T) {
 	})
 	if err == nil || !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+}
+
+func TestCompatibilityContainerCreationUsesComposeServiceAliasAsHostname(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		for _, expected := range []string{
+			"--network project_default",
+			"--hostname api",
+		} {
+			if !strings.Contains(joined, expected) {
+				return nil, fmt.Errorf("missing %q in %s", expected, joined)
+			}
+		}
+		return []byte("container-id\n"), nil
+	}
+	id, err := New(runner).CreateContainer(context.Background(), CreateContainerRequest{
+		Name:  "project-api-1",
+		Image: "alpine:latest",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api"},
+		}},
+	})
+	if err != nil || id != "container-id" {
+		t.Fatalf("create compatibility container = %q, %v", id, err)
+	}
+}
+
+func TestCompatibilityContainerCreationRejectsExtraAliasesBeforeMutation(t *testing.T) {
+	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
+	_, err := New(runner).CreateContainer(context.Background(), CreateContainerRequest{
+		Name:  "project-api-1",
+		Image: "alpine:latest",
+		Networks: []ContainerNetwork{{
+			Name:    "project_default",
+			Aliases: []string{"project-api-1", "api", "api.internal"},
+		}},
+	})
+	if err == nil || !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("error = %v, want unsupported aliases", err)
+	}
+	runner.mu.Lock()
+	defer runner.mu.Unlock()
+	if len(runner.commands) != 0 {
+		t.Fatalf("unsupported aliases mutated runtime: %+v", runner.commands)
 	}
 }
 

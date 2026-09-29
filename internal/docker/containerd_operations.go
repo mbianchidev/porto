@@ -24,6 +24,7 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/errdefs"
+	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc/codes"
@@ -751,8 +752,8 @@ func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...str
 		command.Name = "limactl"
 		command.Args = []string{
 			"shell", "--workdir=/", r.lima, "--", "sh", "-c",
-			`exec "$HOME/.local/bin/porto-runtime-helper" "$@"`,
-			"porto-runtime-helper",
+			`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+			"porto-runtime-helper", r.namespace,
 		}
 		command.Args = append(command.Args, args...)
 	} else {
@@ -761,6 +762,7 @@ func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...str
 		}
 		command.Name = r.helperPath
 		command.Args = append([]string(nil), args...)
+		command.Env = process.WithEnvironment(os.Environ(), "CONTAINERD_NAMESPACE="+r.namespace)
 	}
 	output, err := r.runner.Run(ctx, command)
 	if err != nil {

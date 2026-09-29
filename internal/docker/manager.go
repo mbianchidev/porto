@@ -69,6 +69,7 @@ type Manager struct {
 	operationsConnector containerOperationsConnector
 	execConnector       execOperationsConnector
 	networkConnector    networkOperationsConnector
+	metricReader        func(context.Context, string) (ContainerMetricSample, error)
 	networkLocks        *containerMutexes
 	containerNameMu     *sync.Mutex
 	registryAuthMu      sync.RWMutex
@@ -96,6 +97,7 @@ func New(runner runtimes.Runner) *Manager {
 			containerNameMu: &sync.Mutex{},
 		}
 		manager.runtimeConnector = manager.connectContainerRuntime
+		manager.metricReader = manager.readContainerMetric
 		return manager
 	}
 	stateDir, _ := config.DockerEngineDir()
@@ -116,6 +118,7 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		containerNameMu: &sync.Mutex{},
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
+	manager.metricReader = manager.readContainerMetric
 	manager.creationConnector = manager.connectContainerCreation
 	manager.operationsConnector = manager.connectContainerOperations
 	manager.execConnector = manager.connectExecOperations
@@ -176,6 +179,79 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 	if version := firstVersionLine(string(output)); version != "" {
 		status.ServerVersion = version
 	}
+	return status
+}
+
+func (m *Manager) BackendInfo(ctx context.Context) (BackendInfo, error) {
+	output, err := m.run(ctx, "inspect Porto container runtime information", "info", "--format", "{{json .}}")
+	if err != nil {
+		return BackendInfo{}, err
+	}
+	var info BackendInfo
+	if err := json.Unmarshal(output, &info); err != nil {
+		return BackendInfo{}, fmt.Errorf("decode Porto container runtime information: %w", err)
+	}
+	return info, nil
+}
+
+func (m *Manager) EngineOwnershipStatus(ctx context.Context) EngineOwnershipStatus {
+	state, err := m.readEngineState()
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return EngineOwnershipStatus{Message: "Porto-managed container engine metadata does not exist"}
+		}
+		return EngineOwnershipStatus{
+			Configured: true,
+			Conflict:   true,
+			Message:    err.Error(),
+		}
+	}
+	status := EngineOwnershipStatus{
+		Configured: true,
+		Mode:       state.Mode,
+		Instance:   state.Instance,
+	}
+	switch state.Mode {
+	case "direct":
+		status.Owned = true
+		status.Verified = true
+		status.Message = "External containerd ownership is controlled by its administrator"
+		return status
+	case "lima":
+		if state.Instance != engineInstanceName || strings.TrimSpace(state.OwnerID) == "" {
+			status.Conflict = true
+			status.Message = "Porto engine ownership metadata is incomplete or targets an unexpected instance"
+			return status
+		}
+	default:
+		status.Conflict = true
+		status.Message = fmt.Sprintf("Porto engine ownership mode %q is invalid", state.Mode)
+		return status
+	}
+	status.Owned = true
+	exists, running, err := m.limaInstanceStatus(ctx)
+	if err != nil {
+		status.Message = err.Error()
+		return status
+	}
+	if !exists {
+		status.Owned = false
+		status.Message = fmt.Sprintf("Porto-owned Lima instance %q is missing", state.Instance)
+		return status
+	}
+	if !running {
+		status.Message = "Porto-owned engine is stopped; the guest ownership marker was not verified"
+		return status
+	}
+	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+		status.Owned = false
+		status.Conflict = strings.Contains(strings.ToLower(err.Error()), "does not match") ||
+			strings.Contains(strings.ToLower(err.Error()), "refusing")
+		status.Message = err.Error()
+		return status
+	}
+	status.Verified = true
+	status.Message = "Porto engine ownership metadata and guest marker match"
 	return status
 }
 
@@ -626,7 +702,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		}
 		return id, err
 	}
-	hostname, err := containerHostname(request)
+	hostname, err := compatibilityContainerHostname(request)
 	if err != nil {
 		return "", err
 	}
@@ -767,21 +843,9 @@ func createdContainerID(output []byte) (string, error) {
 }
 
 func containerHostname(request CreateContainerRequest) (string, error) {
-	aliases := make([]string, 0)
-	seen := make(map[string]struct{})
-	for _, network := range request.Networks {
-		for _, alias := range network.Aliases {
-			if err := validateObjectID(alias); err != nil {
-				return "", fmt.Errorf("network alias: %w", err)
-			}
-			if alias == request.Name {
-				continue
-			}
-			if _, ok := seen[alias]; !ok {
-				seen[alias] = struct{}{}
-				aliases = append(aliases, alias)
-			}
-		}
+	aliases, err := containerAliases(request)
+	if err != nil {
+		return "", err
 	}
 	if request.Hostname != "" {
 		for _, alias := range aliases {
@@ -792,12 +856,62 @@ func containerHostname(request CreateContainerRequest) (string, error) {
 		return request.Hostname, nil
 	}
 	if len(aliases) > 1 {
-		return "", fmt.Errorf("%w: multiple network aliases", ErrUnsupported)
+		return "", fmt.Errorf("%w: multiple network aliases %v", ErrUnsupported, aliases)
 	}
 	if len(aliases) == 1 {
 		return aliases[0], nil
 	}
 	return "", nil
+}
+
+func compatibilityContainerHostname(request CreateContainerRequest) (string, error) {
+	aliases, err := containerAliases(request)
+	if err != nil {
+		return "", err
+	}
+	if request.Hostname != "" {
+		for _, alias := range aliases {
+			if alias != request.Hostname {
+				return "", fmt.Errorf("%w: network aliases with an explicit hostname", ErrUnsupported)
+			}
+		}
+		return request.Hostname, nil
+	}
+	if len(aliases) > 1 {
+		return "", fmt.Errorf(
+			"%w: compatibility runtime supports one network alias, received %v for container name %q and Compose service %q",
+			ErrUnsupported,
+			aliases,
+			request.Name,
+			request.Labels["com.docker.compose.service"],
+		)
+	}
+	if len(aliases) == 1 {
+		return aliases[0], nil
+	}
+	return "", nil
+}
+
+func containerAliases(request CreateContainerRequest) ([]string, error) {
+	aliases := make([]string, 0)
+	seen := make(map[string]struct{})
+	composeRequest := request.Labels["com.docker.compose.project"] != "" &&
+		request.Labels["com.docker.compose.service"] != ""
+	for _, network := range request.Networks {
+		for index, alias := range network.Aliases {
+			if err := validateObjectID(alias); err != nil {
+				return nil, fmt.Errorf("network alias: %w", err)
+			}
+			if alias == request.Name || (composeRequest && index == 0) {
+				continue
+			}
+			if _, ok := seen[alias]; !ok {
+				seen[alias] = struct{}{}
+				aliases = append(aliases, alias)
+			}
+		}
+	}
+	return aliases, nil
 }
 
 func appendHealthcheckArgs(args []string, healthcheck *ContainerHealthcheck) ([]string, error) {
@@ -905,12 +1019,19 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 		return nil, err
 	}
 	return decodeLines(output, func(item map[string]string) Image {
+		sizeBytes, err := resources.ParseBytes(item["Size"])
+		if err != nil {
+			sizeBytes = -1
+		}
 		return Image{
 			ID:         first(item, "ID", "Id"),
+			Name:       item["Name"],
 			Repository: item["Repository"],
 			Tag:        item["Tag"],
 			Digest:     item["Digest"],
+			Platform:   item["Platform"],
 			Size:       item["Size"],
+			SizeBytes:  sizeBytes,
 			CreatedAt:  first(item, "CreatedAt", "CreatedSince", "Created"),
 			Labels:     parseLabels(item["Labels"]),
 		}
@@ -1336,6 +1457,21 @@ func (state containerWaitState) active() bool {
 	return state.Running || state.Status == "running" || state.Status == "paused" || state.Status == "pausing"
 }
 
+func (state containerWaitState) normalized() containerWaitState {
+	if state.Status != "" {
+		return state
+	}
+	switch {
+	case state.Running:
+		state.Status = "running"
+	case state.StartedAt == "" && state.FinishedAt == "":
+		state.Status = "created"
+	default:
+		state.Status = "exited"
+	}
+	return state
+}
+
 func (m *Manager) waitForNextContainerExit(
 	ctx context.Context,
 	id string,
@@ -1386,7 +1522,7 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return containerWaitState{}, fmt.Errorf("decode container wait state: %w", err)
 	}
-	return inspected.State, nil
+	return inspected.State.normalized(), nil
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
@@ -1501,8 +1637,97 @@ func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) 
 	return stats, nil
 }
 
-func (m *Manager) InspectImage(ctx context.Context, id string) (json.RawMessage, error) {
-	return m.inspect(ctx, "image", normalizeNerdctlReference(id))
+func (m *Manager) ContainerMetric(ctx context.Context, id string) (ContainerMetricSample, error) {
+	if m.metricReader == nil {
+		return ContainerMetricSample{}, fmt.Errorf("%w: raw container metrics", ErrUnsupported)
+	}
+	return m.metricReader(ctx, id)
+}
+
+func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample ContainerMetricSample, err error) {
+	if err := validateObjectID(id); err != nil {
+		return ContainerMetricSample{}, err
+	}
+	if m.runtimeConnector == nil {
+		return ContainerMetricSample{}, fmt.Errorf("%w: direct container metrics", ErrUnsupported)
+	}
+	runtimeClient, err := m.runtimeConnector(ctx)
+	if err != nil {
+		return ContainerMetricSample{}, err
+	}
+	defer func() {
+		err = errors.Join(err, runtimeClient.Close())
+	}()
+	provider, ok := runtimeClient.(interface {
+		ContainerMetric(context.Context, string) (ContainerMetricSample, error)
+	})
+	if !ok {
+		return ContainerMetricSample{}, fmt.Errorf("%w: direct container metrics", ErrUnsupported)
+	}
+	return provider.ContainerMetric(ctx, id)
+}
+
+func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
+	normalized := normalizeNerdctlReference(id)
+	if platform == "" {
+		var err error
+		platform, err = m.imagePlatform(ctx, normalized)
+		if err != nil {
+			return nil, err
+		}
+	}
+	options := appendStringFlag(nil, "--platform", platform)
+	return m.inspect(ctx, "image", normalized, options...)
+}
+
+func (m *Manager) imagePlatform(ctx context.Context, id string) (string, error) {
+	images, err := m.Images(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve Porto image platform: %w", err)
+	}
+	for _, image := range images {
+		if imageMatchesIdentifier(image, id) {
+			return image.Platform, nil
+		}
+	}
+	return "", nil
+}
+
+func imageMatchesIdentifier(image Image, id string) bool {
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return false
+	}
+	references := []string{image.Name, image.ID, image.Digest}
+	if image.Repository != "" && image.Tag != "" && image.Tag != "<none>" {
+		references = append(references, image.Repository+":"+image.Tag)
+	}
+	if image.Repository != "" && image.Digest != "" && image.Digest != "<none>" {
+		references = append(references, image.Repository+"@"+image.Digest)
+	}
+	if image.Repository != "" && image.Tag == "latest" {
+		references = append(references, image.Repository)
+	}
+	for _, reference := range references {
+		if id == reference {
+			return true
+		}
+		if strings.HasPrefix(reference, "docker.io/library/") &&
+			id == strings.TrimPrefix(reference, "docker.io/library/") {
+			return true
+		}
+	}
+	digest := strings.TrimPrefix(id, "sha256:")
+	if len(digest) < 12 {
+		return false
+	}
+	for _, candidate := range []string{image.ID, image.Digest} {
+		candidate = strings.TrimPrefix(candidate, "sha256:")
+		if strings.HasPrefix(candidate, digest) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) InspectNetwork(ctx context.Context, id string) (json.RawMessage, error) {
@@ -1572,18 +1797,64 @@ func (m *Manager) PullImageWithAuth(
 func (m *Manager) InstallContext(ctx context.Context, socketPath string) error {
 	endpoint := dockerEndpoint(socketPath)
 	if _, err := m.runDockerCLI(ctx, "inspect Porto Docker context", "context", "inspect", "porto"); err == nil {
-		_, err = m.runDockerCLI(ctx, "update Porto Docker context", "context", "update", "porto", "--docker", "host="+endpoint)
+		if _, err = m.runDockerCLI(ctx, "update Porto Docker context", "context", "update", "porto", "--docker", "host="+endpoint); err != nil {
+			return err
+		}
+	} else if _, err = m.runDockerCLI(ctx, "create Porto Docker context", "context", "create", "porto", "--docker", "host="+endpoint); err != nil {
 		return err
 	}
-	_, err := m.runDockerCLI(ctx, "create Porto Docker context", "context", "create", "porto", "--docker", "host="+endpoint)
-	return err
+	status := m.ContextStatus(ctx, socketPath)
+	if !status.Matches {
+		return fmt.Errorf("verify Porto Docker context: %s", status.Message)
+	}
+	return nil
 }
 
-func (m *Manager) inspect(ctx context.Context, kind, id string) (json.RawMessage, error) {
+func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextStatus {
+	status := ContextStatus{Name: "porto", ExpectedEndpoint: dockerEndpoint(socketPath)}
+	output, err := m.runDockerCLI(ctx, "inspect Porto Docker context", "context", "inspect", "porto")
+	if err != nil {
+		status.Message = err.Error()
+		return status
+	}
+	var documents []struct {
+		Name      string `json:"Name"`
+		Endpoints struct {
+			Docker struct {
+				Host string `json:"Host"`
+			} `json:"docker"`
+		} `json:"Endpoints"`
+	}
+	if err := json.Unmarshal(output, &documents); err != nil || len(documents) != 1 {
+		if err == nil {
+			err = fmt.Errorf("expected one context document, got %d", len(documents))
+		}
+		status.Message = fmt.Sprintf("decode Porto Docker context: %v", err)
+		return status
+	}
+	status.Installed = true
+	status.Endpoint = strings.TrimSpace(documents[0].Endpoints.Docker.Host)
+	status.Matches = status.Endpoint == status.ExpectedEndpoint
+	if status.Matches {
+		status.Message = "Porto Docker context points to Porto"
+	} else {
+		status.Message = fmt.Sprintf(
+			"Porto Docker context points to %q instead of %q",
+			status.Endpoint,
+			status.ExpectedEndpoint,
+		)
+	}
+	return status
+}
+
+func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
-	output, err := m.run(ctx, "inspect Porto "+kind, kind, "inspect", id)
+	args := []string{kind, "inspect"}
+	args = append(args, options...)
+	args = append(args, id)
+	output, err := m.run(ctx, "inspect Porto "+kind, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1782,18 +2053,27 @@ func (m *Manager) runBackendStreamingInput(
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
+	return m.runStreamingCommand(ctx, timeout, action, runtimes.Command{
+		Name:        backend.name,
+		Args:        append(append([]string(nil), backend.prefix...), args...),
+		Stdin:       stdin,
+		StdinReader: stdinReader,
+	}, emit)
+}
+
+func (m *Manager) runStreamingCommand(
+	ctx context.Context,
+	timeout time.Duration,
+	action string,
+	command runtimes.Command,
+	emit func(runtimes.OutputChunk) error,
+) error {
 	runner, ok := m.runner.(streamingRunner)
 	if !ok {
 		return fmt.Errorf("%w: streaming stdout and stderr capture", ErrUnsupported)
 	}
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	command := runtimes.Command{
-		Name:        backend.name,
-		Args:        append(append([]string(nil), backend.prefix...), args...),
-		Stdin:       stdin,
-		StdinReader: stdinReader,
-	}
 	output, runErr := runner.RunStreaming(commandContext, command, emit)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return runtimes.CommandError(

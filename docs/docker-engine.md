@@ -168,18 +168,42 @@ porto docker engine-remove --confirm
 
 `engine-remove --confirm` deletes the Porto-owned Lima VM and every container resource stored in it. It does not delete a system containerd installation used through local `nerdctl`.
 
-## Supported Docker API
+## Docker API compatibility matrix
 
 Porto accepts versioned and unversioned Docker Engine paths. It currently advertises API 1.47 with minimum API 1.41.
 
-| Resource | Supported operations |
-| --- | --- |
-| System | `/_ping`, `/version`, `/info` |
-| Containers | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, resource and restart-policy update, remove, named checkpoint, capability-gated restore |
-| Images | list, inspect, pull, save, remove |
-| Networks | list, create, inspect, connect, disconnect, remove |
-| Volumes | list, create, inspect, remove |
-| Builds | Docker build API plus BuildKit `/grpc` and `/session` upgrades |
+| Resource | Status | Operations and boundaries |
+| --- | --- | --- |
+| System | Supported | `/_ping`, `/version`, `/info`, and container lifecycle `/events` |
+| Containers | Supported | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, filesystem export, one-shot/streaming stats, resource and restart-policy update, remove, named checkpoint |
+| Container mounts | Partial | structured bind, local volume, and tmpfs mounts with read-only, supported propagation, `nocopy`, size, mode, and basic tmpfs flags; unsupported recursive bind, subpath, driver, label, and security semantics fail before creation |
+| Container restore | Capability-gated | restore is advertised only when the owned backend reports CRIU support |
+| Images | Supported | list, inspect, pull, save, archive load, request-body rootfs import, container commit, tag, authenticated push, and remove |
+| Networks | Supported | list, create, inspect, connect, disconnect, remove |
+| Volumes | Supported | list, create, inspect, remove |
+| Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, and registry push |
+| Orchestration | Unsupported | Swarm services/tasks/nodes, generic engine plugins, and Windows containers return explicit errors |
+
+Docker events replay only the latest 200 retained container lifecycle events
+when `since` is supplied. The stream supports `type`, `event`, `container`,
+`image`, `label`, and `scope` filters, honors `since`/`until`, uses a one-slot
+latest-snapshot buffer, and unsubscribes immediately when the client disconnects.
+Image, network, namespace, and snapshot events still drive reconciliation but
+are not exposed as fabricated Docker resource events.
+
+Container stats use raw containerd cgroup v1/v2 counters. CPU, memory, PID,
+network, and block-I/O sections are emitted only when the backend reports those
+measurements; Porto does not replace unavailable counters with invented zeroes.
+Legacy compatibility-owned containers return an explicit capability error when
+raw task metrics are unavailable.
+
+End-to-end coverage exercises the bundled Docker CLI, Compose project
+lifecycle, Buildx build/load, image archive load/save, tag/push through a
+disposable registry, exec/TTY, attach, and KinD-required privileged operations.
+Dev Containers and Testcontainers can use the local Porto socket for the
+operations marked supported above; Porto does not claim generic drop-in
+compatibility for remote TCP, Swarm, system prune/disk-usage APIs, remote-URL
+imports, extra custom network aliases, or other operations listed as unsupported.
 
 The common detached lifecycle works through standard Docker clients:
 
@@ -207,7 +231,7 @@ loopback-only published port and an optional shell health command.
 
 Container creation supports image, command, entrypoint, environment, labels,
 working directory, user, hostname, stop behavior, healthchecks, `--volume`
-bind/volume mappings, published ports, network mode, restart policy, TTY,
+and structured bind/volume/tmpfs mappings, published ports, network mode, restart policy, TTY,
 stdin, and automatic removal. Requests that contain only directly supported
 resources use containerd without invoking `nerdctl`; other accepted requests
 preflight to the compatibility path.
@@ -287,6 +311,15 @@ gain multi-platform support without recreating the VM.
 Porto also enables packaged 32-bit ARM/x86 handlers that distributions omit
 because they assume native compatibility; Apple Silicon cannot execute
 32-bit ARM binaries natively.
+
+`linux/amd64` is supported on ARM64 hosts. Porto builds and runs AMD64
+containers through QEMU/binfmt, and `uname -m` inside the container reports
+`x86_64`. Image inspect selects the platform stored for the local image so
+Compose validates AMD64 images correctly, while attached starts normalize
+containerd's empty pre-start status before the Docker hijack handshake. An
+image-inspect JSON error or failed stream upgrade is therefore a Docker API
+compatibility defect, not evidence that AMD64 emulation is unavailable.
+
 The first setup needs package-repository access; subsequent launches reuse the
 installed packages and repair missing or disabled registrations without
 downloading them again. Provisioning failures are reported instead of claiming
@@ -372,14 +405,18 @@ Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupporte
 
 Not implemented:
 
-- selecting only one log output stream and structured `--mount` requests; these return 501 instead of changing semantics
+- selecting only one log output stream; unsupported mount propagation,
+  recursive bind, volume subpath/driver/label, and advanced tmpfs options return
+  501 before resources are created
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort, and Porto-owned raw log files cannot synthesize per-line timestamps
-- attach with historical logs and streaming stats through Docker clients
-- build history, commit, import, export, load, and save through the legacy Docker API
+- attach with historical logs
+- remote-URL rootfs import; request-body import, container commit/export, and image save/load use Docker-compatible endpoints
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
-- the Docker Engine-compatible `/events` endpoint, system prune, and system disk-usage details; the dashboard uses Porto's internal revisioned SSE endpoint instead
+- system prune and system disk-usage details
 - namespace overrides beyond KinD's host/private modes, combined resource and restart-policy updates, and resource limits beyond CPU/memory container updates
+- more than the standard Compose container-name/service-name network alias pair;
+  extra custom aliases fail before container creation
 - remote TCP/TLS exposure and Windows containers
 
 The Porto dashboard's existing container exec endpoint is separate from the
@@ -403,16 +440,24 @@ daemon.
 
 The Unix socket is created with mode `0600` and removed during graceful shutdown. A stale socket is replaced only when it is a Unix socket; Porto refuses to replace a regular file or directory.
 
-To expose Porto at the canonical Unix path:
+Porto installs a named `porto` Docker context automatically. Select it for the
+current user with:
 
 ```sh
-porto docker activate
+docker context use porto
 ```
 
-Porto never replaces a non-symlink `/var/run/docker.sock`. Replacing another runtime's symlink requires `--replace`; Porto records the previous target and restores it on:
+To expose Porto at the canonical Unix path for tools that ignore contexts, use
+`porto docker activate`. Porto never replaces a non-symlink
+`/var/run/docker.sock`. Replacing another runtime's symlink requires
+`--replace`; Porto records the previous target and restores it on:
 
 ```sh
 porto docker deactivate
 ```
+
+See [Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
+for administrator retries, verification commands, restoration, and Windows
+behavior.
 
 Access to the Porto Docker socket grants control over containers and host-mounted files. Treat it as host-administrator access.
