@@ -111,19 +111,34 @@ function installerCommand({
 
 async function waitForUpdateHelperReady(child, readyFile, {
   timeoutMs = UPDATE_HELPER_READY_TIMEOUT,
+  errorFile = '',
   existsImpl = fs.existsSync,
+  readFileImpl = fs.readFileSync,
   delayImpl = delay,
   nowImpl = Date.now,
 } = {}) {
+  const helperError = () => {
+    if (errorFile === '') return ''
+    try {
+      return readFileImpl(errorFile, 'utf8').trim()
+    } catch (error) {
+      if (error.code === 'ENOENT') return ''
+      throw error
+    }
+  }
   const deadline = nowImpl() + timeoutMs
   while (nowImpl() < deadline) {
     if (existsImpl(readyFile)) return
+    const message = helperError()
+    if (message !== '') throw new Error(message)
     if (child.exitCode != null || child.signalCode != null) {
       const outcome = child.exitCode != null ? `code ${child.exitCode}` : `signal ${child.signalCode}`
       throw new Error(`Porto update helper exited before becoming ready with ${outcome}`)
     }
     await delayImpl(50)
   }
+  const message = helperError()
+  if (message !== '') throw new Error(message)
   throw new Error(`Porto update helper did not become ready within ${timeoutMs / 1000}s`)
 }
 
@@ -207,15 +222,17 @@ async function launchDownloadedUpdate({
   })
   if (platform === 'win32') {
     try {
-      await waitForUpdateHelperReady(child, readyFile)
+      await waitForUpdateHelperReady(child, readyFile, { errorFile })
     } catch (error) {
-      try {
-        child.kill()
-      } catch (killError) {
-        throw new Error(
-          `${error.message}; unable to stop failed update helper: ${killError.message}`,
-          { cause: error },
-        )
+      if (child.exitCode == null && child.signalCode == null) {
+        try {
+          child.kill()
+        } catch (killError) {
+          throw new Error(
+            `${error.message}; unable to stop failed update helper: ${killError.message}`,
+            { cause: error },
+          )
+        }
       }
       throw error
     }

@@ -16,3 +16,13 @@ test('makes the Windows desktop shortcut an explicit installer choice', () => {
   assert.match(installer, /CreateShortCut "\$newDesktopLink"/)
   assert.match(installer, /\$\{IfNot\} \$\{isKeepShortcuts\}/)
 })
+
+test('preflights locked runtimes and marks silent installs as updates', () => {
+  const updater = fs.readFileSync(path.join(__dirname, 'apply-update.ps1'), 'utf8')
+  const blockerCheck = updater.indexOf('Stop running Porto VMs and Kubernetes clusters before updating')
+  const readySignal = updater.indexOf('WriteAllText($ReadyFile')
+
+  assert.ok(blockerCheck >= 0)
+  assert.ok(readySignal > blockerCheck)
+  assert.match(updater, /-ArgumentList "--updated \/S \/D=\$InstallDirectory"/)
+})

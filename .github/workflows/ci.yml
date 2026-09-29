@@ -218,7 +218,7 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: macos-latest
@@ -360,13 +360,73 @@ jobs:
           finally {
             Remove-Item Env:PORTO_TEST_DAEMON
           }
+          $scriptPath = (Resolve-Path './ui/electron/apply-update.ps1').Path
+          $blockedUpdatePackage = Join-Path $env:RUNNER_TEMP 'Porto blocked update package.exe'
+          $blockedUpdateError = Join-Path $env:RUNNER_TEMP 'Porto blocked update error.txt'
+          $blockedUpdateReady = Join-Path $env:RUNNER_TEMP 'Porto blocked update ready.txt'
+          $blockedUpdateProceed = Join-Path $env:RUNNER_TEMP 'Porto blocked update proceed.txt'
+          Copy-Item $installer.FullName $blockedUpdatePackage
+          Remove-Item $blockedUpdateError, $blockedUpdateReady, $blockedUpdateProceed -Force -ErrorAction SilentlyContinue
+          $qemuBlocker = Start-Process `
+            -FilePath $qemuSystem `
+            -ArgumentList '-machine none -nodefaults -display none -monitor none -serial none -S' `
+            -PassThru `
+            -WindowStyle Hidden
+          try {
+            Start-Sleep -Milliseconds 500
+            if ($qemuBlocker.HasExited) {
+              throw "QEMU update blocker exited with code $($qemuBlocker.ExitCode)."
+            }
+            $blockedUpdateArguments = @(
+              '-NoProfile',
+              '-NonInteractive',
+              '-ExecutionPolicy', 'Bypass',
+              '-File', "`"$scriptPath`"",
+              '-ParentPid', '2147483647',
+              '-PackagePath', "`"$blockedUpdatePackage`"",
+              '-InstallDirectory', "`"$installRoot`"",
+              '-ExecutablePath', "`"$(Join-Path $installRoot 'Porto.exe')`"",
+              '-ErrorFile', "`"$blockedUpdateError`"",
+              '-ReadyFile', "`"$blockedUpdateReady`"",
+              '-ProceedFile', "`"$blockedUpdateProceed`"",
+              '-SkipRestart'
+            )
+            $blockedUpdate = Start-Process powershell.exe -ArgumentList $blockedUpdateArguments -PassThru -WindowStyle Hidden
+            $blockedUpdate.WaitForExit()
+            if ($blockedUpdate.ExitCode -eq 0) {
+              throw 'Update helper accepted a running QEMU workload.'
+            }
+            if (Test-Path $blockedUpdateReady) {
+              throw 'Update helper signaled readiness before rejecting a running QEMU workload.'
+            }
+            if (-not (Test-Path $blockedUpdateError)) {
+              throw 'Update helper did not report the blocking QEMU workload.'
+            }
+            $blockedUpdateMessage = Get-Content -Raw $blockedUpdateError
+            if ($blockedUpdateMessage -notmatch 'Stop running Porto VMs and Kubernetes clusters before updating') {
+              throw "Unexpected QEMU blocker error: $blockedUpdateMessage"
+            }
+            if ($qemuBlocker.HasExited) {
+              throw 'Update helper terminated the running QEMU workload.'
+            }
+          }
+          finally {
+            Stop-Process -Id $qemuBlocker.Id -Force -ErrorAction SilentlyContinue
+            $qemuBlocker.WaitForExit()
+            @(
+              $blockedUpdatePackage
+              "$blockedUpdatePackage.install.log"
+              $blockedUpdateError
+              $blockedUpdateReady
+              $blockedUpdateProceed
+            ) | Remove-Item -Force -ErrorAction SilentlyContinue
+          }
           $updatePackage = Join-Path $env:RUNNER_TEMP 'Porto update package.exe'
           $updateError = Join-Path $env:RUNNER_TEMP 'Porto update error.txt'
           $updateReady = Join-Path $env:RUNNER_TEMP 'Porto update ready.txt'
           $updateProceed = Join-Path $env:RUNNER_TEMP 'Porto update proceed.txt'
           Copy-Item $installer.FullName $updatePackage
           Remove-Item $updateReady, $updateProceed -Force -ErrorAction SilentlyContinue
-          $scriptPath = (Resolve-Path './ui/electron/apply-update.ps1').Path
           $updateArguments = @(
             '-NoProfile',
             '-NonInteractive',

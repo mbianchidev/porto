@@ -131,6 +131,27 @@ test('rejects a Windows update helper that exits or times out before readiness',
   assert.equal(UPDATE_HELPER_READY_TIMEOUT, 15 * 1000)
 })
 
+test('surfaces a Windows update helper error before Porto exits', async () => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-update-error-'))
+  const errorFile = path.join(directory, 'install-error.txt')
+  fs.writeFileSync(
+    errorFile,
+    'Stop running Porto VMs and Kubernetes clusters before updating.\n',
+  )
+
+  try {
+    await assert.rejects(
+      waitForUpdateHelperReady({ exitCode: null, signalCode: null }, 'ready', {
+        errorFile,
+        existsImpl: () => false,
+      }),
+      /Stop running Porto VMs and Kubernetes clusters before updating/,
+    )
+  } finally {
+    fs.rmSync(directory, { recursive: true, force: true })
+  }
+})
+
 test('stages a detached installer helper beside a verified update', async () => {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-update-install-'))
   const installDirectory = path.join(directory, 'installed')

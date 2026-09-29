@@ -157,6 +157,20 @@ If Porto was copied into an administrator-owned directory, install the
 downloaded update manually or move Porto to a user-writable application
 directory.
 
+Windows Porto 1.2.13 and earlier can exit before their detached update helper is
+ready, so those builds cannot reliably repair themselves in place. Stop active
+Porto VMs and Kubernetes clusters, then run the verified installer once:
+
+```powershell
+irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+```
+
+Porto 1.2.14 and later wait for the helper to signal readiness before exiting.
+The current updater also completes its locked-runtime preflight first. If a
+bundled QEMU process still has the installation open, Porto keeps the desktop
+running and reports the blocking workload instead of disappearing before the
+installer starts.
+
 macOS DMGs still need Developer ID signing/notarization for warning-free
 launches, and Windows installers may show SmartScreen until releases are
 signed. Porto provides its own Docker-compatible API, containerd backend,
