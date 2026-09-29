@@ -36,7 +36,7 @@ destination="$(cd "$destination" && pwd -P)"
 download() {
   local url="$1"
   local output="$2"
-  curl --fail --location --retry 4 --retry-all-errors --silent --show-error "$url" --output "$output"
+  bash "$script_directory/download-file.sh" "$url" "$output"
 }
 
 sha256_file() {

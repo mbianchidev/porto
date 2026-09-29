@@ -166,6 +166,7 @@ jobs:
         if: matrix.node == '24'
         working-directory: ${{ github.workspace }}
         run: |
+          bash -n scripts/download-file.sh
           bash -n scripts/bundle-desktop-runtime.sh
           bash -n scripts/package-desktop-installer.sh
           sh -n scripts/install-desktop.sh
