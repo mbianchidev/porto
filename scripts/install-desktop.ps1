@@ -89,7 +89,7 @@ try {
             Start-Sleep -Milliseconds 100
         }
         if ($Remaining) {
-            throw "Porto is still running from $InstallRoot: $(Format-PortoProcesses $Remaining). Close it and retry the installation."
+            throw "Porto is still running from ${InstallRoot}: $(Format-PortoProcesses $Remaining). Close it and retry the installation."
         }
     }
 
