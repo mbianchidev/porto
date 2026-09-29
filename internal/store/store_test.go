@@ -43,7 +43,8 @@ func TestRuntimeFeatureSettingsDefaultDockerOnAndRoundTrip(t *testing.T) {
 		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
 		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
 		!settings.TerminalCursorBlink ||
-		settings.TerminalScrollback != app.DefaultTerminalScrollback {
+		settings.TerminalScrollback != app.DefaultTerminalScrollback ||
+		settings.LogRetentionDays != app.DefaultLogRetentionDays {
 		t.Fatalf("unexpected experience defaults: %+v", settings)
 	}
 	settings.KubernetesEnabled = true
@@ -184,6 +185,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		TerminalLineHeight:  1.5,
 		TerminalCursorBlink: false,
 		TerminalScrollback:  20000,
+		LogRetentionDays:    30,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
 		t.Fatalf("save settings: %v", err)
@@ -283,7 +285,8 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
 		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
 		!settings.TerminalCursorBlink ||
-		settings.TerminalScrollback != app.DefaultTerminalScrollback {
+		settings.TerminalScrollback != app.DefaultTerminalScrollback ||
+		settings.LogRetentionDays != app.DefaultLogRetentionDays {
 		t.Fatalf("legacy settings did not receive experience defaults: %+v", settings)
 	}
 }

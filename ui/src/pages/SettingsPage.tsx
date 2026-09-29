@@ -15,8 +15,15 @@ const RUNTIME_LABELS: Record<RuntimeFeatureName, string> = {
   vms: 'Virtual machines',
 }
 
+const DEFAULT_LOG_RETENTION_DAYS = 7
+
 function editableSettings(settings: Settings | null): Settings | null {
-  return settings ? { ...settings, dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false, ...normalizeExperiencePreferences(settings) } : null
+  return settings ? {
+    ...settings,
+    dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false,
+    logRetentionDays: settings.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS,
+    ...normalizeExperiencePreferences(settings),
+  } : null
 }
 
 export function SettingsPage({
@@ -64,7 +71,11 @@ export function SettingsPage({
   const [saving, setSaving] = useState(false)
   const mutationPending = useRef(false)
   const draftDisabled = !draft || saving
-  const saveDisabled = draftDisabled || runtimeBusy !== null
+  const logRetentionValid = draft !== null &&
+    Number.isInteger(draft.logRetentionDays) &&
+    draft.logRetentionDays >= 1 &&
+    draft.logRetentionDays <= 365
+  const saveDisabled = draftDisabled || runtimeBusy !== null || !logRetentionValid
 
   // Sync editable draft state whenever the loaded/saved settings change, following
   // React's "adjust state during render" pattern instead of an effect so the
@@ -281,6 +292,43 @@ export function SettingsPage({
       </section>
 
       <DesktopBehaviorSettings />
+
+      <section className="hygiene" aria-labelledby="diagnostic-log-settings-title">
+        <div className="hygieneIntro">
+          <h2 id="diagnostic-log-settings-title">Keep diagnostics bounded.</h2>
+          <p>Porto rotates the shared desktop and daemon log each day and compresses completed days as ZIP archives.</p>
+        </div>
+        <div className="hygieneControls">
+          <label className="settingsField">
+            <span>Keep diagnostic logs for</span>
+            <input
+              type="number"
+              min={1}
+              max={365}
+              step={1}
+              value={draft?.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS}
+              disabled={draftDisabled}
+              aria-invalid={draft !== null && !logRetentionValid}
+              onChange={(event) => {
+                if (Number.isInteger(event.currentTarget.valueAsNumber)) {
+                  updateDraft('logRetentionDays', event.currentTarget.valueAsNumber)
+                }
+              }}
+            />
+            <small>
+              {draft !== null && !logRetentionValid
+                ? 'Enter a whole number from 1 to 365.'
+                : 'Calendar days, including today. Archives older than this are deleted automatically.'}
+            </small>
+          </label>
+          <div className="settingsActions">
+            <button type="button" onClick={() => updateDraft('logRetentionDays', DEFAULT_LOG_RETENTION_DAYS)} disabled={draftDisabled}>
+              Reset to 7 days
+            </button>
+            <button type="button" onClick={save} disabled={saveDisabled}>Save log retention</button>
+          </div>
+        </div>
+      </section>
 
       <section className="hygiene" aria-labelledby="branch-hygiene-title">
         <div className="hygieneIntro">
