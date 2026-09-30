@@ -17,17 +17,27 @@ import (
 )
 
 type Descriptor struct {
-	Resource    datafiles.Resource `json:"resource"`
-	Address     string             `json:"address,omitempty"`
-	Namespace   string             `json:"namespace,omitempty"`
-	RootPath    string             `json:"rootPath,omitempty"`
-	Snapshotter string             `json:"snapshotter,omitempty"`
-	SnapshotKey string             `json:"snapshotKey,omitempty"`
-	PID         uint32             `json:"pid,omitempty"`
-	Mounts      []specs.Mount      `json:"mounts,omitempty"`
-	Display     []datafiles.Mount  `json:"display,omitempty"`
-	Owner       string             `json:"owner,omitempty"`
-	Platform    string             `json:"platform,omitempty"`
+	Resource     datafiles.Resource `json:"resource"`
+	Address      string             `json:"address,omitempty"`
+	Namespace    string             `json:"namespace,omitempty"`
+	RootPath     string             `json:"rootPath,omitempty"`
+	Snapshotter  string             `json:"snapshotter,omitempty"`
+	SnapshotKey  string             `json:"snapshotKey,omitempty"`
+	PID          uint32             `json:"pid,omitempty"`
+	Mounts       []specs.Mount      `json:"mounts,omitempty"`
+	Display      []datafiles.Mount  `json:"display,omitempty"`
+	Owner        string             `json:"owner,omitempty"`
+	Platform     string             `json:"platform,omitempty"`
+	UIDMap       []IDMap            `json:"uidMap,omitempty"`
+	GIDMap       []IDMap            `json:"gidMap,omitempty"`
+	RuntimePID   int32              `json:"runtimePid,omitempty"`
+	NamespacePID int32              `json:"namespacePid,omitempty"`
+}
+
+type IDMap struct {
+	Namespace int64 `json:"namespace"`
+	Host      int64 `json:"host"`
+	Size      int64 `json:"size"`
 }
 
 type Envelope struct {
@@ -36,13 +46,14 @@ type Envelope struct {
 }
 
 type Attachment struct {
-	Token       string             `json:"token"`
-	Path        string             `json:"path"`
-	Resource    datafiles.Resource `json:"resource"`
-	Identity    string             `json:"identity"`
-	ReadOnly    bool               `json:"readOnly"`
-	Snapshotter string             `json:"snapshotter,omitempty"`
-	SnapshotKey string             `json:"snapshotKey,omitempty"`
+	Token        string             `json:"token"`
+	Path         string             `json:"path"`
+	Resource     datafiles.Resource `json:"resource"`
+	Identity     string             `json:"identity"`
+	ReadOnly     bool               `json:"readOnly"`
+	Snapshotter  string             `json:"snapshotter,omitempty"`
+	SnapshotKey  string             `json:"snapshotKey,omitempty"`
+	NamespacePID int32              `json:"namespacePid,omitempty"`
 }
 
 func Run(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -60,21 +71,28 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	if envelope.Descriptor.Resource.ID == "" || envelope.Request.Identity != envelope.Descriptor.Resource.Fingerprint() {
 		return datafiles.ErrConflict
 	}
+	descriptor, err := resolveOwnership(envelope.Descriptor)
+	if err != nil {
+		return err
+	}
+	if handled, err := dispatchRuntimeNamespace(ctx, descriptor, envelope.Request, reader, output); handled {
+		return err
+	}
 	switch envelope.Request.Action {
 	case "attach":
-		attachment, err := attach(ctx, envelope.Descriptor, envelope.Request.Writable)
+		attachment, err := attach(ctx, descriptor, envelope.Request.Writable)
 		if err != nil {
 			return err
 		}
 		return json.NewEncoder(output).Encode(attachment)
 	case "detach":
-		if err := detach(ctx, envelope.Descriptor, envelope.Request.Token); err != nil {
+		if err := detach(ctx, descriptor, envelope.Request.Token); err != nil {
 			return err
 		}
 		return json.NewEncoder(output).Encode(map[string]bool{"detached": true})
 	default:
 		readOnly := envelope.Request.Action != "write" && envelope.Request.Action != "delete"
-		return withDirectory(ctx, envelope.Descriptor, readOnly, func(descriptor Descriptor) error {
+		return withDirectory(ctx, descriptor, readOnly, func(descriptor Descriptor) error {
 			return ExecuteDirectory(ctx, descriptor, envelope.Request, reader, output)
 		})
 	}
@@ -104,6 +122,13 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		var listing datafiles.Listing
 		listing, err = datafiles.List(ctx, descriptor.RootPath, request.Path, descriptor.Resource)
 		listing.ReadOnly, listing.Mounts = readOnly, descriptor.Display
+		for index := range listing.Entries {
+			entry := &listing.Entries[index]
+			entry.UID, entry.GID, err = descriptor.namespaceOwner(entry.UID, entry.GID)
+			if err != nil {
+				return err
+			}
+		}
 		if descriptor.Resource.Kind == "container" {
 			listing.Message = "Container writable layer; mounted volumes and bind mounts are listed separately. Absolute or escaping symlinks are not traversed."
 		}
@@ -117,7 +142,11 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		if readErr != nil {
 			return readErr
 		}
-		err = datafiles.Write(ctx, descriptor.RootPath, request.Path, content, request.SHA256)
+		uid, gid, ownerErr := descriptor.hostOwner(0, 0)
+		if ownerErr != nil {
+			return ownerErr
+		}
+		err = datafiles.WriteOwned(ctx, descriptor.RootPath, request.Path, content, request.SHA256, uid, gid)
 		result = map[string]bool{"written": err == nil}
 	case "delete":
 		if !request.Confirm {
@@ -126,10 +155,10 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		err = datafiles.Delete(ctx, descriptor.RootPath, request.Path, request.SHA256)
 		result = map[string]bool{"deleted": err == nil}
 	case "export":
-		_, err := datafiles.Export(ctx, output, descriptor.RootPath, descriptor.Resource)
+		_, err := datafiles.ExportWithOwners(ctx, output, descriptor.RootPath, descriptor.Resource, descriptor.namespaceOwner)
 		return err
 	case "manifest":
-		result, err = datafiles.Export(ctx, io.Discard, descriptor.RootPath, descriptor.Resource)
+		result, err = datafiles.ExportWithOwners(ctx, io.Discard, descriptor.RootPath, descriptor.Resource, descriptor.namespaceOwner)
 	case "usage":
 		logical, allocated, usageErr := datafiles.DiskUsage(ctx, descriptor.RootPath)
 		result, err = map[string]any{"logicalBytes": logical, "allocatedBytes": allocated}, usageErr
@@ -174,7 +203,7 @@ func restoreVolume(ctx context.Context, descriptor Descriptor, request datafiles
 				if err := ensureVolumeIdle(ctx, descriptor); err != nil {
 					return err
 				}
-				manifest, err := datafiles.Export(ctx, io.Discard, descriptor.RootPath, descriptor.Resource)
+				manifest, err := datafiles.ExportWithOwners(ctx, io.Discard, descriptor.RootPath, descriptor.Resource, descriptor.namespaceOwner)
 				if err != nil {
 					return err
 				}
@@ -201,6 +230,7 @@ func restoreVolume(ctx context.Context, descriptor Descriptor, request datafiles
 	return datafiles.ReplaceDirectory(ctx, descriptor.RootPath, func(stage string) error {
 		return datafiles.Restore(ctx, file, stage, datafiles.RestoreOptions{
 			PreserveOwnership: true, AvailableBytes: datafiles.AvailableSpace,
+			MapOwner: descriptor.hostOwner,
 		})
 	}, func() error { return ensureVolumeIdle(ctx, descriptor) })
 }

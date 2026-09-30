@@ -36,6 +36,7 @@ import (
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/nativefiles"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
@@ -121,6 +122,7 @@ type Server struct {
 	dataDone           map[int64]chan struct{}
 	dataUnstored       map[int64]*dataops.Operation
 	dataExecutor       func(context.Context, dataops.Operation) (dataops.Result, error)
+	nativeFiles        *nativefiles.Manager
 }
 
 var (
@@ -207,9 +209,14 @@ func New(st *store.Store, ui fs.FS) *Server {
 		identityErr:    identityErr,
 		registryVault:  registries.NewVault(),
 	}
+	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
+	server.nativeFiles = nativefiles.New(nativeRoot, runner)
+	dockerManager.SetNativeFilesGuard(server.nativeFiles.Guard)
+	dockerManager.SetNativeFilesClose(server.nativeFiles.Close)
 	dockerManager.SetRegistryAuthResolver(server.registryAuthForImage)
 	dockerManager.SetManagedContainerGuard(clusterProvisioner.ProtectContainerRemoval)
 	dockerManager.SetStorageReporter(server.recordDockerStorageOperation)
+	dockerManager.SetMigrationVolumeLedger(st.RecordMigratedVolume, st.KnownMigratedVolume)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
 	return server
 }
@@ -307,6 +314,14 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.store.RecoverDataOperations(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("recover interrupted data operations: %w", err)
 	}
+	if s.nativeFiles != nil {
+		recovery, cancelRecovery := context.WithTimeout(ctx, 30*time.Second)
+		recoveryErr := s.nativeFiles.Recover(recovery, s.docker.ReleaseNativeRecord)
+		cancelRecovery()
+		if recoveryErr != nil {
+			log.Printf("recover native filesystem attachments: %v; failed detach records remain visible", recoveryErr)
+		}
+	}
 	go func() {
 		if err := router.Serve(routerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
@@ -321,6 +336,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.certificateRenewalLoop(ctx)
 	go s.kubernetesRouteLoop(ctx)
 	go s.dockerCleanupLoop(ctx)
+	go s.nativeFiles.Monitor(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
 	log.Printf(
@@ -365,6 +381,11 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	}
 	if err := s.stopDockerCleanup(cleanupContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
+	}
+	if s.nativeFiles != nil {
+		if err := s.nativeFiles.Close(cleanupContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
 	}
 	cancelCleanup()
 	httpContext, cancelHTTP := context.WithTimeout(context.Background(), httpShutdownTimeout)

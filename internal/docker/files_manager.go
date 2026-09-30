@@ -22,6 +22,8 @@ import (
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 func (m *Manager) FileDescriptor(ctx context.Context, kind, name string) (descriptor runtimefiles.Descriptor, err error) {
@@ -72,7 +74,7 @@ func (m *Manager) FileDescriptor(ctx context.Context, kind, name string) (descri
 		descriptor.Resource.ReadOnly = spec.Root.Readonly
 		descriptor.Snapshotter, descriptor.SnapshotKey, descriptor.Mounts = info.Snapshotter, info.SnapshotKey, spec.Mounts
 		process, err := backend.getTask(ctx, id)
-		if err != nil && !containerRemovalComplete(err) {
+		if err != nil && status.Code(err) != codes.NotFound {
 			return descriptor, err
 		}
 		if process != nil && containerdTaskActive(process.GetStatus()) {

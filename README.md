@@ -30,6 +30,8 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Image layers in the terminal.** Run `porto docker dive IMAGE` with the bundled Dive client to inspect layer contents, file changes, and wasted space.
 - **Local diagnostics and repair.** Run `porto diagnose` or use the Diagnostics page to inspect runtime health, preview a redacted local bundle, and apply confirmed Porto-owned repairs.
 - **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.
+- **Inspect and protect runtime data.** Browse shell-independent files, stream bounded logs, inspect metrics/metadata, preview scoped storage cleanup, and make verified local volume archives/backups.
+- **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
 
 See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
 for supported, partial, capability-gated, and explicitly unsupported operations.
@@ -135,6 +137,7 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 - [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
 - [Local runtimes](docs/runtimes.md) — Docker socket, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
 - [Porto Docker Engine](docs/docker-engine.md) — native containerd backend, Docker context compatibility, supported API, and limitations
+- [Runtime data management](docs/data-management.md) — container inspection, storage accounting, volume archives/backups, migration, and native file-manager capabilities
 - [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
 - [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
 - [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox

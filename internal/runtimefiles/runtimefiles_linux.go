@@ -29,6 +29,9 @@ func withDirectory(ctx context.Context, descriptor Descriptor, readOnly bool, ru
 	if descriptor.Resource.Kind == "volume" {
 		return run(descriptor)
 	}
+	if descriptor.Resource.Kind == "container" && descriptor.PID > 0 {
+		return withRunningContainerRoot(ctx, descriptor, readOnly, run)
+	}
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	directory, err := os.MkdirTemp("", "porto-files-")
@@ -336,6 +339,7 @@ func attach(ctx context.Context, descriptor Descriptor, writable bool) (attachme
 	attachment = Attachment{
 		Token: token, Path: directory, Resource: descriptor.Resource, Identity: descriptor.Resource.Fingerprint(),
 		ReadOnly: !writable, Snapshotter: prepared.Snapshotter,
+		NamespacePID: descriptor.NamespacePID,
 	}
 	if descriptor.Resource.Kind == "image" {
 		attachment.SnapshotKey = prepared.SnapshotKey

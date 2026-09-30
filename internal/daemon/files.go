@@ -22,6 +22,7 @@ import (
 
 func (s *Server) dataRoutes(mux *http.ServeMux) {
 	s.storageRoutes(mux)
+	s.nativeFileRoutes(mux)
 	for _, resource := range []struct{ plural, kind string }{
 		{"containers", "container"}, {"images", "image"}, {"volumes", "volume"},
 	} {

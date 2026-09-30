@@ -298,15 +298,18 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 			return result, fmt.Errorf("%w: destination volume already exists", datafiles.ErrConflict)
 		}
 	}
+	archive, err := InspectVolumeArchive(ctx, archivePath)
+	if err != nil {
+		return result, err
+	}
+	if archive.SHA256 != archiveSHA {
+		return result, fmt.Errorf("%w: archive changed before creating the destination", datafiles.ErrConflict)
+	}
 	token := make([]byte, 16)
 	if _, err := rand.Read(token); err != nil {
 		return result, err
 	}
 	owner := hex.EncodeToString(token)
-	created, createErr := m.CreateVolume(ctx, destination, "local", map[string]string{transferOwnerLabel: owner})
-	if createErr != nil {
-		return result, createErr
-	}
 	committed := false
 	defer func() {
 		if committed {
@@ -314,7 +317,10 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 		}
 		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		document, inspectErr := m.InspectVolume(cleanupContext, created.Name)
+		document, inspectErr := m.InspectVolume(cleanupContext, destination)
+		if missingDockerObject(inspectErr, "volume") {
+			return
+		}
 		var volume struct{ Labels map[string]string }
 		if inspectErr == nil {
 			inspectErr = json.Unmarshal(document, &volume)
@@ -323,8 +329,12 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 			err = errors.Join(err, errors.New("temporary volume ownership could not be proven; no volume was deleted"), inspectErr)
 			return
 		}
-		err = errors.Join(err, m.RemoveVolume(cleanupContext, created.Name, false))
+		err = errors.Join(err, m.RemoveVolume(cleanupContext, destination, false))
 	}()
+	created, createErr := m.CreateVolume(ctx, destination, "local", map[string]string{transferOwnerLabel: owner})
+	if createErr != nil {
+		return result, createErr
+	}
 	descriptor, err := m.FileDescriptor(ctx, "volume", created.Name)
 	if err != nil {
 		return result, err

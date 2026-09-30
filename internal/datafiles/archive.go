@@ -21,6 +21,10 @@ import (
 const manifestName = "porto-manifest.json"
 
 func Export(ctx context.Context, output io.Writer, directory string, resource Resource) (manifest Manifest, err error) {
+	return ExportWithOwners(ctx, output, directory, resource, nil)
+}
+
+func ExportWithOwners(ctx context.Context, output io.Writer, directory string, resource Resource, mapOwner func(int, int) (int, int, error)) (manifest Manifest, err error) {
 	root, err := os.OpenRoot(directory)
 	if err != nil {
 		return manifest, fmt.Errorf("open export source: %w", err)
@@ -31,6 +35,10 @@ func Export(ctx context.Context, output io.Writer, directory string, resource Re
 	manifest = Manifest{
 		Version: 1, Resource: resource, CreatedAt: time.Now().UTC(),
 		Consistency: "crash-consistent", Entries: make([]Entry, 0),
+		Ownership: "filesystem",
+	}
+	if mapOwner != nil {
+		manifest.Ownership = "namespace"
 	}
 	links := make(map[string]string)
 	err = fs.WalkDir(root.FS(), ".", func(name string, item fs.DirEntry, walkErr error) error {
@@ -53,9 +61,18 @@ func Export(ctx context.Context, output io.Writer, directory string, resource Re
 		if err != nil {
 			return err
 		}
+		if info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
+			return fmt.Errorf("%w: special permission bits require an administrator-managed transfer", ErrUnsupported)
+		}
 		entry, err := entryFromInfo(name, info)
 		if err != nil {
 			return err
+		}
+		if mapOwner != nil {
+			entry.UID, entry.GID, err = mapOwner(entry.UID, entry.GID)
+			if err != nil {
+				return err
+			}
 		}
 		if entry.Type == "symlink" {
 			entry.LinkTarget, err = root.Readlink(name)
@@ -123,6 +140,7 @@ func SealTar(ctx context.Context, input io.Reader, output io.Writer, resource Re
 	manifest = Manifest{
 		Version: 1, Resource: resource, CreatedAt: time.Now().UTC(),
 		Consistency: "crash-consistent", Entries: make([]Entry, 0),
+		Ownership: "namespace",
 	}
 	seen := make(map[string]Entry)
 	for {
@@ -200,6 +218,7 @@ func Validate(ctx context.Context, archive io.ReadSeeker) (Manifest, error) {
 				return manifest, fmt.Errorf("%w: extra manifest data", ErrInvalid)
 			}
 			if manifest.Version != 1 || manifest.Consistency != "crash-consistent" ||
+				manifest.Ownership != "" && manifest.Ownership != "filesystem" && manifest.Ownership != "namespace" ||
 				manifest.Resource.ID == "" || manifest.Bytes != total || !reflect.DeepEqual(manifest.Entries, entries) {
 				return manifest, fmt.Errorf("%w: archive does not match its integrity manifest", ErrInvalid)
 			}
@@ -298,7 +317,15 @@ func Restore(ctx context.Context, archive io.ReadSeeker, destination string, opt
 			return fmt.Errorf("restore %s: %w", entry.Path, err)
 		}
 		if options.PreserveOwnership {
-			if err := root.Lchown(entry.Path, entry.UID, entry.GID); err != nil {
+			uid, gid := entry.UID, entry.GID
+			if options.MapOwner != nil {
+				var err error
+				uid, gid, err = options.MapOwner(uid, gid)
+				if err != nil {
+					return err
+				}
+			}
+			if err := root.Lchown(entry.Path, uid, gid); err != nil {
 				return fmt.Errorf("restore ownership for %s: %w", entry.Path, err)
 			}
 		}
@@ -476,9 +503,6 @@ func entryFromInfo(name string, info os.FileInfo) (Entry, error) {
 		entry.Type = "symlink"
 	default:
 		return entry, fmt.Errorf("%w: devices, FIFOs and sockets cannot be transferred", ErrUnsupported)
-	}
-	if info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 {
-		return entry, fmt.Errorf("%w: special permission bits require an administrator-managed transfer", ErrUnsupported)
 	}
 	return entry, nil
 }

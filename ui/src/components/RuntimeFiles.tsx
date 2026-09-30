@@ -3,6 +3,7 @@ import { apiGet, apiSend, apiUpload, errorMessage, isAbortError } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { bytesLabel, type FileContent, type FileEntry, type FileListing } from '../dataTypes'
+import { NativeFiles } from './NativeFiles'
 
 const PLURAL = { container: 'containers', image: 'images', volume: 'volumes' } as const
 
@@ -109,7 +110,7 @@ export function RuntimeFiles({ kind, name }: { kind: keyof typeof PLURAL; name: 
 
   const unavailable = Boolean(listing.error)
   return (
-    <section className="drawerPanel runtimeFiles">
+    <><NativeFiles kind={kind} name={name} /><section className="drawerPanel runtimeFiles">
       <h3>Files</h3>
       <p className="hintLine">Text previews/edits: 256 KiB. File transfers: 64 MiB. Symlinks cannot escape the selected resource. Uploads create new files; edits replace files atomically.</p>
       {listing.data?.message && <p className="hintLine">{listing.data.message}</p>}
@@ -146,6 +147,6 @@ export function RuntimeFiles({ kind, name }: { kind: keyof typeof PLURAL; name: 
           {busy && <button type="button" onClick={() => { operation.current?.abort(); setBusy(false) }}>Cancel file operation</button>}
         </div>
       </section>}
-    </section>
+    </section></>
   )
 }

@@ -40,6 +40,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
 	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
+	mux.HandleFunc("POST /api/docker/engine/stop", s.requireRuntime("docker", s.stopDockerEngine))
+	mux.HandleFunc("POST /api/docker/engine/remove", s.requireRuntime("docker", s.removeDockerEngine))
 	mux.HandleFunc("POST /api/docker/engine/prepare-update", s.prepareDockerEngineUpdate)
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
@@ -1273,6 +1275,9 @@ func (s *Server) startVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1303,6 +1308,9 @@ func (s *Server) execVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1320,6 +1328,9 @@ func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1337,6 +1348,9 @@ func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !queryBool(r, "confirm") {
 		http.Error(w, "confirm=true is required to delete a VM", http.StatusBadRequest)
 		return

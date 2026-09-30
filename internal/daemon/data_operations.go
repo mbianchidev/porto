@@ -32,6 +32,8 @@ func (s *Server) storageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/docker/backups", s.requireRuntime("docker", s.saveBackupSchedule))
 	mux.HandleFunc("DELETE /api/docker/backups/{id}", s.deleteBackupSchedule)
 	mux.HandleFunc("POST /api/docker/backups/{id}/run", s.requireRuntime("docker", s.runBackupSchedule))
+	mux.HandleFunc("GET /api/docker/migration/contexts", s.requireRuntime("docker", s.migrationContexts))
+	mux.HandleFunc("GET /api/docker/migration/inventory", s.requireRuntime("docker", s.migrationInventory))
 }
 
 func transferDirectory() (string, error) {
@@ -57,6 +59,9 @@ func (s *Server) dataPreview(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	switch request.Action {
+	case "migration":
+		value, err := s.docker.PreviewMigration(r.Context(), request)
+		writeRuntimeResult(w, value, err)
 	case "prune":
 		value, err := s.docker.PreviewPrune(r.Context(), request)
 		writeRuntimeResult(w, value, err)
@@ -201,6 +206,13 @@ func (s *Server) executeDataOperation(ctx context.Context, run dataops.Operation
 	progress := func(phase string, bytes int64) error { return s.store.DataProgress(ctx, run.ID, phase, bytes) }
 	if request.Action == "prune" {
 		return s.docker.Prune(ctx, request, progress)
+	}
+	if request.Action == "migration" {
+		directory, err := transferDirectory()
+		if err != nil {
+			return result, err
+		}
+		return s.docker.Migrate(ctx, request, directory, progress)
 	}
 	preview, err := s.docker.PreviewVolume(ctx, request)
 	if err != nil {
@@ -521,4 +533,14 @@ func (s *Server) recordDockerStorageOperation(_ context.Context, request dataops
 		status, message = "failed", operationErr.Error()
 	}
 	return s.store.FinishDataOperation(ctx, run.ID, status, result, message, time.Now().UTC())
+}
+
+func (s *Server) migrationContexts(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.MigrationContexts(r.Context())
+	writeRuntimeResult(w, value, err)
+}
+
+func (s *Server) migrationInventory(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.MigrationInventory(r.Context(), r.URL.Query().Get("context"))
+	writeRuntimeResult(w, value, err)
 }

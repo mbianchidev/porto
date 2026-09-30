@@ -43,6 +43,14 @@ CREATE TABLE IF NOT EXISTS volume_backup_schedules (
  next_run_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_volume_backup_due ON volume_backup_schedules(enabled,next_run_at);
+CREATE TABLE IF NOT EXISTS migration_volume_ledger (
+ source_context TEXT NOT NULL,
+ source_identity TEXT NOT NULL,
+ destination TEXT NOT NULL,
+ destination_identity TEXT NOT NULL,
+ verified_at TEXT NOT NULL,
+ PRIMARY KEY(source_context,source_identity,destination)
+);
 `)
 	if err != nil {
 		return err
@@ -328,4 +336,21 @@ phase='archive-expired' WHERE id=? AND status='succeeded'`, id)
 		return errors.New("backup result changed; retention outcome could not be recorded")
 	}
 	return err
+}
+
+func (s *Store) RecordMigratedVolume(ctx context.Context, source, identity, destination, destinationIdentity string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO migration_volume_ledger(source_context,source_identity,destination,destination_identity,verified_at)
+VALUES(?,?,?,?,?) ON CONFLICT(source_context,source_identity,destination) DO UPDATE SET destination_identity=excluded.destination_identity,verified_at=excluded.verified_at`,
+		source, identity, destination, destinationIdentity, time.Now().UTC().Format(time.RFC3339Nano))
+	return err
+}
+
+func (s *Store) KnownMigratedVolume(ctx context.Context, source, identity, destination, destinationIdentity string) (bool, error) {
+	var stored string
+	err := s.db.QueryRowContext(ctx, `SELECT destination_identity FROM migration_volume_ledger WHERE source_context=? AND source_identity=? AND destination=?`,
+		source, identity, destination).Scan(&stored)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, nil
+	}
+	return stored == destinationIdentity, err
 }

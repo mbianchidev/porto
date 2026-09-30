@@ -27,6 +27,11 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 		return result, err
 	}
 	defer release()
+	if m.nativeGuard != nil {
+		if err := m.nativeGuard("image", "*"); err != nil {
+			return result, err
+		}
+	}
 	if !m.cleanupMu.TryLock() {
 		return result, fmt.Errorf("%w: Porto runtime cleanup is already running", ErrConflict)
 	}

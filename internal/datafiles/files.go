@@ -124,6 +124,10 @@ func Download(ctx context.Context, directory, relative string, output io.Writer,
 }
 
 func Write(ctx context.Context, directory, relative string, content []byte, expectedSHA256 string) (err error) {
+	return WriteOwned(ctx, directory, relative, content, expectedSHA256, -1, -1)
+}
+
+func WriteOwned(ctx context.Context, directory, relative string, content []byte, expectedSHA256 string, uid, gid int) (err error) {
 	if err := ValidatePath(relative); err != nil || relative == "." {
 		return errors.Join(fmt.Errorf("%w: a file path is required", ErrInvalid), err)
 	}
@@ -171,6 +175,8 @@ func Write(ctx context.Context, directory, relative string, content []byte, expe
 	_, writeErr := file.Write(content)
 	if writeErr == nil && original != nil {
 		writeErr = preserveFileOwnership(file, original)
+	} else if writeErr == nil && uid >= 0 && gid >= 0 {
+		writeErr = file.Chown(uid, gid)
 	}
 	err = errors.Join(writeErr, file.Sync(), file.Close())
 	if err != nil {

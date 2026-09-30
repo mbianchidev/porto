@@ -51,39 +51,43 @@ var (
 )
 
 type Manager struct {
-	runner                runtimes.Runner
-	timeout               time.Duration
-	stateDir              string
-	lookPath              func(string) (string, error)
-	directCLI             bool
-	dialBuildKit          func(context.Context) (net.Conn, error)
-	installMu             sync.Mutex
-	ownershipProbe        chan struct{}
-	cleanupMu             sync.Mutex
-	inventoryMu           sync.Mutex
-	inventory             *containerInventory
-	inventoryCancel       context.CancelFunc
-	inventoryDone         chan struct{}
-	healthCancel          context.CancelFunc
-	healthDone            chan struct{}
-	runtimeConnector      containerRuntimeConnector
-	creationConnector     containerCreationConnector
-	operationsConnector   containerOperationsConnector
-	execConnector         execOperationsConnector
-	networkConnector      networkOperationsConnector
-	metricReader          func(context.Context, string) (ContainerMetricSample, error)
-	networkLocks          *containerMutexes
-	containerNameMu       *sync.Mutex
-	registryAuthMu        sync.RWMutex
-	registryAuth          RegistryAuthResolver
-	fileDescriptorReader  func(context.Context, string, string) (runtimefiles.Descriptor, error)
-	metricHistoryMu       sync.Mutex
-	metricHistory         map[string][]InspectorStatsPoint
-	dataMu                sync.RWMutex
-	storageReader         func(context.Context) (StorageUsage, error)
-	nativeGuard           func(string, string) error
-	managedContainerGuard func(context.Context, string) error
-	storageReporter       func(context.Context, dataops.Request, dataops.Result, error) error
+	runner                  runtimes.Runner
+	timeout                 time.Duration
+	stateDir                string
+	lookPath                func(string) (string, error)
+	directCLI               bool
+	dialBuildKit            func(context.Context) (net.Conn, error)
+	installMu               sync.Mutex
+	ownershipProbe          chan struct{}
+	cleanupMu               sync.Mutex
+	inventoryMu             sync.Mutex
+	inventory               *containerInventory
+	inventoryCancel         context.CancelFunc
+	inventoryDone           chan struct{}
+	healthCancel            context.CancelFunc
+	healthDone              chan struct{}
+	runtimeConnector        containerRuntimeConnector
+	creationConnector       containerCreationConnector
+	operationsConnector     containerOperationsConnector
+	execConnector           execOperationsConnector
+	networkConnector        networkOperationsConnector
+	metricReader            func(context.Context, string) (ContainerMetricSample, error)
+	networkLocks            *containerMutexes
+	containerNameMu         *sync.Mutex
+	registryAuthMu          sync.RWMutex
+	registryAuth            RegistryAuthResolver
+	fileDescriptorReader    func(context.Context, string, string) (runtimefiles.Descriptor, error)
+	metricHistoryMu         sync.Mutex
+	metricHistory           map[string][]InspectorStatsPoint
+	dataMu                  sync.RWMutex
+	storageReader           func(context.Context) (StorageUsage, error)
+	nativeGuard             func(string, string) error
+	managedContainerGuard   func(context.Context, string) error
+	storageReporter         func(context.Context, dataops.Request, dataops.Result, error) error
+	migrationSourceFactory  func(context.Context, string) (*migrationClient, error)
+	migrationVolumeRecorded func(context.Context, string, string, string, string) error
+	migrationVolumeKnown    func(context.Context, string, string, string, string) (bool, error)
+	nativeClose             func(context.Context) error
 }
 
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
@@ -540,6 +544,11 @@ func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bool, err error) {
+	if m.nativeClose != nil {
+		if err := m.nativeClose(ctx); err != nil {
+			return false, fmt.Errorf("detach native files before engine shutdown: %w", err)
+		}
+	}
 	m.installMu.Lock()
 	defer m.installMu.Unlock()
 	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
@@ -1104,6 +1113,16 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return err
 	}
 	defer release()
+	if m.nativeGuard != nil && m.nativeGuard("container", "*") != nil &&
+		(strings.HasPrefix(action, "remove") || action == "start" || action == "stop" || action == "restart") {
+		name, err := m.ContainerName(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := m.nativeGuard("container", name); err != nil {
+			return err
+		}
+	}
 	if strings.HasPrefix(action, "remove") && m.managedContainerGuard != nil {
 		name, err := m.ContainerName(ctx, id)
 		if err != nil {
@@ -1778,6 +1797,15 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 		return err
 	}
 	defer release()
+	if m.nativeGuard != nil && m.nativeGuard("image", "*") != nil {
+		descriptor, err := m.FileDescriptor(ctx, "image", id)
+		if err != nil {
+			return err
+		}
+		if err := m.nativeGuard("image", descriptor.Resource.Name); err != nil {
+			return err
+		}
+	}
 	if err := validateObjectID(id); err != nil {
 		return err
 	}

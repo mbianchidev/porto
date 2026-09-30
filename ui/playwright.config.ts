@@ -6,8 +6,8 @@ export default defineConfig({
   workers: 2,
   use: {
     baseURL: 'http://127.0.0.1:4174', headless: true,
-    browserName: process.env.PORTO_TEST_BROWSER === 'firefox' ? 'firefox' : 'chromium',
-    channel: process.env.PORTO_TEST_BROWSER === 'firefox' ? undefined : 'chromium',
+    browserName: process.env.PORTO_TEST_BROWSER === 'firefox' ? 'firefox' : process.env.PORTO_TEST_BROWSER === 'webkit' ? 'webkit' : 'chromium',
+    channel: process.env.PORTO_TEST_BROWSER && process.env.PORTO_TEST_BROWSER !== 'chromium' ? undefined : 'chromium',
   },
   webServer: {
     command: 'npm run dev -- --host 127.0.0.1 --port 4174 --strictPort',

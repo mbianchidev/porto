@@ -175,6 +175,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install browser test dependencies
+        if: matrix.node == '24'
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Test data dashboards
+        if: matrix.node == '24'
+        run: npm test -- --reporter=line
+
       - name: Validate desktop shell
         run: |
           npm --prefix electron ci

@@ -57,6 +57,7 @@ type Manifest struct {
 	Resource    Resource  `json:"resource"`
 	CreatedAt   time.Time `json:"createdAt"`
 	Consistency string    `json:"consistency"`
+	Ownership   string    `json:"ownership,omitempty"`
 	Bytes       int64     `json:"bytes"`
 	Entries     []Entry   `json:"entries"`
 	SHA256      string    `json:"sha256"`
@@ -65,6 +66,7 @@ type Manifest struct {
 type RestoreOptions struct {
 	PreserveOwnership bool
 	AvailableBytes    func(string) (uint64, error)
+	MapOwner          func(int, int) (int, int, error)
 }
 
 type Listing struct {
