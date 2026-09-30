@@ -19,6 +19,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -49,31 +50,32 @@ var (
 )
 
 type Manager struct {
-	runner              runtimes.Runner
-	timeout             time.Duration
-	stateDir            string
-	lookPath            func(string) (string, error)
-	directCLI           bool
-	dialBuildKit        func(context.Context) (net.Conn, error)
-	installMu           sync.Mutex
-	ownershipProbe      chan struct{}
-	cleanupMu           sync.Mutex
-	inventoryMu         sync.Mutex
-	inventory           *containerInventory
-	inventoryCancel     context.CancelFunc
-	inventoryDone       chan struct{}
-	healthCancel        context.CancelFunc
-	healthDone          chan struct{}
-	runtimeConnector    containerRuntimeConnector
-	creationConnector   containerCreationConnector
-	operationsConnector containerOperationsConnector
-	execConnector       execOperationsConnector
-	networkConnector    networkOperationsConnector
-	metricReader        func(context.Context, string) (ContainerMetricSample, error)
-	networkLocks        *containerMutexes
-	containerNameMu     *sync.Mutex
-	registryAuthMu      sync.RWMutex
-	registryAuth        RegistryAuthResolver
+	runner               runtimes.Runner
+	timeout              time.Duration
+	stateDir             string
+	lookPath             func(string) (string, error)
+	directCLI            bool
+	dialBuildKit         func(context.Context) (net.Conn, error)
+	installMu            sync.Mutex
+	ownershipProbe       chan struct{}
+	cleanupMu            sync.Mutex
+	inventoryMu          sync.Mutex
+	inventory            *containerInventory
+	inventoryCancel      context.CancelFunc
+	inventoryDone        chan struct{}
+	healthCancel         context.CancelFunc
+	healthDone           chan struct{}
+	runtimeConnector     containerRuntimeConnector
+	creationConnector    containerCreationConnector
+	operationsConnector  containerOperationsConnector
+	execConnector        execOperationsConnector
+	networkConnector     networkOperationsConnector
+	metricReader         func(context.Context, string) (ContainerMetricSample, error)
+	networkLocks         *containerMutexes
+	containerNameMu      *sync.Mutex
+	registryAuthMu       sync.RWMutex
+	registryAuth         RegistryAuthResolver
+	fileDescriptorReader func(context.Context, string, string) (runtimefiles.Descriptor, error)
 }
 
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)

@@ -9,9 +9,11 @@ import (
 	"os"
 	"strings"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "2"
+const helperVersion = "3"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -50,6 +52,12 @@ func main() {
 		}
 	case "dial-stdio":
 		if err := dialStdio(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+	case "files":
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Hour)
+		defer cancel()
+		if err := runtimefiles.Run(ctx, os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 	case "cni-connect", "cni-check", "cni-disconnect":
