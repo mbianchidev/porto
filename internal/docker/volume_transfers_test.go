@@ -16,11 +16,17 @@ import (
 func TestCancelledVolumeCreationCleansOnlyProvenTemporaryResources(t *testing.T) {
 	for _, owned := range []bool{true, false} {
 		t.Run(map[bool]string{true: "owned", false: "foreign"}[owned], func(t *testing.T) {
+			state := t.TempDir()
+			t.Setenv("PORTO_HOME", state)
 			source := t.TempDir()
 			if err := os.WriteFile(filepath.Join(source, "fixture.txt"), []byte("synthetic"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			archivePath := filepath.Join(t.TempDir(), "fixture.tar")
+			archiveDirectory := filepath.Join(state, "transfers")
+			if err := os.Mkdir(archiveDirectory, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			archivePath := filepath.Join(archiveDirectory, "fixture.tar")
 			file, err := os.Create(archivePath)
 			if err != nil {
 				t.Fatal(err)

@@ -84,7 +84,7 @@ func dockerDataCmd(args []string) error {
 			flags := flag.NewFlagSet("backups schedule", flag.ContinueOnError)
 			hours := flags.Int("hours", 24, "local backup interval in hours")
 			retention := flags.Int("retain", 7, "verified archives to retain")
-			directory := flags.String("directory", "", "absolute local archive directory; default Porto state")
+			directory := flags.String("directory", "", "backup folder inside Porto state; default source-specific folder")
 			enabled := flags.Bool("enabled", false, "explicitly enable automatic local backups")
 			if err := parseInterspersed(flags, args[2:], map[string]bool{"enabled": true}); err != nil {
 				return err
@@ -113,6 +113,7 @@ func dockerVolumeDataCmd(args []string) error {
 		return err
 	}
 	request := dataops.Request{Action: "volume-" + args[0]}
+	localExport := ""
 	switch args[0] {
 	case "export":
 		if flags.NArg() != 2 {
@@ -123,7 +124,7 @@ func dockerVolumeDataCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		request.Destination = destination
+		localExport = destination
 	case "clone":
 		if flags.NArg() != 2 {
 			return errors.New("usage: porto docker volume clone <source-volume> <new-volume> [--confirm]")
@@ -137,7 +138,11 @@ func dockerVolumeDataCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		request.Archive, request.Destination = archive, flags.Arg(1)
+		uploaded, err := uploadLocalVolumeArchive(archive)
+		if err != nil {
+			return err
+		}
+		request.Archive, request.Destination = uploaded.Path, flags.Arg(1)
 	case "restore":
 		if flags.NArg() != 2 {
 			return errors.New("usage: porto docker volume restore <volume> <local.tar> [--confirm]")
@@ -146,7 +151,11 @@ func dockerVolumeDataCmd(args []string) error {
 		if err != nil {
 			return err
 		}
-		request.Resource.Name, request.Archive = flags.Arg(0), archive
+		uploaded, err := uploadLocalVolumeArchive(archive)
+		if err != nil {
+			return err
+		}
+		request.Resource.Name, request.Archive = flags.Arg(0), uploaded.Path
 	case "empty":
 		if flags.NArg() != 1 {
 			return errors.New("usage: porto docker volume empty <volume> [--confirm]")
@@ -166,9 +175,23 @@ func dockerVolumeDataCmd(args []string) error {
 	if err := writeOutput(preview); err != nil {
 		return err
 	}
+	if localExport != "" {
+		fmt.Fprintf(os.Stdout, "Local download destination: %s (created by this CLI, not the daemon)\n", localExport)
+	}
 	if !*confirm {
 		return nil
 	}
 	preview.Request.Confirm, preview.Request.Preview = true, preview.Token
+	if localExport != "" {
+		var response bytes.Buffer
+		if err := api("POST", "/api/data/operations", preview.Request, &response); err != nil {
+			return err
+		}
+		var operation dataops.Operation
+		if err := json.Unmarshal(response.Bytes(), &operation); err != nil {
+			return err
+		}
+		return downloadCompletedVolumeExport(operation.ID, localExport)
+	}
 	return runtimePOST("/api/data/operations", preview.Request)
 }

@@ -325,11 +325,12 @@ func (s *Server) dataOperationArchive(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, errors.Join(datafiles.ErrConflict, err))
 		return
 	}
-	file, err := os.Open(current.Path)
+	root, file, err := datafiles.OpenManagedArchive(current.Path)
 	if err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
+	defer root.Close()
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil {
@@ -407,6 +408,21 @@ func (s *Server) saveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		schedule.Directory = filepath.Join(root, "backups", schedule.Resource.Fingerprint()[:16])
+	} else if !filepath.IsAbs(schedule.Directory) {
+		if !filepath.IsLocal(schedule.Directory) {
+			writeRuntimeError(w, datafiles.ErrInvalid)
+			return
+		}
+		root, err := config.Dir()
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		schedule.Directory = filepath.Join(root, "backups", schedule.Directory)
+	}
+	if _, _, err := datafiles.ManagedLocation(schedule.Directory); err != nil {
+		writeRuntimeError(w, err)
+		return
 	}
 	schedule, err = s.store.SaveBackupSchedule(r.Context(), schedule, time.Now().UTC())
 	writeRuntimeResult(w, schedule, err)

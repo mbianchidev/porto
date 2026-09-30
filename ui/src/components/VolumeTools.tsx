@@ -36,7 +36,7 @@ export function VolumeTools({ name }: { name: string }) {
   async function prepare() {
     const request: DataRequest = {
       action, resource: source.data?.resource, identity: source.data?.identity,
-      destination, archive: archive?.path,
+      destination: action === 'volume-export' ? '' : destination, archive: archive?.path,
     }
     await run(async (signal) => { setPreview(await apiSend<VolumePreview>('/api/docker/storage/preview', 'POST', request, signal)) })
   }
@@ -78,7 +78,8 @@ export function VolumeTools({ name }: { name: string }) {
           <option value="volume-export">Export local archive</option><option value="volume-clone">Clone to new volume</option>
           <option value="volume-import">Import archive to new volume</option><option value="volume-restore">Restore this volume</option><option value="volume-empty">Empty this volume</option>
         </select></label>
-        {action !== 'volume-empty' && action !== 'volume-restore' && <label><span>{action === 'volume-export' ? 'Absolute export path (blank uses managed archives)' : 'New destination volume'}</span><input type="text" value={destination} onChange={(event) => { setDestination(event.target.value); setPreview(null) }} required={action !== 'volume-export'} /></label>}
+        {(action === 'volume-clone' || action === 'volume-import') && <label><span>New destination volume</span><input type="text" value={destination} onChange={(event) => { setDestination(event.target.value); setPreview(null) }} required /></label>}
+        {action === 'volume-export' && <p>Export publishes a verified managed archive. Choose its host download location in your browser after it completes.</p>}
         {(action === 'volume-import' || action === 'volume-restore') && <label><span>Versioned volume archive</span><input type="file" accept=".tar" disabled={busy} onChange={(event) => upload(event.target.files?.[0])} /></label>}
         {archive && <p>{archive.path} · {bytesLabel(archive.bytes)} · verified SHA-256 {archive.sha256.slice(0, 16)}</p>}
         <button type="submit" disabled={busy || (!source.data && action !== 'volume-import') || ((action === 'volume-import' || action === 'volume-restore') && !archive)}>{busy ? 'Preparing…' : 'Preview volume action'}</button>
@@ -98,7 +99,7 @@ export function VolumeTools({ name }: { name: string }) {
       {!matching.length && <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); void saveSchedule(true) }}>
         <label><span>Interval in hours</span><input type="number" min={1} max={8760} value={intervalHours} onChange={(event) => setIntervalHours(Number(event.target.value))} /></label>
         <label><span>Verified archives to retain</span><input type="number" min={1} max={365} value={retention} onChange={(event) => setRetention(Number(event.target.value))} /></label>
-        <label><span>Absolute local backup directory (blank uses Porto state)</span><input type="text" value={directory} onChange={(event) => setDirectory(event.target.value)} /></label>
+        <label><span>Backup folder inside Porto state (blank uses a source-specific folder)</span><input type="text" value={directory} onChange={(event) => setDirectory(event.target.value)} /></label>
         <button type="submit" disabled={busy || !source.data}>Enable local backups</button>
       </form>}
       {matching.map((schedule) => <div key={schedule.id}>

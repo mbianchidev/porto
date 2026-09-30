@@ -80,6 +80,15 @@ logical containerd-namespace ownership and translate rootless UID/GID ranges
 when restoring. Unsupported identity ranges, absolute links, devices, sockets,
 FIFOs and special permission bits fail explicitly rather than being dropped.
 
+The daemon reads/writes archives only inside Porto's managed `transfers/` and
+`backups/` roots, using filesystem-confined handles that reject symlink escapes.
+Dashboard imports upload an archive, and exports are downloaded after
+verification. The CLI reads a user-selected local import file and uploads it;
+for export it downloads the verified result into the user-selected local path
+without overwriting an existing file. HTTP requests cannot select arbitrary
+host files or destination directories. Backup folder choices are relative to
+Porto's `backups/` directory.
+
 **Copies and backups are crash-consistent, not application-consistent database
 backups.** Porto does not stop or quiesce writers implicitly. Quiesce your
 application or stop its containers yourself before exporting when required.

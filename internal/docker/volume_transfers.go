@@ -144,13 +144,11 @@ func archiveSignature(archive *dataops.Archive, fallback string) string {
 }
 
 func InspectVolumeArchive(ctx context.Context, archivePath string) (result dataops.Archive, err error) {
-	if !filepath.IsAbs(archivePath) {
-		return result, fmt.Errorf("%w: an absolute local archive path is required", datafiles.ErrInvalid)
-	}
-	file, err := os.Open(archivePath)
+	root, file, err := datafiles.OpenManagedArchive(archivePath)
 	if err != nil {
 		return result, err
 	}
+	defer root.Close()
 	defer file.Close()
 	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > datafiles.MaxArchiveBytes+32*1024*1024 {
@@ -181,14 +179,20 @@ func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource,
 	if identity != descriptor.Resource.Fingerprint() {
 		return result, datafiles.ErrConflict
 	}
-	if !filepath.IsAbs(destination) {
-		return result, fmt.Errorf("%w: export destination must be an absolute local path", datafiles.ErrInvalid)
-	}
-	parent := filepath.Dir(destination)
-	if err := os.MkdirAll(parent, 0o700); err != nil {
+	base, relative, err := datafiles.ManagedLocation(destination)
+	if err != nil {
 		return result, err
 	}
-	if _, err := os.Lstat(destination); err == nil {
+	root, err := os.OpenRoot(base)
+	if err != nil {
+		return result, err
+	}
+	defer root.Close()
+	parent := filepath.Dir(relative)
+	if err := root.MkdirAll(parent, 0o700); err != nil {
+		return result, err
+	}
+	if _, err := root.Lstat(relative); err == nil {
 		return result, fmt.Errorf("%w: export destination already exists", datafiles.ErrConflict)
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return result, err
@@ -203,15 +207,20 @@ func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource,
 	if err := json.Unmarshal(measured.Bytes(), &usage); err != nil {
 		return result, err
 	}
-	available, err := datafiles.AvailableSpace(parent)
+	available, err := datafiles.AvailableSpace(base)
 	if err != nil || usage.LogicalBytes < 0 || uint64(usage.LogicalBytes)+64*1024*1024 > available {
 		return result, errors.Join(fmt.Errorf("%w: insufficient local space for export", datafiles.ErrLimit), err)
 	}
-	file, err := os.CreateTemp(parent, ".porto-export-")
+	random := make([]byte, 16)
+	if _, err := rand.Read(random); err != nil {
+		return result, err
+	}
+	temporary := filepath.Join(parent, ".porto-export-"+hex.EncodeToString(random))
+	file, err := root.OpenFile(temporary, os.O_CREATE|os.O_EXCL|os.O_RDWR, 0o600)
 	if err != nil {
 		return result, err
 	}
-	defer func() { err = errors.Join(err, file.Close(), os.Remove(file.Name())) }()
+	defer func() { err = errors.Join(err, file.Close(), root.Remove(temporary)) }()
 	counter := &transferWriter{ctx: ctx, output: file, progress: progress, phase: "Exporting crash-consistent volume data"}
 	err = m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "export", Identity: identity}, nil, counter)
 	if err != nil {
@@ -220,7 +229,7 @@ func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource,
 	if err := file.Sync(); err != nil {
 		return result, err
 	}
-	result, err = InspectVolumeArchive(ctx, file.Name())
+	result, err = InspectVolumeArchive(ctx, filepath.Join(base, temporary))
 	if err != nil {
 		return result, err
 	}
@@ -230,7 +239,7 @@ func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource,
 	if err := ctx.Err(); err != nil {
 		return result, err
 	}
-	if err := os.Link(file.Name(), destination); err != nil {
+	if err := root.Link(temporary, relative); err != nil {
 		return result, fmt.Errorf("publish verified archive without overwrite: %w", err)
 	}
 	result.Path = destination
@@ -252,10 +261,11 @@ func (m *Manager) RestoreVolume(ctx context.Context, resource datafiles.Resource
 	if archive.SHA256 != archiveSHA {
 		return fmt.Errorf("%w: archive changed after preview", datafiles.ErrConflict)
 	}
-	file, err := os.Open(archivePath)
+	root, file, err := datafiles.OpenManagedArchive(archivePath)
 	if err != nil {
 		return err
 	}
+	defer root.Close()
 	defer file.Close()
 	if err := progress("Restoring into isolated staging; original data unchanged", 0); err != nil {
 		return err
