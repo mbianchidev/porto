@@ -16,6 +16,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/datafiles"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/vm"
@@ -24,6 +25,7 @@ import (
 const maxRuntimeRequestBytes = 2 * 1024 * 1024
 
 func (s *Server) runtimeRoutes(mux *http.ServeMux) {
+	s.dataRoutes(mux)
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
 	mux.HandleFunc("GET /api/runtime/features", s.runtimeFeatures)
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
@@ -1376,8 +1378,12 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, portodocker.ErrConflict):
+	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict):
 		status = http.StatusConflict
+	case errors.Is(err, datafiles.ErrInvalid), errors.Is(err, datafiles.ErrLimit):
+		status = http.StatusBadRequest
+	case errors.Is(err, datafiles.ErrUnsupported):
+		status = http.StatusNotImplemented
 	case strings.Contains(message, "unavailable"),
 		strings.Contains(message, "not found"),
 		strings.Contains(message, "connection refused"),

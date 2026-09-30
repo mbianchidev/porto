@@ -128,6 +128,8 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 	case "export":
 		_, err := datafiles.Export(ctx, output, descriptor.RootPath, descriptor.Resource)
 		return err
+	case "manifest":
+		result, err = datafiles.Export(ctx, io.Discard, descriptor.RootPath, descriptor.Resource)
 	case "usage":
 		logical, allocated, usageErr := datafiles.DiskUsage(ctx, descriptor.RootPath)
 		result, err = map[string]any{"logicalBytes": logical, "allocatedBytes": allocated}, usageErr
@@ -135,7 +137,7 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		if descriptor.Resource.Kind != "volume" || !request.Confirm {
 			return fmt.Errorf("%w: only a confirmed, idle volume can be restored or emptied", datafiles.ErrInvalid)
 		}
-		err = restoreVolume(ctx, descriptor, request.Action, input)
+		err = restoreVolume(ctx, descriptor, request, input)
 		result = map[string]bool{"committed": err == nil}
 	default:
 		return fmt.Errorf("%w: unknown runtime file action", datafiles.ErrInvalid)
@@ -159,13 +161,29 @@ func readOnlyPath(descriptor Descriptor, relative string) bool {
 	return false
 }
 
-func restoreVolume(ctx context.Context, descriptor Descriptor, action string, input io.Reader) (err error) {
+func restoreVolume(ctx context.Context, descriptor Descriptor, request datafiles.Request, input io.Reader) (err error) {
 	if err := ensureVolumeIdle(ctx, descriptor); err != nil {
 		return err
 	}
-	if action == "empty" {
+	if request.Action == "empty" {
+		if request.SHA256 == "" {
+			return fmt.Errorf("%w: volume empty requires a content preview", datafiles.ErrInvalid)
+		}
 		return datafiles.ReplaceDirectory(ctx, descriptor.RootPath, func(string) error { return nil },
-			func() error { return ensureVolumeIdle(ctx, descriptor) })
+			func() error {
+				if err := ensureVolumeIdle(ctx, descriptor); err != nil {
+					return err
+				}
+				manifest, err := datafiles.Export(ctx, io.Discard, descriptor.RootPath, descriptor.Resource)
+				if err != nil {
+					return err
+				}
+				digest, err := datafiles.ContentDigest(manifest)
+				if err != nil || digest != request.SHA256 {
+					return errors.Join(datafiles.ErrConflict, err)
+				}
+				return nil
+			})
 	}
 	file, err := os.CreateTemp(path.Dir(descriptor.RootPath), ".porto-archive-")
 	if err != nil {

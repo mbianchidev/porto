@@ -38,6 +38,7 @@ func List(ctx context.Context, directory, relative string, resource Resource) (L
 		return listing, err
 	}
 	listing.Truncated = len(items) > MaxListing
+	budget := 0
 	for _, item := range items[:min(len(items), MaxListing)] {
 		if err := ctx.Err(); err != nil {
 			return listing, err
@@ -56,6 +57,11 @@ func List(ctx context.Context, directory, relative string, resource Resource) (L
 			entry.LinkTarget, err = root.Readlink(name)
 			if err != nil {
 				return listing, err
+			}
+			budget += len(entry.Path) + len(entry.LinkTarget) + 256
+			if budget > 512*1024 {
+				listing.Truncated = true
+				break
 			}
 		}
 		listing.Entries = append(listing.Entries, entry)

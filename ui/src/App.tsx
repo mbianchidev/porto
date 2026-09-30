@@ -14,6 +14,7 @@ import { Images } from './pages/Images'
 import { Builds } from './pages/Builds'
 import { Volumes } from './pages/Volumes'
 import { Networks } from './pages/Networks'
+import { DockerStorage } from './pages/DockerStorage'
 import { KubernetesOverview } from './pages/KubernetesOverview'
 import { KubernetesDeployments } from './pages/KubernetesDeployments'
 import { Pods } from './pages/Pods'
@@ -43,6 +44,7 @@ import type {
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
+  'docker-storage',
   'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
@@ -151,6 +153,7 @@ function AppShell() {
         {route === 'builds' && <Builds />}
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
+        {route === 'docker-storage' && <DockerStorage />}
         {route === 'kubernetes' && (
           <KubernetesOverview
             context={activeKubeContext}

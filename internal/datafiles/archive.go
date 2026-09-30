@@ -449,6 +449,18 @@ func manifestDigest(manifest Manifest) (string, error) {
 	return hex.EncodeToString(hash[:]), nil
 }
 
+func ContentDigest(manifest Manifest) (string, error) {
+	document, err := json.Marshal(struct {
+		Resource Resource
+		Entries  []Entry
+	}{manifest.Resource, manifest.Entries})
+	if err != nil {
+		return "", err
+	}
+	hash := sha256.Sum256(document)
+	return hex.EncodeToString(hash[:]), nil
+}
+
 func entryFromInfo(name string, info os.FileInfo) (Entry, error) {
 	uid, gid, _ := fileMetadata(info)
 	entry := Entry{

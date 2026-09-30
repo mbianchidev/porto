@@ -164,6 +164,11 @@ func (m *Manager) FileRequest(ctx context.Context, kind, name string, request da
 }
 
 func (m *Manager) RunFileRequest(ctx context.Context, descriptor runtimefiles.Descriptor, request datafiles.Request, input io.Reader, output io.Writer) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	header, err := json.Marshal(runtimefiles.Envelope{Descriptor: descriptor, Request: request})
 	if err != nil {
 		return err

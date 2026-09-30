@@ -30,6 +30,7 @@ import (
 	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/discovery"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/gitutil"
@@ -115,6 +116,11 @@ type Server struct {
 	registryConfigKey  string
 	registryConfig     []byte
 	updateLogRetention func(int) error
+	dataMu             sync.Mutex
+	dataCancels        map[int64]context.CancelFunc
+	dataDone           map[int64]chan struct{}
+	dataUnstored       map[int64]*dataops.Operation
+	dataExecutor       func(context.Context, dataops.Operation) (dataops.Result, error)
 }
 
 var (
@@ -202,6 +208,8 @@ func New(st *store.Store, ui fs.FS) *Server {
 		registryVault:  registries.NewVault(),
 	}
 	dockerManager.SetRegistryAuthResolver(server.registryAuthForImage)
+	dockerManager.SetManagedContainerGuard(clusterProvisioner.ProtectContainerRemoval)
+	dockerManager.SetStorageReporter(server.recordDockerStorageOperation)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
 	return server
 }
@@ -296,6 +304,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if err := s.store.RecoverDockerCleanup(ctx, s.dockerCleanupTime()); err != nil {
 		return fmt.Errorf("recover interrupted Docker cleanup: %w", err)
 	}
+	if err := s.store.RecoverDataOperations(ctx, time.Now().UTC()); err != nil {
+		return fmt.Errorf("recover interrupted data operations: %w", err)
+	}
 	go func() {
 		if err := router.Serve(routerListener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log.Printf("router: %v", err)
@@ -349,6 +360,9 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	s.runtimeClosing = true
 	s.runtimeOpsMu.Unlock()
 	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), runtimeOperationTimeout)
+	if err := s.stopDataOperations(cleanupContext); err != nil {
+		shutdownErrors = append(shutdownErrors, err)
+	}
 	if err := s.stopDockerCleanup(cleanupContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
 	}

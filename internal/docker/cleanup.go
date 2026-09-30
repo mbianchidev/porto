@@ -22,6 +22,11 @@ const maxCleanupOutput = 32 * 1024
 
 func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, error) {
 	result := app.NewDockerCleanupResult()
+	ctx, release, err := m.BeginDataTransaction(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer release()
 	if !m.cleanupMu.TryLock() {
 		return result, fmt.Errorf("%w: Porto runtime cleanup is already running", ErrConflict)
 	}

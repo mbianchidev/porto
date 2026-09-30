@@ -794,6 +794,7 @@ export type RouteID =
   | 'builds'
   | 'volumes'
   | 'networks'
+  | 'docker-storage'
   | 'kubernetes'
   | 'deployments'
   | 'pods'

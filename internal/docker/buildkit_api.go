@@ -170,6 +170,7 @@ func (a *API) hijackBuildKitControl(
 		client:              controlapi.NewControlClient(connection),
 		containerdNamespace: configuredContainerdNamespace(),
 		imageExported:       a.manager.invalidateContainerInventory,
+		solveGate:           a.manager.dataReadGate,
 	})
 	stopped := make(chan struct{})
 	go func() {
