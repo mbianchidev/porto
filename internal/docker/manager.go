@@ -51,43 +51,46 @@ var (
 )
 
 type Manager struct {
-	runner                  runtimes.Runner
-	timeout                 time.Duration
-	stateDir                string
-	lookPath                func(string) (string, error)
-	directCLI               bool
-	dialBuildKit            func(context.Context) (net.Conn, error)
-	installMu               sync.Mutex
-	ownershipProbe          chan struct{}
-	cleanupMu               sync.Mutex
-	inventoryMu             sync.Mutex
-	inventory               *containerInventory
-	inventoryCancel         context.CancelFunc
-	inventoryDone           chan struct{}
-	healthCancel            context.CancelFunc
-	healthDone              chan struct{}
-	runtimeConnector        containerRuntimeConnector
-	creationConnector       containerCreationConnector
-	operationsConnector     containerOperationsConnector
-	execConnector           execOperationsConnector
-	networkConnector        networkOperationsConnector
-	metricReader            func(context.Context, string) (ContainerMetricSample, error)
-	networkLocks            *containerMutexes
-	containerNameMu         *sync.Mutex
-	registryAuthMu          sync.RWMutex
-	registryAuth            RegistryAuthResolver
-	fileDescriptorReader    func(context.Context, string, string) (runtimefiles.Descriptor, error)
-	metricHistoryMu         sync.Mutex
-	metricHistory           map[string][]InspectorStatsPoint
-	dataMu                  sync.RWMutex
-	storageReader           func(context.Context) (StorageUsage, error)
-	nativeGuard             func(string, string) error
-	managedContainerGuard   func(context.Context, string) error
-	storageReporter         func(context.Context, dataops.Request, dataops.Result, error) error
-	migrationSourceFactory  func(context.Context, string) (*migrationClient, error)
-	migrationVolumeRecorded func(context.Context, string, string, string, string) error
-	migrationVolumeKnown    func(context.Context, string, string, string, string) (bool, error)
-	nativeClose             func(context.Context) error
+	runner                    runtimes.Runner
+	timeout                   time.Duration
+	stateDir                  string
+	lookPath                  func(string) (string, error)
+	directCLI                 bool
+	dialBuildKit              func(context.Context) (net.Conn, error)
+	installMu                 sync.Mutex
+	ownershipProbe            chan struct{}
+	cleanupMu                 sync.Mutex
+	inventoryMu               sync.Mutex
+	inventory                 *containerInventory
+	inventoryCancel           context.CancelFunc
+	inventoryDone             chan struct{}
+	healthCancel              context.CancelFunc
+	healthDone                chan struct{}
+	runtimeConnector          containerRuntimeConnector
+	creationConnector         containerCreationConnector
+	operationsConnector       containerOperationsConnector
+	execConnector             execOperationsConnector
+	networkConnector          networkOperationsConnector
+	metricReader              func(context.Context, string) (ContainerMetricSample, error)
+	networkLocks              *containerMutexes
+	containerNameMu           *sync.Mutex
+	registryAuthMu            sync.RWMutex
+	registryAuth              RegistryAuthResolver
+	fileDescriptorReader      func(context.Context, string, string) (runtimefiles.Descriptor, error)
+	metricHistoryMu           sync.Mutex
+	metricHistory             map[string][]InspectorStatsPoint
+	dataMu                    sync.RWMutex
+	storageReader             func(context.Context) (StorageUsage, error)
+	nativeGuard               func(string, string) error
+	managedContainerGuard     func(context.Context, string) error
+	storageReporter           func(context.Context, dataops.Request, dataops.Result, error) error
+	migrationSourceFactory    func(context.Context, string) (*migrationClient, error)
+	migrationVolumeRecorded   func(context.Context, string, string, string, string) error
+	migrationVolumeKnown      func(context.Context, string, string, string, string) (bool, error)
+	migrationTemporaryReserve func(context.Context, dataops.SourceTemporary) error
+	migrationTemporaryClear   func(context.Context, dataops.SourceTemporary) error
+	migrationTemporaryPending func(context.Context) ([]dataops.SourceTemporary, error)
+	nativeClose               func(context.Context) error
 }
 
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
@@ -466,24 +469,7 @@ func (m *Manager) runtimeHelperPath() (string, error) {
 }
 
 func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, error)) (string, error) {
-	if executable != "" {
-		candidate := filepath.Join(filepath.Dir(executable), "runtime", "bin", "porto-runtime-helper")
-		info, err := os.Stat(candidate)
-		if err == nil {
-			if !info.Mode().IsRegular() {
-				return "", fmt.Errorf("Porto runtime helper is not a regular file: %s", candidate)
-			}
-			return candidate, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect bundled Porto runtime helper %s: %w", candidate, err)
-		}
-	}
-	path, err := lookPath("porto-runtime-helper")
-	if err != nil {
-		return "", nil
-	}
-	return path, nil
+	return runtimes.BundledRuntimeHelper(executable, lookPath)
 }
 
 func (m *Manager) StartEngine(ctx context.Context) (err error) {

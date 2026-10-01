@@ -86,7 +86,7 @@ func (s *Server) createNativeFileAttachment(w http.ResponseWriter, r *http.Reque
 	}
 	var target nativefiles.Target
 	if request.Kind == "vm" {
-		target, err = s.vms.NativeFilesTarget(r.Context(), request.Name)
+		target, err = s.vms.NativeFilesTarget(r.Context(), request.Name, request.Writable)
 	} else {
 		target, err = s.docker.NativeFilesTarget(r.Context(), request.Kind, request.Name, request.Writable)
 	}

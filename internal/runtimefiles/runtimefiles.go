@@ -71,7 +71,19 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	if envelope.Descriptor.Resource.ID == "" || envelope.Request.Identity != envelope.Descriptor.Resource.Fingerprint() {
 		return datafiles.ErrConflict
 	}
-	descriptor, err := resolveOwnership(envelope.Descriptor)
+	if envelope.Request.Action == "sftp" && envelope.Request.Writable &&
+		(envelope.Descriptor.Resource.Kind == "image" || envelope.Descriptor.Resource.ReadOnly) {
+		return os.ErrPermission
+	}
+	descriptor := envelope.Descriptor
+	if descriptor.Resource.Kind == "vm" {
+		home, err := os.UserHomeDir()
+		if err != nil || descriptor.RootPath != home || envelope.Request.Action != "sftp" {
+			return errors.Join(datafiles.ErrInvalid, err)
+		}
+		return ExecuteDirectory(ctx, descriptor, envelope.Request, reader, output)
+	}
+	descriptor, err = resolveOwnership(descriptor)
 	if err != nil {
 		return err
 	}
@@ -92,6 +104,9 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		return json.NewEncoder(output).Encode(map[string]bool{"detached": true})
 	default:
 		readOnly := envelope.Request.Action != "write" && envelope.Request.Action != "delete"
+		if envelope.Request.Action == "sftp" {
+			readOnly = !envelope.Request.Writable
+		}
 		return withDirectory(ctx, descriptor, readOnly, func(descriptor Descriptor) error {
 			return ExecuteDirectory(ctx, descriptor, envelope.Request, reader, output)
 		})
@@ -118,6 +133,15 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 	var result any
 	var err error
 	switch request.Action {
+	case "sftp":
+		if request.Writable && descriptor.Resource.ReadOnly {
+			return os.ErrPermission
+		}
+		return datafiles.ServeSFTP(ctx, &sftpStdio{Reader: input, Writer: output}, descriptor.RootPath, datafiles.SFTPOptions{
+			ReadOnly:   !request.Writable || descriptor.Resource.ReadOnly,
+			ReadOnlyAt: func(value string) bool { return readOnlyPath(descriptor, value) },
+			MapOwner:   descriptor.hostOwner, Owner: descriptor.namespaceOwner,
+		})
 	case "list":
 		var listing datafiles.Listing
 		listing, err = datafiles.List(ctx, descriptor.RootPath, request.Path, descriptor.Resource)

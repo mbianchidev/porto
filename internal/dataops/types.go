@@ -18,6 +18,15 @@ type Selection struct {
 	Destination string `json:"destination,omitempty"`
 }
 
+type SourceTemporary struct {
+	Context  string `json:"context"`
+	Endpoint string `json:"endpoint"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	ID       string `json:"id,omitempty"`
+	Owner    string `json:"owner"`
+}
+
 type Request struct {
 	Action            string             `json:"action"`
 	Resource          datafiles.Resource `json:"resource"`

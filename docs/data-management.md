@@ -117,6 +117,8 @@ does not delete its archives. Failures and interrupted jobs remain visible.
 contexts without switching the active context. Select images, named volumes,
 custom networks and compatible stopped containers, then review the dry run.
 Source sockets, original resources and registry credentials are not changed.
+Unattached volumes can be read through explicitly consented temporary helpers;
+their exact source names and consequences appear in the dry run.
 
 ```sh
 porto docker migrate contexts
@@ -124,6 +126,8 @@ porto docker migrate --context desktop-linux
 porto docker migrate --context desktop-linux \
   --objects image:fixture:latest,volume:fixture-data,container:fixture \
   --confirm
+porto docker migrate --context desktop-linux \
+  --objects volume:unattached-fixture --allow-source-helper --confirm
 ```
 
 Container dependencies must be selected too. Unsupported host paths,
@@ -135,9 +139,18 @@ sockets or Windows named pipes, not unauthenticated remote endpoints.
 
 Image content is loaded and its config digest checked. Volume data uses the
 source's read-only container archive API or an already accessible local
-mountpoint. An unreferenced Docker Desktop volume without such access requires
-you to attach it to an existing source container or export a local archive
-yourself; Porto does not create a source helper or start a workload implicitly.
+mountpoint. For an unattached Docker Desktop volume, select **Allow temporary
+read-only source access** (CLI: `--allow-source-helper`). Porto loads a uniquely
+labelled empty scratch image and creates a stopped helper container. Its volume
+mount is **read-only with NoCopy**, its network disabled, and it is never started.
+There is no registry pull, executable workload, volume population, or source
+workload stop. The archive is read through Docker's stopped-container API.
+Only identity/label-proven helper containers/images are removed afterward;
+original resources and data remain intact. Helper reservations persist before
+source mutations, so a daemon interruption can recover exact owned resources.
+An offline or altered source retains its cleanup reservation and reports the
+failure instead of guessing ownership. Without that explicit consent, the dry
+run rejects volumes needing a helper; local archive import remains available.
 Completed destination objects remain on partial failure, with per-object
 results and deterministic conflicts. A persisted volume identity ledger permits
 resuming a verified transfer without silently duplicating a recreated name.
@@ -163,8 +176,28 @@ porto docker files detach <attachment-id>
 | Linux / local containerd | Owned Linux bind mount | Linux mount permission, kernel 5.12+ recursive safe attributes; stopped snapshots do not start workloads |
 | macOS / Porto Lima | Foreground SSHFS over Lima SSH | macFUSE and a maintained SSHFS build proving `contain_symlinks`; sudo SFTP access inside the Porto guest |
 | Linux / Porto Lima | Foreground SSHFS over Lima SSH | FUSE3 and containment-capable SSHFS |
-| Windows / Porto Lima | Explicitly unavailable | Current folder bridges cannot prove the required containment/readiness contract; use Files, archives or `porto vm copy` |
+| Windows x64/ARM64 / Porto Lima | WinFsp host folder with direct confined SFTP | Install WinFsp 2.1+ once; the Porto desktop bundles its native mount helper. Running/stopped containers, images and local volumes use the identity-checked guest helper. |
 | Standalone managed VM | SSHFS of its guest home | Running, Porto-owned standalone VM; no implicit boot or access to unrelated VM resources |
+
+On Windows, the standalone VM row uses the same WinFsp/SFTP integration for
+its guest home. Porto installs a checksum-verified, version-scoped guest helper
+only after native-access consent, without replacing the VM's other tooling.
+WinFsp is the maintained OS filesystem driver; installation requires your
+administrator approval. Porto never installs a kernel driver silently. The
+capability report distinguishes **driver missing** from **guest disconnected**.
+Once installed, **Open files** exposes a real private folder usable by Explorer,
+VS Code and other ordinary host editors.
+
+Windows mounts use direct SFTP random-access I/O rather than a cached sync
+folder: a successful write is persisted in the workload filesystem before the
+host receives success. There is no delayed upload or automatic copy-back at
+detach. Images are read-only both at WinFsp and the guest handler. All paths,
+link targets and mutations are confined by `os.Root`; symlinks cannot expose
+unrelated host/guest locations. Read-only bind mounts are enforced independently
+of the GUI. Guest files retain their modes and logical UID/GID; the host ACL
+grants access only to the mounting user. Case-sensitive guest names remain
+case-sensitive. Filesystem notifications from arbitrary guest processes are
+not guaranteed, so refresh or poll for external changes.
 
 Rootless local kernels may forbid binding a running container's locked mount
 subtree. In-app Files reads its live `/proc` root safely without a bind; native
@@ -184,6 +217,8 @@ notifications are not guaranteed; refresh/poll for concurrent changes.
 
 Detach before destructive storage changes. The daemon monitors resource
 identity/connection state, detaches on shutdown/update, and recovers its exact
-owned attachment records after an interrupted daemon. Failed detach operations
+owned attachment records after an interrupted daemon. Windows readiness checks
+the actual mounted volume's label/serial, not an empty directory; recovery
+checks the bridge PID and creation time before stopping a process. Failed detach operations
 remain visible; cleanup never removes source data. If a driver or backend is
 unavailable, use the in-app inspector, verified archives, or VM copy instead.

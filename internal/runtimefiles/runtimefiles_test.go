@@ -17,6 +17,7 @@ func TestDirectoryRequestValidatesIdentityAndReadOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(directory, "fixture.txt"), []byte("synthetic"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+
 	resource := datafiles.Resource{Kind: "volume", Name: "fixture", ID: "volume-1"}
 	descriptor := Descriptor{Resource: resource, RootPath: directory}
 	request := datafiles.Request{Action: "list", Path: ".", Identity: "stale"}

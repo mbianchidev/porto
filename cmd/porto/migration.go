@@ -21,11 +21,12 @@ func dockerMigrationCmd(args []string) error {
 	objects := flags.String("objects", "", "comma-separated kind:name selectors")
 	confirm := flags.Bool("confirm", false, "execute a conflict-free dry run")
 	sensitive := flags.Bool("include-sensitive-environment", false, "explicitly select local sensitive environment transfer")
-	if err := parseInterspersed(flags, args, map[string]bool{"confirm": true, "include-sensitive-environment": true}); err != nil {
+	helpers := flags.Bool("allow-source-helper", false, "explicitly allow empty-image/stopped-container readonly access for unattached volumes; helpers are never started")
+	if err := parseInterspersed(flags, args, map[string]bool{"confirm": true, "include-sensitive-environment": true, "allow-source-helper": true}); err != nil {
 		return err
 	}
 	if *context == "" || flags.NArg() != 0 {
-		return errors.New("usage: porto docker migrate --context <name> [--objects image:ref,volume:name,network:name,container:name] [--confirm]")
+		return errors.New("usage: porto docker migrate --context <name> [--objects image:ref,volume:name,network:name,container:name] [--allow-source-helper] [--confirm]")
 	}
 	var output bytes.Buffer
 	if err := api("GET", "/api/docker/migration/inventory?context="+url.QueryEscape(*context), nil, &output); err != nil {
@@ -38,7 +39,7 @@ func dockerMigrationCmd(args []string) error {
 	if *objects == "" {
 		return writeOutput(inventory)
 	}
-	request := dataops.Request{Action: "migration", Context: *context, IncludeSensitive: *sensitive}
+	request := dataops.Request{Action: "migration", Context: *context, IncludeSensitive: *sensitive, AllowSourceHelper: *helpers}
 	for _, selector := range strings.Split(*objects, ",") {
 		kind, name, valid := strings.Cut(selector, ":")
 		if !valid {

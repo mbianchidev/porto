@@ -29,6 +29,7 @@ type Target struct {
 	Backend      *runtimefiles.Descriptor
 	Token        string
 	NamespacePID int32
+	SFTP         *SFTPCommand
 	Verify       func(context.Context) error
 	Release      func(context.Context) error
 }
@@ -53,6 +54,10 @@ type Attachment struct {
 	Backend      *runtimefiles.Descriptor `json:"backend,omitempty"`
 	Token        string                   `json:"token,omitempty"`
 	NamespacePID int32                    `json:"namespacePid,omitempty"`
+	Driver       string                   `json:"driver,omitempty"`
+	BridgePID    int                      `json:"bridgePid,omitempty"`
+	BridgeStart  uint64                   `json:"bridgeStart,omitempty"`
+	Serial       uint32                   `json:"serial,omitempty"`
 }
 
 type liveAttachment struct {
@@ -60,6 +65,8 @@ type liveAttachment struct {
 	target  Target
 	process runtimes.Process
 	cancel  context.CancelFunc
+	done    <-chan error
+	stdinMu sync.Mutex
 }
 
 type Manager struct {
@@ -83,7 +90,7 @@ func (m *Manager) Capability(ctx context.Context, local bool) Capability {
 		return Capability{Supported: true, Driver: "Linux bind mount", Message: "Backend-local, ownership-checked bind mount; images are kernel read-only.", Fallback: fallback}
 	}
 	if runtime.GOOS == "windows" {
-		return Capability{Driver: "WinFsp / SSHFS-Win", Message: "Native Windows folder bridges are unavailable until the installed driver can prove symlink containment and owned mount readiness. Porto will not report a copied folder as a live mount.", Fallback: fallback}
+		return m.windowsCapability(ctx)
 	}
 	binary, err := m.lookPath("sshfs")
 	if err != nil {
@@ -132,6 +139,9 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 	}
 	if err := os.Chmod(m.root, 0o700); err != nil {
 		return result, err
+	}
+	if runtime.GOOS == "windows" {
+		return m.attachWindowsLocked(ctx, target, writable)
 	}
 	result = Attachment{
 		ID: id, Resource: target.Resource, Identity: target.Identity, ReadOnly: !writable, State: "connecting",
@@ -275,6 +285,15 @@ func (m *Manager) Get(ctx context.Context, id string) (Attachment, error) {
 		m.mu.Unlock()
 		return record, fmt.Errorf("%w: native resource is disconnected or its identity changed", datafiles.ErrConflict)
 	}
+	if live.record.Driver == "winfsp" {
+		if err := verifyWindowsMount(live.record); err != nil {
+			m.mu.Lock()
+			live.record.State, live.record.Message = "disconnected", err.Error()
+			record := live.record
+			m.mu.Unlock()
+			return record, err
+		}
+	}
 	m.mu.Lock()
 	record := live.record
 	m.mu.Unlock()
@@ -298,6 +317,20 @@ func (m *Manager) Detach(ctx context.Context, id string) error {
 	live := m.attachments[id]
 	if live == nil {
 		return os.ErrNotExist
+	}
+	if live.record.Driver == "winfsp" {
+		if err := m.detachWindowsLocked(ctx, live); err != nil {
+			live.record.State, live.record.Message = "detach-failed", err.Error()
+			return errors.Join(err, m.save(live.record))
+		}
+		if err := live.target.Release(ctx); err != nil {
+			return err
+		}
+		if err := os.Remove(filepath.Join(m.root, id+".json")); err != nil {
+			return err
+		}
+		delete(m.attachments, id)
+		return nil
 	}
 	if !live.target.Local {
 		mounted, err := m.mounted(ctx, live.record.Path)

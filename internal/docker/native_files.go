@@ -35,6 +35,35 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writ
 	if writable && (descriptor.Resource.ReadOnly || kind == "image") {
 		return target, fmt.Errorf("%w: native image or read-only container writes are rejected", datafiles.ErrUnsupported)
 	}
+	if runtime.GOOS == "windows" {
+		if backend.limaInstance == "" {
+			return target, fmt.Errorf("%w: native Windows runtime files require the Porto Linux guest", datafiles.ErrUnsupported)
+		}
+		encoded, err := nativefiles.EncodeNativeRequest(descriptor, writable)
+		if err != nil {
+			return target, err
+		}
+		target = nativefiles.Target{
+			Resource: descriptor.Resource, Identity: descriptor.Resource.Fingerprint(),
+			SFTP: &nativefiles.SFTPCommand{
+				Name: backend.name,
+				Args: []string{"shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+					`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files-sftp "$1"`, "porto-native-files", encoded},
+			},
+			Release: func(context.Context) error { return nil },
+		}
+		target.Verify = func(ctx context.Context) error {
+			current, err := m.FileDescriptor(ctx, kind, descriptor.Resource.Name)
+			if err != nil {
+				return err
+			}
+			if current.Resource.Fingerprint() != target.Identity || current.PID != descriptor.PID {
+				return datafiles.ErrConflict
+			}
+			return nil
+		}
+		return target, nil
+	}
 	if kind == "container" && descriptor.PID > 0 {
 		if backend.limaInstance == "" {
 			return target, fmt.Errorf("%w: this rootless kernel locks the running container's mount subtree; use in-app Files or stop it explicitly before mounting its snapshot", datafiles.ErrUnsupported)

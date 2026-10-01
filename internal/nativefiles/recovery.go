@@ -63,6 +63,14 @@ func (m *Manager) Recover(ctx context.Context, release func(context.Context, Att
 			result = errors.Join(result, datafiles.ErrConflict)
 			continue
 		}
+		if record.Driver != "" && record.Driver != "winfsp" {
+			result = errors.Join(result, datafiles.ErrInvalid)
+			continue
+		}
+		if record.Driver == "winfsp" && (record.BridgePID < 1 || record.BridgeStart == 0 || record.Serial == 0) {
+			result = errors.Join(result, datafiles.ErrInvalid)
+			continue
+		}
 		captured := record
 		target := Target{
 			Resource: record.Resource, Identity: record.Identity, Local: record.Local,

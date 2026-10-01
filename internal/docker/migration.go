@@ -13,7 +13,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -54,12 +53,13 @@ type MigrationInventory struct {
 }
 
 type MigrationPreview struct {
-	Request      dataops.Request   `json:"request"`
-	Objects      []MigrationObject `json:"objects"`
-	Conflicts    []string          `json:"conflicts"`
-	Warnings     []string          `json:"warnings"`
-	Token        string            `json:"token"`
-	SourcePolicy string            `json:"sourcePolicy"`
+	Request       dataops.Request   `json:"request"`
+	Objects       []MigrationObject `json:"objects"`
+	Conflicts     []string          `json:"conflicts"`
+	Warnings      []string          `json:"warnings"`
+	Token         string            `json:"token"`
+	SourcePolicy  string            `json:"sourcePolicy"`
+	SourceHelpers []string          `json:"sourceHelpers"`
 }
 
 type migrationClient struct {
@@ -139,7 +139,11 @@ func (c *migrationClient) request(ctx context.Context, method, resource string, 
 	}
 	request.URL.RawQuery = query.Encode()
 	if body != nil {
-		request.Header.Set("Content-Type", "application/json")
+		contentType := "application/json"
+		if resource == "/images/load" {
+			contentType = "application/x-tar"
+		}
+		request.Header.Set("Content-Type", contentType)
 	}
 	response, err := c.client.Do(request)
 	if err != nil {
@@ -149,9 +153,9 @@ func (c *migrationClient) request(ctx context.Context, method, resource string, 
 		defer response.Body.Close()
 		var message struct{ Message string }
 		if err := json.NewDecoder(io.LimitReader(response.Body, 4096)).Decode(&message); err != nil {
-			return nil, fmt.Errorf("source runtime rejected request with HTTP %d", response.StatusCode)
+			return nil, &sourceAPIError{status: response.StatusCode, message: "source runtime rejected this request"}
 		}
-		return nil, fmt.Errorf("source runtime: %s", message.Message)
+		return nil, &sourceAPIError{status: response.StatusCode, message: message.Message}
 	}
 	return response, nil
 }
@@ -374,7 +378,8 @@ func (m *Manager) MigrationInventory(ctx context.Context, contextName string) (M
 
 func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request) (MigrationPreview, error) {
 	preview := MigrationPreview{Request: request, Objects: make([]MigrationObject, 0), Conflicts: make([]string, 0), Warnings: make([]string, 0),
-		SourcePolicy: "Read-only source inventory and image/container archive APIs. No source context switch, workload start/stop, registry credential import, or original resource deletion. Optional temporary read-only helpers require separate explicit consent."}
+		SourceHelpers: make([]string, 0),
+		SourcePolicy:  "Original source volumes, images, containers, contexts and credentials remain unchanged. No source workload is started/stopped. Explicit helper consent permits only an empty temporary image and a never-started container with a read-only/no-copy volume mount; owned helpers are removed after transfer."}
 	if request.Context == "" || len(request.Selections) == 0 {
 		return preview, fmt.Errorf("%w: choose a source context and individual resources", datafiles.ErrInvalid)
 	}
@@ -461,6 +466,27 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 					}
 				}
 			case "volume":
+				var volume struct{ Name, Driver, CreatedAt, Mountpoint string }
+				if err := json.Unmarshal(metadata, &volume); err != nil {
+					return preview, err
+				}
+				container, _, err := source.findVolumeContainer(ctx, object.Name)
+				if err != nil {
+					return preview, err
+				}
+				hostAccessible := false
+				if container == "" && strings.HasPrefix(source.context.Endpoint, "unix://") && filepath.IsAbs(volume.Mountpoint) {
+					info, err := os.Stat(volume.Mountpoint)
+					hostAccessible = err == nil && info.IsDir()
+				}
+				if container == "" && !hostAccessible {
+					preview.SourceHelpers = append(preview.SourceHelpers, object.Name)
+					if !request.AllowSourceHelper {
+						preview.Conflicts = append(preview.Conflicts, object.Name+": enable explicit read-only temporary source-helper access to migrate this unattached volume")
+					} else {
+						preview.Warnings = append(preview.Warnings, object.Name+": temporary empty image and stopped helper container will be created, never started, mounted read-only/no-copy, and removed after transfer")
+					}
+				}
 				for _, target := range targetVolumes {
 					if target.Name != destination {
 						continue
@@ -815,48 +841,32 @@ func (m *Manager) migrateVolume(ctx context.Context, source *migrationClient, re
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Close(), os.Remove(file.Name())) }()
-	var containers []struct {
-		ID string `json:"Id"`
-	}
-	if err := source.get(ctx, "/containers/json", url.Values{"all": {"true"}}, &containers); err != nil {
+	containerID, _, err := source.findVolumeContainer(ctx, selection.Name)
+	if err != nil {
 		return err
 	}
-	containerID, mountedPath := "", ""
-	for _, container := range containers {
-		var inspected migrationContainer
-		if err := source.get(ctx, "/containers/"+url.PathEscape(container.ID)+"/json", nil, &inspected); err != nil {
-			return err
-		}
-		for _, mounted := range inspected.Mounts {
-			if mounted.Type == "volume" && mounted.Name == selection.Name {
-				containerID, mountedPath = inspected.ID, mounted.Destination
-				break
-			}
-		}
-		if containerID != "" {
-			break
+	local := false
+	if containerID == "" && strings.HasPrefix(source.context.Endpoint, "unix://") && filepath.IsAbs(volume.Mountpoint) {
+		if info, statErr := os.Stat(volume.Mountpoint); statErr == nil && info.IsDir() {
+			local = true
 		}
 	}
-	if containerID == "" {
-		if source.context.Endpoint != "" && strings.HasPrefix(source.context.Endpoint, "unix://") && filepath.IsAbs(volume.Mountpoint) {
-			if info, statErr := os.Stat(volume.Mountpoint); statErr == nil && info.IsDir() {
-				_, err = datafiles.Export(ctx, file, volume.Mountpoint, resource)
-				if err != nil {
-					return err
-				}
-			} else {
-				return fmt.Errorf("%w: unreferenced source volume is not host-accessible; attach it to an existing source container yourself or export a local archive. Porto does not create source resources implicitly.", ErrUnsupported)
-			}
-		} else {
-			return fmt.Errorf("%w: attach this volume to a source container or export a local archive first", ErrUnsupported)
+	if local {
+		if _, err := datafiles.Export(ctx, file, volume.Mountpoint, resource); err != nil {
+			return err
 		}
 	} else {
-		response, err := source.request(ctx, http.MethodGet, "/containers/"+url.PathEscape(containerID)+"/archive", url.Values{"path": {path.Join(mountedPath, ".") + "/."}}, nil)
+		stream, cleanup, err := source.openVolumeArchive(ctx, request, selection.Name, selection.ID, m.migrationTemporaryReserve, m.migrationTemporaryClear)
 		if err != nil {
 			return err
 		}
-		_, sealErr := datafiles.SealTar(ctx, response.Body, &transferWriter{ctx: ctx, output: file, progress: progress, phase: "Copying read-only source volume archive"}, resource)
-		if err := errors.Join(sealErr, response.Body.Close()); err != nil {
+		defer func() {
+			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			err = errors.Join(err, cleanup(cleanupContext))
+		}()
+		_, sealErr := datafiles.SealTar(ctx, stream, &transferWriter{ctx: ctx, output: file, progress: progress, phase: "Copying read-only source volume archive"}, resource)
+		if err := errors.Join(sealErr, stream.Close()); err != nil {
 			return err
 		}
 	}

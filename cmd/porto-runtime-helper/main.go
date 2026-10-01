@@ -15,7 +15,7 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "3"
+const helperVersion = "4"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -75,6 +75,15 @@ func main() {
 		ctx, cancel := context.WithTimeout(base, 2*time.Hour)
 		defer cancel()
 		if err := runtimefiles.Run(ctx, os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+	case "files-sftp":
+		if len(os.Args) != 3 {
+			fail(errors.New("files-sftp requires one identity-bound request"))
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		if err := runtimefiles.RunSFTP(ctx, os.Args[2], os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 	case "cni-connect", "cni-check", "cni-disconnect":

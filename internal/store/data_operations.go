@@ -51,6 +51,13 @@ CREATE TABLE IF NOT EXISTS migration_volume_ledger (
  verified_at TEXT NOT NULL,
  PRIMARY KEY(source_context,source_identity,destination)
 );
+CREATE TABLE IF NOT EXISTS migration_source_temporaries (
+ owner TEXT NOT NULL,
+ kind TEXT NOT NULL,
+ resource TEXT NOT NULL,
+ reserved_at TEXT NOT NULL,
+ PRIMARY KEY(owner,kind)
+);
 `)
 	if err != nil {
 		return err

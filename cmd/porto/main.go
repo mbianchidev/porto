@@ -708,6 +708,8 @@ Commands:
   porto docker backups schedule <volume> [--hours 24] [--retain 7] [--enabled]
   porto docker backups run <id>
   porto docker operations [id]|cancel <id>
+  porto docker migrate --context <name> [--objects kind:name,...] [--allow-source-helper] [--confirm]
+  porto docker files <container|image|volume|vm> <name> [--writable] --confirm
   porto docker context-install|activate|deactivate
   porto docker container <start|stop|restart|pause|unpause|remove> <id>
   porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]

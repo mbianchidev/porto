@@ -217,6 +217,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	dockerManager.SetManagedContainerGuard(clusterProvisioner.ProtectContainerRemoval)
 	dockerManager.SetStorageReporter(server.recordDockerStorageOperation)
 	dockerManager.SetMigrationVolumeLedger(st.RecordMigratedVolume, st.KnownMigratedVolume)
+	dockerManager.SetMigrationTemporaryLedger(st.ReserveMigrationTemporary, st.ClearMigrationTemporary, st.MigrationTemporaries)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
 	return server
 }
@@ -313,6 +314,14 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if err := s.store.RecoverDataOperations(ctx, time.Now().UTC()); err != nil {
 		return fmt.Errorf("recover interrupted data operations: %w", err)
+	}
+	if settings.DockerEnabled {
+		recovery, cancelRecovery := context.WithTimeout(ctx, 30*time.Second)
+		helperRecoveryErr := s.docker.RecoverMigrationHelpers(recovery)
+		cancelRecovery()
+		if helperRecoveryErr != nil {
+			log.Printf("recover source migration helpers: %v; cleanup reservations remain for explicit retry", helperRecoveryErr)
+		}
 	}
 	if s.nativeFiles != nil {
 		recovery, cancelRecovery := context.WithTimeout(ctx, 30*time.Second)

@@ -8,7 +8,7 @@ import { DataOperations } from '../components/DataOperations'
 type SourceContext = { name: string; endpoint: string; desktop: boolean; supported: boolean; message?: string }
 type SourceObject = { kind: string; name: string; id: string; size?: number; supported: boolean; message?: string; composeProject?: string; composeService?: string }
 type Inventory = { context: SourceContext; objects: SourceObject[]; warnings: string[] }
-type Preview = { request: DataRequest; objects: SourceObject[]; conflicts: string[]; warnings: string[]; token: string; sourcePolicy: string }
+type Preview = { request: DataRequest; objects: SourceObject[]; conflicts: string[]; warnings: string[]; token: string; sourcePolicy: string; sourceHelpers: string[] }
 
 export function Migration() {
   const { notifyError, notifyNotice } = useMessages()
@@ -16,6 +16,7 @@ export function Migration() {
   const [selected, setSelected] = useState<Set<string>>(new Set())
   const [destinations, setDestinations] = useState<Record<string, string>>({})
   const [sensitive, setSensitive] = useState(false)
+  const [allowHelpers, setAllowHelpers] = useState(false)
   const [preview, setPreview] = useState<Preview | null>(null)
   const [busy, setBusy] = useState(false)
   const contexts = usePolledResource<SourceContext[]>((signal) => apiGet('/api/docker/migration/contexts', signal), 0, [], 'migration:contexts')
@@ -28,7 +29,7 @@ export function Migration() {
     try {
       const selections = (inventory.data?.objects ?? []).filter((item) => selected.has(keyFor(item)))
         .map((item) => ({ kind: item.kind, name: item.name, id: item.id, destination: destinations[keyFor(item)] || item.name }))
-      setPreview(await apiSend<Preview>('/api/docker/storage/preview', 'POST', { action: 'migration', context, selections, includeSensitive: sensitive }))
+      setPreview(await apiSend<Preview>('/api/docker/storage/preview', 'POST', { action: 'migration', context, selections, includeSensitive: sensitive, allowSourceHelper: allowHelpers }))
     } catch (err) { notifyError('migration', errorMessage(err, 'Migration dry run failed')) }
     finally { setBusy(false) }
   }
@@ -49,7 +50,7 @@ export function Migration() {
         <h2>Select a source context</h2>
         <p>Docker Desktop contexts are detected alongside other local Docker sockets. Selecting one here never changes your active Docker context.</p>
         {contexts.error && <p role="alert" className="errorLine">{contexts.error}</p>}
-        <label className="inspectorForm">Source Docker context<select value={context} disabled={busy} onChange={(event) => { setContext(event.target.value); setSelected(new Set()); setPreview(null) }}>
+        <label className="inspectorForm">Source Docker context<select value={context} disabled={busy} onChange={(event) => { setContext(event.target.value); setSelected(new Set()); setAllowHelpers(false); setPreview(null) }}>
           <option value="">Choose a source</option>{contexts.data?.map((source) => <option value={source.name} key={source.name} disabled={!source.supported}>{source.name}{source.desktop ? ' · Docker Desktop' : ''}{!source.supported ? ' · unavailable' : ''}</option>)}
         </select></label>
         {contexts.data?.filter((source) => !source.supported).map((source) => <p key={source.name}>{source.name}: {source.message}</p>)}
@@ -58,7 +59,7 @@ export function Migration() {
         {inventory.data?.warnings.map((warning) => <p className="hintLine" key={warning}>{warning}</p>)}
       </section>
       <section className="drawerPanel"><h3>Choose individual objects</h3>
-        <p className="hintLine">Select container dependencies (images, named volumes and custom networks) too. Unreferenced volumes require a host-accessible mountpoint or a local archive; Porto will not silently create source helper containers.</p>
+        <p className="hintLine">Select container dependencies (images, named volumes and custom networks) too. Unattached volumes can use an explicitly approved stopped helper with a read-only/no-copy mount. No source workload is started.</p>
         <div className="dataTableScroll"><table className="dataTable">
           <thead><tr><th>Select</th><th>Source</th><th>Destination / capability</th></tr></thead>
           <tbody>{inventory.data?.objects.map((item) => <tr key={keyFor(item)}>
@@ -68,12 +69,14 @@ export function Migration() {
           </tr>)}</tbody>
         </table></div>
         <label className="toggleRow"><span>Explicitly allow sensitive container environment values through this local socket transfer (never registry credentials)</span><input type="checkbox" checked={sensitive} onChange={(event) => { setSensitive(event.target.checked); setPreview(null) }} /></label>
+        <label className="toggleRow"><span>Allow temporary read-only source access for unattached volumes. Creates an empty helper image and stopped container; never starts it, never copies into the volume, and removes only owned helpers afterward.</span><input type="checkbox" checked={allowHelpers} disabled={busy} onChange={(event) => { setAllowHelpers(event.target.checked); setPreview(null) }} /></label>
         <button type="button" disabled={busy || !selected.size || !context} onClick={() => void prepare()}>Dry-run selected migration</button>
       </section>
       {preview && <section className="drawerPanel" aria-label="Migration dry-run report">
         <h3>Dry-run report</h3><p>{preview.sourcePolicy}</p>
         {preview.conflicts.map((conflict) => <p role="alert" className="errorLine" key={conflict}>{conflict}</p>)}
         {preview.warnings.map((warning) => <p className="hintLine" key={warning}>{warning}</p>)}
+        {preview.sourceHelpers.length > 0 && <p>Temporary read-only source access required for: {preview.sourceHelpers.join(', ')}.</p>}
         <p>{preview.objects.length} exact source identities selected. Original source resources are never removed.</p>
         <button type="button" disabled={busy || preview.conflicts.length > 0} onClick={() => void start()}>Confirm selected migration</button>
       </section>}

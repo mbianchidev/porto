@@ -44,6 +44,15 @@ They use the application version with `+ci.<run-number>` build metadata, so a
 test build is not immediately considered older than the same stable version.
 These are unsigned PR/test builds, not published releases.
 
+The Windows installer job also checksum-verifies and installs the official
+WinFsp 2.1 driver on its disposable runner, then tests the **installed**
+`porto-files-mount.exe` against synthetic confined SFTP roots. Container,
+image, volume and VM fixtures cover real host paths, direct editor
+write/rename, concurrent guest changes, read-only image rejection, spaces/
+non-ASCII paths and owned detach without source deletion. Normal desktop
+installation never silently installs WinFsp; users explicitly install it
+before enabling native host folders.
+
 Desktop logging tests run natively on Windows and macOS. The Windows installer
 check also starts the installed daemon against a deliberately invalid,
 isolated test database to verify that early failures reach `logs/porto.log`
