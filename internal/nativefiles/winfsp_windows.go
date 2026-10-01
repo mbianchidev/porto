@@ -365,8 +365,13 @@ func (fs *winfspFilesystem) Rmdir(value string) int {
 func (fs *winfspFilesystem) Chmod(value string, mode uint32) int {
 	return nativeErrno(fs.core.Change(value, "chmod", os.FileMode(mode), 0, 0, time.Time{}, time.Time{}))
 }
-func (fs *winfspFilesystem) Chown(value string, uid, gid uint32) int {
-	return nativeErrno(fs.core.Change(value, "chown", 0, int(uid), int(gid), time.Time{}, time.Time{}))
+func (fs *winfspFilesystem) Chown(_ string, _, _ uint32) int {
+	if fs.core.readOnly {
+		return -fuse.EROFS
+	}
+	// WinFsp's post-create owner adjustment contains Windows SID mappings,
+	// not guest UID/GIDs. Keep guest ownership rather than applying those IDs.
+	return -fuse.ENOSYS
 }
 func (fs *winfspFilesystem) Utimens(value string, times []fuse.Timespec) int {
 	if len(times) != 2 {

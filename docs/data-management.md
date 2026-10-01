@@ -195,7 +195,10 @@ detach. Images are read-only both at WinFsp and the guest handler. All paths,
 link targets and mutations are confined by `os.Root`; symlinks cannot expose
 unrelated host/guest locations. Read-only bind mounts are enforced independently
 of the GUI. Guest files retain their modes and logical UID/GID; the host ACL
-grants access only to the mounting user. Case-sensitive guest names remain
+grants access only to the mounting user. Host ACL ownership changes are
+explicitly unsupported rather than translated from Windows SIDs into guest
+UID/GIDs; use guest tooling or archive metadata for Unix ownership changes.
+Case-sensitive guest names remain
 case-sensitive. Filesystem notifications from arbitrary guest processes are
 not guaranteed, so refresh or poll for external changes.
 
