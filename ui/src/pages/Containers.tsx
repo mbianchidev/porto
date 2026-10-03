@@ -5,6 +5,8 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
+import { ContainerInspect, ContainerLogs, ContainerStats } from '../components/ContainerDataInspector'
+import { RuntimeFiles } from '../components/RuntimeFiles'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -396,16 +398,22 @@ export function Containers() {
         )}
 
         {selected && (
-          <Inspector title={selected.name.replace(/^\//, '')} subtitle={selected.image} onClose={closeInspector}>
+          <Inspector title={selected.name.replace(/^\//, '')} subtitle={[selected.image, selected.composeProject, selected.composeService].filter(Boolean).join(' · ')} onClose={closeInspector}>
             <InspectorTabs
+              panelID="container-inspector-panel"
               tabs={[
                 { id: 'overview', label: 'Overview' },
+                { id: 'logs', label: 'Logs' },
+                { id: 'files', label: 'Files' },
+                { id: 'stats', label: 'Stats' },
+                { id: 'inspect', label: 'Inspect' },
                 { id: 'terminal', label: 'Terminal' },
                 { id: 'layers', label: 'Layers' },
               ]}
               activeID={containerTab}
               onSelect={setContainerTab}
             />
+            <div role="tabpanel" id="container-inspector-panel" aria-labelledby={`container-inspector-panel-${containerTab}`} tabIndex={0}>
             {containerTab === 'overview' && (
               <>
                 <div className="drawerReadouts" aria-label="Container readouts">
@@ -482,7 +490,12 @@ export function Containers() {
               </>
             )}
             {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
+            {containerTab === 'logs' && <ContainerLogs key={selected.id} id={selected.id} />}
+            {containerTab === 'files' && <RuntimeFiles key={selected.id} kind="container" name={selected.id} />}
+            {containerTab === 'stats' && <ContainerStats key={selected.id} id={selected.id} running={containerState(selected) === 'running'} />}
+            {containerTab === 'inspect' && <ContainerInspect key={selected.id} id={selected.id} />}
             {containerTab === 'layers' && <DiveTerminal image={selected.image} />}
+            </div>
           </Inspector>
         )}
       </div>

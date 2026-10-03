@@ -16,12 +16,17 @@ import (
 const imageTransferTimeout = 30 * time.Minute
 
 func (m *Manager) TagImage(ctx context.Context, source, target string) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	for label, value := range map[string]string{"source": source, "target": target} {
 		if err := validateObjectID(value); err != nil {
 			return fmt.Errorf("image tag %s: %w", label, err)
 		}
 	}
-	_, err := m.run(ctx, "tag Porto image", "tag", normalizeNerdctlReference(source), normalizeNerdctlReference(target))
+	_, err = m.run(ctx, "tag Porto image", "tag", normalizeNerdctlReference(source), normalizeNerdctlReference(target))
 	return err
 }
 
@@ -31,6 +36,11 @@ func (m *Manager) StreamLoadImages(
 	quiet bool,
 	emit func(runtimes.OutputChunk) error,
 ) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if archive == nil {
 		return errors.New("image archive is required")
 	}

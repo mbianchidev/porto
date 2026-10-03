@@ -1,5 +1,12 @@
 # Installation
 
+For live Windows Explorer/editor access to runtime files, install the maintained
+[WinFsp 2.1+ driver](https://winfsp.dev) explicitly, then use **Open files** in
+Porto. Desktop packages bundle the matching native mount helper; no SSHFS-Win
+installation or cached sync folder is needed. In-app Files and volume archives
+do not require WinFsp. See [native runtime access](data-management.md#native-file-manager-access)
+for write boundaries, guest support and cleanup.
+
 Porto needs both the `porto` binary and the compiled dashboard assets. Release archives include both.
 
 ## Install a release

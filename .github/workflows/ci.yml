@@ -18,6 +18,8 @@ jobs:
     name: Go ${{ matrix.go }} (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    env:
+      CGO_ENABLED: ${{ matrix.os == 'windows-latest' && '0' || '1' }}
     strategy:
       fail-fast: false
       matrix:
@@ -64,6 +66,12 @@ jobs:
       - name: Test with race detector
         if: runner.os == 'Linux'
         run: go test ./... -race -count=1
+
+      - name: Test unattached-volume migration against the runner Docker engine
+        if: runner.os == 'Linux' && matrix.go == 'stable'
+        env:
+          PORTO_TEST_MIGRATION_SOURCE_SOCKET: unix:///var/run/docker.sock
+        run: go test ./internal/docker -run '^TestUnattachedVolumeMigrationRealDockerArchive$' -count=1 -timeout=5m -v
 
       - name: Validate Windows installer
         if: runner.os == 'Windows'
@@ -175,6 +183,14 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Install browser test dependencies
+        if: matrix.node == '24'
+        run: npx --no-install playwright install --with-deps chromium
+
+      - name: Test data dashboards
+        if: matrix.node == '24'
+        run: npm test -- --reporter=line
+
       - name: Validate desktop shell
         run: |
           npm --prefix electron ci
@@ -217,6 +233,8 @@ jobs:
     name: Native installers (${{ matrix.goos }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
+    env:
+      CGO_ENABLED: '0'
     strategy:
       fail-fast: true
       matrix:
@@ -349,6 +367,19 @@ jobs:
           & node scripts/lima-runtime-smoke.cjs $limactl
           if ($LASTEXITCODE -ne 0) {
             throw 'Installed Lima failed the process-state recovery checks.'
+          }
+          & ./scripts/install-winfsp-ci.ps1
+          $env:PORTO_TEST_NATIVE_MOUNT_HELPER = Join-Path $installRoot 'resources/runtime/bin/porto-files-mount.exe'
+          $env:PORTO_TEST_WINFSP_NATIVE = '1'
+          try {
+            & go test ./internal/nativefiles -run '^TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach$' -count=1 -timeout=10m -v
+            if ($LASTEXITCODE -ne 0) {
+              throw 'Installed Porto native WinFsp folder bridge failed direct-edit/read-only/detach checks.'
+            }
+          }
+          finally {
+            Remove-Item Env:PORTO_TEST_NATIVE_MOUNT_HELPER
+            Remove-Item Env:PORTO_TEST_WINFSP_NATIVE
           }
           $env:PORTO_TEST_DAEMON = Join-Path $installRoot 'resources/porto.exe'
           try {

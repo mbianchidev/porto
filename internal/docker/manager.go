@@ -18,7 +18,9 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -49,31 +51,46 @@ var (
 )
 
 type Manager struct {
-	runner              runtimes.Runner
-	timeout             time.Duration
-	stateDir            string
-	lookPath            func(string) (string, error)
-	directCLI           bool
-	dialBuildKit        func(context.Context) (net.Conn, error)
-	installMu           sync.Mutex
-	ownershipProbe      chan struct{}
-	cleanupMu           sync.Mutex
-	inventoryMu         sync.Mutex
-	inventory           *containerInventory
-	inventoryCancel     context.CancelFunc
-	inventoryDone       chan struct{}
-	healthCancel        context.CancelFunc
-	healthDone          chan struct{}
-	runtimeConnector    containerRuntimeConnector
-	creationConnector   containerCreationConnector
-	operationsConnector containerOperationsConnector
-	execConnector       execOperationsConnector
-	networkConnector    networkOperationsConnector
-	metricReader        func(context.Context, string) (ContainerMetricSample, error)
-	networkLocks        *containerMutexes
-	containerNameMu     *sync.Mutex
-	registryAuthMu      sync.RWMutex
-	registryAuth        RegistryAuthResolver
+	runner                    runtimes.Runner
+	timeout                   time.Duration
+	stateDir                  string
+	lookPath                  func(string) (string, error)
+	directCLI                 bool
+	dialBuildKit              func(context.Context) (net.Conn, error)
+	installMu                 sync.Mutex
+	ownershipProbe            chan struct{}
+	cleanupMu                 sync.Mutex
+	inventoryMu               sync.Mutex
+	inventory                 *containerInventory
+	inventoryCancel           context.CancelFunc
+	inventoryDone             chan struct{}
+	healthCancel              context.CancelFunc
+	healthDone                chan struct{}
+	runtimeConnector          containerRuntimeConnector
+	creationConnector         containerCreationConnector
+	operationsConnector       containerOperationsConnector
+	execConnector             execOperationsConnector
+	networkConnector          networkOperationsConnector
+	metricReader              func(context.Context, string) (ContainerMetricSample, error)
+	networkLocks              *containerMutexes
+	containerNameMu           *sync.Mutex
+	registryAuthMu            sync.RWMutex
+	registryAuth              RegistryAuthResolver
+	fileDescriptorReader      func(context.Context, string, string) (runtimefiles.Descriptor, error)
+	metricHistoryMu           sync.Mutex
+	metricHistory             map[string][]InspectorStatsPoint
+	dataMu                    sync.RWMutex
+	storageReader             func(context.Context) (StorageUsage, error)
+	nativeGuard               func(string, string) error
+	managedContainerGuard     func(context.Context, string) error
+	storageReporter           func(context.Context, dataops.Request, dataops.Result, error) error
+	migrationSourceFactory    func(context.Context, string) (*migrationClient, error)
+	migrationVolumeRecorded   func(context.Context, string, string, string, string) error
+	migrationVolumeKnown      func(context.Context, string, string, string, string) (bool, error)
+	migrationTemporaryReserve func(context.Context, dataops.SourceTemporary) error
+	migrationTemporaryClear   func(context.Context, dataops.SourceTemporary) error
+	migrationTemporaryPending func(context.Context) ([]dataops.SourceTemporary, error)
+	nativeClose               func(context.Context) error
 }
 
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
@@ -452,24 +469,7 @@ func (m *Manager) runtimeHelperPath() (string, error) {
 }
 
 func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, error)) (string, error) {
-	if executable != "" {
-		candidate := filepath.Join(filepath.Dir(executable), "runtime", "bin", "porto-runtime-helper")
-		info, err := os.Stat(candidate)
-		if err == nil {
-			if !info.Mode().IsRegular() {
-				return "", fmt.Errorf("Porto runtime helper is not a regular file: %s", candidate)
-			}
-			return candidate, nil
-		}
-		if !errors.Is(err, os.ErrNotExist) {
-			return "", fmt.Errorf("inspect bundled Porto runtime helper %s: %w", candidate, err)
-		}
-	}
-	path, err := lookPath("porto-runtime-helper")
-	if err != nil {
-		return "", nil
-	}
-	return path, nil
+	return runtimes.BundledRuntimeHelper(executable, lookPath)
 }
 
 func (m *Manager) StartEngine(ctx context.Context) (err error) {
@@ -530,6 +530,11 @@ func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bool, err error) {
+	if m.nativeClose != nil {
+		if err := m.nativeClose(ctx); err != nil {
+			return false, fmt.Errorf("detach native files before engine shutdown: %w", err)
+		}
+	}
 	m.installMu.Lock()
 	defer m.installMu.Unlock()
 	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
@@ -693,6 +698,11 @@ func normalizeNerdctlContainerState(value string) string {
 }
 
 func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
@@ -815,6 +825,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 }
 
 func (m *Manager) RunContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer release()
 	id, err := m.CreateContainer(ctx, request)
 	if err != nil {
 		return "", err
@@ -1079,6 +1094,30 @@ func (m *Manager) ContainerAction(ctx context.Context, id, action string) error 
 }
 
 func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if m.nativeGuard != nil && m.nativeGuard("container", "*") != nil &&
+		(strings.HasPrefix(action, "remove") || action == "start" || action == "stop" || action == "restart") {
+		name, err := m.ContainerName(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := m.nativeGuard("container", name); err != nil {
+			return err
+		}
+	}
+	if strings.HasPrefix(action, "remove") && m.managedContainerGuard != nil {
+		name, err := m.ContainerName(ctx, id)
+		if err != nil {
+			return err
+		}
+		if err := m.managedContainerGuard(ctx, name); err != nil {
+			return err
+		}
+	}
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
@@ -1127,7 +1166,7 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
-	_, err := m.run(ctx, action+" Porto container", args...)
+	_, err = m.run(ctx, action+" Porto container", args...)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -1739,6 +1778,20 @@ func (m *Manager) InspectVolume(ctx context.Context, id string) (json.RawMessage
 }
 
 func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if m.nativeGuard != nil && m.nativeGuard("image", "*") != nil {
+		descriptor, err := m.FileDescriptor(ctx, "image", id)
+		if err != nil {
+			return err
+		}
+		if err := m.nativeGuard("image", descriptor.Resource.Name); err != nil {
+			return err
+		}
+	}
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
@@ -1747,7 +1800,7 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 		args = append(args, "--force")
 	}
 	args = append(args, normalizeNerdctlReference(id))
-	_, err := m.run(ctx, "remove Porto image", args...)
+	_, err = m.run(ctx, "remove Porto image", args...)
 	return err
 }
 
@@ -1761,6 +1814,11 @@ func (m *Manager) PullImageWithAuth(
 	platform string,
 	registryAuth *RegistryAuth,
 ) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := validateObjectID(reference); err != nil {
 		return err
 	}
@@ -1768,7 +1826,6 @@ func (m *Manager) PullImageWithAuth(
 	args = appendStringFlag(args, "--platform", platform)
 	normalized := normalizeNerdctlReference(reference)
 	args = append(args, normalized)
-	var err error
 	if registryAuth == nil {
 		registryAuth, err = m.resolveRegistryAuth(ctx, normalized)
 		if err != nil {

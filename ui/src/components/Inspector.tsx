@@ -95,10 +95,12 @@ export function InspectorTabs({
   tabs,
   activeID,
   onSelect,
+  panelID,
 }: {
   tabs: Array<{ id: string; label: string }>
   activeID: string
   onSelect: (id: string) => void
+  panelID?: string
 }) {
   function moveFocus(event: ReactKeyboardEvent<HTMLButtonElement>, index: number) {
     let nextIndex: number | null = null
@@ -120,6 +122,8 @@ export function InspectorTabs({
           type="button"
           role="tab"
           key={tab.id}
+          id={panelID ? `${panelID}-${tab.id}` : undefined}
+          aria-controls={panelID}
           aria-selected={activeID === tab.id}
           tabIndex={activeID === tab.id ? 0 : -1}
           className={activeID === tab.id ? 'active' : ''}

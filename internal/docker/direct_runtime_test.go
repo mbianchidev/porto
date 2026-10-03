@@ -95,6 +95,7 @@ func TestDirectContainerLabelsPersistOwnedRuntimeState(t *testing.T) {
 	})
 	runtimeClient := &grpcContainerRuntime{logDir: t.TempDir()}
 	labels, err := runtimeClient.directContainerLabels(
+		context.Background(),
 		CreateContainerRequest{
 			Name:     "demo",
 			Image:    "alpine:latest",

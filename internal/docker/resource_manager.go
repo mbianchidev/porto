@@ -39,10 +39,15 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 }
 
 func (m *Manager) RemoveNetwork(ctx context.Context, name string) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := validateObjectID(name); err != nil {
 		return err
 	}
-	_, err := m.run(ctx, "remove Porto network", "network", "rm", name)
+	_, err = m.run(ctx, "remove Porto network", "network", "rm", name)
 	return err
 }
 
@@ -104,6 +109,11 @@ func (m *Manager) DisconnectNetwork(ctx context.Context, network, container stri
 }
 
 func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels map[string]string) (Volume, error) {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return Volume{}, err
+	}
+	defer release()
 	if strings.TrimSpace(name) == "" {
 		generated, err := randomResourceName()
 		if err != nil {
@@ -132,14 +142,33 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 }
 
 func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := validateObjectID(name); err != nil {
 		return err
+	}
+	if m.nativeGuard != nil {
+		if err := m.nativeGuard("volume", name); err != nil {
+			return err
+		}
+	}
+	containers, err := m.Containers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if containerUsesVolume(container, name, "") {
+			return fmt.Errorf("%w: volume %s is referenced by container %s; remove or detach its mount first", ErrConflict, name, container.Name)
+		}
 	}
 	args := []string{"volume", "rm"}
 	if force {
 		args = append(args, "--force")
 	}
 	args = append(args, name)
-	_, err := m.run(ctx, "remove Porto volume", args...)
+	_, err = m.run(ctx, "remove Porto volume", args...)
 	return err
 }

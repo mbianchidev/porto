@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -1033,7 +1032,7 @@ func (r *grpcContainerRuntime) recreateAndStartTask(ctx context.Context, id stri
 		if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
 			return err
 		}
-		logURI := (&url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}).String()
+		logURI := logURIForLabels(record.GetLabels())
 		createRequest.Stdout = logURI
 		createRequest.Stderr = logURI
 	}
@@ -1239,10 +1238,7 @@ func (r *grpcContainerRuntime) UpdateRestartPolicy(ctx context.Context, id, poli
 		}
 		updates[restartStatusLabel] = map[bool]string{true: "running", false: "stopped"}[running]
 		updates[restartStoppedLabel] = strconv.FormatBool(!running)
-		updates[restartLogURILabel] = (&url.URL{
-			Scheme: "file",
-			Path:   filepath.ToSlash(logPath),
-		}).String()
+		updates[restartLogURILabel] = logURIForLabels(response.GetContainer().GetLabels())
 	}
 	return r.updateLabelsResolved(ctx, id, updates)
 }
@@ -1547,13 +1543,18 @@ func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint strin
 		return cleanup(err)
 	}
 	labels[portoLogPathLabel] = logPath
+	logURI, err := r.directLogURI(ctx, logPath)
+	if err != nil {
+		return cleanup(err)
+	}
+	labels[portoLogURILabel] = logURI.String()
+	if logURI.Scheme == "binary" {
+		labels[portoLogJournalLabel] = logPath + ".jsonl"
+	}
 	if labels[restartPolicyLabel] != "" {
 		labels[restartStatusLabel] = "stopped"
 		labels[restartStoppedLabel] = "true"
-		labels[restartLogURILabel] = (&url.URL{
-			Scheme: "file",
-			Path:   filepath.ToSlash(logPath),
-		}).String()
+		labels[restartLogURILabel] = logURI.String()
 	}
 	if _, err := restored.SetLabels(namespacedContext, labels); err != nil {
 		return cleanup(fmt.Errorf("restore container %q labels: %w", id, err))
@@ -1565,7 +1566,6 @@ func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint strin
 	if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
 		return cleanup(err)
 	}
-	logURI := &url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}
 	ioCreator := cio.LogURI(logURI)
 	if spec.Process != nil && spec.Process.Terminal {
 		ioCreator = cio.TerminalLogURI(logURI)
@@ -1803,7 +1803,7 @@ func (r *grpcContainerRuntime) removeDirectLog(ctx context.Context, logPath stri
 		_, err := r.runner.Run(ctx, runtimes.Command{
 			Name: "limactl",
 			Args: []string{
-				"shell", r.lima, "--", "rm", "-f", "--", logPath,
+				"shell", r.lima, "--", "rm", "-f", "--", logPath, logPath + ".jsonl",
 			},
 		})
 		if err != nil {
@@ -1813,6 +1813,9 @@ func (r *grpcContainerRuntime) removeDirectLog(ctx context.Context, logPath stri
 	}
 	if err := os.Remove(logPath); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return fmt.Errorf("remove direct container log %q: %w", logPath, err)
+	}
+	if err := os.Remove(logPath + ".jsonl"); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("remove timestamped container journal: %w", err)
 	}
 	return nil
 }
