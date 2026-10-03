@@ -13,7 +13,7 @@ import (
 	"time"
 )
 
-var Version = "1.2.16"
+var Version = "1.2.17"
 
 const (
 	AppName                  = "porto"
