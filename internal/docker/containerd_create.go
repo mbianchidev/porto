@@ -102,6 +102,7 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 		containerd.WithImage(image),
 		containerd.WithContainerLabels(labels),
 		containerd.WithRuntime(portoRuntimeName, nil),
+		containerd.WithSnapshotter(r.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithNewSpec(specOptions...),
 	)
@@ -230,6 +231,7 @@ func (r *grpcContainerRuntime) resolveContainerImage(
 	if errdefs.IsNotFound(err) {
 		options := []containerd.RemoteOpt{
 			containerd.WithPullUnpack,
+			containerd.WithPullSnapshotter(r.snapshotter),
 			containerd.WithPlatform(platform),
 		}
 		image, err = r.client.Pull(namespacedContext, imageReference, options...)
@@ -246,12 +248,12 @@ func (r *grpcContainerRuntime) resolveContainerImage(
 		image.Metadata(),
 		platforms.OnlyStrict(parsedPlatform),
 	)
-	unpacked, err := image.IsUnpacked(namespacedContext, "")
+	unpacked, err := image.IsUnpacked(namespacedContext, r.snapshotter)
 	if err != nil {
 		return nil, fmt.Errorf("inspect image unpack state %q: %w", imageReference, err)
 	}
 	if !unpacked {
-		if err := image.Unpack(namespacedContext, ""); err != nil {
+		if err := image.Unpack(namespacedContext, r.snapshotter); err != nil {
 			return nil, fmt.Errorf("unpack container image %q: %w", imageReference, err)
 		}
 	}
@@ -463,7 +465,7 @@ func (r *grpcContainerRuntime) cleanupDirectSnapshot(ctx context.Context, snapsh
 	if r.client == nil || snapshotKey == "" {
 		return nil
 	}
-	err := r.client.SnapshotService("").Remove(withContainerdNamespace(ctx, r.namespace), snapshotKey)
+	err := r.client.SnapshotService(r.snapshotter).Remove(withContainerdNamespace(ctx, r.namespace), snapshotKey)
 	if err == nil || errdefs.IsNotFound(err) {
 		return nil
 	}

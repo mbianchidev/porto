@@ -24,6 +24,15 @@ once, avoiding redundant registry requests and npm-version-specific tree checks.
 Confirmed npm registry transport or server outages emit a warning instead of
 failing the matrix; vulnerability reports and invalid lockfiles still fail.
 
+The desktop lockfile keeps patched `brace-expansion` releases in both dependency
+branches. A downloader override makes `app-builder-lib` use the same fetch-based
+`@electron/get` 5.x downloader as Electron and Electron Packager, removing its
+legacy `got`/`http-cache-semantics` dependency chain without downgrading
+electron-builder or changing Electron. The installer script enables that
+downloader's proxy support so `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` remain
+effective. Remove the override when electron-builder adopts the maintained
+downloader itself.
+
 Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID

@@ -52,6 +52,7 @@
   },
   "overrides": {
     "@electron/asar": "^4.3.0",
+    "@electron/get": "^5.1.0",
     "@electron/universal": "^3.0.6"
   },
   "allowScripts": {
