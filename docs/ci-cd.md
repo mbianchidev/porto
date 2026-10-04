@@ -88,6 +88,13 @@ archives omit AppleDouble metadata and retain the existing release layout.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
+The Go module temporarily pins gRPC to
+`v1.85.0-dev.0.20260825072537-93e31b48545e`, the upstream fix for
+[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). The latest stable release,
+`v1.84.0`, still contains the missing-authority server panic. Replace this
+development pin with a stable release containing the fix when available;
+keep the vulnerability scan enabled.
+
 ## Cutting a release
 
 1. Make sure `main` is green, checked out, clean, and tracking `origin/main`.
@@ -198,6 +205,7 @@ gh attestation verify porto_1.2.3_linux_amd64.tar.gz --repo mbianchidev/porto
 gofmt -l .
 go mod tidy -diff
 go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 go test ./...
 go build ./cmd/porto
 npm --prefix ui ci
