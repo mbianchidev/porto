@@ -24,6 +24,15 @@ once, avoiding redundant registry requests and npm-version-specific tree checks.
 Confirmed npm registry transport or server outages emit a warning instead of
 failing the matrix; vulnerability reports and invalid lockfiles still fail.
 
+The desktop lockfile keeps patched `brace-expansion` releases in both dependency
+branches. A downloader override makes `app-builder-lib` use the same fetch-based
+`@electron/get` 5.x downloader as Electron and Electron Packager, removing its
+legacy `got`/`http-cache-semantics` dependency chain without downgrading
+electron-builder or changing Electron. The installer script enables that
+downloader's proxy support so `HTTP_PROXY`, `HTTPS_PROXY`, and `NO_PROXY` remain
+effective. Remove the override when electron-builder adopts the maintained
+downloader itself.
+
 Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
@@ -92,6 +101,13 @@ Linux fails explicitly; CLI archives can still be cross-built. macOS tar
 archives omit AppleDouble metadata and retain the existing release layout.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
+
+The Go module temporarily pins gRPC to
+`v1.85.0-dev.0.20260825072537-93e31b48545e`, the upstream fix for
+[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). The latest stable release,
+`v1.84.0`, still contains the missing-authority server panic. Replace this
+development pin with a stable release containing the fix when available;
+keep the vulnerability scan enabled.
 
 ## Cutting a release
 
@@ -203,6 +219,7 @@ gh attestation verify porto_1.2.3_linux_amd64.tar.gz --repo mbianchidev/porto
 gofmt -l .
 go mod tidy -diff
 go vet ./...
+go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 go test ./...
 go build ./cmd/porto
 npm --prefix ui ci

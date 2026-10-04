@@ -25,6 +25,7 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/containerd/containerd/v2/defaults"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -75,6 +76,7 @@ type grpcContainerRuntime struct {
 	connection      *grpc.ClientConn
 	client          *containerd.Client
 	namespace       string
+	snapshotter     string
 	backend         string
 	stateDir        string
 	logDir          string
@@ -255,10 +257,16 @@ func newGRPCContainerRuntime(
 		_ = connection.Close()
 		return nil, fmt.Errorf("create high-level containerd client: %w", err)
 	}
+	snapshotter := defaults.DefaultSnapshotter
+	if limaInstance != "" {
+		// Client defaults follow the host OS, not the Linux guest.
+		snapshotter = "overlayfs"
+	}
 	runtimeClient := &grpcContainerRuntime{
 		connection:        connection,
 		client:            client,
 		namespace:         namespace,
+		snapshotter:       snapshotter,
 		backend:           backend,
 		stateDir:          stateDir,
 		logDir:            filepath.Join(stateDir, "container-logs"),
@@ -301,6 +309,10 @@ func newGRPCContainerRuntime(
 	}
 	for _, candidate := range namespaces.GetNamespaces() {
 		if candidate.GetName() == namespace {
+			runtimeClient.snapshotter = firstNonEmpty(
+				candidate.GetLabels()[defaults.DefaultSnapshotterNSLabel],
+				runtimeClient.snapshotter,
+			)
 			return runtimeClient, nil
 		}
 	}

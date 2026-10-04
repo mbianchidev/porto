@@ -122,6 +122,18 @@ the request can be represented directly. Requests that still need legacy-owned
 volume, initial CNI, device, init, or security-option behavior use the
 compatibility path before any direct resource is mutated.
 
+The Lima backend uses the Linux `overlayfs` snapshotter by default, regardless
+of the desktop host OS. In particular, containerd 2.4's macOS client default
+(`erofs`) does not apply to the Linux guest. Porto honors the active namespace's
+`containerd.io/defaults/snapshotter` label when set, and uses the same selected
+snapshotter for pulls, unpack checks, unpacking, writable snapshots, and failed
+creation cleanup. Local containerd backends retain their native defaults.
+Existing containers keep the snapshotter recorded in their metadata.
+Explicitly selecting EROFS requires a working guest snapshotter and the
+[upstream prerequisites](https://containerd.io/docs/2.4/snapshotters/erofs/);
+Porto does not silently replace an unavailable configured snapshotter or change
+containerd's configuration.
+
 Porto-owned healthchecks are scheduled by the daemon and executed through
 direct containerd exec. Timing, retries, start periods, start intervals, bounded
 result logs, and starting/healthy/unhealthy transitions are persisted in

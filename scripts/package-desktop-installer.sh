@@ -132,7 +132,7 @@ fi
 
 (
   cd ui/electron
-  CSC_IDENTITY_AUTO_DISCOVERY=false npx --no-install electron-builder \
+  ELECTRON_GET_USE_PROXY=true CSC_IDENTITY_AUTO_DISCOVERY=false npx --no-install electron-builder \
     --prepackaged "$builder_input" \
     "${builder_target[@]}" \
     "--$electron_arch" \
