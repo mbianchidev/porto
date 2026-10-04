@@ -324,6 +324,20 @@ async function presentPendingUpdatePrompt(window = mainWindow()) {
 }
 
 function registerDesktopIPC() {
+  ipcMain.handle('porto:files:open', async (event, attachmentID) => {
+    assertTrustedDashboardRequest(event)
+    if (typeof attachmentID !== 'string' || !/^[a-f0-9]{64}-(ro|rw)$/.test(attachmentID)) {
+      throw new Error('Invalid native filesystem attachment ID')
+    }
+    const response = await fetch(`${DAEMON_URL}/api/files/attachments/${encodeURIComponent(attachmentID)}`)
+    if (!response.ok) throw new Error(`Native filesystem is unavailable: ${await response.text()}`)
+    const attachment = await response.json()
+    if (attachment.id !== attachmentID || attachment.state !== 'connected' || typeof attachment.path !== 'string' || !path.isAbsolute(attachment.path)) {
+      throw new Error('Native filesystem identity or path was not verified')
+    }
+    const message = await shell.openPath(attachment.path)
+    if (message) throw new Error(`Unable to open native files: ${message}`)
+  })
   ipcMain.handle('porto:desktop-preferences:get', (event) => {
     assertTrustedDashboardRequest(event)
     return desktopPreferencesSnapshot()

@@ -310,6 +310,10 @@ fi
 download "https://raw.githubusercontent.com/kubernetes/kubernetes/${kubectl_version}/LICENSE" "$destination/licenses/kubernetes.txt"
 download "https://raw.githubusercontent.com/kubernetes-sigs/kind/${kind_version}/LICENSE" "$destination/licenses/kind.txt"
 download "https://raw.githubusercontent.com/derailed/k9s/${k9s_version}/LICENSE" "$destination/licenses/k9s.txt"
+download "https://raw.githubusercontent.com/pkg/sftp/v1.13.11/LICENSE" "$destination/licenses/sftp.txt"
+if [ "$goos" = "windows" ]; then
+  download "https://raw.githubusercontent.com/winfsp/cgofuse/v1.6.0/LICENSE.txt" "$destination/licenses/cgofuse.txt"
+fi
 if [ "$docker_bundled" = "true" ]; then
   cp "$docker_source_directory/LICENSE" "$destination/licenses/docker-cli.txt"
   cp "$docker_source_directory/NOTICE" "$destination/licenses/docker-cli-NOTICE.txt"
@@ -327,6 +331,12 @@ fi
 
 CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
   go build -trimpath -ldflags '-s -w' -o "$destination/bin/porto-runtime-helper" ./cmd/porto-runtime-helper
+
+if [ "$goos" = "windows" ]; then
+  CGO_ENABLED=0 GOOS=windows GOARCH="$goarch" \
+    go build -trimpath -ldflags '-s -w' -o "$destination/bin/porto-files-mount.exe" ./cmd/porto-files-mount
+  test -f "$destination/bin/porto-files-mount.exe"
+fi
 
 if [ "$goos" != "windows" ]; then
   chmod 0755 "$destination/bin/kubectl"
@@ -352,7 +362,8 @@ kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'no
 k9s ${k9s_version}
 lima ${lima_runtime_version}
 qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
-porto-runtime-helper 1
+porto-runtime-helper 4
+porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
 
 if [ "$docker_bundled" = "true" ]; then

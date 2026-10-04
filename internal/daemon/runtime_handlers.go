@@ -16,6 +16,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/datafiles"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/vm"
@@ -24,6 +25,7 @@ import (
 const maxRuntimeRequestBytes = 2 * 1024 * 1024
 
 func (s *Server) runtimeRoutes(mux *http.ServeMux) {
+	s.dataRoutes(mux)
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
 	mux.HandleFunc("GET /api/runtime/features", s.runtimeFeatures)
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
@@ -38,6 +40,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
 	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
+	mux.HandleFunc("POST /api/docker/engine/stop", s.requireRuntime("docker", s.stopDockerEngine))
+	mux.HandleFunc("POST /api/docker/engine/remove", s.requireRuntime("docker", s.removeDockerEngine))
 	mux.HandleFunc("POST /api/docker/engine/prepare-update", s.prepareDockerEngineUpdate)
 	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
 	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
@@ -1271,6 +1275,9 @@ func (s *Server) startVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) stopVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1301,6 +1308,9 @@ func (s *Server) execVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1318,6 +1328,9 @@ func (s *Server) snapshotVM(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !s.requireStandaloneVM(w, r.PathValue("name")) {
 		return
 	}
@@ -1335,6 +1348,9 @@ func (s *Server) restoreVMSnapshot(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
 	if !queryBool(r, "confirm") {
 		http.Error(w, "confirm=true is required to delete a VM", http.StatusBadRequest)
 		return
@@ -1376,8 +1392,12 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, portodocker.ErrConflict):
+	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict):
 		status = http.StatusConflict
+	case errors.Is(err, datafiles.ErrInvalid), errors.Is(err, datafiles.ErrLimit):
+		status = http.StatusBadRequest
+	case errors.Is(err, datafiles.ErrUnsupported):
+		status = http.StatusNotImplemented
 	case strings.Contains(message, "unavailable"),
 		strings.Contains(message, "not found"),
 		strings.Contains(message, "connection refused"),

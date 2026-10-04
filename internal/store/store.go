@@ -160,6 +160,9 @@ CREATE TABLE IF NOT EXISTS registries (
 	if err != nil {
 		return err
 	}
+	if err := s.migrateDataOperations(); err != nil {
+		return err
+	}
 	if err := s.ensureSettingsColumn("sql_not_so_lite_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
