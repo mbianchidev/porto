@@ -70,6 +70,11 @@ external guard, preserve Electron Node mode and its executable path, and
 repair closed standard streams. `PORTO_TEST_MACOS_APP=/path/to/Porto.app`
 runs these checks on a temporary copy of an already-built app instead;
 the original bundle and user data are never modified.
+The same suite prepares the cached source-development app, forces failed power
+registration, and checks rendering and reopening without a command-line app
+path. `ui/electron/dev-launcher.test.cjs` checks normal argument-free reopen,
+preserved development-mode behavior, unchanged npm runtime files, cache reuse,
+and Windows/Linux source arguments.
 An unguarded probe deliberately fails with removal instructions when the
 locked Electron no longer needs the workaround. Keep that retirement gate
 until the helper is removed; see

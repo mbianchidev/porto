@@ -196,6 +196,7 @@ jobs:
           npm --prefix electron ci
           npm --prefix electron test
           node --check electron/main.js
+          node --check electron/dev-launcher.cjs
           node --check electron/daemon-readiness.cjs
           node --check electron/desktop-update-install.cjs
           node --check electron/desktop-updater.cjs
@@ -204,6 +205,7 @@ jobs:
           bash -n electron/apply-update.sh
           node --check ../scripts/desktop-runtime-symlinks.cjs
           node --check ../scripts/macos-desktop-bootstrap.cjs
+          node --check ../scripts/macos-development-app.cjs
 
       - name: Audit desktop dependencies
         if: matrix.node == '24'

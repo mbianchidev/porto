@@ -395,6 +395,28 @@ npm --prefix ui run desktop:install
 npm --prefix ui run desktop
 ```
 
+On macOS, `desktop` (or `npm --prefix ui/electron start`) prepares a cached
+**Porto Dev.app** with the same native power-notification guard as the desktop
+package. The first preparation requires Xcode Command Line Tools. It copies
+Electron into a checkout/runtime-specific directory under
+`~/Library/Caches/Porto/development/`; it never edits the npm-installed
+`Electron.app`, installed Porto application, or helper processes.
+
+The launcher prints the exact app path. Reopen **Porto Dev.app** from that path
+or its Dock icon: the bundle remembers this checkout and loads its current
+source even without the original command-line arguments. Opening
+`node_modules/electron/dist/Electron.app` directly is not equivalent; it is the
+generic Electron runtime and can show its welcome screen without an app path.
+Keep the source checkout in place, and rerun the npm command after moving it or
+changing the Electron runtime. Cached dev bundles remain immutable while
+running, and source edits are loaded without repackaging.
+
+This remains development mode: packaged-only updates, login registration, and
+bundled-daemon replacement are not enabled by the cached wrapper. Windows and
+Linux keep using their installed Electron runtime with an absolute source app
+path. The macOS guard is linked only into the cached main executable, not
+inherited through a loader environment by renderers or other children.
+
 The resulting `porto` binary contains the daemon and CLI. It looks for dashboard assets in this order:
 
 1. the directory set by `PORTO_UI_DIR`;
