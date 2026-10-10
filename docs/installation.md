@@ -354,6 +354,8 @@ Requirements:
 - Go 1.26.8 or newer
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
+The minimum Go version follows the `go` directive in `go.mod`.
+
 Source builds use standard host tools:
 
 - Docker CLI with Compose for the named Porto context and Compose project orchestration
