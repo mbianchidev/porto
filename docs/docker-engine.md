@@ -66,7 +66,11 @@ For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a tunnel open for the gRPC connection. Windows uses
 Lima shell standard input/output and the bundled guest helper; it never asks
 Windows OpenSSH to create a host Unix socket. macOS and Linux retain their
-Unix-socket SSH forwarding. A completed gRPC dial does not terminate the
+Unix-socket SSH forwarding, using a dedicated foreground SSH connection rather
+than Lima's shared `ControlMaster`/`ControlPersist` session. This prevents a
+successful SSH background exit from being mistaken for a startup failure and
+keeps tunnel cleanup independent of Lima's other SSH sessions.
+A completed gRPC dial does not terminate the
 established tunnel. The connection and subscription are closed during runtime
 disable and daemon shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 `limactl shell` processes. Container lifecycle events and inventory failures
