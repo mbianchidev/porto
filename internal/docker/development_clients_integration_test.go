@@ -26,7 +26,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Skip("set PORTO_DOCKER_CLIENT_INTEGRATION=1 to test development clients against an existing Porto backend")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 	manager := New(nil)
 	backend := os.Getenv("PORTO_DOCKER_CLIENT_BACKEND")
 	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {

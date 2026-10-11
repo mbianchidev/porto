@@ -371,6 +371,13 @@ Porto endpoint automatically.
 BuildKit clients connect through Docker-compatible h2c upgrades. Multi-platform
 builds work with Buildx and Compose Bake:
 
+SDK uploads to the ordinary Docker `/build` endpoint are unpacked into a
+confined temporary context before invoking nerdctl, which does not accept a
+tar context as `-`. Gzip uploads are supported; expanded archives are bounded
+to 2 GiB and 100000 entries. Escaping paths/links and special-file entries are
+rejected, and local/Lima temporary contexts are removed after completion or
+cancellation.
+
 ```sh
 docker --context porto buildx build \
   --platform linux/amd64,linux/arm64 \

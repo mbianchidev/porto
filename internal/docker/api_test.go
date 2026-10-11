@@ -761,20 +761,12 @@ func TestDockerAPIBuildsMultiPlatformImage(t *testing.T) {
 			!strings.Contains(args, "--build-arg VERSION=1") {
 			return nil, fmt.Errorf("unexpected build arguments: %s", args)
 		}
-		if command.Args[len(command.Args)-1] != "-" || command.StdinReader == nil {
-			return nil, fmt.Errorf("build context was not streamed from an archive: %+v", command)
+		if command.Args[len(command.Args)-1] != "." || command.Dir == "" {
+			return nil, fmt.Errorf("build context was not materialized from its archive: %+v", command)
 		}
-		archive := tar.NewReader(command.StdinReader)
-		header, err := archive.Next()
-		if err != nil {
-			return nil, fmt.Errorf("read stored build context: %w", err)
-		}
-		content, err := io.ReadAll(archive)
+		content, err := os.ReadFile(filepath.Join(command.Dir, "Dockerfile"))
 		if err != nil {
 			return nil, fmt.Errorf("read stored Dockerfile: %w", err)
-		}
-		if header.Name != "Dockerfile" {
-			return nil, fmt.Errorf("unexpected build context entry: %q", header.Name)
 		}
 		if string(content) != "FROM scratch\n" {
 			return nil, fmt.Errorf("unexpected Dockerfile: %q", content)

@@ -74,12 +74,9 @@ func (m *Manager) StreamBuild(
 	}
 	contextArgument := request.Context
 	if request.ContextReader != nil {
-		contextArgument = "-"
+		return m.streamUploadedBuildContext(ctx, request, args, emit)
 	}
 	args = append(args, contextArgument)
-	if request.ContextReader != nil {
-		return m.runStreamingReader(ctx, buildTimeout, "build Porto image", request.ContextReader, emit, args...)
-	}
 	return m.runStreaming(ctx, buildTimeout, "build Porto image", nil, emit, args...)
 }
 
