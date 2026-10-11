@@ -571,7 +571,8 @@ func (r *grpcContainerRuntime) Snapshot(ctx context.Context) ([]Container, error
 	}
 	taskByContainer := make(map[string]*tasktypes.Process, len(taskResponse.GetTasks()))
 	for _, process := range taskResponse.GetTasks() {
-		taskByContainer[process.GetContainerID()] = process
+		// ListTasks can populate only ID for the container's init task.
+		taskByContainer[firstNonEmpty(process.GetContainerID(), process.GetID())] = process
 	}
 	containers := make([]Container, 0, len(records))
 	for _, record := range records {
@@ -806,10 +807,6 @@ func containerFromContainerd(record *containersapi.Container, process *tasktypes
 		ExitReason:     labels[nerdctlErrorLabel],
 	}
 	container.RestartCount, _ = strconv.Atoi(labels[restartCountLabel])
-	if labels[restartStatusLabel] == "running" && container.RestartPolicy != "" {
-		container.State = "restarting"
-		container.Status = "Restarting"
-	}
 
 	var mappingErrors []error
 	var spec specs.Spec

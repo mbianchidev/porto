@@ -23,6 +23,8 @@ import (
 	"testing"
 	"time"
 
+	containersapi "github.com/containerd/containerd/api/services/containers/v1"
+	tasktypes "github.com/containerd/containerd/api/types/task"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
@@ -104,6 +106,74 @@ func TestDockerContainerListMetadataUsesInventoryPortsAndMounts(t *testing.T) {
 	mounts := dockerContainerMounts(container)
 	if len(mounts) != 1 || mounts[0]["Name"] != "data" || mounts[0]["RW"] != false {
 		t.Fatalf("unexpected mounts: %+v", mounts)
+	}
+}
+
+func TestDockerContainerListDoesNotTreatRestartIntentAsActive(t *testing.T) {
+	records := make([]*containersapi.Container, 0, 3)
+	for _, id := range []string{"fixture-running", "fixture-exited", "fixture-taskless"} {
+		records = append(records, &containersapi.Container{
+			ID: id,
+			Labels: map[string]string{
+				restartPolicyLabel:  "unless-stopped",
+				restartStatusLabel:  "running",
+				restartStoppedLabel: "true",
+			},
+		})
+	}
+	runtimeClient := &grpcContainerRuntime{
+		namespace:  "fixture-namespace",
+		containers: &fakeContainersClient{listContainers: records},
+		tasks: &fakeTasksClient{listProcesses: []*tasktypes.Process{
+			{ID: "fixture-running", Pid: 42, Status: tasktypes.Status_RUNNING},
+			{ID: "fixture-exited", Pid: 43, Status: tasktypes.Status_STOPPED, ExitStatus: 1},
+		}},
+	}
+	containers, err := runtimeClient.Snapshot(context.Background())
+	if err != nil {
+		t.Fatalf("read containerd snapshot: %v", err)
+	}
+	manager := New(&fakeRunner{})
+	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+	manager.inventory.publishContainers("fixture-namespace", "fixture", time.Now().UTC(), containers)
+	manager.inventoryCancel = func() {}
+	handler := NewAPI(manager, "/tmp/fixture-docker.sock")
+	for _, test := range []struct {
+		name string
+		path string
+		want map[string]string
+	}{
+		{
+			name: "active containers",
+			path: "/v1.47/containers/json",
+			want: map[string]string{"fixture-running": "running"},
+		},
+		{
+			name: "all containers",
+			path: "/v1.47/containers/json?all=1",
+			want: map[string]string{
+				"fixture-running": "running", "fixture-exited": "exited", "fixture-taskless": "created",
+			},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("list containers = %d: %s", response.Code, response.Body.String())
+			}
+			var listed []struct{ Id, State string }
+			if err := json.Unmarshal(response.Body.Bytes(), &listed); err != nil {
+				t.Fatalf("decode container list: %v", err)
+			}
+			states := make(map[string]string, len(listed))
+			for _, container := range listed {
+				states[container.Id] = container.State
+			}
+			if !reflect.DeepEqual(states, test.want) {
+				t.Fatalf("container states = %v, want %v", states, test.want)
+			}
+		})
 	}
 }
 

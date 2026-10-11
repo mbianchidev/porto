@@ -18,10 +18,11 @@ const snapshot = {
 declare global {
   interface Window {
     fixtureLogSources?: Array<{ target: EventTarget; closed: boolean }>
+    fixtureContainerSource?: EventTarget
   }
 }
 
-async function mockRuntime(page: Page) {
+async function mockRuntime(page: Page, runtimeSnapshot = snapshot) {
   await page.route('**/api/**', async (route) => {
     const path = new URL(route.request().url()).pathname
     const values: Record<string, unknown> = {
@@ -32,8 +33,8 @@ async function mockRuntime(page: Page) {
       '/api/files/attachments': [],
       '/api/data/operations': [],
       '/api/docker/backups': [],
-      '/api/docker/containers/snapshot': snapshot,
-      '/api/docker/containers': [fixture],
+      '/api/docker/containers/snapshot': runtimeSnapshot,
+      '/api/docker/containers': runtimeSnapshot.containers,
       '/api/docker/images': [],
       '/api/docker/containers/synthetic-container-1': {
         Id: fixture.id, Config: { Env: ['FIXTURE_TOKEN=synthetic-secret'], Labels: {} },
@@ -45,10 +46,112 @@ async function mockRuntime(page: Page) {
       },
     }
     if (path.endsWith('/containers/events')) {
-      await route.fulfill({ contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n` })
+      await route.fulfill({ contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(runtimeSnapshot)}\n\n` })
       return
     }
     await route.fulfill({ contentType: 'application/json', body: JSON.stringify(values[path] ?? []) })
+  })
+}
+
+test('Compose status and running counts follow live task snapshots', async ({ page }, testInfo) => {
+  const services = ['api', 'web', 'database'].map((service, index) => ({
+    ...fixture, id: `synthetic-container-${index + 1}`, name: `fixture-${service}`,
+    composeService: service, state: 'restarting', status: 'Restarting', taskPresent: false, pid: 0,
+  }))
+  const oldContainer = {
+    ...fixture, id: 'synthetic-container-4', name: 'fixture-api-old',
+    state: 'created', status: 'Created', taskPresent: false, pid: 0,
+  }
+  await mockRuntime(page, { ...snapshot, containers: [...services, oldContainer] })
+  await page.addInitScript(() => {
+    const Original = window.EventSource
+    Object.defineProperty(window, 'EventSource', { value: function (url: string) {
+      if (!String(url).includes('/containers/events')) return new Original(url)
+      const target = new EventTarget()
+      window.fixtureContainerSource = target
+      const source: EventTarget & { onopen: ((event: Event) => void) | null } = Object.assign(target, {
+        url, readyState: 1, onopen: null, onerror: null,
+        close() {
+          if (window.fixtureContainerSource === target) window.fixtureContainerSource = undefined
+        },
+      })
+      queueMicrotask(() => source.onopen?.(new Event('open')))
+      return source
+    } })
+  })
+  await page.goto('/#/containers', { waitUntil: 'networkidle' })
+  const group = page.locator('.containerComposeGroup')
+  const summary = group.locator('summary')
+  await expect(summary).toContainText('3 service(s) · 4 container(s) · 0 running')
+
+  async function publishSnapshot(nextSnapshot: typeof snapshot) {
+    await page.evaluate((nextSnapshot) => {
+      const source = window.fixtureContainerSource
+      if (!source) throw new Error('Fixture container stream missing')
+      source.dispatchEvent(new MessageEvent('snapshot', { data: JSON.stringify(nextSnapshot) }))
+    }, nextSnapshot)
+  }
+
+  const runningSnapshot = {
+    ...snapshot, revision: 2,
+    containers: [
+      ...services.map((container, index) => ({
+        ...container, state: 'running', status: 'Up', taskPresent: true, pid: 42 + index,
+      })),
+      { ...oldContainer, state: 'exited', status: 'Exited (0)', taskPresent: true, pid: 50, exitCode: 0 },
+    ],
+  }
+  await publishSnapshot(runningSnapshot)
+  await expect(summary).toContainText('3 service(s) · 4 container(s) · 3 running')
+  await expect(summary).toContainText('running application state')
+  await expect(group.getByRole('option', { name: /Status: Up(?:\s|$)/ })).toHaveCount(3)
+  await expect(group.getByRole('option', { name: /Status: Exited \(0\)/ })).toBeVisible()
+  await expect(group.getByRole('option', { name: /Status: Restarting/ })).toHaveCount(0)
+  await expect(group.getByRole('button', { name: 'Remove container (stop it first)', exact: true, disabled: true })).toHaveCount(3)
+  await page.screenshot({ path: testInfo.outputPath('compose-running.png'), fullPage: true })
+
+  await publishSnapshot({
+    ...runningSnapshot, revision: 3,
+    containers: runningSnapshot.containers.map((container, index) => index === 0
+      ? { ...container, state: 'exited', status: 'Exited (1)', exitCode: 1 }
+      : container),
+  })
+  await expect(summary).toContainText('3 service(s) · 4 container(s) · 2 running')
+  await expect(group.getByRole('option', { name: /Status: Up(?:\s|$)/ })).toHaveCount(2)
+  await expect(group.getByRole('option', { name: /Status: Exited \(1\)/ })).toBeVisible()
+})
+
+for (const grouped of [true, false]) {
+  test(`inactive ${grouped ? 'Compose' : 'standalone'} containers remain startable with restart policies`, async ({ page }, testInfo) => {
+    const containers = [
+      {
+        ...fixture, id: 'synthetic-idle', name: 'fixture-idle', state: 'created', status: 'Created',
+        taskPresent: false, pid: 0, restartPolicy: 'unless-stopped',
+        composeProject: grouped ? 'fixture-idle-stack' : '', composeService: grouped ? 'api' : '',
+      },
+      {
+        ...fixture, id: 'synthetic-exited', name: 'fixture-exited', state: 'exited', status: 'Exited (1)',
+        exitCode: 1, restartPolicy: 'always',
+        composeProject: grouped ? 'fixture-idle-stack' : '', composeService: grouped ? 'worker' : '',
+      },
+    ]
+    await mockRuntime(page, { ...snapshot, containers })
+    await page.goto('/#/containers', { waitUntil: 'networkidle' })
+    for (const container of containers) {
+      const row = page.locator('.inventoryRow').filter({
+        has: page.getByRole('option', { name: new RegExp(container.name) }),
+      })
+      await expect(row.getByRole('option')).toContainText(`Status: ${container.status}`)
+      await expect(row.getByRole('button', { name: 'Start container', exact: true })).toBeEnabled()
+      await expect(row.getByRole('button', { name: 'Stop container', exact: true })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Restart container', exact: true })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Remove container', exact: true })).toBeEnabled()
+    }
+    await expect(page.getByRole('option', { name: /Status: Restarting/ })).toHaveCount(0)
+    if (grouped) {
+      await expect(page.locator('.containerComposeGroup summary')).toContainText('2 service(s) · 2 container(s) · 0 running')
+      await page.screenshot({ path: testInfo.outputPath('inactive-containers.png'), fullPage: true })
+    }
   })
 }
 
