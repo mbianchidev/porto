@@ -122,6 +122,7 @@ else
   go build -o "$porto" ./cmd/porto
   created_lima=true
   if [ "$goos" = darwin ]; then
+    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$runtime/bin/porto-runtime-helper" ./cmd/porto-runtime-helper
     additional="$temporary/guestagents.tar.gz"
     bash scripts/download-file.sh \
       https://github.com/lima-vm/lima/releases/download/v2.2.0/lima-additional-guestagents-2.2.0-Darwin-arm64.tar.gz "$additional"

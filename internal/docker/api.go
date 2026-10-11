@@ -335,6 +335,7 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	var request struct {
+		Name         string              `json:"name"`
 		Hostname     string              `json:"Hostname"`
 		User         string              `json:"User"`
 		Env          []string            `json:"Env"`
@@ -678,6 +679,13 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	containerName := r.URL.Query().Get("name")
+	if containerName != "" && request.Name != "" && containerName != request.Name {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "container names in query and body must match"})
+		return
+	}
+	if containerName == "" {
+		containerName = request.Name
+	}
 	if containerName == "" {
 		containerName = composeContainerName(request.Labels, networks)
 	}

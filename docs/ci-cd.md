@@ -60,7 +60,10 @@ The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
 containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
 `PORTO_HOME` roots. Only their own processes and VM are removed.
 Hosted macOS runners use a small x86-64 QEMU guest under software emulation:
-their nested Virtualization.framework support is unavailable. Windows CI
+their nested Virtualization.framework support is unavailable.
+The cross-architecture guest uses a checksum-pinned additional Lima guest agent
+and an amd64 Porto runtime helper, rather than the host arm64 helper.
+Windows CI
 uses the normal Porto QEMU guest and disables CGO for the daemon/test build,
 as the client suite does not require WinFsp. Linux bundles tools as the runner
 user and elevates only the isolated containerd/BuildKit workload.

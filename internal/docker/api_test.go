@@ -197,6 +197,30 @@ func TestDockerAPICreateAcceptsDefaultValuedClientOptions(t *testing.T) {
 	}
 }
 
+func TestDockerAPICreateAcceptsDockerodeNameInBody(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if !strings.Contains(strings.Join(command.Args, " "), "--name synthetic-dockerode") {
+			t.Fatalf("Dockerode container name was not applied: %v", command.Args)
+		}
+		return []byte("synthetic-container\n"), nil
+	}}
+	handler := NewAPI(New(runner), "/tmp/porto.sock")
+	for _, query := range []string{"", "?name=synthetic-dockerode"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1.47/containers/create"+query,
+			strings.NewReader(`{"name":"synthetic-dockerode","Image":"synthetic:latest"}`)))
+		if response.Code != http.StatusCreated {
+			t.Fatalf("Dockerode create = %d: %s", response.Code, response.Body.String())
+		}
+	}
+	response := httptest.NewRecorder()
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodPost, "/v1.47/containers/create?name=different",
+		strings.NewReader(`{"name":"synthetic-dockerode","Image":"synthetic:latest"}`)))
+	if response.Code != http.StatusBadRequest || len(runner.commands) != 2 {
+		t.Fatal("conflicting container names reached the backend")
+	}
+}
+
 func TestDockerAPIRequestVersionControlsHealthStartInterval(t *testing.T) {
 	for _, test := range []struct {
 		version string
