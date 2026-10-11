@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -520,7 +521,7 @@ func directContainerPlatform(requested string, lima bool) (string, error) {
 
 func (r *grpcContainerRuntime) directContainerLogPath(id string) (string, error) {
 	if r.lima != "" {
-		return filepath.Join("/tmp", "porto-container-logs", id+".log"), nil
+		return path.Join("/tmp", "porto-container-logs", id+".log"), nil
 	}
 	if r.logDir == "" {
 		return "", fmt.Errorf("%w: direct container log directory is unavailable", ErrUnsupported)

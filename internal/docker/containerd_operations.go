@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path"
 	"path/filepath"
 	"slices"
 	"sort"
@@ -1090,7 +1091,7 @@ func (r *grpcContainerRuntime) prepareDirectLogPath(ctx context.Context, logPath
 				"shell", r.lima, "--", "sh", "-c",
 				`set -eu; umask 077; mkdir -p -- "$1"; touch -- "$2"`,
 				"porto-container-log",
-				filepath.Dir(logPath),
+				path.Dir(logPath),
 				logPath,
 			},
 		})
@@ -1669,9 +1670,6 @@ func (r *grpcContainerRuntime) rollbackContainerSpec(
 }
 
 func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, volumes bool) error {
-	if volumes {
-		return fmt.Errorf("%w: direct removal does not clean up container volumes", ErrUnsupported)
-	}
 	resolvedID, err := r.resolveContainerID(ctx, id)
 	if err != nil {
 		return err
@@ -1692,6 +1690,9 @@ func (r *grpcContainerRuntime) Delete(ctx context.Context, id string, force, vol
 		return fmt.Errorf("inspect metadata for container %q returned an empty record", id)
 	}
 	managed := record.GetLabels()[portoManagedLabel] == portoRuntimeVersion
+	if volumes && !managed {
+		return fmt.Errorf("%w: direct removal does not own compatibility-container volumes", ErrUnsupported)
+	}
 	if !managed && (record.GetSnapshotKey() != "" || record.GetSnapshotter() != "" ||
 		record.GetLabels()[nerdctlNetworksLabel] != "" ||
 		record.GetLabels()[nerdctlPortsLabel] != "") {
