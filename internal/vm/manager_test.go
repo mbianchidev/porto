@@ -505,6 +505,22 @@ func TestManagedInventoryFiltersUnownedLimaInstances(t *testing.T) {
 	}
 }
 
+func TestReadMetadataRejectsPathTraversal(t *testing.T) {
+	baseDir := t.TempDir()
+	stateDir := filepath.Join(baseDir, "metadata")
+	if err := os.Mkdir(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(baseDir, "outside.json"), []byte(`{"name":"outside","kind":"standalone"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := NewWithStateDir(&recordingRunner{}, stateDir)
+	if metadata, err := manager.readMetadata("../outside"); err == nil {
+		t.Fatalf("path traversal returned metadata: %+v", metadata)
+	}
+}
+
 func TestListIgnoresLimaDiagnostics(t *testing.T) {
 	runner := &recordingRunner{
 		listPrefix: `time="2026-09-01T22:00:00+02:00" level=warning msg="instance has errors"` + "\n",
