@@ -85,6 +85,33 @@ func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 	}
 }
 
+func TestCleanupUnusedRetainsPlatformWarningsWithoutFailing(t *testing.T) {
+	warning := `time="2026-01-01T00:00:00Z" level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:` +
+		strings.Repeat("a", 64) + `: not found"`
+	manager := New(&fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+		for _, chunk := range []runtimes.OutputChunk{
+			{Stream: "stderr", Data: []byte(warning[:70])},
+			{Stream: "stdout", Data: []byte("Deleted Images:\nUntagged: example/foreign-platform:unused\n")},
+			{Stream: "stderr", Data: []byte(warning[70:])},
+		} {
+			if err := emit(chunk); err != nil {
+				return nil, err
+			}
+		}
+		return nil, nil
+	}})
+	manager.dialBuildKit = buildKitControlTestDialer(t, &cleanupBuildKitServer{})
+
+	result, err := manager.CleanupUnused(context.Background())
+	if err != nil || result.Images.Status != app.CleanupSucceeded || result.Images.Error != "" {
+		t.Fatalf("a layer-reporting warning failed successful image deletion: result=%+v, error=%v", result, err)
+	}
+	if result.Images.ItemsRemoved != 1 || result.Images.BytesReclaimed != nil ||
+		!strings.Contains(result.Images.Output, warning) {
+		t.Fatalf("cleanup lost its deletion count or advisory warning: %+v", result.Images)
+	}
+}
+
 func TestCleanupUnusedPreservesActiveBuilds(t *testing.T) {
 	service := &cleanupBuildKitServer{}
 	service.active = true
@@ -112,6 +139,8 @@ func TestCleanupUnusedRetainsPartialResultsAndSoftFailures(t *testing.T) {
 		{name: "cache failure", cacheError: errors.New("synthetic cache failure")},
 		{name: "image exit failure", imageError: errors.New("synthetic image failure")},
 		{name: "image warning with zero exit", stderr: "time=\"2026-01-01T00:00:00Z\" level=warning msg=\"failed to delete image example/unused:two\"\n"},
+		{name: "other rootfs warning", stderr: `level=warning msg="failed to enumerate rootfs" error="synthetic content read failure"`},
+		{name: "rootfs error severity", stderr: `level=error msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:` + strings.Repeat("a", 64) + `: not found"`},
 		{name: "unknown image output", stdout: "unexpected prune output\n"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -145,6 +174,41 @@ func TestCleanupUnusedRetainsPartialResultsAndSoftFailures(t *testing.T) {
 				}
 			} else if result.Images.Status != app.CleanupFailed || result.Images.Error == "" {
 				t.Fatalf("image failure was not retained: %+v", result)
+			}
+		})
+	}
+}
+
+func TestImagePruneDiagnosticsRemainCheckedAfterOutputTruncation(t *testing.T) {
+	warning := `level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:` +
+		strings.Repeat("b", 64) + `: not found"` + "\n"
+	for _, test := range []struct {
+		name    string
+		failure string
+		runErr  error
+	}{
+		{name: "advisory warnings only"},
+		{name: "deletion failure", failure: `level=warning msg="failed to delete image example/unused:two"`},
+		{name: "command failure", runErr: errors.New("synthetic prune exit failure")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var output imagePruneOutput
+			diagnostics := strings.Repeat(warning, maxCleanupOutput/len(warning)+2) + test.failure
+			if err := output.write(runtimes.OutputChunk{Stream: "stderr", Data: []byte(diagnostics)}); err != nil {
+				t.Fatal(err)
+			}
+			result, err := output.result(test.runErr)
+			if !strings.Contains(result.Output, "truncated") || len(result.Output) > maxCleanupOutput+128 {
+				t.Fatalf("diagnostic output was not bounded: %+v", result)
+			}
+			if test.failure == "" && test.runErr == nil {
+				if err != nil || result.Status != app.CleanupSucceeded {
+					t.Fatalf("truncating advisory output failed cleanup: %+v, %v", result, err)
+				}
+			} else if err == nil || result.Status != app.CleanupFailed ||
+				(test.failure != "" && !strings.Contains(result.Error, test.failure)) ||
+				(test.runErr != nil && !errors.Is(err, test.runErr)) {
+				t.Fatalf("truncation hid an actual deletion failure: %+v, %v", result, err)
 			}
 		})
 	}

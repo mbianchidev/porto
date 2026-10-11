@@ -56,6 +56,7 @@ const {
 const APP_NAME = 'Porto'
 const APP_ID = 'dev.mbianchi.porto'
 const APP_ICON = path.join(__dirname, 'assets', 'porto.png')
+const UPDATE_CHECK_MENU_ID = 'porto-check-for-updates'
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const windows = new Set()
 const execFileAsync = promisify(execFile)
@@ -67,7 +68,9 @@ let updateInstallErrorPath = ''
 let updatePromptActive = false
 let promptedAvailableVersion = ''
 let promptedDownloadedVersion = ''
+let manualUpdateCheckActive = false
 let tray = null
+let trayMenu = null
 let quitting = false
 let desktopLogging = null
 
@@ -145,10 +148,44 @@ function showMainWindow() {
   createWindow()
 }
 
+function updateCheckMenuItem(status = desktopUpdater?.getStatus()) {
+  return {
+    id: UPDATE_CHECK_MENU_ID,
+    label: status?.phase === 'checking' || manualUpdateCheckActive ? 'Checking for updates...' : 'Check for updates...',
+    enabled: status !== undefined && status.phase !== 'unsupported' && !manualUpdateCheckActive &&
+      !['checking', 'downloading', 'installing'].includes(status.phase),
+    click: checkForUpdatesManually,
+  }
+}
+
+function configureApplicationMenu() {
+  Menu.setApplicationMenu(Menu.buildFromTemplate([
+    ...(process.platform === 'darwin' ? [{ role: 'appMenu' }] : []),
+    { role: 'fileMenu' },
+    { role: 'editMenu' },
+    { role: 'viewMenu' },
+    { role: 'windowMenu' },
+    { role: 'help', submenu: [updateCheckMenuItem()] },
+  ]))
+}
+
+function refreshUpdateCheckMenus(status = desktopUpdater?.getStatus()) {
+  const { label, enabled } = updateCheckMenuItem(status)
+  for (const menu of [Menu.getApplicationMenu(), trayMenu]) {
+    const item = menu?.getMenuItemById(UPDATE_CHECK_MENU_ID)
+    if (item) {
+      item.label = label
+      item.enabled = enabled
+    }
+  }
+  if (tray !== null && trayMenu !== null) tray.setContextMenu(trayMenu)
+}
+
 function configureTray(enabled) {
   if (!enabled) {
     tray?.destroy()
     tray = null
+    trayMenu = null
     return
   }
   if (tray !== null) return
@@ -159,11 +196,12 @@ function configureTray(enabled) {
   }
   tray = new Tray(icon)
   tray.setToolTip(APP_NAME)
-  tray.setContextMenu(Menu.buildFromTemplate([
+  trayMenu = Menu.buildFromTemplate([
     {
       label: 'Open Porto',
       click: showMainWindow,
     },
+    updateCheckMenuItem(),
     { type: 'separator' },
     {
       label: 'Quit Porto',
@@ -172,7 +210,8 @@ function configureTray(enabled) {
         app.quit()
       },
     },
-  ]))
+  ])
+  tray.setContextMenu(trayMenu)
   tray.on('click', showMainWindow)
 }
 
@@ -187,8 +226,41 @@ function assertTrustedDashboardRequest(event) {
 }
 
 function broadcastUpdateStatus(status) {
+  refreshUpdateCheckMenus(status)
   for (const window of windows) {
     if (!window.isDestroyed()) window.webContents.send('porto:updates:status', status)
+  }
+}
+
+async function checkForUpdatesManually() {
+  if (manualUpdateCheckActive) return
+  manualUpdateCheckActive = true
+  refreshUpdateCheckMenus()
+  try {
+    if (desktopUpdater === null) throw new Error('The Porto updater is not ready')
+    showMainWindow()
+    await desktopUpdater.check()
+    const status = desktopUpdater.getStatus()
+    if (status.phase === 'available' || status.phase === 'downloaded') {
+      promptedAvailableVersion = ''
+      promptedDownloadedVersion = ''
+      await presentPendingUpdatePrompt(mainWindow(), true)
+    } else if (status.phase !== 'installing') {
+      await dialog.showMessageBox(mainWindow(), {
+        type: status.phase === 'error' ? 'error' : 'info',
+        title: 'Porto updates',
+        message: status.message,
+        buttons: ['OK'],
+        noLink: true,
+      })
+    }
+  } catch (error) {
+    console.error('Unable to manually check for Porto updates', error)
+    dialog.showErrorBox('Porto update check failed', error.message)
+  } finally {
+    manualUpdateCheckActive = false
+    refreshUpdateCheckMenus()
+    void presentPendingUpdatePrompt()
   }
 }
 
@@ -258,10 +330,11 @@ async function restartAndInstallUpdate() {
   return status
 }
 
-async function presentPendingUpdatePrompt(window = mainWindow()) {
+async function presentPendingUpdatePrompt(window = mainWindow(), manual = false) {
   if (
     desktopUpdater === null
     || updatePromptActive
+    || (manualUpdateCheckActive && !manual)
     || !window
     || window.isDestroyed()
     || !window.isVisible()
@@ -277,7 +350,7 @@ async function presentPendingUpdatePrompt(window = mainWindow()) {
         type: 'info',
         title: 'Porto update ready',
         message: `Porto ${status.availableVersion} is ready to install.`,
-        detail: 'Restart Porto to update the desktop app and bundled daemon. Running VMs, Kubernetes clusters, and containers remain in place while Porto reconnects.',
+        detail: `${manual ? `${status.message}\n\n` : ''}Restart Porto to update the desktop app and bundled daemon. Running VMs, Kubernetes clusters, and containers remain in place while Porto reconnects.`,
         buttons: ['Restart and update', 'Later'],
         defaultId: 0,
         cancelId: 1,
@@ -907,6 +980,7 @@ app.whenReady().then(async () => {
     dockerError = error
     console.error('Unable to prepare the bundled Porto container runtime', error)
   }
+  configureApplicationMenu()
   let trayError = null
   try {
     configureTray(desktopPreferences.keepInTray)

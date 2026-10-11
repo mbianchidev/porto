@@ -86,6 +86,11 @@ CNI operations and runtime capability probes.
 ## Updates
 
 Installed builds check GitHub Releases shortly after launch and every 12 hours.
+**Help > Check for updates**, the tray's **Check for updates**, and the Settings
+button request an immediate check through the same updater. Native menu checks
+show a result/error, respect automatic downloads, and let users reopen a prompt
+they dismissed earlier. Checks are disabled while checking, downloading, or
+installing, and in unsupported source builds.
 When a newer stable version exists, Porto prompts before downloading it. The
 Settings page can enable automatic downloads; installation still waits for the
 user to choose **Restart and update**.
