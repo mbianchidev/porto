@@ -7,6 +7,7 @@ import (
 	"io"
 	"math"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -19,6 +20,8 @@ import (
 )
 
 const maxCleanupOutput = 32 * 1024
+
+var imagePrunePlatformWarning = regexp.MustCompile(`^(?:time="[^"]+" )?level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:[0-9a-f]{64}: not found"$`)
 
 func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, error) {
 	result := app.NewDockerCleanupResult()
@@ -121,33 +124,36 @@ func pruneBuildCache(ctx context.Context, client controlapi.ControlClient) (resu
 }
 
 type imagePruneOutput struct {
-	mu        sync.Mutex
-	stdout    strings.Builder
-	stderr    strings.Builder
-	pending   string
-	removed   int64
-	parseErr  error
-	truncated bool
+	mu                sync.Mutex
+	stdout            strings.Builder
+	stderr            strings.Builder
+	pending           string
+	diagnosticPending string
+	removed           int64
+	parseErr          error
+	diagnosticErr     error
+	truncated         bool
 }
 
 func (o *imagePruneOutput) write(chunk runtimes.OutputChunk) error {
 	o.mu.Lock()
 	defer o.mu.Unlock()
+	output, pending, parseLine := &o.stdout, &o.pending, o.parseLine
 	switch chunk.Stream {
 	case "stdout":
-		o.append(&o.stdout, string(chunk.Data))
-		lines := strings.Split(o.pending+string(chunk.Data), "\n")
-		for _, line := range lines[:len(lines)-1] {
-			o.parseLine(line)
-		}
-		o.pending = lines[len(lines)-1]
-		if len(o.pending) > maxCleanupOutput {
-			return errors.New("image prune output line exceeds the result limit")
-		}
 	case "stderr":
-		o.append(&o.stderr, string(chunk.Data))
+		output, pending, parseLine = &o.stderr, &o.diagnosticPending, o.parseDiagnosticLine
 	default:
 		return fmt.Errorf("unknown image prune output stream %q", chunk.Stream)
+	}
+	o.append(output, string(chunk.Data))
+	lines := strings.Split(*pending+string(chunk.Data), "\n")
+	for _, line := range lines[:len(lines)-1] {
+		parseLine(line)
+	}
+	*pending = lines[len(lines)-1]
+	if len(*pending) > maxCleanupOutput {
+		return fmt.Errorf("image prune %s line exceeds the result limit", chunk.Stream)
 	}
 	return nil
 }
@@ -175,22 +181,31 @@ func (o *imagePruneOutput) parseLine(line string) {
 	}
 }
 
+func (o *imagePruneOutput) parseDiagnosticLine(line string) {
+	line = strings.TrimSpace(line)
+	// nerdctl uses the host-platform rootfs only to print deleted layer digests.
+	if line == "" || imagePrunePlatformWarning.MatchString(line) {
+		return
+	}
+	if o.diagnosticErr == nil {
+		o.diagnosticErr = fmt.Errorf("image cleanup reported runtime diagnostics: %.512s", line)
+	}
+}
+
 func (o *imagePruneOutput) result(runErr error) (app.DockerCleanupStep, error) {
 	o.mu.Lock()
 	defer o.mu.Unlock()
 	o.parseLine(o.pending)
+	o.parseDiagnosticLine(o.diagnosticPending)
 	output := strings.TrimSpace(o.stdout.String())
 	diagnostics := strings.TrimSpace(o.stderr.String())
-	var diagnosticErr error
 	if diagnostics != "" {
-		// nerdctl logs some image deletion failures as warnings but exits zero.
-		diagnosticErr = fmt.Errorf("image cleanup reported runtime diagnostics: %s", diagnostics)
 		output = strings.TrimSpace(output + "\n" + diagnostics)
 	}
 	if o.truncated {
 		output += "\n[Runtime output truncated; reported removal counts include all parsed lines.]"
 	}
-	err := errors.Join(runErr, o.parseErr, diagnosticErr)
+	err := errors.Join(runErr, o.parseErr, o.diagnosticErr)
 	result := app.DockerCleanupStep{Status: app.CleanupSucceeded, ItemsRemoved: o.removed, Output: output}
 	if err != nil {
 		result.Status = app.CleanupFailed

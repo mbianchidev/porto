@@ -126,7 +126,7 @@ export function DesktopBehaviorSettings() {
   const desktopAvailable = bridge !== undefined
   const loading = desktopAvailable && preferences === null && loadError === ''
   const desktopReady = desktopAvailable && loadError === '' && preferences !== null
-  const updateReady = desktopAvailable && updateStatus !== null
+  const updateReady = desktopAvailable && updateStatus !== null && currentUpdate.phase !== 'unsupported'
   const updateBusy = updateAction !== '' ||
     currentUpdate.phase === 'checking' ||
     currentUpdate.phase === 'downloading' ||

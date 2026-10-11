@@ -408,8 +408,13 @@ the trigger, start/end times, outcome, removed image-reference count, build-cach
 record count, reported cache bytes, and diagnostic output in SQLite. Settings
 shows the latest ten results, including failures and partial results. Image
 layer storage can be shared, so Porto does not invent a reclaimed-byte total for
-images. Native image-prune warnings are reported as failures even when the CLI
-exits successfully.
+images. Image-deletion warnings and unknown diagnostics are reported as failures
+even when the CLI exits successfully. The known host-platform rootfs warning
+(`no match for platform in manifest`) only prevents nerdctl from listing layer
+digests for a foreign-platform image; it does not prevent image-reference
+deletion. Porto retains that warning in **Image cleanup output** without failing
+an otherwise successful run. Diagnostics are checked even after retained output
+is truncated, so a later deletion failure cannot be hidden by earlier warnings.
 
 If a result cannot be saved, the running daemon still exposes its observed
 counts and storage error instead of leaving the UI stuck on "running".

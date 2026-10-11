@@ -79,7 +79,8 @@ See the [installation guide](docs/installation.md) for checksum verification, so
 CLI/web archives remain available for headless machines and servers.
 
 Open **Settings** to see the running Porto release version, including prerelease
-and build metadata.
+and build metadata. Installed desktop builds offer **Help > Check for updates**
+and a **Check for updates** action in Settings and the menu bar/system tray.
 
 ### 2. Discover projects
 
