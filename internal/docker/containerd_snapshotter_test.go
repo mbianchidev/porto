@@ -384,6 +384,9 @@ func newSnapshotterTestRuntime(
 		ctx, snapshotterTestNamespace, "synthetic containerd",
 		func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) },
 		nil, t.TempDir(), &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+			if command.Args[len(command.Args)-1] == "path" {
+				return []byte("/synthetic/porto-runtime-helper\n"), nil
+			}
 			return []byte(`{"OSType":"linux","Architecture":"arm64","CgroupDriver":"systemd","SecurityOptions":["name=rootless"]}`), nil
 		}}, lima, "", nil, nil,
 	)

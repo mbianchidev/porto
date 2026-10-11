@@ -122,14 +122,7 @@ else
   go build -o "$porto" ./cmd/porto
   created_lima=true
   if [ "$goos" = darwin ]; then
-    CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o "$runtime/bin/porto-runtime-helper" ./cmd/porto-runtime-helper
-    additional="$temporary/guestagents.tar.gz"
-    bash scripts/download-file.sh \
-      https://github.com/lima-vm/lima/releases/download/v2.2.0/lima-additional-guestagents-2.2.0-Darwin-arm64.tar.gz "$additional"
-    node scripts/verify-runtime-checksum.cjs --verify \
-      3aff4453eb3c359eb4f3b458056db24f2c5c15019232531292f49e04050554ed "$additional"
-    tar -xzf "$additional" -C "$runtime/lima"
-    limactl start --tty=false --name=porto-engine --vm-type=qemu --arch=x86_64 \
+    limactl start --tty=false --name=porto-engine --vm-type=qemu \
       --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user template:ubuntu-24.04
     export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
   else

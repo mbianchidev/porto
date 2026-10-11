@@ -59,10 +59,10 @@ and native macOS/Windows Lima backends. Windows exercises Porto's named pipe.
 The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
 containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
 `PORTO_HOME` roots. Only their own processes and VM are removed.
-Hosted macOS runners use a small x86-64 QEMU guest under software emulation:
+Hosted macOS runners use a small host-architecture QEMU guest under software emulation:
 their nested Virtualization.framework support is unavailable.
-The cross-architecture guest uses a checksum-pinned additional Lima guest agent
-and an amd64 Porto runtime helper, rather than the host arm64 helper.
+The matching architecture keeps the guest agent/runtime helper aligned without
+cross-architecture x86 emulation; CPU counter assertions remain enabled.
 Windows CI
 uses the normal Porto QEMU guest and disables CGO for the daemon/test build,
 as the client suite does not require WinFsp. Linux bundles tools as the runner
