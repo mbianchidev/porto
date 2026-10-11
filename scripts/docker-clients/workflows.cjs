@@ -27,6 +27,10 @@ async function main() {
   const suite = process.env.PORTO_CLIENT_TEST_SUITE
   assert.ok(image && workspace && suite && process.env.DOCKER_HOST, 'Run through the isolated Go integration harness')
   assert.equal(process.env.TESTCONTAINERS_RYUK_DISABLED, 'true', 'The harness owns cleanup; no host socket is mounted into the guest')
+  const dockerHost = process.env.DOCKER_HOST
+  if (process.platform === 'win32') {
+    process.env.DOCKER_HOST = dockerHost.replace('npipe:////./pipe/', 'npipe:////.\\pipe\\')
+  }
 
   const container = await new GenericContainer(image)
     .withName(`${suite}-testcontainers`)
@@ -42,6 +46,7 @@ async function main() {
     assert.equal(result.stdout.trim(), 'porto-synthetic-client-fixture')
   } finally {
     await container.stop({ remove: true, removeVolumes: true })
+    process.env.DOCKER_HOST = dockerHost
   }
   console.log('Testcontainers create/start/log-wait/exec/cleanup passed')
 
