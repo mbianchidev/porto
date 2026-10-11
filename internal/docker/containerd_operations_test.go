@@ -913,6 +913,7 @@ func TestManagerRemoveFallsBackWhenDirectMetadataIsUnavailable(t *testing.T) {
 type fakeTasksClient struct {
 	tasksapi.TasksClient
 	process       *tasktypes.Process
+	listProcesses []*tasktypes.Process
 	calls         []string
 	killSignals   []uint32
 	updateRequest *tasksapi.UpdateTaskRequest
@@ -920,6 +921,15 @@ type fakeTasksClient struct {
 	getErr        error
 	updateErr     error
 	deleteErr     error
+}
+
+func (f *fakeTasksClient) List(
+	_ context.Context,
+	_ *tasksapi.ListTasksRequest,
+	_ ...grpc.CallOption,
+) (*tasksapi.ListTasksResponse, error) {
+	f.calls = append(f.calls, "list")
+	return &tasksapi.ListTasksResponse{Tasks: f.listProcesses}, nil
 }
 
 func (f *fakeTasksClient) Get(

@@ -17,6 +17,115 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
+func TestContainerdSnapshotMatchesTaskProcessID(t *testing.T) {
+	tests := []struct {
+		name       string
+		process    *tasktypes.Process
+		wantState  string
+		wantStatus string
+		wantTask   bool
+		wantExit   *uint32
+	}{
+		{
+			name:       "running task with process ID",
+			process:    &tasktypes.Process{ID: "fixture-container", Pid: 42, Status: tasktypes.Status_RUNNING},
+			wantState:  "running",
+			wantStatus: "Up",
+			wantTask:   true,
+		},
+		{
+			name:       "running task with explicit container ID",
+			process:    &tasktypes.Process{ContainerID: "fixture-container", ID: "fixture-init", Pid: 42, Status: tasktypes.Status_RUNNING},
+			wantState:  "running",
+			wantStatus: "Up",
+			wantTask:   true,
+		},
+		{
+			name:       "paused task",
+			process:    &tasktypes.Process{ID: "fixture-container", Pid: 42, Status: tasktypes.Status_PAUSED},
+			wantState:  "paused",
+			wantStatus: "Up (Paused)",
+			wantTask:   true,
+		},
+		{
+			name:       "stopped task",
+			process:    &tasktypes.Process{ID: "fixture-container", Pid: 42, Status: tasktypes.Status_STOPPED, ExitStatus: 137},
+			wantState:  "exited",
+			wantStatus: "Exited (137)",
+			wantTask:   true,
+			wantExit:   uint32Pointer(137),
+		},
+		{
+			name:       "created task",
+			process:    &tasktypes.Process{ID: "fixture-container", Status: tasktypes.Status_CREATED},
+			wantState:  "created",
+			wantStatus: "Created",
+			wantTask:   true,
+		},
+		{
+			name:       "missing task awaiting restart",
+			wantState:  "restarting",
+			wantStatus: "Restarting",
+		},
+		{
+			name:       "unrelated task",
+			process:    &tasktypes.Process{ID: "fixture-other", Pid: 99, Status: tasktypes.Status_RUNNING},
+			wantState:  "restarting",
+			wantStatus: "Restarting",
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			tasks := &fakeTasksClient{}
+			if test.process != nil {
+				tasks.listProcesses = []*tasktypes.Process{test.process}
+			}
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "fixture-namespace",
+				containers: &fakeContainersClient{container: &containersapi.Container{
+					ID: "fixture-container",
+					Labels: map[string]string{
+						nerdctlNameLabel:             "fixture-api",
+						"com.docker.compose.project": "fixture-stack",
+						"com.docker.compose.service": "api",
+						restartPolicyLabel:           "always",
+						restartStatusLabel:           "running",
+						restartCountLabel:            "3",
+					},
+				}},
+				tasks: tasks,
+			}
+			containers, err := runtimeClient.Snapshot(context.Background())
+			if err != nil {
+				t.Fatalf("read containerd snapshot: %v", err)
+			}
+			if len(containers) != 1 {
+				t.Fatalf("snapshot has %d containers, want 1", len(containers))
+			}
+			container := containers[0]
+			if container.State != test.wantState || container.Status != test.wantStatus ||
+				container.TaskPresent != test.wantTask {
+				t.Fatalf("state = %q, status = %q, task present = %t; want %q, %q, %t",
+					container.State, container.Status, container.TaskPresent,
+					test.wantState, test.wantStatus, test.wantTask)
+			}
+			if test.wantTask && container.PID != test.process.GetPid() {
+				t.Fatalf("PID = %d, want %d", container.PID, test.process.GetPid())
+			}
+			if !reflect.DeepEqual(container.ExitCode, test.wantExit) {
+				t.Fatalf("exit code = %v, want %v", container.ExitCode, test.wantExit)
+			}
+			if container.ComposeProject != "fixture-stack" || container.ComposeService != "api" ||
+				container.RestartPolicy != "always" || container.RestartCount != 3 {
+				t.Fatalf("Compose or restart metadata changed: %+v", container)
+			}
+			if !reflect.DeepEqual(tasks.calls, []string{"list"}) {
+				t.Fatalf("task calls = %v, want one task list", tasks.calls)
+			}
+		})
+	}
+}
+
 func TestContainerFromContainerdMapsTypedLifecycleState(t *testing.T) {
 	memoryLimit := int64(512 * 1024 * 1024)
 	cpuQuota := int64(50000)

@@ -69,6 +69,11 @@ the stream is unavailable. `/api/docker/containers/snapshot` exposes the same
 revision, typed task/exit/OOM/restart/health/resource metadata, lifecycle
 history, namespace, and stale-state status.
 
+Task list entries are matched by container ID when provided, otherwise by
+process ID (an init task's ID is its container's ID). Actual task state takes
+precedence over a restart policy's desired state, so running Compose services
+are counted as running and stopped tasks retain their exit status.
+
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a tunnel open for the gRPC connection. Windows uses
 Lima shell standard input/output and the bundled guest helper; it never asks
