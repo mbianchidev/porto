@@ -287,6 +287,15 @@ up/post-create/exec, and Testcontainers start/log-wait/exec/cleanup against
 local Linux containerd and Lima-backed runtimes. Fixtures are synthetic;
 workspaces and resources are individually owned and removed.
 
+Dockerode's plain HTTP exec streams receive Docker-framed HTTP 200 responses;
+CLI/SDK connection upgrades still receive HTTP 101. Testcontainers' `tail=-1`
+log sentinel means all retained lines. Lima log paths and recorder executables
+are resolved in the Linux guest, including when the desktop host is Windows.
+For Node Testcontainers on Windows, use backslashes in the pipe path
+(`npipe:////.\pipe\porto`): its WHATWG URL parser removes the `.` segment from
+the ordinary CLI spelling `npipe:////./pipe/porto`. The native CLI/SDK keep their
+normal endpoint spelling.
+
 The tested Dev Containers configuration uses a named workspace volume.
 Testcontainers uses explicit harness cleanup with Ryuk disabled: Porto does
 not mount the host control socket into its guest or claim a working guest-side

@@ -30,7 +30,7 @@ type LogCapabilities struct {
 }
 
 func (r *grpcContainerRuntime) directLogURI(ctx context.Context, logPath string) (*url.URL, error) {
-	if r.helperPath == "" {
+	if r.helperPath == "" && r.lima == "" {
 		return &url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}, nil
 	}
 	helper := r.helperPath
