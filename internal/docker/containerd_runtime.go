@@ -807,10 +807,6 @@ func containerFromContainerd(record *containersapi.Container, process *tasktypes
 		ExitReason:     labels[nerdctlErrorLabel],
 	}
 	container.RestartCount, _ = strconv.Atoi(labels[restartCountLabel])
-	if labels[restartStatusLabel] == "running" && container.RestartPolicy != "" {
-		container.State = "restarting"
-		container.Status = "Restarting"
-	}
 
 	var mappingErrors []error
 	var spec specs.Spec

@@ -45,10 +45,6 @@ function isPaused(container: DockerContainer) {
   return containerState(container) === 'paused'
 }
 
-function isStopped(container: DockerContainer) {
-  return ['stopped', 'exited'].includes(containerState(container))
-}
-
 function isStartable(container: DockerContainer) {
   return ['stopped', 'exited', 'created'].includes(containerState(container))
 }
@@ -222,20 +218,20 @@ export function Containers() {
 
   function containerActions(container: DockerContainer) {
     const paused = isPaused(container)
-    const stopped = isStopped(container)
+    const startable = isStartable(container)
     const active = isActive(container)
     return (
       <>
         <ActionButton label="Inspect image layers" icon="terminal" onClick={() => openContainer(container, 'layers')} />
-        <ActionButton label="Start container" icon="play" disabled={!isStartable(container)} onClick={() => containerAction(container, 'start')} />
+        <ActionButton label="Start container" icon="play" disabled={!startable} onClick={() => containerAction(container, 'start')} />
         <ActionButton label="Resume container" icon="play" disabled={!paused} onClick={() => containerAction(container, 'unpause')} />
         <ActionButton label="Stop container" icon="stop" disabled={!active} onClick={() => containerAction(container, 'stop')} />
         <ActionButton label="Restart container" icon="restart" disabled={!active} onClick={() => containerAction(container, 'restart')} />
         <ActionButton
           className="removeButton"
-          label={stopped ? 'Remove container' : 'Remove container (stop it first)'}
+          label={startable ? 'Remove container' : 'Remove container (stop it first)'}
           icon="remove"
-          disabled={!stopped}
+          disabled={!startable}
           onClick={() => containerAction(container, 'remove', `Remove container ${container.name}?`)}
         />
         <ActionButton

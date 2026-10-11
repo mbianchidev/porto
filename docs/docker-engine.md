@@ -73,6 +73,11 @@ Task list entries are matched by container ID when provided, otherwise by
 process ID (an init task's ID is its container's ID). Actual task state takes
 precedence over a restart policy's desired state, so running Compose services
 are counted as running and stopped tasks retain their exit status.
+Restart-policy labels describe intent, not an observed restart: a container
+without a task reports `Created`, not `Restarting`, even if a stale desired-state
+label says `running`. Observing the inventory never changes its restart policy.
+Both created and exited containers can be started or removed without a
+running task; Stop and Restart remain disabled until the container is active.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a tunnel open for the gRPC connection. Windows uses

@@ -107,6 +107,7 @@ test('Compose status and running counts follow live task snapshots', async ({ pa
   await expect(group.getByRole('option', { name: /Status: Up(?:\s|$)/ })).toHaveCount(3)
   await expect(group.getByRole('option', { name: /Status: Exited \(0\)/ })).toBeVisible()
   await expect(group.getByRole('option', { name: /Status: Restarting/ })).toHaveCount(0)
+  await expect(group.getByRole('button', { name: 'Remove container (stop it first)', exact: true, disabled: true })).toHaveCount(3)
   await page.screenshot({ path: testInfo.outputPath('compose-running.png'), fullPage: true })
 
   await publishSnapshot({
@@ -119,6 +120,40 @@ test('Compose status and running counts follow live task snapshots', async ({ pa
   await expect(group.getByRole('option', { name: /Status: Up(?:\s|$)/ })).toHaveCount(2)
   await expect(group.getByRole('option', { name: /Status: Exited \(1\)/ })).toBeVisible()
 })
+
+for (const grouped of [true, false]) {
+  test(`inactive ${grouped ? 'Compose' : 'standalone'} containers remain startable with restart policies`, async ({ page }, testInfo) => {
+    const containers = [
+      {
+        ...fixture, id: 'synthetic-idle', name: 'fixture-idle', state: 'created', status: 'Created',
+        taskPresent: false, pid: 0, restartPolicy: 'unless-stopped',
+        composeProject: grouped ? 'fixture-idle-stack' : '', composeService: grouped ? 'api' : '',
+      },
+      {
+        ...fixture, id: 'synthetic-exited', name: 'fixture-exited', state: 'exited', status: 'Exited (1)',
+        exitCode: 1, restartPolicy: 'always',
+        composeProject: grouped ? 'fixture-idle-stack' : '', composeService: grouped ? 'worker' : '',
+      },
+    ]
+    await mockRuntime(page, { ...snapshot, containers })
+    await page.goto('/#/containers', { waitUntil: 'networkidle' })
+    for (const container of containers) {
+      const row = page.locator('.inventoryRow').filter({
+        has: page.getByRole('option', { name: new RegExp(container.name) }),
+      })
+      await expect(row.getByRole('option')).toContainText(`Status: ${container.status}`)
+      await expect(row.getByRole('button', { name: 'Start container', exact: true })).toBeEnabled()
+      await expect(row.getByRole('button', { name: 'Stop container', exact: true })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Restart container', exact: true })).toBeDisabled()
+      await expect(row.getByRole('button', { name: 'Remove container', exact: true })).toBeEnabled()
+    }
+    await expect(page.getByRole('option', { name: /Status: Restarting/ })).toHaveCount(0)
+    if (grouped) {
+      await expect(page.locator('.containerComposeGroup summary')).toContainText('2 service(s) · 2 container(s) · 0 running')
+      await page.screenshot({ path: testInfo.outputPath('inactive-containers.png'), fullPage: true })
+    }
+  })
+}
 
 test('logs remain bounded, searchable, stream-filtered and close on tab switch', async ({ page }) => {
       await mockRuntime(page)

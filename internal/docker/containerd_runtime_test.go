@@ -63,15 +63,15 @@ func TestContainerdSnapshotMatchesTaskProcessID(t *testing.T) {
 			wantTask:   true,
 		},
 		{
-			name:       "missing task awaiting restart",
-			wantState:  "restarting",
-			wantStatus: "Restarting",
+			name:       "missing task with restart policy",
+			wantState:  "created",
+			wantStatus: "Created",
 		},
 		{
 			name:       "unrelated task",
 			process:    &tasktypes.Process{ID: "fixture-other", Pid: 99, Status: tasktypes.Status_RUNNING},
-			wantState:  "restarting",
-			wantStatus: "Restarting",
+			wantState:  "created",
+			wantStatus: "Created",
 		},
 	}
 	for _, test := range tests {
@@ -123,6 +123,33 @@ func TestContainerdSnapshotMatchesTaskProcessID(t *testing.T) {
 				t.Fatalf("task calls = %v, want one task list", tasks.calls)
 			}
 		})
+	}
+}
+
+func TestTasklessContainerDoesNotInferRestartingFromPolicy(t *testing.T) {
+	for _, policy := range []string{"no", "always", "unless-stopped", "on-failure"} {
+		for _, explicitlyStopped := range []string{"true", "false"} {
+			t.Run(policy+"/explicitly-stopped="+explicitlyStopped, func(t *testing.T) {
+				record := &containersapi.Container{
+					ID: "fixture-taskless",
+					Labels: map[string]string{
+						restartPolicyLabel:  policy,
+						restartStatusLabel:  "running",
+						restartStoppedLabel: explicitlyStopped,
+						restartCountLabel:   "3",
+					},
+				}
+				container := containerFromContainerd(record, nil)
+				if container.State != "created" || container.Status != "Created" ||
+					container.TaskPresent || container.PID != 0 || containerActive(&container) {
+					t.Fatalf("restart metadata fabricated an active task: %+v", container)
+				}
+				if container.RestartPolicy != policy || container.RestartCount != 3 ||
+					!reflect.DeepEqual(container.Labels, record.GetLabels()) {
+					t.Fatalf("observation changed restart metadata: %+v", container)
+				}
+			})
+		}
 	}
 }
 
