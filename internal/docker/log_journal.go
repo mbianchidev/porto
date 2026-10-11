@@ -43,6 +43,10 @@ func (r *grpcContainerRuntime) directLogURI(ctx context.Context, logPath string)
 		if !path.IsAbs(helper) {
 			return nil, errors.New("runtime helper reported an invalid logger path")
 		}
+		return &url.URL{
+			Scheme: "binary", Path: helper,
+			RawQuery: url.Values{"-porto-log": {logPath}}.Encode(),
+		}, nil
 	}
 	return cio.LogURIGenerator("binary", helper, map[string]string{"-porto-log": logPath})
 }

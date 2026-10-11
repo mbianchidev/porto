@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -248,8 +249,16 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	if output, err := dockerCommand(ctx, "load", "--input", corruptArchive); err == nil {
 		t.Fatalf("ordinary Docker load accepted a corrupt archive: %s", output)
 	}
+	reservation, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	registryPort := reservation.Addr().(*net.TCPAddr).Port
+	if err := reservation.Close(); err != nil {
+		t.Fatal(err)
+	}
 	runDocker("run", "--detach", "--name", registryName, "--label", "porto.test.suite="+suite,
-		"--publish", "127.0.0.1::5000", "registry:2")
+		"--publish", "127.0.0.1:"+strconv.Itoa(registryPort)+":5000", "registry:2")
 	port := strings.TrimSpace(string(runDocker("inspect", "--format", `{{(index (index .NetworkSettings.Ports "5000/tcp") 0).HostPort}}`, registryName)))
 	if parsed, err := strconv.Atoi(port); err != nil || parsed <= 0 {
 		t.Fatalf("disposable registry port = %q, error=%v", port, err)
@@ -278,13 +287,15 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	runDocker("push", registryTag)
 	runDocker("image", "inspect", registryTag)
 
-	command := process.NewCommand(ctx, root, "npm", "--prefix", "scripts/docker-clients", "test")
+	workflowContext, cancelWorkflow := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancelWorkflow()
+	command := process.NewCommand(workflowContext, root, "npm", "--prefix", "scripts/docker-clients", "test")
 	command.Env = environment
-	output, err := command.CombinedOutput()
-	if err != nil {
-		t.Fatalf("Dev Containers/Testcontainers workflows: %v: %s", err, output)
+	command.Stdout, command.Stderr = os.Stdout, os.Stderr
+	if err := command.Run(); err != nil {
+		t.Fatalf("Dev Containers/Testcontainers workflows: %v", err)
 	}
-	t.Logf("development client workflows:\n%s", output)
+	t.Log("real Testcontainers and Dev Containers workflows completed")
 }
 
 func syntheticClientBuildArchive(t *testing.T) []byte {
