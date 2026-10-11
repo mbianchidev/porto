@@ -100,6 +100,14 @@ any future code signing/notarization. Cross-packaging macOS desktop apps on
 Linux fails explicitly; CLI archives can still be cross-built. macOS tar
 archives omit AppleDouble metadata and retain the existing release layout.
 
+macOS packages include a native Icon Composer `.icon` asset made from Porto's
+existing artwork, with glass effects disabled, alongside the unchanged `.icns`
+fallback. Electron Packager compiles the modern icon into `Assets.car`; native
+smoke tests check both icon resources and their `Info.plist` entries. Building
+macOS packages requires macOS 26 or newer and Xcode 26 or newer with `actool`
+available. Source development still uses the `.icns` icon and only requires
+Xcode Command Line Tools.
+
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
 The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
