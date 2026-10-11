@@ -9,6 +9,7 @@ import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
+import { NativeFiles } from '../components/NativeFiles'
 import type { RuntimeProviderStatus, VMCreateRequest, VMImage, VMInstance, VMStatus } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(150px,1.2fr) minmax(110px,0.7fr) minmax(70px,0.4fr) minmax(90px,0.5fr) minmax(90px,0.5fr)'
@@ -249,6 +250,7 @@ export function Machines() {
               activeID={tab}
               onSelect={setTab}
             />
+            <NativeFiles key={selected.name} kind="vm" name={selected.name} />
             {tab === 'overview' && (
               <section className="drawerPanel">
                 <h3>Instance detail</h3>

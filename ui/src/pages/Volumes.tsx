@@ -4,7 +4,9 @@ import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
-import { Inspector } from '../components/Inspector'
+import { Inspector, InspectorTabs } from '../components/Inspector'
+import { RuntimeFiles } from '../components/RuntimeFiles'
+import { VolumeTools } from '../components/VolumeTools'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -20,6 +22,7 @@ export function Volumes() {
   const [name, setName] = useState('')
   const [driver, setDriver] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [tab, setTab] = useState('overview')
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const volumes = usePolledResource<DockerVolume[]>((signal) => apiGet('/api/docker/volumes', signal), 8000, [], 'docker:volumes')
@@ -85,7 +88,7 @@ export function Volumes() {
             getKey={(volume) => volume.name}
             columnsTemplate={COLUMNS_TEMPLATE}
             selectedKey={selectedName}
-            onSelect={(volume) => { setCreating(false); setSelectedName(volume.name) }}
+            onSelect={(volume) => { setCreating(false); setSelectedName(volume.name); setTab('overview') }}
             ariaLabel="Docker volumes"
             emptyMessage={volumes.error || 'No volumes found.'}
             columns={[
@@ -102,6 +105,8 @@ export function Volumes() {
 
         {selected && !creating && (
           <Inspector title={selected.name} subtitle={selected.driver} onClose={() => setSelectedName(null)}>
+            <InspectorTabs tabs={[{ id: 'overview', label: 'Overview' }, { id: 'files', label: 'Files' }, { id: 'data', label: 'Data and backups' }]} activeID={tab} onSelect={setTab} />
+            {tab === 'overview' && <>
             <section className="drawerPanel">
               <h3>Volume detail</h3>
               <dl className="runtimeGrid">
@@ -117,6 +122,9 @@ export function Volumes() {
                 <ActionButton className="removeButton" label="Force remove volume" icon="kill" onClick={() => removeVolume(selected, true)} />
               </div>
             </div>
+            </>}
+            {tab === 'files' && <RuntimeFiles key={selected.name} kind="volume" name={selected.name} />}
+            {tab === 'data' && <VolumeTools key={selected.name} name={selected.name} />}
           </Inspector>
         )}
 

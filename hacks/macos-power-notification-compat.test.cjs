@@ -7,6 +7,7 @@ const path = require('node:path')
 const test = require('node:test')
 
 const { installMacOSBootstrap } = require('../scripts/macos-desktop-bootstrap.cjs')
+const { prepareMacOSDevelopmentApp } = require('../scripts/macos-development-app.cjs')
 
 const launcher = path.join(__dirname, 'open-porto-macos-27.sh')
 const guardSource = path.join(__dirname, 'macos-power-notification-compat.c')
@@ -193,7 +194,7 @@ test('macOS power-notification workaround and upstream removal gate', {
     const result = spawnSync(electron, [
       application, `--user-data-dir=${path.join(directory, name)}`, '--disable-breakpad',
     ], {
-      encoding: 'utf8', timeout: 45000,
+      encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
       env: { ...environment, DYLD_INSERT_LIBRARIES: libraries },
     })
     assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)
@@ -217,6 +218,41 @@ test('macOS power-notification workaround and upstream removal gate', {
       'and retain this injected-failure case as a passing, unguarded regression test.')
     assert.equal(result.signal, 'SIGSEGV',
       `Unexpected unguarded startup failure; do not treat it as proof the shim is needed:\n${result.stderr}`)
+  })
+
+  await t.test('the development app renders and reopens after failed power registration without CLI app arguments', async () => {
+    const source = path.join(directory, 'development source with spaces', 'ui', 'electron')
+    fs.mkdirSync(source, { recursive: true })
+    fs.writeFileSync(path.join(source, 'package.json'), JSON.stringify({
+      name: 'synthetic-porto-dev', version: '1.0.0', main: 'main.cjs',
+    }))
+    fs.copyFileSync(application, path.join(source, 'main.cjs'))
+    const bundle = await prepareMacOSDevelopmentApp({
+      appDirectory: source, electronExecutable: electron, cacheRoot: path.join(directory, 'development cache'),
+    })
+    const executable = path.join(bundle, 'Contents', 'MacOS', 'Electron')
+    for (const name of ['first launch', 'reopened']) {
+      const result = spawnSync(executable, [
+        `--user-data-dir=${path.join(directory, `development profile ${name}`)}`, '--disable-breakpad',
+      ], {
+        encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
+        env: { ...environment, PORTO_TEST_APP_PATH: source, DYLD_INSERT_LIBRARIES: failure },
+      })
+      assert.ifError(result.error)
+      assert.equal(result.status, 0, `Guarded dev startup failed (${result.signal}):\n${result.stdout}\n${result.stderr}`)
+      assert.match(result.stderr, /PORTO_TEST_POWER_UNAVAILABLE/, 'Failure injection was not exercised')
+      assert.match(result.stderr, /Continuing without sleep\/wake events/)
+      assert.match(result.stdout, /PORTO_TEST_RENDERED/)
+      assert.match(result.stdout, /PORTO_TEST_PACKAGED=false/, 'Development must not enable packaged-only daemon replacement or updates')
+      assert.match(result.stdout, /PORTO_TEST_GUARD_INHERITED=false/)
+    }
+    const node = spawnSync(executable, ['-e', 'console.log(process.execPath)'], {
+      encoding: 'utf8', timeout: 10000,
+      env: { ...environment, ELECTRON_RUN_AS_NODE: '1' },
+    })
+    assert.ifError(node.error)
+    assert.equal(node.status, 0, node.stderr)
+    assert.equal(fs.realpathSync(node.stdout.trim()), fs.realpathSync(executable))
   })
 
   await t.test('the packaged macOS app preserves native startup without a recovery launcher', async (t) => {
@@ -253,7 +289,7 @@ test('macOS power-notification workaround and upstream removal gate', {
         const result = spawnSync(executable, [
           `--user-data-dir=${path.join(directory, `packaged profile ${injectFailure}`)}`, '--disable-breakpad',
         ], {
-          encoding: 'utf8', timeout: 45000,
+          encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
           env: { ...packagedEnvironment, ...(injectFailure ? { DYLD_INSERT_LIBRARIES: failure } : {}) },
         })
         assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)

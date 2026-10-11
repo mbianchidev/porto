@@ -88,6 +88,12 @@ func dockerCmd(args []string) error {
 		return errors.New("usage: porto docker cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
+	case "storage", "volume", "backups", "operations":
+		return dockerDataCmd(args)
+	case "migrate":
+		return dockerMigrationCmd(args[1:])
+	case "files":
+		return dockerFilesCmd(args[1:])
 	case "cli":
 		if len(args) == 1 {
 			return errors.New("usage: porto docker cli <args...>")
@@ -184,6 +190,9 @@ func dockerCmd(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto docker engine-stop")
 		}
+		if daemonUp() {
+			return runtimePOST("/api/docker/engine/stop", nil)
+		}
 		if err := portodocker.New(nil).StopEngine(context.Background()); err != nil {
 			return err
 		}
@@ -196,6 +205,9 @@ func dockerCmd(args []string) error {
 		}
 		if fs.NArg() != 0 || !*confirm {
 			return errors.New("usage: porto docker engine-remove --confirm")
+		}
+		if daemonUp() {
+			return runtimePOST("/api/docker/engine/remove?confirm=true", nil)
 		}
 		if err := portodocker.New(nil).RemoveEngine(context.Background()); err != nil {
 			return err

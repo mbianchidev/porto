@@ -5,6 +5,8 @@
 # Release packaging output
 /dist/
 /stage/
+/ui/test-results/
+/ui/playwright-report/
 
 # Local editor and OS files
 .DS_Store

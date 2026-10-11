@@ -7,11 +7,15 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "2"
+const helperVersion = "4"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -38,18 +42,48 @@ type cniEndpointResult struct {
 }
 
 func main() {
+	if len(os.Args) > 1 && strings.HasPrefix(os.Args[1], "-") && os.Getenv("CONTAINER_ID") != "" {
+		fail(runShimLogger(os.Args[1:]))
+	}
 	if len(os.Args) < 2 {
 		fail(errors.New("runtime helper command is required"))
 	}
 	switch os.Args[1] {
 	case "version":
 		fmt.Println(helperVersion)
+	case "path":
+		executable, err := os.Executable()
+		if err != nil {
+			fail(err)
+		}
+		fmt.Println(executable)
+	case "log-stdio":
+		if err := logStdio(os.Args[2:]); err != nil {
+			fail(err)
+		}
 	case "probe":
 		if err := json.NewEncoder(os.Stdout).Encode(probeRuntime()); err != nil {
 			fail(err)
 		}
 	case "dial-stdio":
 		if err := dialStdio(context.Background(), os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+	case "files":
+		base, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		ctx, cancel := context.WithTimeout(base, 2*time.Hour)
+		defer cancel()
+		if err := runtimefiles.Run(ctx, os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+	case "files-sftp":
+		if len(os.Args) != 3 {
+			fail(errors.New("files-sftp requires one identity-bound request"))
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		if err := runtimefiles.RunSFTP(ctx, os.Args[2], os.Stdin, os.Stdout); err != nil {
 			fail(err)
 		}
 	case "cni-connect", "cni-check", "cni-disconnect":

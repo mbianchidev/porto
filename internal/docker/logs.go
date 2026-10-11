@@ -12,6 +12,7 @@ import (
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
+	"github.com/mbianchidev/porto/internal/containerlogs"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -58,11 +59,11 @@ func (m *Manager) StreamDockerContainerLogs(
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
-	if options.Stdout != options.Stderr {
-		return fmt.Errorf("%w: selecting only stdout or stderr logs", ErrUnsupported)
-	}
 	if handled, err := m.streamContainerLogsDirect(ctx, id, options, emit); handled {
 		return err
+	}
+	if options.Stdout != options.Stderr {
+		return fmt.Errorf("%w: selecting only stdout or stderr logs requires a timestamped Porto journal", ErrUnsupported)
 	}
 	args := []string{"logs"}
 	if options.Follow {
@@ -137,6 +138,31 @@ func (r *grpcContainerRuntime) StreamLogs(
 	logPath := response.GetContainer().GetLabels()[portoLogPathLabel]
 	if logPath == "" {
 		return fmt.Errorf("%w: container %q does not use Porto-owned logs", ErrUnsupported, id)
+	}
+	if journal := response.GetContainer().GetLabels()[portoLogJournalLabel]; journal != "" {
+		tail, err := parseLogTail(options.Tail)
+		if err != nil {
+			return err
+		}
+		since, _, err := parseDockerEventTime(options.Since)
+		if err != nil {
+			return err
+		}
+		until, _, err := parseDockerEventTime(options.Until)
+		if err != nil {
+			return err
+		}
+		return r.streamJournal(ctx, journal, tail, options.Follow, func(record containerlogs.Record) error {
+			if record.Stream == "stdout" && !options.Stdout || record.Stream == "stderr" && !options.Stderr ||
+				!since.IsZero() && record.Timestamp.Before(since) || !until.IsZero() && record.Timestamp.After(until) {
+				return nil
+			}
+			text := record.Text
+			if options.Timestamps {
+				text = record.Timestamp.UTC().Format(time.RFC3339Nano) + " " + text
+			}
+			return emit(runtimes.OutputChunk{Stream: record.Stream, Data: []byte(text)})
+		})
 	}
 	if options.Since != "" || options.Until != "" || options.Timestamps {
 		return fmt.Errorf(

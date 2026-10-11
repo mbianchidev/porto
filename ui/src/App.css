@@ -2241,6 +2241,74 @@ button:disabled {
   gap: 8px;
 }
 
+.dataActions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-block: 9px;
+}
+
+.dataWorkArea {
+  display: grid;
+  min-width: 0;
+  gap: 11px;
+  padding-block: 11px;
+}
+
+.dataTableScroll {
+  overflow-x: auto;
+  max-width: 100%;
+}
+
+.dataTable {
+  width: 100%;
+  border-collapse: collapse;
+  font: 11px/1.5 var(--mono);
+}
+
+.dataTable th,
+.dataTable td {
+  padding: 6px;
+  border-bottom: 1px solid var(--line);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+
+.dataTable th {
+  color: var(--ink-soft);
+}
+
+.fileEditor textarea {
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 100%;
+  min-height: 180px;
+  padding: 9px;
+  border: 1px solid var(--line);
+  background: var(--panel-raised);
+  color: var(--ink);
+  font: 12px/1.5 var(--mono);
+  resize: vertical;
+}
+
+.statsHistory {
+  display: block;
+  width: 100%;
+  max-width: 600px;
+  height: 100px;
+  color: var(--ink);
+}
+
+.runtimeFiles .inspectorForm label {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.runtimeFiles input {
+  max-width: 100%;
+}
+
 .terminalModePicker {
   display: flex;
   gap: 5px;

@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useState } from 'react'
 import './App.css'
 import { apiGet } from './api'
 import { usePolledResource, useNarrowViewport } from './hooks'
@@ -43,9 +43,14 @@ import type {
 
 const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
+  'docker-storage',
+  'migration',
   'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
+
+const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
+const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
 
 function routeFromHash(): RouteID {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -151,6 +156,8 @@ function AppShell() {
         {route === 'builds' && <Builds />}
         {route === 'volumes' && <Volumes />}
         {route === 'networks' && <Networks />}
+        {route === 'docker-storage' && <Suspense fallback={<p role="status">Loading storage tools…</p>}><DockerStorage /></Suspense>}
+        {route === 'migration' && <Suspense fallback={<p role="status">Loading migration tools…</p>}><Migration /></Suspense>}
         {route === 'kubernetes' && (
           <KubernetesOverview
             context={activeKubeContext}

@@ -280,7 +280,7 @@ func TestDockerAPICreatesPrivilegedKindContainer(t *testing.T) {
 func TestDockerAPIRejectsUnsupportedOperationsExplicitly(t *testing.T) {
 	handler := NewAPI(New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}), "/tmp/porto.sock")
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/system/df", nil))
+	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/swarm", nil))
 	if response.Code != http.StatusNotImplemented || !strings.Contains(response.Body.String(), "does not support") {
 		t.Fatalf("unsupported = %d: %s", response.Code, response.Body.String())
 	}

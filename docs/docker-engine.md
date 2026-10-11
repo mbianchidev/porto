@@ -1,5 +1,12 @@
 # Porto Docker Engine
 
+See [runtime data management](data-management.md) for storage accounting,
+confirmed object/category cleanup, versioned local volume archives, scheduled
+crash-consistent backups, safe staged restore, source-preserving migration, and
+native filesystem boundaries. `/system/df` reports unique content/snapshot
+provenance; category prune APIs protect referenced resources and return warnings
+when actual reclaimed bytes are unavailable rather than inventing a total.
+
 Porto owns a Docker Engine-compatible API endpoint. It does not forward requests to Docker Desktop, Podman, or another Docker daemon.
 
 ## Architecture

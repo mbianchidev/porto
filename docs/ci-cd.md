@@ -13,7 +13,7 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 
 ## CI details
 
-The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.8` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
+The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.9` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
 The `cross-build` job compiles `./cmd/porto` with `CGO_ENABLED=0` for every release target (`linux`, `darwin`, and `windows` on `amd64` and `arm64`), so a broken platform build fails the pull request instead of the release.
 
@@ -53,6 +53,15 @@ They use the application version with `+ci.<run-number>` build metadata, so a
 test build is not immediately considered older than the same stable version.
 These are unsigned PR/test builds, not published releases.
 
+The Windows installer job also checksum-verifies and installs the official
+WinFsp 2.1 driver on its disposable runner, then tests the **installed**
+`porto-files-mount.exe` against synthetic confined SFTP roots. Container,
+image, volume and VM fixtures cover real host paths, direct editor
+write/rename, concurrent guest changes, read-only image rejection, spaces/
+non-ASCII paths and owned detach without source deletion. Normal desktop
+installation never silently installs WinFsp; users explicitly install it
+before enabling native host folders.
+
 Desktop logging tests run natively on Windows and macOS. The Windows installer
 check also starts the installed daemon against a deliberately invalid,
 isolated test database to verify that early failures reach `logs/porto.log`
@@ -70,6 +79,11 @@ external guard, preserve Electron Node mode and its executable path, and
 repair closed standard streams. `PORTO_TEST_MACOS_APP=/path/to/Porto.app`
 runs these checks on a temporary copy of an already-built app instead;
 the original bundle and user data are never modified.
+The same suite prepares the cached source-development app, forces failed power
+registration, and checks rendering and reopening without a command-line app
+path. `ui/electron/dev-launcher.test.cjs` checks normal argument-free reopen,
+preserved development-mode behavior, unchanged npm runtime files, cache reuse,
+and Windows/Linux source arguments.
 An unguarded probe deliberately fails with removal instructions when the
 locked Electron no longer needs the workaround. Keep that retirement gate
 until the helper is removed; see
@@ -88,12 +102,16 @@ archives omit AppleDouble metadata and retain the existing release layout.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
-The Go module temporarily pins gRPC to
-`v1.85.0-dev.0.20260825072537-93e31b48545e`, the upstream fix for
-[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). The latest stable release,
-`v1.84.0`, still contains the missing-authority server panic. Replace this
-development pin with a stable release containing the fix when available;
-keep the vulnerability scan enabled.
+The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
+fix for the missing-authority server panic,
+[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). Prefer a stable release
+containing the fix when updating this dependency; keep the vulnerability
+scan enabled.
+
+The module graph keeps `golang.org/x/net` at `v0.60.0` or newer for the HTTP/2
+security fixes. Related standard-library fixes require Go `1.26.9` or
+`1.27.2`; use a security-patched toolchain for local builds and vulnerability
+scans, not an older patch release on a newer Go minor line.
 
 ## Cutting a release
 

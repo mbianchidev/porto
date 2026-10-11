@@ -60,11 +60,13 @@ func (a *API) routes() {
 	a.mux.HandleFunc("HEAD /_ping", a.ping)
 	a.mux.HandleFunc("GET /version", a.version)
 	a.mux.HandleFunc("GET /info", a.info)
+	a.mux.HandleFunc("GET /system/df", a.systemDiskUsage)
 	a.mux.HandleFunc("GET /events", a.events)
 	a.mux.HandleFunc("POST /grpc", a.buildKitControl)
 	a.mux.HandleFunc("POST /session", a.buildKitSession)
 
 	a.mux.HandleFunc("GET /containers/json", a.containers)
+	a.mux.HandleFunc("POST /containers/prune", a.pruneResources("container"))
 	a.mux.HandleFunc("POST /containers/create", a.createContainer)
 	a.mux.HandleFunc("GET /containers/{id}/json", a.inspectContainer)
 	a.mux.HandleFunc("POST /containers/{id}/start", a.startContainer)
@@ -92,6 +94,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /exec/{id}/resize", a.resizeExec)
 
 	a.mux.HandleFunc("GET /images/json", a.images)
+	a.mux.HandleFunc("POST /images/prune", a.pruneResources("image"))
 	a.mux.HandleFunc("GET /images/get", a.getImages)
 	a.mux.HandleFunc("POST /images/load", a.loadImages)
 	a.mux.HandleFunc("GET /images/{id...}", a.inspectImagePath)
@@ -99,9 +102,11 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /images/create", a.pullImage)
 	a.mux.HandleFunc("DELETE /images/{id...}", a.deleteImage)
 	a.mux.HandleFunc("POST /build", a.buildImage)
+	a.mux.HandleFunc("POST /build/prune", a.pruneResources("cache"))
 	a.mux.HandleFunc("POST /commit", a.commitContainer)
 
 	a.mux.HandleFunc("GET /networks", a.networks)
+	a.mux.HandleFunc("POST /networks/prune", a.pruneResources("network"))
 	a.mux.HandleFunc("POST /networks/create", a.createNetwork)
 	a.mux.HandleFunc("GET /networks/{id}", a.inspectNetwork)
 	a.mux.HandleFunc("POST /networks/{id}/connect", a.connectNetwork)
@@ -109,6 +114,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("DELETE /networks/{id}", a.deleteNetwork)
 
 	a.mux.HandleFunc("GET /volumes", a.volumes)
+	a.mux.HandleFunc("POST /volumes/prune", a.pruneResources("volume"))
 	a.mux.HandleFunc("POST /volumes/create", a.createVolume)
 	a.mux.HandleFunc("GET /volumes/{name}", a.inspectVolume)
 	a.mux.HandleFunc("DELETE /volumes/{name}", a.deleteVolume)

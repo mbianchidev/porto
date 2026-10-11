@@ -1,5 +1,12 @@
 # Installation
 
+For live Windows Explorer/editor access to runtime files, install the maintained
+[WinFsp 2.1+ driver](https://winfsp.dev) explicitly, then use **Open files** in
+Porto. Desktop packages bundle the matching native mount helper; no SSHFS-Win
+installation or cached sync folder is needed. In-app Files and volume archives
+do not require WinFsp. See [native runtime access](data-management.md#native-file-manager-access)
+for write boundaries, guest support and cleanup.
+
 Porto needs both the `porto` binary and the compiled dashboard assets. Release archives include both.
 
 ## Install a release
@@ -262,7 +269,7 @@ named `porto` context because named-pipe takeover cannot be reversed safely.
 On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
 notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
 before Porto starts or creates its diagnostic log. This was reproduced in the
-bundled v1.2.12 release, and Electron 44.4.5 still crashes when registration
+bundled v1.2.12 release, and Electron 44.5.1 still crashes when registration
 fails. Removing quarantine does not fix this native crash.
 
 Until the bundled Electron includes the
@@ -351,7 +358,7 @@ on Windows.
 
 Requirements:
 
-- Go 1.26.8 or newer
+- Go 1.26.9 or newer, using a security-patched release (Go 1.27 requires 1.27.2 or newer)
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
 The minimum Go version follows the `go` directive in `go.mod`.
@@ -389,6 +396,28 @@ To run the desktop shell from source:
 npm --prefix ui run desktop:install
 npm --prefix ui run desktop
 ```
+
+On macOS, `desktop` (or `npm --prefix ui/electron start`) prepares a cached
+**Porto Dev.app** with the same native power-notification guard as the desktop
+package. The first preparation requires Xcode Command Line Tools. It copies
+Electron into a checkout/runtime-specific directory under
+`~/Library/Caches/Porto/development/`; it never edits the npm-installed
+`Electron.app`, installed Porto application, or helper processes.
+
+The launcher prints the exact app path. Reopen **Porto Dev.app** from that path
+or its Dock icon: the bundle remembers this checkout and loads its current
+source even without the original command-line arguments. Opening
+`node_modules/electron/dist/Electron.app` directly is not equivalent; it is the
+generic Electron runtime and can show its welcome screen without an app path.
+Keep the source checkout in place, and rerun the npm command after moving it or
+changing the Electron runtime. Cached dev bundles remain immutable while
+running, and source edits are loaded without repackaging.
+
+This remains development mode: packaged-only updates, login registration, and
+bundled-daemon replacement are not enabled by the cached wrapper. Windows and
+Linux keep using their installed Electron runtime with an absolute source app
+path. The macOS guard is linked only into the cached main executable, not
+inherited through a loader environment by renderers or other children.
 
 The resulting `porto` binary contains the daemon and CLI. It looks for dashboard assets in this order:
 

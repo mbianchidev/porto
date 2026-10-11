@@ -120,6 +120,7 @@ func (s *Server) executeDockerCleanup(ctx context.Context, cancel context.Cancel
 }
 
 func (s *Server) dockerCleanupLoop(ctx context.Context) {
+	s.checkScheduledBackups(ctx)
 	s.checkScheduledDockerCleanup(ctx)
 	ticker := time.NewTicker(time.Minute)
 	defer ticker.Stop()
@@ -128,6 +129,7 @@ func (s *Server) dockerCleanupLoop(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			s.checkScheduledBackups(ctx)
 			s.checkScheduledDockerCleanup(ctx)
 		}
 	}

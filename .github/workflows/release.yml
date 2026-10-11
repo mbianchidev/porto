@@ -92,6 +92,7 @@ jobs:
           npm --prefix ui/electron audit
           npm --prefix ui/electron test
           node --check ui/electron/main.js
+          node --check ui/electron/dev-launcher.cjs
           node --check ui/electron/daemon-readiness.cjs
           node --check ui/electron/desktop-update-install.cjs
           node --check ui/electron/desktop-updater.cjs
@@ -100,6 +101,7 @@ jobs:
           bash -n ui/electron/apply-update.sh
           node --check scripts/desktop-runtime-symlinks.cjs
           node --check scripts/macos-desktop-bootstrap.cjs
+          node --check scripts/macos-development-app.cjs
           bash -n scripts/download-file.sh
           bash -n scripts/bundle-desktop-runtime.sh
           bash -n scripts/package-desktop-installer.sh

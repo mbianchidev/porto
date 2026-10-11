@@ -5,6 +5,7 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
+import { RuntimeFiles } from '../components/RuntimeFiles'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -143,6 +144,7 @@ export function Images() {
               tabs={[
                 { id: 'overview', label: 'Overview' },
                 { id: 'layers', label: 'Layers' },
+                { id: 'files', label: 'Files (read-only)' },
               ]}
               activeID={imageTab}
               onSelect={setImageTab}
@@ -168,6 +170,7 @@ export function Images() {
               </>
             )}
             {imageTab === 'layers' && <DiveTerminal image={imageReference(selected)} />}
+            {imageTab === 'files' && <RuntimeFiles key={selected.id} kind="image" name={imageReference(selected)} />}
           </Inspector>
         )}
       </div>

@@ -84,6 +84,7 @@ type grpcContainerRuntime struct {
 	runner          runtimes.Runner
 	lima            string
 	helperPath      string
+	address         string
 	networkLocks    *containerMutexes
 	containerNameMu *sync.Mutex
 	containers      containersapi.ContainersClient
@@ -182,7 +183,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			}
 		}
 		helperPath, _ := m.lookPath("porto-runtime-helper")
-		return newGRPCContainerRuntime(
+		client, err := newGRPCContainerRuntime(
 			ctx,
 			namespace,
 			backend.description,
@@ -197,6 +198,10 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			m.networkLocks,
 			m.containerNameMu,
 		)
+		if err == nil {
+			client.address = socket
+		}
+		return client, err
 	}
 
 	helperPath, _ := m.lookPath("porto-runtime-helper")
@@ -218,6 +223,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 			m.containerNameMu,
 		)
 		if err == nil {
+			runtimeClient.address = normalizeContainerdAddress(address)
 			return runtimeClient, nil
 		}
 		dialErrors = append(dialErrors, fmt.Errorf("%s: %w", address, err))

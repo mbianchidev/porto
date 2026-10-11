@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -83,7 +82,7 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 			ErrUnsupported,
 		)
 	}
-	labels, err := r.directContainerLabels(request, image, hostname, id)
+	labels, err := r.directContainerLabels(ctx, request, image, hostname, id)
 	if err != nil {
 		return "", err
 	}
@@ -261,6 +260,7 @@ func (r *grpcContainerRuntime) resolveContainerImage(
 }
 
 func (r *grpcContainerRuntime) directContainerLabels(
+	ctx context.Context,
 	request CreateContainerRequest,
 	image containerd.Image,
 	hostname,
@@ -300,13 +300,18 @@ func (r *grpcContainerRuntime) directContainerLabels(
 		return nil, err
 	}
 	labels[portoLogPathLabel] = logPath
+	logURI, err := r.directLogURI(ctx, logPath)
+	if err != nil {
+		return nil, err
+	}
+	labels[portoLogURILabel] = logURI.String()
+	if logURI.Scheme == "binary" {
+		labels[portoLogJournalLabel] = logPath + ".jsonl"
+	}
 	if request.Restart != "" && request.Restart != "no" {
 		labels[restartStatusLabel] = "stopped"
 		labels[restartStoppedLabel] = "true"
-		labels[restartLogURILabel] = (&url.URL{
-			Scheme: "file",
-			Path:   filepath.ToSlash(logPath),
-		}).String()
+		labels[restartLogURILabel] = logURI.String()
 	}
 	if hostname != "" {
 		labels["io.porto.container.hostname"] = hostname

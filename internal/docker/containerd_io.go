@@ -18,6 +18,7 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
+	"github.com/mbianchidev/porto/internal/containerlogs"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -53,13 +54,13 @@ if [ -n "$stdin_path" ]; then
   cat > "$stdin_path" &
 fi
 if [ -n "$log_path" ]; then
-  tee -a "$log_path" < "$stdout_path" &
+  "$HOME/.local/bin/porto-runtime-helper" log-stdio --path "$log_path" --stream stdout < "$stdout_path" &
 else
   cat "$stdout_path" &
 fi
 if [ -n "$stderr_path" ]; then
   if [ -n "$log_path" ]; then
-    tee -a "$log_path" < "$stderr_path" >&2 &
+    "$HOME/.local/bin/porto-runtime-helper" log-stdio --path "$log_path" --stream stderr < "$stderr_path" >&2 &
   else
     cat "$stderr_path" >&2 &
   fi
@@ -473,18 +474,18 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 	}
 	stdoutTarget := io.Writer(stdoutWriter)
 	stderrTarget := io.Writer(stderrWriter)
-	var logFile *os.File
+	closeLog := func() error { return nil }
 	if logPath != "" {
 		if err := r.prepareDirectLogPath(ctx, logPath); err != nil {
 			return directProcessIO{}, err
 		}
-		var err error
-		logFile, err = os.OpenFile(logPath, os.O_APPEND|os.O_WRONLY, 0o600)
+		recorder, closer, err := containerlogs.Open(logPath)
 		if err != nil {
 			return directProcessIO{}, fmt.Errorf("open direct attached log %q: %w", logPath, err)
 		}
-		stdoutTarget = io.MultiWriter(stdoutWriter, logFile)
-		stderrTarget = io.MultiWriter(stderrWriter, logFile)
+		closeLog = closer
+		stdoutTarget = io.MultiWriter(stdoutWriter, recorder.Writer("stdout"))
+		stderrTarget = io.MultiWriter(stderrWriter, recorder.Writer("stderr"))
 	}
 	options := []cio.Opt{
 		cio.WithStreams(stdinReader, stdoutTarget, stderrTarget),
@@ -508,7 +509,7 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 				stdoutWriter.Close(),
 				stderrReader.Close(),
 				stderrWriter.Close(),
-				closeOptionalFile(logFile),
+				closeLog(),
 			)
 		},
 	}, nil

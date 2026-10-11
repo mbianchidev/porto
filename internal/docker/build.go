@@ -28,6 +28,11 @@ func (m *Manager) StreamBuild(
 	request BuildRequest,
 	emit func(runtimes.OutputChunk) error,
 ) error {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	if err := validateBuildRequest(request); err != nil {
 		return err
 	}

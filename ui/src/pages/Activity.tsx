@@ -3,6 +3,7 @@ import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { StatusLamp } from '../components/StatusLamp'
+import { DataOperations } from '../components/DataOperations'
 import type { ActivityLevel, ActivityResourceSnapshot, ResourceUsage } from '../types'
 
 const LEVEL_LAMP: Record<ActivityLevel, 'running' | 'starting' | 'crashed'> = {
@@ -78,6 +79,7 @@ export function Activity() {
         <button className="refreshControl destructiveAction" type="button" disabled={entries.length === 0} onClick={clearActivity}>Clear activity</button>
       </div>
       <div className="workArea activityWorkArea">
+        <DataOperations />
         <section className="activityResources" aria-label="Current resource consumption">
           <div className="activityResourcesHeading">
             <div>

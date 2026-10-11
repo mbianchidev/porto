@@ -137,6 +137,15 @@ Windows named pipes cannot be replaced with a reversible symbolic link.
 
 ### Docker resources
 
+The container inspector includes bounded Logs, shell-independent Files, recent
+Stats and redacted Inspect views. Volumes add file browsing, verified
+clone/import/export/restore/empty workflows and persisted local backups.
+**Storage and cleanup** reports shared-store accounting and exact protected
+prune previews; **Migrate runtime data** dry-runs source-preserving local
+transfers. Capability-supported native file bridges open real host paths without
+implicit copy-back. See [runtime data management](data-management.md) for safety,
+backup consistency, CLI workflows and the host/backend capability matrix.
+
 ```sh
 porto docker status
 porto docker engine-install

@@ -32,8 +32,9 @@ function architectures(executable) {
   return run('xcrun', ['lipo', '-archs', executable]).split(/\s+/).sort()
 }
 
-function validateMacOSBootstrap(bundle) {
-  const executable = path.join(bundle, 'Contents', 'MacOS', 'Porto')
+function validateMacOSBootstrap(bundle, { executableName = 'Porto' } = {}) {
+  if (!['Porto', 'Electron'].includes(executableName)) throw new Error('Invalid Porto macOS bootstrap executable')
+  const executable = path.join(bundle, 'Contents', 'MacOS', executableName)
   const library = path.join(bundle, 'Contents', 'Frameworks', LIBRARY)
   if (!fs.statSync(library).isFile()) throw new Error(`Missing packaged macOS power guard: ${library}`)
   if (!run('xcrun', ['otool', '-L', executable]).includes(LIBRARY_REFERENCE)) {
@@ -47,14 +48,15 @@ function validateMacOSBootstrap(bundle) {
   }
 }
 
-function installMacOSBootstrap(bundle) {
+function installMacOSBootstrap(bundle, { executableName = 'Porto' } = {}) {
   if (process.platform !== 'darwin') {
     throw new Error('Package macOS Porto on a macOS host so the native startup guard is included')
   }
-  const executable = path.join(bundle, 'Contents', 'MacOS', 'Porto')
+  if (!['Porto', 'Electron'].includes(executableName)) throw new Error('Invalid Porto macOS bootstrap executable')
+  const executable = path.join(bundle, 'Contents', 'MacOS', executableName)
   const frameworks = path.join(bundle, 'Contents', 'Frameworks')
   if (fs.existsSync(path.join(frameworks, LIBRARY))) {
-    validateMacOSBootstrap(bundle)
+    validateMacOSBootstrap(bundle, { executableName })
     return
   }
   const targets = architectures(executable)
@@ -78,7 +80,7 @@ function installMacOSBootstrap(bundle) {
   const temporary = fs.mkdtempSync(path.join(path.dirname(executable), '.porto-bootstrap-'))
   try {
     const library = path.join(temporary, LIBRARY)
-    const main = path.join(temporary, 'Porto')
+    const main = path.join(temporary, executableName)
     const flags = [
       '-Wall', '-Wextra', '-Werror', '-O2',
       ...targets.flatMap((arch) => ['-arch', arch]),
@@ -102,7 +104,7 @@ function installMacOSBootstrap(bundle) {
     // Complete all native edits before any future application signing/notarization.
     fs.renameSync(library, path.join(frameworks, LIBRARY))
     fs.renameSync(main, executable)
-    validateMacOSBootstrap(bundle)
+    validateMacOSBootstrap(bundle, { executableName })
   } finally {
     fs.rmSync(temporary, { recursive: true, force: true })
   }

@@ -21,6 +21,7 @@ type buildKitControlProxy struct {
 	client              controlapi.ControlClient
 	containerdNamespace string
 	imageExported       func()
+	solveGate           func(context.Context) (context.Context, func(), error)
 
 	workerMu         sync.Mutex
 	workerCompatible bool
@@ -47,6 +48,14 @@ func (p *buildKitControlProxy) Prune(request *controlapi.PruneRequest, stream gr
 }
 
 func (p *buildKitControlProxy) Solve(ctx context.Context, request *controlapi.SolveRequest) (*controlapi.SolveResponse, error) {
+	if p.solveGate != nil {
+		gated, release, err := p.solveGate(ctx)
+		if err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+		defer release()
+		ctx = gated
+	}
 	rewritten, hasMoby, err := rewriteMobyExporters(request)
 	if err != nil {
 		return nil, err

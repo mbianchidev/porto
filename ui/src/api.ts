@@ -64,6 +64,13 @@ export function apiSend<T>(
   })
 }
 
+export function apiUpload<T>(path: string, body: Blob | string, signal?: AbortSignal): Promise<T> {
+  return request<T>(path, {
+    method: 'PUT', body, signal,
+    headers: { 'Content-Type': 'application/octet-stream' },
+  })
+}
+
 export function isAbortError(err: unknown): boolean {
   return err instanceof DOMException && err.name === 'AbortError'
 }

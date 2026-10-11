@@ -3,6 +3,7 @@ import type { DesktopPreferences, DesktopUpdateStatus } from './types'
 declare global {
   interface Window {
     portoDesktop?: {
+      openFiles: (attachmentID: string) => Promise<void>
       getPreferences: () => Promise<DesktopPreferences>
       setPreferences: (preferences: Pick<DesktopPreferences, 'openAtLogin' | 'keepInTray' | 'automaticallyDownloadUpdates'>) => Promise<DesktopPreferences>
       getUpdateStatus: () => Promise<DesktopUpdateStatus>
