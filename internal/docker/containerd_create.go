@@ -32,6 +32,7 @@ const (
 	portoNetworkAliasLabel = "io.porto.container.network-aliases"
 	portoNetworkStateLabel = "io.porto.container.network-state"
 	portoNetworkPIDLabel   = "io.porto.container.network-pid"
+	portoExposedPortsLabel = "io.porto.container.exposed-ports"
 	portoRuntimeVersion    = "1"
 	portoRuntimeName       = "io.containerd.runc.v2"
 	restartLogURILabel     = "containerd.io/restart.loguri"
@@ -192,7 +193,7 @@ func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContain
 	if len(request.Volumes) > 0 {
 		return "", fmt.Errorf("%w: direct container creation does not yet own volume lifecycle", ErrUnsupported)
 	}
-	if len(request.Publish) > 0 || len(request.Expose) > 0 {
+	if len(request.Publish) > 0 {
 		return "", fmt.Errorf("%w: direct container creation requires direct CNI port mapping", ErrUnsupported)
 	}
 	if len(request.SecurityOpt) > 0 {
@@ -330,6 +331,13 @@ func (r *grpcContainerRuntime) directContainerLabels(
 	labels[portoAutoRemoveLabel] = strconv.FormatBool(request.Remove)
 	labels[nerdctlNameLabel] = firstNonEmpty(request.Name, id)
 	labels[nerdctlImageDigestLabel] = image.Target().Digest.String()
+	if len(request.Expose) > 0 {
+		ports, err := json.Marshal(request.Expose)
+		if err != nil {
+			return nil, fmt.Errorf("encode exposed container ports: %w", err)
+		}
+		labels[portoExposedPortsLabel] = string(ports)
+	}
 	networkDocument, err := json.Marshal([]string{request.Networks[0].Name})
 	if err != nil {
 		return nil, fmt.Errorf("encode direct container networks: %w", err)

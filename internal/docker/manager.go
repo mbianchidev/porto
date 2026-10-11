@@ -22,6 +22,7 @@ import (
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/moby/moby/api/types/network"
 )
 
 const (
@@ -706,6 +707,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
+	for _, port := range request.Expose {
+		if _, err := network.ParsePort(port); err != nil {
+			return "", fmt.Errorf("invalid exposed container port %q: %w", port, err)
+		}
+	}
 	if id, handled, err := m.createContainerDirect(ctx, request); handled {
 		if err == nil {
 			m.invalidateContainerInventory()
@@ -796,8 +802,12 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	for _, published := range request.Publish {
 		args = append(args, "--publish", published)
 	}
-	for _, port := range request.Expose {
-		args = append(args, "--expose", port)
+	if len(request.Expose) > 0 {
+		ports, err := json.Marshal(request.Expose)
+		if err != nil {
+			return "", fmt.Errorf("encode exposed container ports: %w", err)
+		}
+		args = append(args, "--label", portoExposedPortsLabel+"="+string(ports))
 	}
 	command := request.Command
 	if len(request.Entrypoint) > 0 {

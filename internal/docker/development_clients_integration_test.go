@@ -112,6 +112,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		"DOCKER_AUTH_CONFIG=", "BUILDX_BUILDER=default", "BUILDX_CONFIG="+t.TempDir(),
 		"PORTO_CLIENT_TEST_IMAGE="+image, "PORTO_CLIENT_TEST_WORKSPACE="+workspace,
 		"PORTO_CLIENT_TEST_SUITE="+suite, "TESTCONTAINERS_RYUK_DISABLED=true",
+		"DEBUG=testcontainers*",
 	)
 	dockerCommand := func(commandContext context.Context, arguments ...string) ([]byte, error) {
 		command := process.NewCommand(commandContext, root, "docker", arguments...)
@@ -201,7 +202,9 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 			hostDelta := sample.CPUStats.SystemUsage - sample.PreCPUStats.SystemUsage
 			containerDelta := sample.CPUStats.CPUUsage.TotalUsage - sample.PreCPUStats.CPUUsage.TotalUsage
 			percentage := float64(containerDelta) / float64(hostDelta) * float64(sample.CPUStats.OnlineCPUs) * 100
-			if !(percentage > 1 && percentage <= float64(sample.CPUStats.OnlineCPUs)*100) {
+			// Tick-based Linux totals can transiently undershoot cgroup nanoseconds,
+			// especially under software emulation; allow 5% quantization, never clamp data.
+			if !(percentage > 1 && percentage <= float64(sample.CPUStats.OnlineCPUs)*105) {
 				t.Fatalf("busy-workload CPU percentage is invalid: %f, stats=%+v", percentage, sample.CPUStats)
 			}
 			t.Logf("real backend SDK CPU: %.2f%% with %d online CPUs", percentage, sample.CPUStats.OnlineCPUs)

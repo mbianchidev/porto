@@ -79,6 +79,23 @@ func dockerInspectForVersion(value json.RawMessage, version string, image bool) 
 			delete(document, "Container")
 			delete(document, "ContainerConfig")
 		}
+	} else if config, ok := document["Config"].(map[string]any); ok {
+		if labels, ok := config["Labels"].(map[string]any); ok {
+			if encoded, ok := labels[portoExposedPortsLabel].(string); ok && encoded != "" {
+				var ports []string
+				if err := json.Unmarshal([]byte(encoded), &ports); err != nil {
+					return nil, fmt.Errorf("decode exposed container ports: %w", err)
+				}
+				exposed, ok := config["ExposedPorts"].(map[string]any)
+				if !ok {
+					exposed = make(map[string]any)
+				}
+				for _, port := range ports {
+					exposed[port] = map[string]any{}
+				}
+				config["ExposedPorts"] = exposed
+			}
+		}
 	}
 	if dockerVersionBefore(version, "1.44") {
 		if config, ok := document["Config"].(map[string]any); ok {

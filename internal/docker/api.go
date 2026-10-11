@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"runtime"
@@ -884,6 +885,7 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	tty, err := a.manager.ContainerTTY(r.Context(), r.PathValue("id"))
 	if err != nil {
+		log.Printf("Docker container log configuration failed for %s: %v", r.PathValue("id"), err)
 		writeDockerError(w, err)
 		return
 	}
@@ -925,8 +927,10 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 	})
 	if err != nil {
 		if wrote {
+			log.Printf("Docker container log stream failed for %s: %v", r.PathValue("id"), err)
 			return
 		}
+		log.Printf("Docker container log request failed for %s: %v", r.PathValue("id"), err)
 		writeDockerError(w, err)
 		return
 	}
