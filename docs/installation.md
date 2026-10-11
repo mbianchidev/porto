@@ -269,7 +269,7 @@ named `porto` context because named-pipe takeover cannot be reversed safely.
 On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
 notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
 before Porto starts or creates its diagnostic log. This was reproduced in the
-bundled v1.2.12 release, and Electron 44.4.5 still crashes when registration
+bundled v1.2.12 release, and Electron 44.5.1 still crashes when registration
 fails. Removing quarantine does not fix this native crash.
 
 Until the bundled Electron includes the
@@ -358,8 +358,10 @@ on Windows.
 
 Requirements:
 
-- Go 1.26.3 or newer
+- Go 1.26.9 or newer, using a security-patched release (Go 1.27 requires 1.27.2 or newer)
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
+
+The minimum Go version follows the `go` directive in `go.mod`.
 
 Source builds use standard host tools:
 

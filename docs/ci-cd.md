@@ -13,7 +13,7 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 
 ## CI details
 
-The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
+The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.9` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
 The `cross-build` job compiles `./cmd/porto` with `CGO_ENABLED=0` for every release target (`linux`, `darwin`, and `windows` on `amd64` and `arm64`), so a broken platform build fails the pull request instead of the release.
 
@@ -102,12 +102,16 @@ archives omit AppleDouble metadata and retain the existing release layout.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
-The Go module temporarily pins gRPC to
-`v1.85.0-dev.0.20260825072537-93e31b48545e`, the upstream fix for
-[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). The latest stable release,
-`v1.84.0`, still contains the missing-authority server panic. Replace this
-development pin with a stable release containing the fix when available;
-keep the vulnerability scan enabled.
+The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
+fix for the missing-authority server panic,
+[GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). Prefer a stable release
+containing the fix when updating this dependency; keep the vulnerability
+scan enabled.
+
+The module graph keeps `golang.org/x/net` at `v0.60.0` or newer for the HTTP/2
+security fixes. Related standard-library fixes require Go `1.26.9` or
+`1.27.2`; use a security-patched toolchain for local builds and vulnerability
+scans, not an older patch release on a newer Go minor line.
 
 ## Cutting a release
 

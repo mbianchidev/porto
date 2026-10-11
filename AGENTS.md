@@ -6,7 +6,7 @@ When changing Electron dependencies, inspect the temporary guard in
 `scripts/macos-desktop-bootstrap.cjs` and `scripts/macos-desktop-main.cc`.
 They work around a failed `IORegisterForSystemPower` call followed by a
 null-port dereference, observed in release v1.2.12 on macOS 27.
-Electron 44.4.5 still fails the injected-failure probe without the guard.
+Electron 44.5.1 still fails the injected-failure probe without the guard.
 
 macOS packages link the guard into their main executable through a bundled
 dylib, before Electron starts; no user command or loader environment is needed.

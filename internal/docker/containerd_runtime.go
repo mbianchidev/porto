@@ -414,13 +414,22 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 		return nil, fmt.Errorf("create containerd tunnel directory: %w", err)
 	}
 	localSocket := filepath.Join(directory, "containerd.sock")
+	// Lima's ControlPersist master can background -N and exit successfully.
 	command := newTunnelCommand(
 		ctx,
 		"ssh",
 		"-F",
 		sshConfig,
+		"-S",
+		"none",
 		"-N",
 		"-T",
+		"-o",
+		"ControlMaster=no",
+		"-o",
+		"ControlPersist=no",
+		"-o",
+		"ForkAfterAuthentication=no",
 		"-o",
 		"ExitOnForwardFailure=yes",
 		"-o",
@@ -448,8 +457,11 @@ func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string)
 		case err := <-done:
 			_ = os.RemoveAll(directory)
 			message := strings.TrimSpace(stderr.String())
-			if message == "" && err != nil {
-				message = err.Error()
+			if message == "" {
+				message = "SSH exited with status 0"
+				if err != nil {
+					message = err.Error()
+				}
 			}
 			return nil, fmt.Errorf("containerd SSH tunnel exited before connecting: %s", message)
 		case <-ctx.Done():
