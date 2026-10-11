@@ -979,6 +979,9 @@ func (m *Manager) writeMetadata(metadata Metadata) error {
 }
 
 func (m *Manager) readMetadata(name string) (Metadata, error) {
+	if err := validateName(name); err != nil {
+		return Metadata{}, err
+	}
 	data, err := os.ReadFile(m.metadataPath(name))
 	if err != nil {
 		return Metadata{}, err
