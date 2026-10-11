@@ -29,6 +29,25 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	defer cancel()
 	manager := New(nil)
 	backend := os.Getenv("PORTO_DOCKER_CLIENT_BACKEND")
+	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
+		if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("LIMA_HOME") == "" ||
+			!strings.HasPrefix(os.Getenv("LIMA_HOME"), os.Getenv("RUNNER_TEMP")+string(os.PathSeparator)) {
+			t.Fatal("fresh Lima fixture ownership is restricted to an isolated CI runtime")
+		}
+		if _, err := os.Stat(manager.engineStatePath()); !os.IsNotExist(err) {
+			t.Fatal("refusing to replace an existing engine ownership record")
+		}
+		owner := newInventoryInstanceID()
+		if err := manager.writeLimaOwnership(ctx, owner); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: owner, CreatedAt: time.Now().UTC()}); err != nil {
+			t.Fatal(err)
+		}
+		if err := manager.installLimaRuntimeHelper(ctx, engineInstanceName); err != nil {
+			t.Fatal(err)
+		}
+	}
 	switch backend {
 	case "local":
 		if runtime.GOOS != "linux" {

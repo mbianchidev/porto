@@ -56,8 +56,13 @@ case "$(uname -m)" in
   arm64|aarch64) goarch=arm64 ;;
   *) echo "Unsupported CI architecture." >&2; exit 2 ;;
 esac
-bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
-export PATH="$runtime/bin:$runtime/lima/bin:$PATH"
+if [ "$backend" = local ] && [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+  chown "$SUDO_UID:$SUDO_GID" "$temporary"
+  sudo -u "$SUDO_USER" env "PATH=$PATH" bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
+else
+  bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
+fi
+export PATH="$runtime/bin:$runtime/lima/bin:$runtime/qemu:$PATH"
 export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
 export PORTO_DOCKER_CLIENT_BACKEND="$backend"
@@ -111,9 +116,18 @@ if [ "$backend" = local ]; then
   done
 else
   export LIMA_HOME="$temporary/lima"
+  if [ "$goos" = windows ]; then
+    export CGO_ENABLED=0
+  fi
   go build -o "$porto" ./cmd/porto
   created_lima=true
-  "$porto" docker engine-install
+  if [ "$goos" = darwin ]; then
+    limactl start --tty=false --name=porto-engine --vm-type=qemu --arch=x86_64 \
+      --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user template:ubuntu-24.04
+    export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
+  else
+    "$porto" docker engine-install
+  fi
 fi
 
 go test ./internal/docker -run '^TestDockerDevelopmentClientsIntegration$' -count=1 -timeout=25m -v
