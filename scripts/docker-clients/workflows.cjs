@@ -71,6 +71,7 @@ async function main() {
     const output = await run(process.execPath, [
       cli, 'up', '--workspace-folder', workspace, '--config', config,
       '--id-label', `porto.test.suite=${suite}`,
+      '--id-label', `porto.test.devcontainer=${suite}`,
       '--log-format', 'json', '--log-level', 'info',
     ])
     const results = output.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
@@ -80,6 +81,7 @@ async function main() {
     const executed = await run(process.execPath, [
       cli, 'exec', '--workspace-folder', workspace, '--config', config,
       '--id-label', `porto.test.suite=${suite}`,
+      '--id-label', `porto.test.devcontainer=${suite}`,
       'sh', '-c', 'cat /workspaces/porto-synthetic/client-fixture',
     ])
     assert.equal(executed.trim(), 'porto-synthetic-client-fixture')
