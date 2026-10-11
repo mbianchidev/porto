@@ -264,6 +264,10 @@ apart for Docker's CPU percentage calculation; `stream=false&one-shot=true`
 returns one immediate sample without fabricated previous counters. One-shot
 with streaming is rejected. Active inventory connections are reused for metrics,
 instead of opening a new SSH tunnel for every sample.
+Lima samples collect cgroup and host CPU counters together in the Linux runtime
+helper, so SSH/emulation latency cannot offset the two measurements. The guest
+architecture and cgroup driver also determine direct task placement; rootless
+systemd guests use a delegated user slice rather than a host-derived path.
 
 CPU, memory, PID,
 network, and block-I/O sections are emitted only when the backend reports those

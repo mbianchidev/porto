@@ -873,7 +873,7 @@ func (a *API) containerLogs(w http.ResponseWriter, r *http.Request) {
 		stdout, stderr = true, true
 	}
 	tail := r.URL.Query().Get("tail")
-	if tail == "" {
+	if tail == "" || tail == "-1" {
 		tail = "all"
 	}
 	if tail != "all" {

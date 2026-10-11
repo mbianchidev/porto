@@ -182,7 +182,7 @@ func (r *grpcContainerRuntime) StreamLogs(
 
 func parseLogTail(value string) (int, error) {
 	switch strings.TrimSpace(value) {
-	case "", "all":
+	case "", "all", "-1":
 		return allLogLines, nil
 	default:
 		tail, err := strconv.Atoi(value)

@@ -27,6 +27,7 @@ import (
 	"github.com/containerd/containerd/v2/core/leases"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/containerd/containerd/v2/plugins/content/local"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/opencontainers/go-digest"
 	imagespec "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
@@ -382,7 +383,9 @@ func newSnapshotterTestRuntime(
 	runtimeClient, err := newGRPCContainerRuntime(
 		ctx, snapshotterTestNamespace, "synthetic containerd",
 		func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) },
-		nil, t.TempDir(), nil, lima, "", nil, nil,
+		nil, t.TempDir(), &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+			return []byte(`{"OSType":"linux","Architecture":"arm64","CgroupDriver":"systemd","SecurityOptions":["name=rootless"]}`), nil
+		}}, lima, "", nil, nil,
 	)
 	if err != nil {
 		t.Fatal(fmt.Errorf("connect synthetic containerd: %w", err))

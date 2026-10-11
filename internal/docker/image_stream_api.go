@@ -36,26 +36,32 @@ func (a *API) getImages(w http.ResponseWriter, r *http.Request) {
 		_ = os.Remove(archivePath)
 	}()
 	var stderr bytes.Buffer
+	var archiveReadErr, stderrReadErr error
 	var wait sync.WaitGroup
 	wait.Add(2)
 	go func() {
 		defer wait.Done()
-		_, _ = io.Copy(archive, process.Stdout())
+		_, archiveReadErr = io.Copy(archive, process.Stdout())
 	}()
 	go func() {
 		defer wait.Done()
-		_, _ = io.Copy(&stderr, process.Stderr())
+		_, stderrReadErr = io.Copy(&stderr, process.Stderr())
 	}()
 	_ = process.Stdin().Close()
 	wait.Wait()
-	waitErr := process.Wait()
+	waitErr := errors.Join(process.Wait(), archiveReadErr, stderrReadErr)
 	if waitErr != nil {
 		writeDockerError(w, processCommandError("save Porto images", stderr.Bytes(), waitErr))
 		return
 	}
 	servedArchive, err := platformImageArchive(archive)
 	if err != nil {
-		writeDockerError(w, err)
+		info, statErr := archive.Stat()
+		var size int64
+		if statErr == nil {
+			size = info.Size()
+		}
+		writeDockerError(w, fmt.Errorf("validate saved image archive (%d bytes): %w; backend diagnostics: %.1024s", size, err, stderr.Bytes()))
 		return
 	}
 	if servedArchive != archive {

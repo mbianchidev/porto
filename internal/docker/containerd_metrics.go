@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	cgroup1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	cgroup2 "github.com/containerd/cgroups/v3/cgroup2/stats"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
+	apitypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/typeurl/v2"
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -33,10 +35,34 @@ func (r *grpcContainerRuntime) ContainerMetric(
 	if !containerActive(container) {
 		return ContainerMetricSample{}, fmt.Errorf("%w: container %q is not running", ErrConflict, id)
 	}
-	response, err := r.tasks.Metrics(
-		withContainerdNamespace(ctx, r.namespace),
-		&tasksapi.MetricsRequest{Filters: []string{"id==" + container.ID}},
-	)
+	var response *tasksapi.MetricsResponse
+	var backendCPU *resources.HostCPUUsage
+	var backendRead time.Time
+	if r.lima != "" {
+		output, readErr := r.runRuntimeHelper(ctx, "task-metrics", "--address", r.address,
+			"--namespace", r.namespace, "--id", container.ID)
+		if readErr != nil {
+			return ContainerMetricSample{}, readErr
+		}
+		var result struct {
+			Metric  *apitypes.Metric       `json:"metric"`
+			HostCPU resources.HostCPUUsage `json:"hostCPU"`
+			Read    time.Time              `json:"read"`
+		}
+		if err := json.Unmarshal(output, &result); err != nil {
+			return ContainerMetricSample{}, fmt.Errorf("decode backend task/host CPU sample: %w", err)
+		}
+		if result.Metric.GetID() != container.ID || result.HostCPU.OnlineCPUs == 0 || result.Read.IsZero() {
+			return ContainerMetricSample{}, errors.New("backend returned incomplete task/host CPU sample")
+		}
+		response = &tasksapi.MetricsResponse{Metrics: []*apitypes.Metric{result.Metric}}
+		backendCPU, backendRead = &result.HostCPU, result.Read
+	} else {
+		response, err = r.tasks.Metrics(
+			withContainerdNamespace(ctx, r.namespace),
+			&tasksapi.MetricsRequest{Filters: []string{"id==" + container.ID}},
+		)
+	}
 	if err != nil {
 		return ContainerMetricSample{}, containerdOperationError("read metrics for", container.ID, err)
 	}
@@ -64,16 +90,21 @@ func (r *grpcContainerRuntime) ContainerMetric(
 			return ContainerMetricSample{}, err
 		}
 		if sample.CPU != nil {
-			host, err := r.hostCPUUsage(ctx)
-			if err != nil {
-				return ContainerMetricSample{}, fmt.Errorf("%w: backend host CPU counters: %w", ErrUnavailable, err)
+			if backendCPU == nil {
+				host, err := r.hostCPUUsage(ctx)
+				if err != nil {
+					return ContainerMetricSample{}, fmt.Errorf("%w: backend host CPU counters: %w", ErrUnavailable, err)
+				}
+				backendCPU = &host
 			}
-			sample.CPU.SystemCPUUsage = uint64Pointer(host.TotalUsage)
-			sample.CPU.OnlineCPUs = host.OnlineCPUs
+			sample.CPU.SystemCPUUsage = uint64Pointer(backendCPU.TotalUsage)
+			sample.CPU.OnlineCPUs = backendCPU.OnlineCPUs
 		}
 		sample.ID = container.ID
 		sample.Name = container.Name
-		if metric.GetTimestamp() != nil {
+		if !backendRead.IsZero() {
+			sample.Read = backendRead
+		} else if metric.GetTimestamp() != nil {
 			sample.Read = metric.GetTimestamp().AsTime()
 		} else {
 			sample.Read = time.Now().UTC()

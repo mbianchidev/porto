@@ -1545,7 +1545,7 @@ func TestDockerCLIImageSaveStreamsArchive(t *testing.T) {
 	}
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
-		if strings.Join(command.Args, " ") != "save --platform linux/"+runtime.GOARCH+" alpine:latest" {
+		if strings.Join(command.Args, " ") != "save alpine:latest" {
 			return nil, fmt.Errorf("unexpected image save command: %v", command.Args)
 		}
 		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
