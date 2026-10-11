@@ -8,8 +8,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -28,11 +26,13 @@ func TestDockerContainerStatsOneShotUsesRawCounters(t *testing.T) {
 			Name: "demo",
 			Read: read,
 			CPU: &ContainerMetricCPU{
-				TotalUsage:  4_000_000,
-				UserUsage:   3_000_000,
-				SystemUsage: 1_000_000,
-				PerCPUUsage: []uint64{2_000_000, 2_000_000},
-				Throttling:  ContainerMetricThrottling{Periods: 7, ThrottledPeriods: 2, ThrottledTime: 500},
+				TotalUsage:     4_000_000,
+				UserUsage:      3_000_000,
+				SystemUsage:    1_000_000,
+				PerCPUUsage:    []uint64{2_000_000, 2_000_000},
+				SystemCPUUsage: metricUint64(1_000_000_000),
+				OnlineCPUs:     2,
+				Throttling:     ContainerMetricThrottling{Periods: 7, ThrottledPeriods: 2, ThrottledTime: 500},
 			},
 			Memory: &ContainerMetricMemory{
 				Usage: metricUint64(2048), MaxUsage: metricUint64(4096), Limit: metricUint64(8192),
@@ -47,7 +47,7 @@ func TestDockerContainerStatsOneShotUsesRawCounters(t *testing.T) {
 	}
 
 	response := httptest.NewRecorder()
-	request := httptest.NewRequest(http.MethodGet, "/v1.47/containers/demo/stats?stream=false", nil)
+	request := httptest.NewRequest(http.MethodGet, "/v1.47/containers/demo/stats?stream=false&one-shot=true", nil)
 
 	NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response, request)
 
@@ -69,6 +69,70 @@ func TestDockerContainerStatsOneShotUsesRawCounters(t *testing.T) {
 	}
 	if document["networks"].(map[string]any)["eth0"] == nil {
 		t.Fatalf("network stats missing: %+v", document["networks"])
+	}
+}
+
+func TestDockerContainerStatsIncludesPreviousBackendCPUSample(t *testing.T) {
+	var calls atomic.Uint64
+	manager := New(&fakeRunner{})
+	manager.metricReader = func(context.Context, string) (ContainerMetricSample, error) {
+		index := calls.Add(1)
+		return ContainerMetricSample{
+			ID: "synthetic", Read: time.Unix(int64(index), 0),
+			CPU: &ContainerMetricCPU{
+				TotalUsage:     index * 500_000_000,
+				SystemCPUUsage: metricUint64(index * 2_000_000_000),
+				OnlineCPUs:     2,
+			},
+		}, nil
+	}
+	response := httptest.NewRecorder()
+	NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic/stats?stream=false", nil))
+	var stats struct {
+		Read    string `json:"read"`
+		PreRead string `json:"preread"`
+		CPU     struct {
+			System uint64 `json:"system_cpu_usage"`
+			Online uint32 `json:"online_cpus"`
+			Usage  struct {
+				Total uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+		} `json:"cpu_stats"`
+		Previous struct {
+			System uint64 `json:"system_cpu_usage"`
+			Usage  struct {
+				Total uint64 `json:"total_usage"`
+			} `json:"cpu_usage"`
+		} `json:"precpu_stats"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &stats); err != nil {
+		t.Fatal(err)
+	}
+	if calls.Load() != 2 || stats.Read == stats.PreRead || stats.Previous.System == 0 {
+		t.Fatalf("previous sample missing: calls=%d; stats=%+v", calls.Load(), stats)
+	}
+	percent := float64(stats.CPU.Usage.Total-stats.Previous.Usage.Total) /
+		float64(stats.CPU.System-stats.Previous.System) * float64(stats.CPU.Online) * 100
+	if percent != 50 {
+		t.Fatalf("Docker CPU percentage = %f, want 50", percent)
+	}
+}
+
+func TestDockerContainerStatsRejectsStreamingOneShotWithoutSampling(t *testing.T) {
+	manager := New(&fakeRunner{})
+	var calls atomic.Int32
+	manager.metricReader = func(context.Context, string) (ContainerMetricSample, error) {
+		calls.Add(1)
+		return ContainerMetricSample{}, nil
+	}
+	for _, query := range []string{"one-shot=true", "stream=true&one-shot=true", "stream=invalid", "stream=false&one-shot=invalid"} {
+		response := httptest.NewRecorder()
+		NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response,
+			httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic/stats?"+query, nil))
+		if response.Code != http.StatusBadRequest || calls.Load() != 0 {
+			t.Fatalf("%s = %d; samples=%d", query, response.Code, calls.Load())
+		}
 	}
 }
 
@@ -148,9 +212,6 @@ func TestContainerMetricFromCgroup2PreservesRawUnits(t *testing.T) {
 }
 
 func TestDockerCLIStatsConsumesOneShotResponse(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix socket compatibility test")
-	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
 	}
@@ -165,18 +226,13 @@ func TestDockerCLIStatsConsumesOneShotResponse(t *testing.T) {
 	manager.metricReader = func(context.Context, string) (ContainerMetricSample, error) {
 		return ContainerMetricSample{
 			ID: "container-id", Name: "demo", Read: time.Now().UTC(),
-			CPU: &ContainerMetricCPU{TotalUsage: 1_000_000},
+			CPU: &ContainerMetricCPU{TotalUsage: 1_000_000, SystemCPUUsage: metricUint64(2_000_000), OnlineCPUs: 2},
 			Memory: &ContainerMetricMemory{
 				Usage: metricUint64(2048), Limit: metricUint64(8192), Stats: map[string]uint64{},
 			},
 		}, nil
 	}
-	socketDir, err := os.MkdirTemp("/tmp", "porto-stats-cli-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "docker.sock")
+	socketPath := dockerTestEndpoint(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	server := NewAPIServer(socketPath, NewAPI(manager, socketPath))
 	if err := server.Start(ctx); err != nil {
@@ -190,7 +246,7 @@ func TestDockerCLIStatsConsumesOneShotResponse(t *testing.T) {
 		_ = server.Close(closeContext)
 	})
 	configDir := t.TempDir()
-	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host="+EndpointURL(socketPath))
 	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
 	if output, err := createContext.CombinedOutput(); err != nil {
 		t.Fatalf("create Docker context: %v: %s", err, output)
@@ -208,4 +264,48 @@ func TestDockerCLIStatsConsumesOneShotResponse(t *testing.T) {
 
 func metricUint64(value uint64) *uint64 {
 	return &value
+}
+
+type persistentMetricRuntime struct {
+	*fakeContainerRuntime
+}
+
+func (runtime *persistentMetricRuntime) ContainerMetric(context.Context, string) (ContainerMetricSample, error) {
+	return ContainerMetricSample{ID: "synthetic-persistent", Read: time.Now().UTC()}, nil
+}
+
+func TestContainerMetricsReuseInventoryConnectionWithoutClosingIt(t *testing.T) {
+	runtime := &persistentMetricRuntime{newFakeContainerRuntime()}
+	manager := New(&fakeRunner{})
+	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+	manager.inventory.snapshot.Available = true
+	manager.inventory.runtimeClient = runtime
+	manager.inventoryCancel = func() {}
+	manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
+		t.Fatal("a new SSH connection was opened for an active inventory metric sample")
+		return nil, nil
+	}
+	for range 4 {
+		sample, err := manager.ContainerMetric(context.Background(), "synthetic-persistent")
+		if err != nil || sample.ID != "synthetic-persistent" {
+			t.Fatalf("persistent metric = %+v, error=%v", sample, err)
+		}
+	}
+	if runtime.closed {
+		t.Fatal("a metric request closed the inventory-owned connection")
+	}
+}
+
+func TestLimaCPUUsageComesFromVerifiedGuestProcCounters(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "limactl" || strings.Join(command.Args, " ") != "shell --workdir=/ synthetic-owned -- cat /proc/stat" {
+			t.Fatalf("CPU metrics were not read in the selected backend: %+v", command)
+		}
+		return []byte("cpu 100 0 0 100 0 0 0 0 0 0\ncpu0 50 0 0 50\ncpu1 50 0 0 50\n"), nil
+	}}
+	runtime := &grpcContainerRuntime{lima: "synthetic-owned", runner: runner}
+	usage, err := runtime.hostCPUUsage(context.Background())
+	if err != nil || usage.TotalUsage != 2_000_000_000 || usage.OnlineCPUs != 2 {
+		t.Fatalf("backend CPU sample = %+v, error=%v", usage, err)
+	}
 }

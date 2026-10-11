@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"maps"
 	"net/http"
 	"runtime"
 	"slices"
@@ -45,13 +47,24 @@ func NewAPI(manager *Manager, socketPath string) *API {
 }
 
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	path := stripAPIVersion(r.URL.Path)
-	request := r.Clone(r.Context())
-	request.URL.Path = path
 	w.Header().Set("Api-Version", dockerAPIVersion)
 	w.Header().Set("Docker-Experimental", "false")
 	w.Header().Set("Ostype", "linux")
 	w.Header().Set("Server", "Porto/"+config.Version)
+	path, version, err := dockerVersionedPath(r.URL.Path)
+	if err != nil {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	request := r.Clone(dockerVersionedContext(r.Context(), version))
+	request.URL.Path = path
+	if request.URL.RawPath != "" {
+		request.URL.RawPath, _, err = dockerVersionedPath(request.URL.RawPath)
+		if err != nil {
+			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+			return
+		}
+	}
 	a.mux.ServeHTTP(w, request)
 }
 
@@ -191,16 +204,23 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	securityOptions := append([]string(nil), backendInfo.SecurityOptions...)
-	if len(securityOptions) == 0 {
-		securityOptions = []string{"name=seccomp,profile=builtin"}
+	if securityOptions == nil {
+		securityOptions = []string{}
+		warnings = append(warnings, "Backend security options are unavailable; no security profile is inferred.")
 	}
-	if strings.Contains(strings.ToLower(status.Backend), "lima") &&
-		!slices.Contains(securityOptions, "name=rootless") {
-		securityOptions = append(securityOptions, "name=rootless")
+	if backendInfo.NCPU <= 0 {
+		warnings = append(warnings, "Backend CPU count is unavailable; desktop-host CPU information is not substituted.")
 	}
-	ncpu := backendInfo.NCPU
-	if ncpu <= 0 {
-		ncpu = runtime.NumCPU()
+	driverStatus := append([][]string(nil), backendInfo.DriverStatus...)
+	if driverStatus == nil {
+		driverStatus = [][]string{}
+		warnings = append(warnings, "Backend backing filesystem metadata is unavailable.")
+	}
+	if status.Available {
+		driverStatus = append(driverStatus, []string{"driver-type", "io.containerd.snapshotter.v1"})
+	}
+	if backendInfo.Driver == "" {
+		warnings = append(warnings, "Backend snapshotter name is unavailable.")
 	}
 	writeDockerJSON(w, http.StatusOK, map[string]any{
 		"ID":                "porto",
@@ -209,11 +229,8 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"ContainersPaused":  paused,
 		"ContainersStopped": stopped,
 		"Images":            len(images),
-		"Driver":            firstNonEmpty(backendInfo.Driver, "overlayfs"),
-		"DriverStatus": [][]string{
-			{"Backing Filesystem", "extfs"},
-			{"driver-type", "io.containerd.snapshotter.v1"},
-		},
+		"Driver":            backendInfo.Driver,
+		"DriverStatus":      driverStatus,
 		"Plugins": map[string]any{
 			"Volume":        []string{"local"},
 			"Network":       []string{"bridge", "host", "none"},
@@ -232,22 +249,22 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"NFd":                0,
 		"OomKillDisable":     backendInfo.OomKillDisable,
 		"NGoroutines":        0,
-		"SystemTime":         firstNonEmpty(backendInfo.SystemTime, time.Now().UTC().Format(time.RFC3339Nano)),
-		"LoggingDriver":      firstNonEmpty(backendInfo.LoggingDriver, "json-file"),
-		"CgroupDriver":       firstNonEmpty(backendInfo.CgroupDriver, "systemd"),
+		"SystemTime":         backendInfo.SystemTime,
+		"LoggingDriver":      backendInfo.LoggingDriver,
+		"CgroupDriver":       backendInfo.CgroupDriver,
 		"CgroupVersion":      backendInfo.CgroupVersion,
 		"SecurityOptions":    securityOptions,
 		"NEventsListener":    0,
 		"KernelVersion":      backendInfo.KernelVersion,
-		"OperatingSystem":    firstNonEmpty(backendInfo.OperatingSystem, "Porto Engine"),
-		"OSVersion":          config.Version,
-		"OSType":             firstNonEmpty(backendInfo.OSType, "linux"),
-		"Architecture":       firstNonEmpty(backendInfo.Architecture, runtime.GOARCH),
-		"NCPU":               ncpu,
+		"OperatingSystem":    backendInfo.OperatingSystem,
+		"OSVersion":          backendInfo.OSVersion,
+		"OSType":             backendInfo.OSType,
+		"Architecture":       backendInfo.Architecture,
+		"NCPU":               backendInfo.NCPU,
 		"MemTotal":           backendInfo.MemTotal,
-		"Name":               firstNonEmpty(backendInfo.Name, "porto"),
+		"Name":               backendInfo.Name,
 		"ServerVersion":      config.Version,
-		"DockerRootDir":      "porto://containerd",
+		"DockerRootDir":      backendInfo.DockerRootDir,
 		"IndexServerAddress": "https://index.docker.io/v1/",
 		"RegistryConfig": map[string]any{
 			"AllowNondistributableArtifactsCIDRs":     nil,
@@ -307,9 +324,9 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			"State":   container.State,
 			"Status":  container.Status,
 			"HostConfig": map[string]any{
-				"NetworkMode": firstNonEmpty(container.Networks, "default"),
+				"NetworkMode": strings.Split(firstNonEmpty(container.Networks, "default"), ",")[0],
 			},
-			"NetworkSettings": map[string]any{"Networks": map[string]any{}},
+			"NetworkSettings": map[string]any{"Networks": dockerContainerNetworkSettings(container)},
 			"Mounts":          dockerContainerMounts(container),
 		})
 	}
@@ -318,18 +335,19 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Hostname    string            `json:"Hostname"`
-		User        string            `json:"User"`
-		Env         []string          `json:"Env"`
-		Cmd         []string          `json:"Cmd"`
-		Image       string            `json:"Image"`
-		WorkingDir  string            `json:"WorkingDir"`
-		Entrypoint  []string          `json:"Entrypoint"`
-		Labels      map[string]string `json:"Labels"`
-		Volumes     map[string]any    `json:"Volumes"`
-		StopSignal  string            `json:"StopSignal"`
-		StopTimeout *int              `json:"StopTimeout"`
-		Healthcheck *struct {
+		Hostname     string              `json:"Hostname"`
+		User         string              `json:"User"`
+		Env          []string            `json:"Env"`
+		Cmd          []string            `json:"Cmd"`
+		Image        string              `json:"Image"`
+		WorkingDir   string              `json:"WorkingDir"`
+		Entrypoint   []string            `json:"Entrypoint"`
+		Labels       map[string]string   `json:"Labels"`
+		Volumes      map[string]struct{} `json:"Volumes"`
+		ExposedPorts map[string]struct{} `json:"ExposedPorts"`
+		StopSignal   string              `json:"StopSignal"`
+		StopTimeout  *int                `json:"StopTimeout"`
+		Healthcheck  *struct {
 			Test          []string `json:"Test"`
 			Interval      int64    `json:"Interval"`
 			Timeout       int64    `json:"Timeout"`
@@ -344,6 +362,12 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		AttachStdout    bool `json:"AttachStdout"`
 		AttachStderr    bool `json:"AttachStderr"`
 		HostConfig      struct {
+			VolumeDriver string  `json:"VolumeDriver"`
+			ConsoleSize  [2]uint `json:"ConsoleSize"`
+			LogConfig    struct {
+				Type   string            `json:"Type"`
+				Config map[string]string `json:"Config"`
+			} `json:"LogConfig"`
 			Binds        []string                `json:"Binds"`
 			Mounts       []dockerStructuredMount `json:"Mounts"`
 			AutoRemove   bool                    `json:"AutoRemove"`
@@ -424,10 +448,20 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 			} `json:"EndpointsConfig"`
 		} `json:"NetworkingConfig"`
 	}
-	if !decodeDockerJSON(w, r, &request) {
+	if !decodeDockerOptionsJSON(w, r, &request) {
 		return
 	}
 	unsupported := make([]string, 0)
+	if request.HostConfig.VolumeDriver != "" && request.HostConfig.VolumeDriver != "local" {
+		unsupported = append(unsupported, "VolumeDriver")
+	}
+	if request.HostConfig.ConsoleSize != [2]uint{} {
+		unsupported = append(unsupported, "ConsoleSize")
+	}
+	if (request.HostConfig.LogConfig.Type != "" && request.HostConfig.LogConfig.Type != "json-file") ||
+		len(request.HostConfig.LogConfig.Config) > 0 {
+		unsupported = append(unsupported, "LogConfig")
+	}
 	if request.NetworkDisabled {
 		unsupported = append(unsupported, "NetworkDisabled")
 	}
@@ -489,7 +523,6 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.HostConfig.MemoryReservation != 0 || request.HostConfig.MemorySwap != 0 ||
 		(request.HostConfig.MemorySwappiness != nil &&
-			*request.HostConfig.MemorySwappiness != 0 &&
 			*request.HostConfig.MemorySwappiness != -1) {
 		unsupported = append(unsupported, "memory constraints")
 	}
@@ -534,6 +567,23 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	}
 	if len(unsupported) > 0 {
 		writeDockerUnsupported(w, "container options: "+strings.Join(unsupported, ", "))
+		return
+	}
+	for _, option := range request.HostConfig.SecurityOpt {
+		switch option {
+		case "seccomp=unconfined", "apparmor=unconfined", "label=disable",
+			"no-new-privileges", "no-new-privileges=true", "no-new-privileges=false":
+		default:
+			writeDockerUnsupported(w, "container security option "+option)
+			return
+		}
+	}
+	if request.HostConfig.ShmSize < 0 {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "container shared memory size cannot be negative"})
+		return
+	}
+	if len(request.NetworkingConfig.EndpointsConfig) > 1 && dockerVersionBefore(dockerRequestVersion(r), "1.44") {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "multiple container network endpoints require API 1.44 or newer"})
 		return
 	}
 	publish := make([]string, 0)
@@ -657,6 +707,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		Networks:    networks,
 		Volumes:     volumes,
 		Publish:     publish,
+		Expose:      slices.Sorted(maps.Keys(request.ExposedPorts)),
 		Restart:     restartPolicy,
 		TTY:         request.Tty,
 		Interactive: request.OpenStdin || request.AttachStdin,
@@ -687,6 +738,9 @@ func composeContainerName(labels map[string]string, networks []ContainerNetwork)
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
 	value, err := a.manager.InspectContainer(r.Context(), r.PathValue("id"))
+	if err == nil {
+		value, err = dockerInspectForVersion(value, dockerRequestVersion(r), false)
+	}
 	writeDockerRaw(w, value, err)
 }
 
@@ -963,7 +1017,7 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 		if image.Digest != "" && image.Digest != "<none>" {
 			digests = append(digests, image.Repository+"@"+image.Digest)
 		}
-		response = append(response, map[string]any{
+		item := map[string]any{
 			"Id":          image.ID,
 			"ParentId":    "",
 			"RepoTags":    tags,
@@ -971,16 +1025,22 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 			"Created":     parseDockerTime(image.CreatedAt),
 			"Size":        image.SizeBytes,
 			"SharedSize":  int64(-1),
-			"VirtualSize": image.SizeBytes,
 			"Labels":      image.Labels,
 			"Containers":  int64(-1),
-		})
+		}
+		if dockerVersionBefore(dockerRequestVersion(r), "1.44") {
+			item["VirtualSize"] = image.SizeBytes
+		}
+		response = append(response, item)
 	}
 	writeDockerJSON(w, http.StatusOK, response)
 }
 
 func (a *API) inspectImage(w http.ResponseWriter, r *http.Request) {
 	value, err := a.manager.InspectImage(r.Context(), r.PathValue("id"), r.URL.Query().Get("platform"))
+	if err == nil {
+		value, err = dockerInspectForVersion(value, dockerRequestVersion(r), true)
+	}
 	writeDockerRaw(w, value, err)
 }
 
@@ -1039,31 +1099,28 @@ func (a *API) unsupported(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-func stripAPIVersion(path string) string {
-	if !strings.HasPrefix(path, "/v") {
-		return path
-	}
-	remainder := path[2:]
-	slash := strings.IndexByte(remainder, '/')
-	if slash < 0 {
-		return path
-	}
-	version := remainder[:slash]
-	for _, character := range version {
-		if (character < '0' || character > '9') && character != '.' {
-			return path
-		}
-	}
-	return remainder[slash:]
-}
-
 func decodeDockerJSON(w http.ResponseWriter, r *http.Request, value any) bool {
 	decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*1024*1024))
 	if err := decoder.Decode(value); err != nil {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid Docker request: " + err.Error()})
 		return false
 	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid Docker request: expected one JSON document"})
+		return false
+	}
 	return true
+}
+
+func encodeDockerProgress(w http.ResponseWriter, encoder *json.Encoder, value any) error {
+	if err := encoder.Encode(value); err != nil {
+		return err
+	}
+	if flusher, ok := w.(http.Flusher); ok {
+		flusher.Flush()
+	}
+	return nil
 }
 
 func writeDockerRaw(w http.ResponseWriter, value json.RawMessage, err error) {
@@ -1116,6 +1173,30 @@ func parseDockerTime(value string) int64 {
 		}
 	}
 	return 0
+}
+
+func dockerContainerNetworkSettings(container Container) map[string]any {
+	networks := make(map[string]any)
+	for _, endpoint := range container.NetworkDetails {
+		if endpoint.Name == "" {
+			continue
+		}
+		fields := map[string]any{}
+		if endpoint.IPAddress != "" {
+			fields["IPAddress"] = endpoint.IPAddress
+		}
+		if endpoint.Gateway != "" {
+			fields["Gateway"] = endpoint.Gateway
+		}
+		if endpoint.MAC != "" {
+			fields["MacAddress"] = endpoint.MAC
+		}
+		if len(endpoint.Aliases) > 0 {
+			fields["Aliases"] = append([]string(nil), endpoint.Aliases...)
+		}
+		networks[endpoint.Name] = fields
+	}
+	return networks
 }
 
 func dockerNetwork(network Network) map[string]any {

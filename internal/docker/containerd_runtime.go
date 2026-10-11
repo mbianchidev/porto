@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"os"
 	"os/exec"
@@ -768,6 +769,15 @@ func (r *grpcContainerRuntime) Subscribe(ctx context.Context) (<-chan ContainerL
 			if !relevant {
 				continue
 			}
+			if event.Type == "container-create" {
+				record, err := r.containers.Get(withContainerdNamespace(ctx, r.namespace),
+					&containersapi.GetContainerRequest{ID: event.ContainerID})
+				if err == nil && record.GetContainer() != nil {
+					event.Attributes = containerActorAttributes(containerFromContainerd(record.GetContainer(), nil))
+				} else if err != nil {
+					log.Printf("Container event metadata unavailable for %s: %v", event.ContainerID, err)
+				}
+			}
 			r.invalidateCompatibilityMetadata()
 			select {
 			case events <- event:
@@ -1056,12 +1066,17 @@ func containerLifecycleEvent(envelope *eventsapi.Envelope) (ContainerLifecycleEv
 		var value eventtypes.ContainerCreate
 		if decode(&value) {
 			event.ContainerID = value.GetID()
+			event.Attributes = map[string]string{"image": value.GetImage()}
 			event.Reason = "metadata-created"
 		}
 	case "/containers/update":
 		var value eventtypes.ContainerUpdate
 		if decode(&value) {
 			event.ContainerID = value.GetID()
+			event.Attributes = containerActorAttributes(Container{
+				Name:  firstNonEmpty(value.GetLabels()[nerdctlNameLabel], value.GetID()),
+				Image: value.GetImage(), Labels: value.GetLabels(),
+			})
 			event.Reason = "metadata-updated"
 		}
 	case "/containers/delete":

@@ -50,7 +50,6 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 	if ping.Code != http.StatusOK || ping.Body.String() != "OK" || ping.Header().Get("Builder-Version") != "2" {
 		t.Fatalf("ping = %d %q", ping.Code, ping.Body.String())
 	}
-
 	info := httptest.NewRecorder()
 	handler.ServeHTTP(info, httptest.NewRequest(http.MethodGet, "/v1.47/info", nil))
 	if info.Code != http.StatusOK {
@@ -77,15 +76,176 @@ func TestDockerAPIHandlesVersionedCoreRoutes(t *testing.T) {
 			containerdSnapshotter = true
 		}
 	}
-
 	if !containerdSnapshotter {
 		t.Fatalf("driver status does not advertise containerd image-store support: %#v", driverStatus)
 	}
-
 	containers := httptest.NewRecorder()
 	handler.ServeHTTP(containers, httptest.NewRequest(http.MethodGet, "/v1.47/containers/json?all=1&size=0", nil))
 	if containers.Code != http.StatusOK {
 		t.Fatalf("containers = %d: %s", containers.Code, containers.Body.String())
+	}
+}
+
+func TestDockerAPIRejectsUnsupportedVersionsBeforeDispatch(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		message string
+	}{
+		{"1.40", "Minimum supported API version is 1.41"},
+		{"1.48", "Maximum supported API version is 1.47"},
+		{"999.0", "Maximum supported API version is 1.47"},
+		{"1..47", "invalid API version"},
+	} {
+		t.Run(test.version, func(t *testing.T) {
+			runner := &fakeRunner{}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v"+test.version+"/containers/create",
+					strings.NewReader(`{"Image":"synthetic:latest"}`)))
+			if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), test.message) {
+				t.Fatalf("version response = %d: %s", response.Code, response.Body.String())
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("unsupported version reached the backend: %+v", runner.commands)
+			}
+			if response.Header().Get("Api-Version") != dockerAPIVersion {
+				t.Fatal("version negotiation header was lost")
+			}
+		})
+	}
+}
+
+func TestDockerAPISupportedVersionsAndUnversionedNegotiation(t *testing.T) {
+	handler := NewAPI(New(&fakeRunner{}), "/tmp/porto.sock")
+	for _, path := range []string{"/version", "/v1.41/version", "/v1.44/version", "/v1.47/version"} {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), `"ApiVersion":"1.47"`) {
+			t.Fatalf("%s = %d: %s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
+func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
+	for _, field := range []string{
+		`"BlkioDeviceReadBps":[{"Path":"/dev/synthetic","Rate":1024}]`,
+		`"BlkioDeviceWriteBps":[{"Path":"/dev/synthetic","Rate":1024}]`,
+		`"BlkioDeviceReadIOps":[{"Path":"/dev/synthetic","Rate":4}]`,
+		`"BlkioDeviceWriteIOps":[{"Path":"/dev/synthetic","Rate":4}]`,
+		`"BlkioWeightDevice":[{"Path":"/dev/synthetic","Weight":50}]`,
+		`"KernelMemory":1024`, `"KernelMemoryTCP":1024`,
+		`"ContainerIDFile":"/tmp/synthetic-id"`, `"VolumeDriver":"external"`,
+		`"VolumesFrom":["other"]`, `"Links":["other:alias"]`,
+		`"Annotations":{"synthetic":"value"}`, `"ConsoleSize":[24,80]`,
+		`"LogConfig":{"Type":"syslog","Config":{}}`,
+		`"LogConfig":{"Type":"json-file","Config":{"max-size":"1m"}}`,
+		`"MaskedPaths":[]`, `"ReadonlyPaths":[]`,
+		`"FutureResourceLimit":10`,
+		`"Mounts":[{"Type":"bind","Source":"/tmp/synthetic","Target":"/data","BindOptions":{"FutureRecursiveMode":true}}]`,
+	} {
+		t.Run(field, func(t *testing.T) {
+			runner := &fakeRunner{}
+			response := httptest.NewRecorder()
+			body := `{"Image":"synthetic:latest","HostConfig":{` + field + `}}`
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(body)))
+			if response.Code != http.StatusNotImplemented {
+				t.Fatalf("unsupported option = %d: %s", response.Code, response.Body.String())
+			}
+			if len(runner.commands) != 0 {
+				t.Fatalf("unsupported option mutated the backend: %+v", runner.commands)
+			}
+		})
+	}
+}
+
+func TestDockerAPIRejectsUnhandledNestedAndUpdateOptions(t *testing.T) {
+	for _, test := range []struct{ path, body string }{
+		{"/containers/create", `{"Image":"synthetic:latest","Domainname":"example.test"}`},
+		{"/containers/create", `{"Image":"synthetic:latest","Volumes":{"/data":{"Unsupported":true}}}`},
+		{"/containers/create", `{"Image":"synthetic:latest","NetworkingConfig":{"EndpointsConfig":{"bridge":{"MacAddress":"02:00:00:00:00:01"}}}}`},
+		{"/containers/demo/update", `{"FutureResourceLimit":10}`},
+		{"/containers/demo/update", `{"RestartPolicy":{"Name":"always","Unsupported":true}}`},
+		{"/containers/create", `{"Image":"synthetic:latest","Healthcheck":{"Test":["NONE"],"Unsupported":true}}`},
+	} {
+		t.Run(test.body, func(t *testing.T) {
+			runner := &fakeRunner{}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v1.47"+test.path, strings.NewReader(test.body)))
+			if response.Code != http.StatusNotImplemented || len(runner.commands) != 0 {
+				t.Fatalf("unhandled request = %d: %s; commands=%+v", response.Code, response.Body.String(), runner.commands)
+			}
+		})
+	}
+}
+
+func TestDockerAPICreateAcceptsDefaultValuedClientOptions(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		return []byte("synthetic-container\n"), nil
+	}}
+	response := httptest.NewRecorder()
+	body := `{"Image":"synthetic:latest","Domainname":"","ArgsEscaped":false,"Shell":null,
+			"HostConfig":{"LogConfig":{"Type":"json-file","Config":{}},"VolumeDriver":"local",
+			"ConsoleSize":[0,0],"BlkioDeviceReadBps":[],"FutureResourceLimit":0,"MaskedPaths":null,
+			"ReadonlyPaths":null,"Mounts":[{"Type":"volume","Source":"data","Target":"/data",
+			"VolumeOptions":{"DriverConfig":{"Name":"local","Options":{}}}}]}}`
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+		httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(body)))
+	if response.Code != http.StatusCreated {
+		t.Fatalf("default-valued create = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerAPIRequestVersionControlsHealthStartInterval(t *testing.T) {
+	for _, test := range []struct {
+		version string
+		status  int
+	}{{"1.43", http.StatusBadRequest}, {"1.44", http.StatusCreated}, {"1.47", http.StatusCreated}} {
+		t.Run(test.version, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(runtimes.Command) ([]byte, error) {
+				return []byte("synthetic-container\n"), nil
+			}}
+			body := `{"Image":"synthetic:latest","Healthcheck":{"Test":["CMD","true"],"StartInterval":1000000000}}`
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v"+test.version+"/containers/create", strings.NewReader(body)))
+			if response.Code != test.status {
+				t.Fatalf("health request = %d: %s", response.Code, response.Body.String())
+			}
+			if test.status == http.StatusBadRequest && len(runner.commands) != 0 {
+				t.Fatal("version-incompatible health option reached the backend")
+			}
+		})
+	}
+}
+
+func TestDockerAPIVersionsShapeImageInspectAndPreserveEscapedNames(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if strings.Contains(strings.Join(command.Args, " "), "images ") {
+			return nil, nil
+		}
+		if strings.Join(command.Args, " ") != "image inspect registry.example.test/team/synthetic:latest" {
+			return nil, fmt.Errorf("escaped image identifier was changed: %v", command.Args)
+		}
+		return []byte(`[{"Id":"sha256:synthetic","Size":123,"VirtualSize":123,"Container":"legacy","ContainerConfig":{},"Config":{"Healthcheck":{"StartInterval":1000}}}]`), nil
+	}}
+	for _, version := range []string{"1.41", "1.43", "1.44", "1.45", "1.47"} {
+		response := httptest.NewRecorder()
+		path := "/v" + version + "/images/registry.example.test%2Fteam%2Fsynthetic:latest/json"
+		NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		if response.Code != http.StatusOK {
+			t.Fatalf("image inspect %s = %d: %s", version, response.Code, response.Body.String())
+		}
+		var document map[string]any
+		if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+			t.Fatal(err)
+		}
+		_, virtual := document["VirtualSize"]
+		_, legacy := document["ContainerConfig"]
+		if virtual != (version < "1.44") || legacy != (version < "1.45") {
+			t.Fatalf("incorrect version %s image fields: %+v", version, document)
+		}
 	}
 }
 
@@ -106,6 +266,53 @@ func TestDockerContainerListMetadataUsesInventoryPortsAndMounts(t *testing.T) {
 	mounts := dockerContainerMounts(container)
 	if len(mounts) != 1 || mounts[0]["Name"] != "data" || mounts[0]["RW"] != false {
 		t.Fatalf("unexpected mounts: %+v", mounts)
+	}
+}
+
+func TestDockerAPIInfoNeverInfersUnavailableBackendMetadata(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Args[0] == "info" {
+			return []byte(`{}`), nil
+		}
+		return nil, nil
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/info", nil))
+	var document map[string]any
+	if err := json.Unmarshal(response.Body.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document["NCPU"] != float64(0) || len(document["SecurityOptions"].([]any)) != 0 {
+		t.Fatalf("guessed host CPU/security metadata: %+v", document)
+	}
+	for _, field := range []string{"Driver", "CgroupDriver", "Architecture", "KernelVersion", "OSVersion", "SystemTime", "DockerRootDir"} {
+		if document[field] != "" {
+			t.Fatalf("unavailable %s was fabricated: %v", field, document[field])
+		}
+	}
+	if strings.Contains(response.Body.String(), "extfs") || len(document["Warnings"].([]any)) == 0 {
+		t.Fatalf("unknown backend metadata was not reported: %s", response.Body.String())
+	}
+}
+
+func TestDockerAPIInfoPreservesDifferentVerifiedBackendCapabilities(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Args[0] == "info" {
+			return []byte(`{"Driver":"native","DriverStatus":[["Backing Filesystem","btrfs"]],"Architecture":"arm64","NCPU":2,"CgroupDriver":"cgroupfs","CgroupVersion":"1","SecurityOptions":["name=apparmor"],"MemoryLimit":true,"CpuCfsQuota":false}`), nil
+		}
+		return nil, nil
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/info", nil))
+	var info BackendInfo
+	if err := json.Unmarshal(response.Body.Bytes(), &info); err != nil {
+		t.Fatal(err)
+	}
+	if info.Driver != "native" || info.NCPU != 2 || info.Architecture != "arm64" ||
+		info.CgroupDriver != "cgroupfs" || info.CPUQuota || !info.MemoryLimit ||
+		!reflect.DeepEqual(info.SecurityOptions, []string{"name=apparmor"}) ||
+		info.DriverStatus[0][1] != "btrfs" {
+		t.Fatalf("backend capabilities were rewritten: %+v", info)
 	}
 }
 

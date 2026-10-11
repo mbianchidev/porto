@@ -138,7 +138,7 @@ func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContain
 	if len(request.Volumes) > 0 {
 		return "", fmt.Errorf("%w: direct container creation does not yet own volume lifecycle", ErrUnsupported)
 	}
-	if len(request.Publish) > 0 {
+	if len(request.Publish) > 0 || len(request.Expose) > 0 {
 		return "", fmt.Errorf("%w: direct container creation requires direct CNI port mapping", ErrUnsupported)
 	}
 	if len(request.SecurityOpt) > 0 {

@@ -796,6 +796,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	for _, published := range request.Publish {
 		args = append(args, "--publish", published)
 	}
+	for _, port := range request.Expose {
+		args = append(args, "--expose", port)
+	}
 	command := request.Command
 	if len(request.Entrypoint) > 0 {
 		args = append(args, "--entrypoint", request.Entrypoint[0])
@@ -1687,6 +1690,16 @@ func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample Co
 	if err := validateObjectID(id); err != nil {
 		return ContainerMetricSample{}, err
 	}
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if runtimeClient := inventory.metricRuntime(); runtimeClient != nil {
+			if provider, ok := runtimeClient.(interface {
+				ContainerMetric(context.Context, string) (ContainerMetricSample, error)
+			}); ok {
+				return provider.ContainerMetric(ctx, id)
+			}
+			return ContainerMetricSample{}, fmt.Errorf("%w: inventory backend raw container metrics", ErrUnsupported)
+		}
+	}
 	if m.runtimeConnector == nil {
 		return ContainerMetricSample{}, fmt.Errorf("%w: direct container metrics", ErrUnsupported)
 	}
@@ -2131,13 +2144,24 @@ func (m *Manager) runStreamingCommand(
 	}
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, runErr := runner.RunStreaming(commandContext, command, emit)
+	streamContext, cancelStream := context.WithCancelCause(commandContext)
+	defer cancelStream(nil)
+	output, runErr := runner.RunStreaming(streamContext, command, func(chunk runtimes.OutputChunk) error {
+		err := emit(chunk)
+		if err != nil {
+			cancelStream(err)
+		}
+		return err
+	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return runtimes.CommandError(
 			fmt.Sprintf("%s timed out after %s", action, timeout),
 			output,
 			context.Cause(commandContext),
 		)
+	}
+	if streamContext.Err() != nil {
+		runErr = errors.Join(runErr, context.Cause(streamContext))
 	}
 	if runErr != nil {
 		return runtimes.CommandError(action, output, runErr)

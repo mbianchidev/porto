@@ -151,6 +151,51 @@ jobs:
           PATH="$RUNNER_TEMP/runtime/bin:$PATH" \
             go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
 
+  development-clients:
+    name: Development clients (${{ matrix.backend }}, ${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            backend: local
+          - os: macos-latest
+            backend: lima
+          - os: windows-latest
+            backend: lima
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+        with:
+          go-version: stable
+          check-latest: true
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: scripts/docker-clients/package-lock.json
+      - name: Install and audit development clients
+        shell: bash
+        run: |
+          npm --prefix scripts/docker-clients ci
+          npm --prefix scripts/docker-clients audit
+      - name: Install Windows runtime packaging dependencies
+        if: runner.os == 'Windows'
+        shell: bash
+        run: npm --prefix ui/electron ci
+      - name: Run real development workflows against Porto
+        shell: bash
+        run: |
+          if [ "${{ matrix.backend }}" = local ]; then
+            sudo -E env "PATH=$PATH" bash scripts/test-docker-clients.sh local
+          else
+            bash scripts/test-docker-clients.sh lima
+          fi
+
   ui:
     name: UI (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

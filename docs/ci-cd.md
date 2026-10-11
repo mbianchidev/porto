@@ -53,6 +53,23 @@ They use the application version with `+ci.<run-number>` build metadata, so a
 test build is not immediately considered older than the same stable version.
 These are unsigned PR/test builds, not published releases.
 
+The development-client matrix runs real Docker SDK/CLI, Dev Containers 0.89.0,
+and Testcontainers 12.2.0 workflows against disposable local Linux containerd
+and native macOS/Windows Lima backends. Windows exercises Porto's named pipe.
+The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
+containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
+`PORTO_HOME` roots. Only their own processes and VM are removed.
+The workload verifies busy-container CPU percentages, exec, valid/corrupt image
+archives, ordinary tag/push to a disposable registry, and client-owned cleanup.
+It uses a named Dev Containers workspace volume and disables Ryuk while the
+harness owns cleanup; it does not grant an untrusted guest a host control socket.
+
+Client dependencies live under `scripts/docker-clients`, separate from the
+shipped dashboard/desktop. Their lockfile uses maintained glob 13 instead of
+archiver's deprecated glob 10. Optional protobuf/native SSH installation scripts
+are explicitly disabled; these tests use Unix sockets/named pipes, not SSH clients.
+Dependency installation and audit are required before these jobs run.
+
 The Windows installer job also checksum-verifies and installs the official
 WinFsp 2.1 driver on its disposable runner, then tests the **installed**
 `porto-files-mount.exe` against synthetic confined SFTP roots. Container,

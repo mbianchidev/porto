@@ -11,6 +11,8 @@ import (
 	cgroup2 "github.com/containerd/cgroups/v3/cgroup2/stats"
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	"github.com/containerd/typeurl/v2"
+	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 func (r *grpcContainerRuntime) ContainerMetric(
@@ -61,6 +63,14 @@ func (r *grpcContainerRuntime) ContainerMetric(
 		if err != nil {
 			return ContainerMetricSample{}, err
 		}
+		if sample.CPU != nil {
+			host, err := r.hostCPUUsage(ctx)
+			if err != nil {
+				return ContainerMetricSample{}, fmt.Errorf("%w: backend host CPU counters: %w", ErrUnavailable, err)
+			}
+			sample.CPU.SystemCPUUsage = uint64Pointer(host.TotalUsage)
+			sample.CPU.OnlineCPUs = host.OnlineCPUs
+		}
 		sample.ID = container.ID
 		sample.Name = container.Name
 		if metric.GetTimestamp() != nil {
@@ -71,6 +81,20 @@ func (r *grpcContainerRuntime) ContainerMetric(
 		return sample, nil
 	}
 	return ContainerMetricSample{}, fmt.Errorf("%w: metrics for container %q", ErrNotFound, id)
+}
+
+func (r *grpcContainerRuntime) hostCPUUsage(ctx context.Context) (resources.HostCPUUsage, error) {
+	if r.lima == "" {
+		return resources.ReadHostCPUUsage()
+	}
+	output, err := r.runner.Run(ctx, runtimes.Command{
+		Name: "limactl",
+		Args: []string{"shell", "--workdir=/", r.lima, "--", "cat", "/proc/stat"},
+	})
+	if err != nil {
+		return resources.HostCPUUsage{}, fmt.Errorf("read Lima backend CPU counters: %w", err)
+	}
+	return resources.ParseHostCPUUsage(output)
 }
 
 func containerMetricFromCgroup1(metrics *cgroup1.Metrics) (ContainerMetricSample, error) {

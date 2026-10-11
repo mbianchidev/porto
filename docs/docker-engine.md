@@ -203,7 +203,10 @@ porto docker engine-remove --confirm
 
 ## Docker API compatibility matrix
 
-Porto accepts versioned and unversioned Docker Engine paths. It currently advertises API 1.47 with minimum API 1.41.
+Porto advertises Docker Engine API **1.47**, minimum **1.41**. Unversioned
+`/_ping` and `/version` negotiate normally; versioned requests outside that
+inclusive range return HTTP 400 with Docker's too-old/too-new error format,
+before any backend operation. Escaped image names remain intact.
 
 | Resource | Status | Operations and boundaries |
 | --- | --- | --- |
@@ -217,26 +220,94 @@ Porto accepts versioned and unversioned Docker Engine paths. It currently advert
 | Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, and registry push |
 | Orchestration | Unsupported | Swarm services/tasks/nodes, generic engine plugins, and Windows containers return explicit errors |
 
+### Endpoint and version boundaries
+
+| Endpoints | Proven contract and boundaries |
+| --- | --- |
+| `GET/HEAD /_ping`, `GET /version` | SDK/CLI negotiation; API 1.41 through 1.47 |
+| `GET /info`, `GET /containers/json`, `GET /containers/{id}/json` | backend-derived counts, capabilities, ports, mounts, and known network endpoints; unknown host/storage/security information is not guessed |
+| `POST /containers/create`, `POST /containers/{id}/update` | decoded and preflight-validated options; unsupported non-default fields, including unknown nested fields, fail before mutation |
+| `GET /containers/{id}/stats` | streaming, two-sample non-streaming, and immediate one-shot; backend Linux CPU totals/counts and raw cgroup v1/v2 counters |
+| `GET /events` | bounded container-lifecycle replay with immutable actor names/images/labels; supports both map and array filter encodings |
+| `POST /images/load`, `POST /images/create?fromSrc=-`, `POST /images/{name}/push` | incremental progress/error frames are flushed immediately; interrupted uploads, canceled transports, malformed archives, and partial failures remain errors |
+| `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45 |
+| Container health configuration | `StartInterval` requires API 1.44; older inspect responses omit it |
+| Structured mount options | recursive read-only controls require API 1.44, volume subpaths 1.45, and tmpfs option arrays 1.46; unsupported semantics remain explicit errors even at a version which defines the field |
+
+### Create/update option boundaries
+
+| Options | Behavior |
+| --- | --- |
+| Image, command/entrypoint, environment, labels, user, working directory, hostname, exposed/published ports, health checks, TTY/stdin, restart policy, auto-remove | supported; compatibility-owned requests can preflight to `nerdctl` |
+| Structured bind, local volume, tmpfs | basic supported mount options; local/default volume driver declarations are accepted |
+| `HostConfig.LogConfig` | default/`json-file` without custom options; other drivers or configuration are rejected |
+| CPU/memory/PID/OOM/block-I/O create constraints | unsupported non-default values are rejected, including every per-device block-I/O field; the update endpoint supports its documented CPU/memory limits |
+| Capabilities, custom namespace/security profiles, device requests/rules, masked/read-only path overrides, volume inheritance, annotations, and unknown fields | unsupported settings are rejected before creation; supported device mappings, sysctls, and explicit unconfined/no-new-privileges options retain their compatibility path |
+| Defaults | omitted, null, false, zero, empty strings/collections, and documented default enum/sentinel values remain compatible with normal client payloads; an explicit empty masked/read-only path list is an override, not a default |
+
 Docker events replay only the latest 200 retained container lifecycle events
 when `since` is supplied. The stream supports `type`, `event`, `container`,
 `image`, `label`, and `scope` filters, honors `since`/`until`, uses a one-slot
 latest-snapshot buffer, and unsubscribes immediately when the client disconnects.
 Image, network, namespace, and snapshot events still drive reconciliation but
 are not exposed as fabricated Docker resource events.
+Actor metadata is copied when an event is captured, including metadata carried
+by containerd update events. Deletion and subsequent rename/label changes cannot
+rewrite retained attributes. A failed creation-time metadata lookup is logged;
+unavailable historical attributes are not invented from later container state.
 
-Container stats use raw containerd cgroup v1/v2 counters. CPU, memory, PID,
+Container stats use raw containerd cgroup v1/v2 counters plus host CPU totals
+from the **Linux backend's** `/proc/stat`, including Lima guests. Guest CPU time
+is not double-counted, and cgroup v2 receives a verified online CPU count even
+without a per-CPU usage array. `stream=false` collects two samples a second
+apart for Docker's CPU percentage calculation; `stream=false&one-shot=true`
+returns one immediate sample without fabricated previous counters. One-shot
+with streaming is rejected. Active inventory connections are reused for metrics,
+instead of opening a new SSH tunnel for every sample.
+
+CPU, memory, PID,
 network, and block-I/O sections are emitted only when the backend reports those
 measurements; Porto does not replace unavailable counters with invented zeroes.
+Missing backend host CPU inputs return an explicit availability error rather
+than a misleading zero percentage.
 Legacy compatibility-owned containers return an explicit capability error when
 raw task metrics are unavailable.
 
 End-to-end coverage exercises the bundled Docker CLI, Compose project
 lifecycle, Buildx build/load, image archive load/save, tag/push through a
 disposable registry, exec/TTY, attach, and KinD-required privileged operations.
-Dev Containers and Testcontainers can use the local Porto socket for the
-operations marked supported above; Porto does not claim generic drop-in
+Real Docker SDK contract tests run on every host, including Windows named-pipe
+transport. The opt-in development-client suite and native CI matrix exercise
+the SDK, ordinary CLI load/save/tag/push, a disposable registry, Dev Containers
+up/post-create/exec, and Testcontainers start/log-wait/exec/cleanup against
+local Linux containerd and Lima-backed runtimes. Fixtures are synthetic;
+workspaces and resources are individually owned and removed.
+
+The tested Dev Containers configuration uses a named workspace volume.
+Testcontainers uses explicit harness cleanup with Ryuk disabled: Porto does
+not mount the host control socket into its guest or claim a working guest-side
+Ryuk reaper. Host bind mounts and other development-container features remain
+subject to the mount/capability matrix.
+
+Porto does not claim generic drop-in
 compatibility for remote TCP, Swarm, system prune/disk-usage APIs, remote-URL
 imports, extra custom network aliases, or other operations listed as unsupported.
+
+Run the live suite against an **already running, owned** Lima engine without
+restarting or recreating it:
+
+```sh
+npm --prefix scripts/docker-clients ci
+PORTO_DOCKER_CLIENT_INTEGRATION=1 PORTO_DOCKER_CLIENT_BACKEND=lima \
+  go test ./internal/docker -run '^TestDockerDevelopmentClientsIntegration$' -count=1 -timeout=25m -v
+```
+
+Use `PORTO_DOCKER_CLIENT_BACKEND=local` for a Linux containerd/BuildKit backend.
+CI uses `scripts/test-docker-clients.sh` with isolated runtime roots and owned
+processes/VMs; it refuses to provision runtimes outside GitHub Actions.
+Fresh SSH connections must be available in an existing Lima guest. A guest
+at its SSH socket connection limit fails this preflight rather than restarting
+or terminating unrelated sessions.
 
 The common detached lifecycle works through standard Docker clients:
 

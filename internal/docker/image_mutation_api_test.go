@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,9 @@ func TestDockerAPIImageLoadStreamsArchiveAndProgress(t *testing.T) {
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "unpacking example/app:v1") {
 		t.Fatalf("load = %d: %s", response.Code, response.Body.String())
 	}
+	if !response.Flushed {
+		t.Fatal("load progress was never flushed")
+	}
 }
 
 func TestDockerAPIImagePushUsesRegistryAuthAndCleansTemporaryConfig(t *testing.T) {
@@ -119,6 +123,9 @@ func TestDockerAPIImagePushUsesRegistryAuthAndCleansTemporaryConfig(t *testing.T
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "pushed manifest") {
 		t.Fatalf("push = %d: %s", response.Code, response.Body.String())
 	}
+	if !response.Flushed {
+		t.Fatal("push progress was never flushed")
+	}
 	if configDirectory == "" {
 		t.Fatal("temporary registry config path was not observed")
 	}
@@ -166,5 +173,43 @@ func TestDockerAPIImageImportStreamsRootFilesystem(t *testing.T) {
 
 	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "sha256:imported") {
 		t.Fatalf("import = %d: %s", response.Code, response.Body.String())
+	}
+	if !response.Flushed {
+		t.Fatal("import progress was never flushed")
+	}
+}
+
+func TestDockerImageTransfersFlushBeforeBackendCompletion(t *testing.T) {
+	for _, path := range []string{
+		"/v1.47/images/load",
+		"/v1.47/images/create?fromSrc=-&repo=synthetic",
+		"/v1.47/images/registry.example.test/synthetic/push",
+	} {
+		t.Run(path, func(t *testing.T) {
+			response := httptest.NewRecorder()
+			runner := &fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+				if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("synthetic transfer in progress\n")}); err != nil {
+					return nil, err
+				}
+				if !response.Flushed {
+					return nil, errors.New("progress did not reach the client before backend completion")
+				}
+				return nil, errors.New("synthetic partial digest failure")
+			}}
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, path, strings.NewReader("synthetic archive")))
+			var frames []map[string]any
+			decoder := json.NewDecoder(response.Body)
+			for decoder.More() {
+				var frame map[string]any
+				if err := decoder.Decode(&frame); err != nil {
+					t.Fatal(err)
+				}
+				frames = append(frames, frame)
+			}
+			if len(frames) != 2 || !strings.Contains(fmt.Sprint(frames[1]["error"]), "synthetic partial digest failure") {
+				t.Fatalf("progress/error frames = %+v", frames)
+			}
+		})
 	}
 }
