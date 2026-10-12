@@ -23,6 +23,8 @@ version Vite and oxlint accept. The Node 24 job audits the Electron lockfile
 once, avoiding redundant registry requests and npm-version-specific tree checks.
 Confirmed npm registry transport or server outages emit a warning instead of
 failing the matrix; vulnerability reports and invalid lockfiles still fail.
+The desktop test command initializes Electron before parallel test workers
+start, preventing concurrent first-run extraction of its runtime.
 
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches. A downloader override makes `app-builder-lib` use the same fetch-based

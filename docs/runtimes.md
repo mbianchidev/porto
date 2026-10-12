@@ -228,6 +228,9 @@ for Services, Pods, and Deployments. Leave the local port empty to allocate a
 free port from Porto's forwarding range, or request a specific available port.
 Forwards bind only to `127.0.0.1`, remain active until stopped or until the
 cluster or Porto daemon exits, and are not restored after a daemon restart.
+Porto allows up to 30 seconds for startup and checks the loopback listener
+without competing for its port. Failed starts are stopped and reaped before
+returning an error; daemon shutdown also cancels pending startup checks.
 
 ### Create a local cluster
 
