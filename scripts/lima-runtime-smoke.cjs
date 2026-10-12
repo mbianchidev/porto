@@ -131,6 +131,16 @@ async function waitFor(check, message) {
 test('Windows forced stop terminates consoleless descendants and releases logs', {
   skip: process.platform !== 'win32',
 }, async (t) => {
+  await checkWindowsForcedStop(t, false)
+})
+
+test('Windows forced stop accepts taskkill exit 255 only after the target exits', {
+  skip: process.platform !== 'win32',
+}, async (t) => {
+  await checkWindowsForcedStop(t, true)
+})
+
+async function checkWindowsForcedStop(t, simulateTaskkillRace) {
   const vm = fixture(t)
   const childPIDPath = path.join(vm.directory, 'synthetic-child.pid')
   const stdoutPath = path.join(vm.directory, 'ha.stdout.log')
@@ -178,7 +188,49 @@ test('Windows forced stop terminates consoleless descendants and releases logs',
     assert.equal(fs.readFileSync(path.join(vm.directory, 'ha.pid'), 'utf8'), `${agent.pid}\n`)
     assert.equal(fs.readFileSync(path.join(vm.directory, 'qemu.pid'), 'utf8'), `${childPIDs[0]}\n`)
 
-    vm.run(['stop', '--force', instanceName])
+    if (simulateTaskkillRace) {
+      const taskkill = path.join(vm.directory, 'taskkill.exe')
+      const preload = path.join(vm.directory, 'synthetic-taskkill.cjs')
+      const trace = path.join(vm.directory, 'synthetic-taskkill.trace')
+      fs.copyFileSync(process.execPath, taskkill)
+      fs.writeFileSync(preload, `
+        const fs = require('node:fs')
+        const { spawnSync } = require('node:child_process')
+        const path = require('node:path')
+        const pid = Number(process.argv[2])
+        if (!Number.isInteger(pid) || pid <= 0) throw new Error('Invalid synthetic taskkill PID')
+        fs.appendFileSync(process.env.PORTO_TEST_TASKKILL_TRACE, pid + '\\n')
+        if (process.env.PORTO_TEST_TASKKILL_EXIT_TARGET === '1') {
+          const result = spawnSync(path.join(process.env.SystemRoot, 'System32', 'taskkill.exe'),
+            ['/PID', String(pid), '/T', '/F'], {
+              windowsHide: true, timeout: 10000, encoding: 'utf8',
+            })
+          if (result.error) throw result.error
+          if (![0, 128, 255].includes(result.status)) throw new Error(result.stdout + '\\n' + result.stderr)
+        }
+        console.error('Synthetic taskkill reported no running instance of the task')
+        process.exit(255)
+      `)
+      const taskkillEnvironment = {
+        PATH: vm.directory + path.delimiter + process.env.PATH,
+        NODE_OPTIONS: '--require=' + JSON.stringify(preload.replaceAll('\\', '/')),
+        PORTO_TEST_TASKKILL_TRACE: trace,
+      }
+      assert.throws(() => vm.run(['stop', '--force', instanceName], taskkillEnvironment), /exit status 255/)
+      assert.equal(fs.readFileSync(trace, 'utf8'), `${agent.pid}\n`)
+      assert.ok(processAlive(agent.pid), 'failed taskkill killed the host agent')
+      assert.ok(childPIDs.every(processAlive), 'failed taskkill killed a descendant')
+      for (const name of ['ha.pid', 'qemu.pid']) {
+        assert.ok(fs.existsSync(path.join(vm.directory, name)), `${name} was removed after failed taskkill`)
+      }
+
+      vm.run(['stop', '--force', instanceName], {
+        ...taskkillEnvironment, PORTO_TEST_TASKKILL_EXIT_TARGET: '1',
+      })
+      assert.equal(fs.readFileSync(trace, 'utf8'), `${agent.pid}\n${agent.pid}\n`)
+    } else {
+      vm.run(['stop', '--force', instanceName])
+    }
     await waitFor(() => !processAlive(agent.pid) && childPIDs.every((pid) => !processAlive(pid)),
       'forced stop left the host agent or its descendant running')
     for (const log of [stdoutPath, stderrPath]) {
@@ -197,4 +249,4 @@ test('Windows forced stop terminates consoleless descendants and releases logs',
       await waitFor(() => !processAlive(pid), `synthetic process ${pid} did not exit`)
     }
   }
-})
+}

@@ -65,6 +65,8 @@ Hosted macOS runners use a small host-architecture QEMU guest under software emu
 their nested Virtualization.framework support is unavailable.
 The matching architecture keeps the guest agent/runtime helper aligned without
 cross-architecture x86 emulation; CPU counter assertions remain enabled.
+The disposable macOS guest has a bounded 20-minute startup budget because
+software emulation can exceed Lima's default ten minutes.
 Windows CI
 uses the normal Porto QEMU guest and disables CGO for the daemon/test build,
 as the client suite does not require WinFsp. Linux bundles tools as the runner
@@ -220,7 +222,7 @@ native packaging smoke tests execute `dive --version`.
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch` and
 `scripts/patches/lima-2.2.0-windows-stop.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.3`. The PID change is an upstream backport; the
+`limactl.exe` as `v2.2.0+porto.4`. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.
