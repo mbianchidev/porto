@@ -31,8 +31,12 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	manager := New(nil)
 	backend := os.Getenv("PORTO_DOCKER_CLIENT_BACKEND")
 	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
-		if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("LIMA_HOME") == "" ||
-			!strings.HasPrefix(os.Getenv("LIMA_HOME"), os.Getenv("RUNNER_TEMP")+string(os.PathSeparator)) {
+		limaHome := filepath.Clean(os.Getenv("LIMA_HOME"))
+		runnerTemporary := filepath.Clean(os.Getenv("RUNNER_TEMP"))
+		relativeLimaHome, err := filepath.Rel(runnerTemporary, limaHome)
+		if os.Getenv("GITHUB_ACTIONS") != "true" || !filepath.IsAbs(limaHome) ||
+			!filepath.IsAbs(runnerTemporary) || err != nil || relativeLimaHome == "." ||
+			relativeLimaHome == ".." || strings.HasPrefix(relativeLimaHome, ".."+string(os.PathSeparator)) {
 			t.Fatal("fresh Lima fixture ownership is restricted to an isolated CI runtime")
 		}
 		if _, err := os.Stat(manager.engineStatePath()); !os.IsNotExist(err) {
@@ -185,35 +189,19 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	for _, options := range []dockerclient.ContainerStatsOptions{
 		{IncludePreviousSample: true}, {Stream: true}, {},
 	} {
-		stats, err := client.ContainerStats(ctx, busy.ID, options)
-		if err != nil {
-			t.Fatalf("live backend CPU stats: %v", err)
-		}
-		var sample container.StatsResponse
-		decoder := json.NewDecoder(stats.Body)
-		if err := decoder.Decode(&sample); err != nil {
-			t.Fatal(err)
-		}
-		if options.Stream {
-			if err := decoder.Decode(&sample); err != nil {
-				t.Fatal(err)
-			}
-		}
+		sample, baseline := readDevelopmentClientStats(t, ctx, client, busy.ID, options)
 		if options.IncludePreviousSample || options.Stream {
-			hostDelta := sample.CPUStats.SystemUsage - sample.PreCPUStats.SystemUsage
-			containerDelta := sample.CPUStats.CPUUsage.TotalUsage - sample.PreCPUStats.CPUUsage.TotalUsage
+			hostDelta := sample.CPUStats.SystemUsage - baseline.SystemUsage
+			containerDelta := sample.CPUStats.CPUUsage.TotalUsage - baseline.CPUUsage.TotalUsage
 			percentage := float64(containerDelta) / float64(hostDelta) * float64(sample.CPUStats.OnlineCPUs) * 100
-			// Tick-based Linux totals can transiently undershoot cgroup nanoseconds,
-			// especially under software emulation; allow 5% quantization, never clamp data.
+			// Average five fixed intervals to smooth emulated tick accounting,
+			// retaining the same 5% quantization allowance and raw counters.
 			if !(percentage > 1 && percentage <= float64(sample.CPUStats.OnlineCPUs)*105) {
-				t.Fatalf("busy-workload CPU percentage is invalid: %f, stats=%+v", percentage, sample.CPUStats)
+				t.Fatalf("busy-workload CPU percentage is invalid: %f, stats=%+v, baseline=%+v", percentage, sample.CPUStats, baseline)
 			}
-			t.Logf("real backend SDK CPU: %.2f%% with %d online CPUs", percentage, sample.CPUStats.OnlineCPUs)
+			t.Logf("real backend SDK CPU over five intervals: %.2f%% with %d online CPUs", percentage, sample.CPUStats.OnlineCPUs)
 		} else if sample.PreCPUStats.SystemUsage != 0 || sample.CPUStats.SystemUsage == 0 {
 			t.Fatal("one-shot invented previous counters or omitted backend CPU totals")
-		}
-		if err := stats.Body.Close(); err != nil {
-			t.Fatal(err)
 		}
 	}
 	cpuOutput := strings.TrimSpace(string(runDocker("stats", "--no-stream", "--format", "{{.CPUPerc}}", busy.ID)))
@@ -296,6 +284,81 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatalf("Dev Containers/Testcontainers workflows: %v", err)
 	}
 	t.Log("real Testcontainers and Dev Containers workflows completed")
+}
+
+func readDevelopmentClientStats(
+	t *testing.T,
+	ctx context.Context,
+	client *dockerclient.Client,
+	id string,
+	options dockerclient.ContainerStatsOptions,
+) (container.StatsResponse, container.CPUStats) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	defer cancel()
+	stats, err := client.ContainerStats(ctx, id, options)
+	if err != nil {
+		t.Fatalf("live backend CPU stats: %v", err)
+	}
+	body := stats.Body
+	defer func() {
+		if body != nil {
+			if err := body.Close(); err != nil {
+				t.Errorf("close live backend CPU stats: %v", err)
+			}
+		}
+	}()
+	decoder := json.NewDecoder(body)
+	var sample container.StatsResponse
+	if err := decoder.Decode(&sample); err != nil {
+		t.Fatalf("decode live backend CPU stats: %v", err)
+	}
+	baseline := sample.PreCPUStats
+	if !options.IncludePreviousSample && !options.Stream {
+		return sample, baseline
+	}
+	if options.Stream {
+		if sample.PreCPUStats.SystemUsage != 0 {
+			t.Fatal("first streaming sample had invented previous counters")
+		}
+		baseline = sample.CPUStats
+	}
+	if baseline.SystemUsage == 0 || baseline.OnlineCPUs == 0 {
+		t.Fatalf("backend CPU baseline is incomplete: %+v", baseline)
+	}
+	previous := baseline
+	for interval := 0; interval < 5; interval++ {
+		if interval > 0 || options.Stream {
+			if !options.Stream {
+				closeErr := body.Close()
+				body = nil
+				if closeErr != nil {
+					t.Fatalf("close live backend CPU stats: %v", closeErr)
+				}
+				stats, err := client.ContainerStats(ctx, id, options)
+				if err != nil {
+					t.Fatalf("live backend CPU stats: %v", err)
+				}
+				body = stats.Body
+				decoder = json.NewDecoder(body)
+			}
+			sample = container.StatsResponse{}
+			if err := decoder.Decode(&sample); err != nil {
+				t.Fatalf("decode live backend CPU stats: %v", err)
+			}
+		}
+		if sample.CPUStats.OnlineCPUs != baseline.OnlineCPUs ||
+			sample.PreCPUStats.SystemUsage == 0 ||
+			sample.CPUStats.SystemUsage <= sample.PreCPUStats.SystemUsage ||
+			sample.CPUStats.CPUUsage.TotalUsage < sample.PreCPUStats.CPUUsage.TotalUsage ||
+			sample.CPUStats.SystemUsage <= previous.SystemUsage ||
+			sample.CPUStats.CPUUsage.TotalUsage < previous.CPUUsage.TotalUsage {
+			t.Fatalf("backend CPU counters are incomplete or non-monotonic: current=%+v, previous=%+v, last=%+v",
+				sample.CPUStats, sample.PreCPUStats, previous)
+		}
+		previous = sample.CPUStats
+	}
+	return sample, baseline
 }
 
 func syntheticClientBuildArchive(t *testing.T) []byte {

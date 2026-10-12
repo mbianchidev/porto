@@ -61,16 +61,20 @@ and native macOS/Windows Lima backends. Windows exercises Porto's named pipe.
 The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
 containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
 `PORTO_HOME` roots. Only their own processes and VM are removed.
-Hosted macOS runners use a small host-architecture QEMU guest under software emulation:
-their nested Virtualization.framework support is unavailable.
-The matching architecture keeps the guest agent/runtime helper aligned without
-cross-architecture x86 emulation; CPU counter assertions remain enabled.
-The disposable macOS guest has a bounded 20-minute startup budget because
-software emulation can exceed Lima's default ten minutes.
-Windows CI
-uses the normal Porto QEMU guest and disables CGO for the daemon/test build,
-as the client suite does not require WinFsp. Linux bundles tools as the runner
-user and elevates only the isolated containerd/BuildKit workload.
+Hosted macOS and Windows runners use small host-architecture Ubuntu 24.04 QEMU
+guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
+requires software emulation because nested Virtualization.framework support is
+unavailable; matching the host architecture keeps its guest agent/runtime helper
+aligned without cross-architecture x86 emulation. Windows also avoids unused
+SSHFS home-folder mounts and their startup probes. The test harness records
+ownership only inside the isolated runner temporary directory, including native
+Windows paths. Windows disables CGO for the daemon/test build, as the client
+suite does not require WinFsp. Linux bundles tools as the runner user and
+elevates only the isolated containerd/BuildKit workload.
+CPU counter assertions remain enabled and average a fixed five-interval window
+to smooth emulated Linux tick accounting, without clamping raw counters or
+increasing the existing 5% quantization allowance. Every interval still checks
+available, monotonic backend counters; a two-minute deadline bounds each window.
 The workload verifies busy-container CPU percentages, exec, valid/corrupt image
 archives, ordinary tag/push to a disposable registry, and client-owned cleanup.
 It uses a named Dev Containers workspace volume and disables Ryuk while the
