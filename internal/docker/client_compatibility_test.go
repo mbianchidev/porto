@@ -2,8 +2,8 @@ package docker
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -116,17 +116,22 @@ func TestDockerSDKStatsCalculatesBackendCPUUsage(t *testing.T) {
 	manager := New(&fakeRunner{})
 	manager.metricReader = func(context.Context, string) (ContainerMetricSample, error) {
 		index := samples.Add(1)
+		systemCPU := index * 2_000_000_000
+		// One undersampled tick interval must not change the fixed-window 40% result.
+		if index == 2 {
+			systemCPU -= 1_650_000_000
+		}
 		return ContainerMetricSample{
 			ID: "synthetic-sdk-stats", Name: "sdk-stats", Read: time.Unix(int64(index), 0),
 			CPU: &ContainerMetricCPU{
 				TotalUsage:     index * 400_000_000,
-				SystemCPUUsage: uint64Pointer(index * 2_000_000_000),
+				SystemCPUUsage: uint64Pointer(systemCPU),
 				OnlineCPUs:     2,
 			},
 		}, nil
 	}
 	client := dockerSDKClient(t, startDockerTestAPI(t, manager))
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	for _, options := range []dockerclient.ContainerStatsOptions{
 		{IncludePreviousSample: true},
@@ -134,36 +139,49 @@ func TestDockerSDKStatsCalculatesBackendCPUUsage(t *testing.T) {
 		{Stream: true},
 	} {
 		before := samples.Load()
-		result, err := client.ContainerStats(ctx, "synthetic-sdk-stats", options)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var stats container.StatsResponse
-		decoder := json.NewDecoder(result.Body)
-		if err := decoder.Decode(&stats); err != nil {
-			t.Fatal(err)
-		}
-		if options.Stream {
-			if stats.PreCPUStats.SystemUsage != 0 {
-				t.Fatal("first streaming sample had invented previous counters")
-			}
-			if err := decoder.Decode(&stats); err != nil {
-				t.Fatal(err)
-			}
-		}
+		stats, baseline := readDevelopmentClientStats(t, ctx, client, "synthetic-sdk-stats", options)
 		if options.IncludePreviousSample || options.Stream {
-			containerDelta := stats.CPUStats.CPUUsage.TotalUsage - stats.PreCPUStats.CPUUsage.TotalUsage
-			hostDelta := stats.CPUStats.SystemUsage - stats.PreCPUStats.SystemUsage
+			containerDelta := stats.CPUStats.CPUUsage.TotalUsage - baseline.CPUUsage.TotalUsage
+			hostDelta := stats.CPUStats.SystemUsage - baseline.SystemUsage
 			percentage := float64(containerDelta) / float64(hostDelta) * float64(stats.CPUStats.OnlineCPUs) * 100
 			if percentage != 40 {
 				t.Fatalf("SDK CPU percentage = %f, want 40", percentage)
 			}
+			wantSamples := uint64(6)
+			if options.IncludePreviousSample {
+				wantSamples = 10
+			}
+			if samples.Load()-before != wantSamples {
+				t.Fatalf("CPU window used %d samples, want %d", samples.Load()-before, wantSamples)
+			}
 		} else if samples.Load()-before != 1 || stats.PreCPUStats.SystemUsage != 0 {
 			t.Fatal("one-shot sampled twice or supplied invented previous counters")
 		}
-		if err := result.Body.Close(); err != nil {
-			t.Fatal(err)
-		}
+	}
+}
+
+func TestDevelopmentClientCPUValidationDistinguishesSoftwareEmulation(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		percentage        float64
+		cpus              uint32
+		softwareEmulation bool
+		valid             bool
+	}{
+		{"native-limit", 210, 2, false, true},
+		{"native-over-limit", 210.01, 2, false, false},
+		{"emulated-active", 250, 2, true, true},
+		{"emulated-missing-cpus", 250, 0, true, false},
+		{"emulated-idle", 0, 2, true, false},
+		{"emulated-insufficient-activity", 1, 2, true, false},
+		{"emulated-nan", math.NaN(), 2, true, false},
+		{"emulated-infinite", math.Inf(1), 2, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if valid := validDevelopmentClientCPUPercentage(test.percentage, test.cpus, test.softwareEmulation); valid != test.valid {
+				t.Fatalf("CPU percentage validation = %t, want %t", valid, test.valid)
+			}
+		})
 	}
 }
 

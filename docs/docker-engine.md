@@ -111,6 +111,13 @@ Lifecycle actions use containerd task APIs. Starting or restarting a stopped
 Porto-owned container recreates its task from the stored OCI spec, snapshot
 mounts, network endpoints, and I/O metadata. Legacy containers whose task
 lifecycle is owned by the compatibility runtime remain on that path.
+When the inventory has a healthy connection, lifecycle and removal operations
+borrow that same verified backend instead of opening another SSH tunnel and
+repeating health probes. Finishing an operation never closes the
+inventory-owned connection; the inventory still owns reconnect and shutdown.
+This keeps slow emulated guests on native cleanup, including `docker rm -v`,
+rather than sending Porto-owned OCI metadata to nerdctl after a redundant
+connection probe times out.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
 

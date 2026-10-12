@@ -846,6 +846,51 @@ func TestManagerRoutesMetadataActionsThroughContainerOperations(t *testing.T) {
 	}
 }
 
+type inventoryOperationsRuntime struct {
+	*fakeContainerRuntime
+	*fakeContainerOperations
+}
+
+func (runtime *inventoryOperationsRuntime) Close() error {
+	return errors.Join(runtime.fakeContainerRuntime.Close(), runtime.fakeContainerOperations.Close())
+}
+
+func TestContainerOperationsReuseInventoryConnectionWithoutClosingIt(t *testing.T) {
+	runtimeClient := &inventoryOperationsRuntime{
+		fakeContainerRuntime:    newFakeContainerRuntime(),
+		fakeContainerOperations: &fakeContainerOperations{errs: map[string]error{}},
+	}
+	manager := NewWithStateDir(&fakeRunner{handler: func(runtimes.Command) ([]byte, error) {
+		t.Fatal("lifecycle operation opened a new backend connection")
+		return nil, nil
+	}}, t.TempDir())
+	manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+	manager.inventory.snapshot.Available = true
+	manager.inventory.runtimeClient = runtimeClient
+	manager.inventoryCancel = func() {}
+	for _, action := range []string{"remove", "remove-force", "remove-volumes", "remove-force-volumes"} {
+		if err := manager.ContainerAction(context.Background(), "synthetic-owned", action); err != nil {
+			t.Fatal(err)
+		}
+	}
+	want := []string{
+		"delete synthetic-owned false false",
+		"delete synthetic-owned true false",
+		"delete synthetic-owned false true",
+		"delete synthetic-owned true true",
+	}
+	if runtimeClient.closed || !reflect.DeepEqual(runtimeClient.calls, want) {
+		t.Fatalf("inventory runtime closed=%t, lifecycle calls=%q, want %q",
+			runtimeClient.closed, runtimeClient.calls, want)
+	}
+	if err := runtimeClient.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if !runtimeClient.closed || runtimeClient.calls[len(runtimeClient.calls)-1] != "close" {
+		t.Fatal("inventory owner could not close its shared runtime")
+	}
+}
+
 func TestManagerMetadataActionsFallbackOnlyForUnavailableOrUnsupported(t *testing.T) {
 	tests := []struct {
 		name         string

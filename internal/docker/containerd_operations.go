@@ -60,6 +60,14 @@ type containerOperations interface {
 
 type containerOperationsConnector func(context.Context) (containerOperations, error)
 
+type borrowedContainerOperations struct {
+	containerOperations
+}
+
+func (borrowedContainerOperations) Close() error {
+	return nil
+}
+
 type containerCreation interface {
 	Create(context.Context, CreateContainerRequest) (string, error)
 	Close() error
@@ -124,6 +132,13 @@ func (m *Manager) createContainerDirect(
 }
 
 func (m *Manager) connectContainerOperations(ctx context.Context) (containerOperations, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if runtimeClient := inventory.activeRuntime(); runtimeClient != nil {
+			if operations, ok := runtimeClient.(containerOperations); ok {
+				return borrowedContainerOperations{operations}, nil
+			}
+		}
+	}
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||

@@ -102,7 +102,7 @@ func (m *Manager) streamContainerLogsDirect(
 	var runtimeClient containerRuntime
 	inventoryOwned := false
 	if inventory := m.activeContainerInventory(); inventory != nil {
-		runtimeClient = inventory.metricRuntime()
+		runtimeClient = inventory.activeRuntime()
 		inventoryOwned = runtimeClient != nil
 	}
 	if runtimeClient == nil {
