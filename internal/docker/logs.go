@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"strconv"
 	"strings"
@@ -98,20 +99,37 @@ func (m *Manager) streamContainerLogsDirect(
 	if m.directCLI || m.runtimeConnector == nil {
 		return false, nil
 	}
-	runtimeClient, err := m.runtimeConnector(ctx)
-	if err != nil {
-		if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrUnsupported) {
-			return false, nil
+	var runtimeClient containerRuntime
+	inventoryOwned := false
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		runtimeClient = inventory.metricRuntime()
+		inventoryOwned = runtimeClient != nil
+	}
+	if runtimeClient == nil {
+		var err error
+		runtimeClient, err = m.runtimeConnector(ctx)
+		if err != nil {
+			if errors.Is(err, ErrUnavailable) || errors.Is(err, ErrUnsupported) {
+				log.Printf("Direct container log connection unavailable for %s; using compatibility logs: %v", id, err)
+				return false, nil
+			}
+			return true, err
 		}
-		return true, err
 	}
 	operations, ok := runtimeClient.(containerLogOperations)
 	if !ok {
+		if inventoryOwned {
+			return false, nil
+		}
 		return false, runtimeClient.Close()
 	}
 	streamErr := operations.StreamLogs(ctx, id, options, emit)
-	closeErr := runtimeClient.Close()
+	var closeErr error
+	if !inventoryOwned {
+		closeErr = runtimeClient.Close()
+	}
 	if errors.Is(streamErr, ErrUnsupported) || errors.Is(streamErr, ErrUnavailable) {
+		log.Printf("Direct container log capability unavailable for %s; using compatibility logs: %v", id, streamErr)
 		return false, errors.Join(streamErr, closeErr)
 	}
 	return true, errors.Join(streamErr, closeErr)
@@ -182,7 +200,7 @@ func (r *grpcContainerRuntime) StreamLogs(
 
 func parseLogTail(value string) (int, error) {
 	switch strings.TrimSpace(value) {
-	case "", "all":
+	case "", "all", "-1":
 		return allLogLines, nil
 	default:
 		tail, err := strconv.Atoi(value)

@@ -166,24 +166,19 @@ func dockerEventFromLifecycle(snapshot ContainerSnapshot, event ContainerLifecyc
 	if !ok || event.ContainerID == "" {
 		return dockerEvent{}, false
 	}
-	attributes := map[string]string{}
-	image := ""
-	for _, container := range snapshot.Containers {
-		if container.ID != event.ContainerID {
-			continue
+	attributes := cloneStringMap(event.Attributes)
+	if attributes == nil {
+		for _, container := range snapshot.Containers {
+			if container.ID == event.ContainerID {
+				attributes = containerActorAttributes(container)
+				break
+			}
 		}
-		if container.Name != "" {
-			attributes["name"] = container.Name
-		}
-		image = container.Image
-		if image != "" {
-			attributes["image"] = image
-		}
-		for key, value := range container.Labels {
-			attributes[key] = value
-		}
-		break
 	}
+	if attributes == nil {
+		attributes = map[string]string{}
+	}
+	image := attributes["image"]
 	if event.ExecID != "" {
 		attributes["execID"] = event.ExecID
 	}
@@ -224,6 +219,8 @@ func dockerEventAction(event ContainerLifecycleEvent) (string, bool) {
 		return "update", true
 	case "container-delete":
 		return "destroy", true
+	case "container-rename":
+		return "rename", true
 	case "task-start":
 		return "start", true
 	case "task-exit":
@@ -251,6 +248,20 @@ func dockerEventAction(event ContainerLifecycleEvent) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func containerActorAttributes(container Container) map[string]string {
+	attributes := cloneStringMap(container.Labels)
+	if attributes == nil {
+		attributes = make(map[string]string)
+	}
+	if container.Name != "" {
+		attributes["name"] = container.Name
+	}
+	if container.Image != "" {
+		attributes["image"] = container.Image
+	}
+	return attributes
 }
 
 func transitionTarget(reason string) string {

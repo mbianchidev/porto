@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -8,8 +9,6 @@ import (
 	"net/url"
 	"os"
 	"os/exec"
-	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -127,10 +126,62 @@ func TestDockerEventsRejectsInvalidTimeBounds(t *testing.T) {
 	}
 }
 
-func TestDockerCLIEventsConsumesFilteredReplay(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix socket compatibility test")
+func TestDockerEventsRetainsImmutableActorMetadataThroughDeletionAndRename(t *testing.T) {
+	inventory := newContainerInventory(nil, defaultInventoryOptions())
+	timestamp := time.Now().UTC().Add(-time.Minute)
+	original := Container{
+		ID: "synthetic-event-id", Name: "original", Image: "synthetic:v1",
+		Labels: map[string]string{"stage": "before"},
 	}
+	inventory.publishContainers("synthetic", "fixture", timestamp, []Container{original})
+	inventory.recordEvent(ContainerLifecycleEvent{
+		Type: "task-start", Topic: "/tasks/start", ContainerID: original.ID, Timestamp: timestamp,
+	})
+	updatedAttributes := map[string]string{
+		"name": "renamed", "image": "synthetic:v2", "stage": "after",
+	}
+	inventory.recordEvent(ContainerLifecycleEvent{
+		Type: "container-update", Topic: "/containers/update", ContainerID: original.ID,
+		Timestamp: timestamp.Add(time.Second), Attributes: updatedAttributes,
+	})
+	updatedAttributes["stage"] = "mutated-after-recording"
+	inventory.recordEvent(ContainerLifecycleEvent{
+		Type: "task-exit", Topic: "/tasks/exit", ContainerID: original.ID,
+		Timestamp: timestamp.Add(2 * time.Second),
+	})
+	inventory.recordEvent(ContainerLifecycleEvent{
+		Type: "container-delete", Topic: "/containers/delete", ContainerID: original.ID,
+		Timestamp: timestamp.Add(3 * time.Second),
+	})
+	inventory.publishContainers("synthetic", "fixture", timestamp, nil)
+	manager := New(&fakeRunner{})
+	manager.inventory, manager.inventoryCancel = inventory, func() {}
+	for _, test := range []struct{ filters, action, name, image, stage string }{
+		{`{"event":["start"],"container":["original"],"image":["synthetic:v1"],"label":["stage=before"]}`, "start", "original", "synthetic:v1", "before"},
+		{`{"event":["rename"],"container":["renamed"],"label":["stage=after"]}`, "rename", "renamed", "synthetic:v2", "after"},
+		{`{"event":["die"],"image":["synthetic:v2"],"label":["stage=after"]}`, "die", "renamed", "synthetic:v2", "after"},
+		{`{"event":["destroy"],"container":["renamed"],"label":["stage=after"]}`, "destroy", "renamed", "synthetic:v2", "after"},
+	} {
+		response := httptest.NewRecorder()
+		path := "/v1.47/events?since=0&until=" + strconv.FormatInt(time.Now().Unix(), 10) + "&filters=" + url.QueryEscape(test.filters)
+		NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		var event dockerEvent
+		if err := json.Unmarshal(bytes.TrimSpace(response.Body.Bytes()), &event); err != nil {
+			t.Fatalf("historical %s event missing: %v: %s", test.action, err, response.Body.String())
+		}
+		if event.Action != test.action || event.Actor.Attributes["name"] != test.name ||
+			event.Actor.Attributes["image"] != test.image || event.Actor.Attributes["stage"] != test.stage {
+			t.Fatalf("event-time attributes changed: %+v", event)
+		}
+	}
+	snapshot := inventory.snapshotValue()
+	snapshot.Events[0].Attributes["stage"] = "external-mutation"
+	if inventory.snapshotValue().Events[0].Attributes["stage"] != "before" || len(inventory.actorMetadata) != 0 {
+		t.Fatal("retained attributes are mutable or deleted-container metadata leaked")
+	}
+}
+
+func TestDockerCLIEventsConsumesFilteredReplay(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
 	}
@@ -149,12 +200,7 @@ func TestDockerCLIEventsConsumesFilteredReplay(t *testing.T) {
 	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
 	manager.inventory = inventory
 	manager.inventoryCancel = func() {}
-	socketDir, err := os.MkdirTemp("/tmp", "porto-events-cli-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "docker.sock")
+	socketPath := dockerTestEndpoint(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	server := NewAPIServer(socketPath, NewAPI(manager, socketPath))
 	if err := server.Start(ctx); err != nil {
@@ -168,7 +214,7 @@ func TestDockerCLIEventsConsumesFilteredReplay(t *testing.T) {
 		_ = server.Close(closeContext)
 	})
 	configDir := t.TempDir()
-	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host="+EndpointURL(socketPath))
 	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
 	if output, err := createContext.CombinedOutput(); err != nil {
 		t.Fatalf("create Docker context: %v: %s", err, output)

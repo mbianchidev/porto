@@ -12,9 +12,24 @@ func parseDockerFilters(raw string) (dockerFilters, error) {
 	if strings.TrimSpace(raw) == "" {
 		return nil, nil
 	}
-	var filters dockerFilters
-	if err := json.Unmarshal([]byte(raw), &filters); err != nil {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
 		return nil, fmt.Errorf("invalid Docker filters: %w", err)
+	}
+	filters := make(dockerFilters, len(fields))
+	for key, field := range fields {
+		var values map[string]bool
+		if err := json.Unmarshal(field, &values); err != nil {
+			var entries []string
+			if err := json.Unmarshal(field, &entries); err != nil {
+				return nil, fmt.Errorf("invalid Docker filter %s: %w", key, err)
+			}
+			values = make(map[string]bool, len(entries))
+			for _, entry := range entries {
+				values[entry] = true
+			}
+		}
+		filters[key] = values
 	}
 	return filters, nil
 }

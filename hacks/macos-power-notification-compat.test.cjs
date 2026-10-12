@@ -272,6 +272,16 @@ test('macOS power-notification workaround and upstream removal gate', {
       assert.doesNotThrow(() => installMacOSBootstrap(bundle))
     })
     const resources = path.join(bundle, 'Contents', 'Resources')
+    await t.test('embeds modern and legacy Porto icons', () => {
+      const info = requireElectron('plist').parse(fs.readFileSync(path.join(bundle, 'Contents', 'Info.plist'), 'utf8'))
+      assert.equal(info.CFBundleIconName, 'Icon')
+      assert.equal(info.CFBundleIconFile, 'porto.icns')
+      assert.ok(fs.statSync(path.join(resources, 'Assets.car')).size > 0)
+      assert.deepEqual(
+        fs.readFileSync(path.join(resources, info.CFBundleIconFile)),
+        fs.readFileSync(path.join(__dirname, '..', 'ui', 'electron', 'assets', 'porto.icns')),
+      )
+    })
     const archive = path.join(resources, 'app.asar')
     assert.equal(fs.statSync(archive).isFile(), true)
     fs.unlinkSync(archive)

@@ -36,6 +36,10 @@ It provides a portable, open-source alternative to proprietary desktop container
 
 See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
 for supported, partial, capability-gated, and explicitly unsupported operations.
+Porto enforces Docker API 1.41–1.47, preserves historical event attributes, and
+uses the Linux backend's CPU counters for Docker stats. The same matrix documents
+tested Docker SDK, Dev Containers, and Testcontainers workflows and their
+configuration/capability limits.
 See [image layer inspection](docs/image-inspection.md) for Dive usage and the
 separate local Grype/SBOM roadmap.
 

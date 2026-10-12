@@ -37,29 +37,32 @@ type ContextStatus struct {
 }
 
 type BackendInfo struct {
-	Driver          string   `json:"Driver"`
-	MemoryLimit     bool     `json:"MemoryLimit"`
-	SwapLimit       bool     `json:"SwapLimit"`
-	CPUPeriod       bool     `json:"CpuCfsPeriod"`
-	CPUQuota        bool     `json:"CpuCfsQuota"`
-	CPUShares       bool     `json:"CPUShares"`
-	CPUSet          bool     `json:"CPUSet"`
-	PIDsLimit       bool     `json:"PidsLimit"`
-	IPv4Forwarding  bool     `json:"IPv4Forwarding"`
-	OomKillDisable  bool     `json:"OomKillDisable"`
-	SystemTime      string   `json:"SystemTime"`
-	LoggingDriver   string   `json:"LoggingDriver"`
-	CgroupDriver    string   `json:"CgroupDriver"`
-	CgroupVersion   string   `json:"CgroupVersion"`
-	KernelVersion   string   `json:"KernelVersion"`
-	OperatingSystem string   `json:"OperatingSystem"`
-	OSType          string   `json:"OSType"`
-	Architecture    string   `json:"Architecture"`
-	NCPU            int      `json:"NCPU"`
-	MemTotal        int64    `json:"MemTotal"`
-	Name            string   `json:"Name"`
-	SecurityOptions []string `json:"SecurityOptions"`
-	Warnings        []string `json:"Warnings"`
+	Driver          string     `json:"Driver"`
+	DriverStatus    [][]string `json:"DriverStatus"`
+	DockerRootDir   string     `json:"DockerRootDir"`
+	OSVersion       string     `json:"OSVersion"`
+	MemoryLimit     bool       `json:"MemoryLimit"`
+	SwapLimit       bool       `json:"SwapLimit"`
+	CPUPeriod       bool       `json:"CpuCfsPeriod"`
+	CPUQuota        bool       `json:"CpuCfsQuota"`
+	CPUShares       bool       `json:"CPUShares"`
+	CPUSet          bool       `json:"CPUSet"`
+	PIDsLimit       bool       `json:"PidsLimit"`
+	IPv4Forwarding  bool       `json:"IPv4Forwarding"`
+	OomKillDisable  bool       `json:"OomKillDisable"`
+	SystemTime      string     `json:"SystemTime"`
+	LoggingDriver   string     `json:"LoggingDriver"`
+	CgroupDriver    string     `json:"CgroupDriver"`
+	CgroupVersion   string     `json:"CgroupVersion"`
+	KernelVersion   string     `json:"KernelVersion"`
+	OperatingSystem string     `json:"OperatingSystem"`
+	OSType          string     `json:"OSType"`
+	Architecture    string     `json:"Architecture"`
+	NCPU            int        `json:"NCPU"`
+	MemTotal        int64      `json:"MemTotal"`
+	Name            string     `json:"Name"`
+	SecurityOptions []string   `json:"SecurityOptions"`
+	Warnings        []string   `json:"Warnings"`
 }
 
 type EngineOwnershipStatus struct {
@@ -151,16 +154,17 @@ type ContainerMount struct {
 }
 
 type ContainerLifecycleEvent struct {
-	Sequence    uint64    `json:"sequence"`
-	Topic       string    `json:"topic"`
-	Type        string    `json:"type"`
-	ContainerID string    `json:"containerId,omitempty"`
-	ExecID      string    `json:"execId,omitempty"`
-	Timestamp   time.Time `json:"timestamp"`
-	ExitCode    *uint32   `json:"exitCode,omitempty"`
-	ExitSignal  *uint32   `json:"exitSignal,omitempty"`
-	OOM         bool      `json:"oom,omitempty"`
-	Reason      string    `json:"reason,omitempty"`
+	Sequence    uint64            `json:"sequence"`
+	Topic       string            `json:"topic"`
+	Type        string            `json:"type"`
+	ContainerID string            `json:"containerId,omitempty"`
+	ExecID      string            `json:"execId,omitempty"`
+	Timestamp   time.Time         `json:"timestamp"`
+	ExitCode    *uint32           `json:"exitCode,omitempty"`
+	ExitSignal  *uint32           `json:"exitSignal,omitempty"`
+	OOM         bool              `json:"oom,omitempty"`
+	Reason      string            `json:"reason,omitempty"`
+	Attributes  map[string]string `json:"attributes,omitempty"`
 }
 
 type RuntimeCapability struct {
@@ -278,11 +282,13 @@ type ContainerMetricSample struct {
 }
 
 type ContainerMetricCPU struct {
-	TotalUsage  uint64
-	UserUsage   uint64
-	SystemUsage uint64
-	PerCPUUsage []uint64
-	Throttling  ContainerMetricThrottling
+	TotalUsage     uint64
+	UserUsage      uint64
+	SystemUsage    uint64
+	SystemCPUUsage *uint64
+	OnlineCPUs     uint32
+	PerCPUUsage    []uint64
+	Throttling     ContainerMetricThrottling
 }
 
 type ContainerMetricThrottling struct {
@@ -358,6 +364,7 @@ type CreateContainerRequest struct {
 	Networks    []ContainerNetwork
 	Volumes     []string
 	Publish     []string
+	Expose      []string
 	Restart     string
 	TTY         bool
 	Interactive bool

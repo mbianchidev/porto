@@ -727,10 +727,6 @@ func (c *bufferedDockerConn) Read(data []byte) (int, error) {
 }
 
 func hijackDockerStream(w http.ResponseWriter, r *http.Request) (net.Conn, error) {
-	if r.Header.Get("Upgrade") == "" {
-		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "Docker stream requires a connection upgrade"})
-		return nil, errors.New("Docker stream upgrade header is missing")
-	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
 		writeDockerJSON(w, http.StatusInternalServerError, map[string]string{"message": "Docker API connection cannot be hijacked"})
@@ -740,10 +736,13 @@ func hijackDockerStream(w http.ResponseWriter, r *http.Request) (net.Conn, error
 	if err != nil {
 		return nil, err
 	}
-	response := fmt.Sprintf(
-		"HTTP/1.1 101 Switching Protocols\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n",
-		r.Header.Get("Upgrade"),
-	)
+	response := "HTTP/1.1 200 OK\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: close\r\n\r\n"
+	if upgrade := r.Header.Get("Upgrade"); upgrade != "" {
+		response = fmt.Sprintf(
+			"HTTP/1.1 101 Switching Protocols\r\nContent-Type: application/vnd.docker.raw-stream\r\nConnection: Upgrade\r\nUpgrade: %s\r\n\r\n",
+			upgrade,
+		)
+	}
 	if _, err := buffered.WriteString(response); err != nil {
 		_ = connection.Close()
 		return nil, err

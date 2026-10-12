@@ -51,7 +51,7 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 			Retries       int      `json:"Retries"`
 		} `json:"Healthcheck"`
 	}
-	if !decodeDockerJSON(w, r, &request) {
+	if !decodeDockerOptionsJSON(w, r, &request) {
 		return
 	}
 	if request.CPUShares != 0 || request.CPUPeriod != 0 || request.CPUQuota != 0 ||
@@ -61,8 +61,10 @@ func (a *API) updateContainer(w http.ResponseWriter, r *http.Request) {
 		request.CPUSetCPUs != "" || request.CPUSetMems != "" ||
 		request.CPUCount != 0 || request.CPUPercent != 0 ||
 		request.IOMaximumIOps != 0 || request.IOMaximumBandwidth != 0 ||
-		request.MemorySwappiness != nil || request.OomKillDisable != nil ||
-		request.PidsLimit != nil || len(request.Ulimits) > 0 || len(request.Devices) > 0 ||
+		(request.MemorySwappiness != nil && *request.MemorySwappiness != -1) ||
+		(request.OomKillDisable != nil && *request.OomKillDisable) ||
+		(request.PidsLimit != nil && *request.PidsLimit != 0 && *request.PidsLimit != -1) ||
+		len(request.Ulimits) > 0 || len(request.Devices) > 0 ||
 		len(request.DeviceCgroupRules) > 0 ||
 		len(request.DeviceRequests) > 0 || len(request.BlkioWeightDevice) > 0 ||
 		len(request.BlkioDeviceReadBps) > 0 || len(request.BlkioDeviceWriteBps) > 0 ||

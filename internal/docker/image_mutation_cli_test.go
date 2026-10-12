@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -19,9 +18,6 @@ import (
 )
 
 func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("Unix socket compatibility test")
-	}
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
 	}
@@ -49,12 +45,7 @@ func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
 			return nil, fmt.Errorf("unexpected streaming image command: %v", command.Args)
 		}
 	}
-	socketDir, err := os.MkdirTemp("/tmp", "porto-image-mutations-*")
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.RemoveAll(socketDir) })
-	socketPath := filepath.Join(socketDir, "docker.sock")
+	socketPath := dockerTestEndpoint(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	server := NewAPIServer(socketPath, NewAPI(New(runner), socketPath))
 	if err := server.Start(ctx); err != nil {
@@ -69,7 +60,7 @@ func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
 	})
 
 	configDir := t.TempDir()
-	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host=unix://"+socketPath)
+	createContext := exec.Command("docker", "context", "create", "porto", "--docker", "host="+EndpointURL(socketPath))
 	createContext.Env = append(os.Environ(), "DOCKER_CONFIG="+configDir)
 	if output, err := createContext.CombinedOutput(); err != nil {
 		t.Fatalf("create Docker context: %v: %s", err, output)

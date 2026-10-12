@@ -41,7 +41,7 @@ func platformImageArchive(archive *os.File) (*os.File, error) {
 		descriptor := &nested.Manifests[index]
 		if descriptor.Platform != nil &&
 			descriptor.Platform.OS == "linux" &&
-			descriptor.Platform.Architecture == runtime.GOARCH {
+			(descriptor.Platform.Architecture == runtime.GOARCH || len(nested.Manifests) == 1) {
 			selected = descriptor
 			break
 		}

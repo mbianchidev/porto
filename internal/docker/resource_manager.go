@@ -109,6 +109,9 @@ func (m *Manager) DisconnectNetwork(ctx context.Context, network, container stri
 }
 
 func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels map[string]string) (Volume, error) {
+	if driver != "" && driver != "local" {
+		return Volume{}, fmt.Errorf("%w: volume driver %q", ErrUnsupported, driver)
+	}
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return Volume{}, err
@@ -125,7 +128,6 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 		return Volume{}, err
 	}
 	args := []string{"volume", "create"}
-	args = appendStringFlag(args, "--driver", driver)
 	for key, value := range labels {
 		args = append(args, "--label", key+"="+value)
 	}

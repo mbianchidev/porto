@@ -5,18 +5,21 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path"
 	"path/filepath"
 	"runtime"
 	"strconv"
 	"strings"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
+	runcoptions "github.com/containerd/containerd/api/types/runc/options"
 	containerd "github.com/containerd/containerd/v2/client"
 	corecontainers "github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -30,6 +33,7 @@ const (
 	portoNetworkAliasLabel = "io.porto.container.network-aliases"
 	portoNetworkStateLabel = "io.porto.container.network-state"
 	portoNetworkPIDLabel   = "io.porto.container.network-pid"
+	portoExposedPortsLabel = "io.porto.container.exposed-ports"
 	portoRuntimeVersion    = "1"
 	portoRuntimeName       = "io.containerd.runc.v2"
 	restartLogURILabel     = "containerd.io/restart.loguri"
@@ -56,6 +60,15 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 	id, err := randomResourceName()
 	if err != nil {
 		return "", err
+	}
+	backendInfo, runtimeOptions, cgroupOptions, err := r.directRuntimeConfiguration(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if request.Platform == "" && r.lima != "" {
+		request.Platform = platforms.Format(platforms.Normalize(ocispec.Platform{
+			OS: backendInfo.OSType, Architecture: backendInfo.Architecture,
+		}))
 	}
 	platform, err := directContainerPlatform(request.Platform, r.lima != "")
 	if err != nil {
@@ -94,13 +107,14 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 		imageSpec.Config,
 		r.lima != "",
 	)
+	specOptions = append(specOptions, cgroupOptions...)
 	snapshotKey := "porto-" + id
 	container, err := r.client.NewContainer(
 		withContainerdNamespace(ctx, r.namespace),
 		id,
 		containerd.WithImage(image),
 		containerd.WithContainerLabels(labels),
-		containerd.WithRuntime(portoRuntimeName, nil),
+		containerd.WithRuntime(portoRuntimeName, runtimeOptions),
 		containerd.WithSnapshotter(r.snapshotter),
 		containerd.WithNewSnapshot(snapshotKey, image),
 		containerd.WithNewSpec(specOptions...),
@@ -114,6 +128,48 @@ func (r *grpcContainerRuntime) Create(ctx context.Context, request CreateContain
 		return "", errors.Join(errors.New("containerd returned an empty container"), cleanupErr)
 	}
 	return container.ID(), nil
+}
+
+func (r *grpcContainerRuntime) directRuntimeConfiguration(ctx context.Context, id string) (BackendInfo, *runcoptions.Options, []oci.SpecOpts, error) {
+	if r.lima == "" {
+		return BackendInfo{}, nil, nil, nil
+	}
+	if r.runner == nil {
+		return BackendInfo{}, nil, nil, fmt.Errorf("%w: backend runtime configuration reader is unavailable", ErrUnsupported)
+	}
+	output, err := r.runner.Run(ctx, runtimes.Command{
+		Name: "limactl",
+		Args: []string{"shell", "--workdir=/", r.lima, "--", "nerdctl", "info", "--format", "{{json .}}"},
+	})
+	if err != nil {
+		return BackendInfo{}, nil, nil, fmt.Errorf("read direct backend runtime configuration: %w", err)
+	}
+	var info BackendInfo
+	if err := json.Unmarshal(output, &info); err != nil {
+		return info, nil, nil, fmt.Errorf("decode direct backend runtime configuration: %w", err)
+	}
+	if info.OSType != "linux" || info.Architecture == "" {
+		return info, nil, nil, fmt.Errorf("%w: backend Linux architecture is unavailable", ErrUnsupported)
+	}
+	rootless := false
+	for _, option := range info.SecurityOptions {
+		if option == "name=rootless" {
+			rootless = true
+		}
+	}
+	if info.CgroupDriver != "systemd" {
+		if rootless || info.CgroupDriver != "cgroupfs" {
+			return info, nil, nil, fmt.Errorf("%w: direct backend cgroup driver %q", ErrUnsupported, info.CgroupDriver)
+		}
+		return info, nil, nil, nil
+	}
+	slice := "system.slice"
+	if rootless {
+		slice = "user.slice"
+	}
+	return info, &runcoptions.Options{SystemdCgroup: true}, []oci.SpecOpts{
+		oci.WithCgroup(slice + ":porto:" + id),
+	}, nil
 }
 
 func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContainerRequest) (string, error) {
@@ -276,6 +332,13 @@ func (r *grpcContainerRuntime) directContainerLabels(
 	labels[portoAutoRemoveLabel] = strconv.FormatBool(request.Remove)
 	labels[nerdctlNameLabel] = firstNonEmpty(request.Name, id)
 	labels[nerdctlImageDigestLabel] = image.Target().Digest.String()
+	if len(request.Expose) > 0 {
+		ports, err := json.Marshal(request.Expose)
+		if err != nil {
+			return nil, fmt.Errorf("encode exposed container ports: %w", err)
+		}
+		labels[portoExposedPortsLabel] = string(ports)
+	}
 	networkDocument, err := json.Marshal([]string{request.Networks[0].Name})
 	if err != nil {
 		return nil, fmt.Errorf("encode direct container networks: %w", err)
@@ -458,7 +521,7 @@ func directContainerPlatform(requested string, lima bool) (string, error) {
 
 func (r *grpcContainerRuntime) directContainerLogPath(id string) (string, error) {
 	if r.lima != "" {
-		return filepath.Join("/tmp", "porto-container-logs", id+".log"), nil
+		return path.Join("/tmp", "porto-container-logs", id+".log"), nil
 	}
 	if r.logDir == "" {
 		return "", fmt.Errorf("%w: direct container log directory is unavailable", ErrUnsupported)

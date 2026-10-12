@@ -138,7 +138,10 @@ func structuredVolumeMount(mount dockerStructuredMount) (string, error) {
 		options = append(options, "ro")
 	}
 	if volume := mount.VolumeOptions; volume != nil {
-		if len(volume.Labels) > 0 || volume.DriverConfig != nil || strings.TrimSpace(volume.Subpath) != "" {
+		if len(volume.Labels) > 0 || strings.TrimSpace(volume.Subpath) != "" ||
+			(volume.DriverConfig != nil &&
+				((volume.DriverConfig.Name != "" && volume.DriverConfig.Name != "local") ||
+					len(volume.DriverConfig.Options) > 0)) {
 			return "", fmt.Errorf("%w: volume labels, driver configuration, and subpaths", ErrUnsupported)
 		}
 		if volume.NoCopy {

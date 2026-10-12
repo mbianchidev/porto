@@ -2,24 +2,61 @@ package docker
 
 import (
 	"encoding/json"
+	"log"
 	"net/http"
+	"strconv"
 	"time"
 )
 
 func (a *API) containerStats(w http.ResponseWriter, r *http.Request) {
 	stream := true
 	if value := r.URL.Query().Get("stream"); value != "" {
-		stream = dockerBool(r, "stream")
+		var err error
+		stream, err = strconv.ParseBool(value)
+		if err != nil {
+			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid stats stream option"})
+			return
+		}
+	}
+	oneShot := false
+	if value := r.URL.Query().Get("one-shot"); value != "" {
+		var err error
+		oneShot, err = strconv.ParseBool(value)
+		if err != nil {
+			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid stats one-shot option"})
+			return
+		}
+	}
+	if stream && oneShot {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "one-shot is only supported with stream=false"})
+		return
 	}
 	current, err := a.manager.ContainerMetric(r.Context(), r.PathValue("id"))
 	if err != nil {
 		writeDockerError(w, err)
 		return
 	}
+	var previousSample *ContainerMetricSample
+	if !stream && !oneShot {
+		previous := current
+		timer := time.NewTimer(time.Second)
+		defer timer.Stop()
+		select {
+		case <-r.Context().Done():
+			return
+		case <-timer.C:
+		}
+		current, err = a.manager.ContainerMetric(r.Context(), r.PathValue("id"))
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
+		previousSample = &previous
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	encoder := json.NewEncoder(w)
-	if err := encoder.Encode(dockerStatsDocument(current, nil)); err != nil {
+	if err := encoder.Encode(dockerStatsDocument(current, previousSample)); err != nil {
 		return
 	}
 	if flusher, ok := w.(http.Flusher); ok {
@@ -38,6 +75,11 @@ func (a *API) containerStats(w http.ResponseWriter, r *http.Request) {
 		case <-ticker.C:
 			current, err = a.manager.ContainerMetric(r.Context(), r.PathValue("id"))
 			if err != nil {
+				log.Printf("Docker stats stream failed for %s: %v", r.PathValue("id"), err)
+				_ = encodeDockerProgress(w, encoder, map[string]any{
+					"error":       err.Error(),
+					"errorDetail": map[string]string{"message": err.Error()},
+				})
 				return
 			}
 			if err := encoder.Encode(dockerStatsDocument(current, &previous)); err != nil {
@@ -141,7 +183,12 @@ func dockerCPUStats(cpu *ContainerMetricCPU) map[string]any {
 	}
 	if len(cpu.PerCPUUsage) > 0 {
 		usage["percpu_usage"] = cpu.PerCPUUsage
-		document["online_cpus"] = len(cpu.PerCPUUsage)
+	}
+	if cpu.SystemCPUUsage != nil {
+		document["system_cpu_usage"] = *cpu.SystemCPUUsage
+	}
+	if cpu.OnlineCPUs != 0 {
+		document["online_cpus"] = cpu.OnlineCPUs
 	}
 	return document
 }

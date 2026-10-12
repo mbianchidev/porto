@@ -57,14 +57,16 @@ type containerInventory struct {
 	connector containerRuntimeConnector
 	options   inventoryOptions
 
-	mu           sync.RWMutex
-	snapshot     ContainerSnapshot
-	capabilities ContainerCapabilities
-	sequence     uint64
-	subscribers  map[uint64]chan ContainerSnapshot
-	nextID       uint64
-	refresh      chan struct{}
-	instanceID   string
+	mu            sync.RWMutex
+	snapshot      ContainerSnapshot
+	capabilities  ContainerCapabilities
+	sequence      uint64
+	subscribers   map[uint64]chan ContainerSnapshot
+	nextID        uint64
+	refresh       chan struct{}
+	instanceID    string
+	actorMetadata map[string]map[string]string
+	runtimeClient containerRuntime
 }
 
 func newContainerInventory(connector containerRuntimeConnector, options inventoryOptions) *containerInventory {
@@ -85,12 +87,13 @@ func newContainerInventory(connector containerRuntimeConnector, options inventor
 	}
 	capabilities := containerCapabilities()
 	inventory := &containerInventory{
-		connector:    connector,
-		options:      options,
-		subscribers:  map[uint64]chan ContainerSnapshot{},
-		refresh:      make(chan struct{}, 1),
-		instanceID:   newInventoryInstanceID(),
-		capabilities: capabilities,
+		connector:     connector,
+		options:       options,
+		subscribers:   map[uint64]chan ContainerSnapshot{},
+		refresh:       make(chan struct{}, 1),
+		instanceID:    newInventoryInstanceID(),
+		actorMetadata: make(map[string]map[string]string),
+		capabilities:  capabilities,
 		snapshot: ContainerSnapshot{
 			Message:      "Connecting to containerd",
 			Containers:   []Container{},
@@ -158,10 +161,16 @@ func (i *containerInventory) run(ctx context.Context) {
 			backoff = min(backoff*2, i.options.maxBackoff)
 			continue
 		}
+		i.mu.Lock()
+		i.runtimeClient = runtimeClient
+		i.mu.Unlock()
 		i.probeCapabilities(ctx, runtimeClient)
 
 		backoff = i.options.connectBackoff
 		err = i.runConnected(ctx, runtimeClient)
+		i.mu.Lock()
+		i.runtimeClient = nil
+		i.mu.Unlock()
 		closeErr := runtimeClient.Close()
 		if ctx.Err() != nil {
 			i.markUnavailable(errors.New("container inventory stopped"))
@@ -312,6 +321,39 @@ func (i *containerInventory) recordEvent(event ContainerLifecycleEvent) bool {
 }
 
 func (i *containerInventory) recordEventLocked(event ContainerLifecycleEvent) bool {
+	if event.ContainerID != "" {
+		if i.actorMetadata == nil {
+			i.actorMetadata = make(map[string]map[string]string)
+		}
+		old := i.actorMetadata[event.ContainerID]
+		if old == nil {
+			for _, container := range i.snapshot.Containers {
+				if container.ID == event.ContainerID {
+					old = containerActorAttributes(container)
+					break
+				}
+			}
+		}
+		if event.Attributes == nil {
+			event.Attributes = cloneStringMap(old)
+		} else {
+			event.Attributes = cloneStringMap(event.Attributes)
+			if event.Type == "container-update" && old != nil &&
+				old["name"] != "" && event.Attributes["name"] != "" &&
+				old["name"] != event.Attributes["name"] {
+				event.Type = "container-rename"
+				event.Attributes["oldName"] = old["name"]
+			}
+		}
+		if event.Attributes == nil {
+			event.Attributes = map[string]string{}
+		}
+		if event.Type == "container-delete" {
+			delete(i.actorMetadata, event.ContainerID)
+		} else {
+			i.actorMetadata[event.ContainerID] = cloneStringMap(event.Attributes)
+		}
+	}
 	for index := len(i.snapshot.Events) - 1; index >= 0; index-- {
 		existing := i.snapshot.Events[index]
 		if lifecycleEventsEqual(existing, event) {
@@ -320,7 +362,7 @@ func (i *containerInventory) recordEventLocked(event ContainerLifecycleEvent) bo
 	}
 	i.sequence++
 	event.Sequence = i.sequence
-	i.snapshot.Events = append(i.snapshot.Events, event)
+	i.snapshot.Events = append(i.snapshot.Events, cloneContainerEvent(event))
 	if len(i.snapshot.Events) > maxInventoryEvents {
 		i.snapshot.Events = append([]ContainerLifecycleEvent(nil), i.snapshot.Events[len(i.snapshot.Events)-maxInventoryEvents:]...)
 	}
@@ -372,9 +414,20 @@ func (i *containerInventory) publishContainers(
 		previous[container.ID] = container
 	}
 	reconciledAt := time.Now().UTC()
+	currentIDs := make(map[string]bool, len(containers))
 	for _, container := range containers {
+		currentIDs[container.ID] = true
 		if old, ok := previous[container.ID]; ok {
 			i.recordReconciledTransitionsLocked(old, container, reconciledAt)
+		}
+		if i.actorMetadata == nil {
+			i.actorMetadata = make(map[string]map[string]string)
+		}
+		i.actorMetadata[container.ID] = containerActorAttributes(container)
+	}
+	for id := range i.actorMetadata {
+		if !currentIDs[id] {
+			delete(i.actorMetadata, id)
 		}
 	}
 	for index := range containers {
@@ -468,6 +521,7 @@ func (i *containerInventory) recordReconciledTransitionsLocked(old, current Cont
 			ContainerID: current.ID,
 			Timestamp:   timestamp,
 			Reason:      reason,
+			Attributes:  containerActorAttributes(current),
 		})
 	}
 	if old.State != current.State && !i.hasStateTransitionEventLocked(old, current.State) {
@@ -486,6 +540,7 @@ func (i *containerInventory) recordReconciledTransitionsLocked(old, current Cont
 			ContainerID: current.ID,
 			Timestamp:   transitionAt,
 			Reason:      old.Health.Status + "->" + current.Health.Status,
+			Attributes:  containerActorAttributes(current),
 		})
 	}
 	if current.RestartCount > old.RestartCount {
@@ -593,6 +648,15 @@ func (i *containerInventory) snapshotValue() ContainerSnapshot {
 	return cloneContainerSnapshot(i.snapshot)
 }
 
+func (i *containerInventory) metricRuntime() containerRuntime {
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	if !i.snapshot.Available {
+		return nil
+	}
+	return i.runtimeClient
+}
+
 func (i *containerInventory) subscribe() (<-chan ContainerSnapshot, func()) {
 	channel, _, unsubscribe := i.subscribeWithSnapshot()
 	return channel, unsubscribe
@@ -692,6 +756,7 @@ func cloneContainer(container Container) Container {
 
 func cloneContainerEvent(event ContainerLifecycleEvent) ContainerLifecycleEvent {
 	cloned := event
+	cloned.Attributes = cloneStringMap(event.Attributes)
 	if event.ExitCode != nil {
 		value := *event.ExitCode
 		cloned.ExitCode = &value

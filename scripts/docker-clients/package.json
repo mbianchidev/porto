@@ -1,0 +1,20 @@
+{
+  "name": "porto-docker-client-tests",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "test": "node workflows.cjs"
+  },
+  "devDependencies": {
+    "@devcontainers/cli": "0.89.0",
+    "testcontainers": "12.2.0"
+  },
+  "overrides": {
+    "glob": "13.0.6"
+  },
+  "allowScripts": {
+    "protobufjs@7.6.6": false,
+    "ssh2@1.17.0": false,
+    "cpu-features@0.0.10": false
+  }
+}

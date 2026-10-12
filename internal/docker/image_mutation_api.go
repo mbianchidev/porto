@@ -52,7 +52,7 @@ func (a *API) loadImages(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
-		return encoder.Encode(map[string]string{"stream": string(chunk.Data)})
+		return encodeDockerProgress(w, encoder, map[string]string{"stream": string(chunk.Data)})
 	}
 	err := a.manager.StreamLoadImages(r.Context(), r.Body, dockerBool(r, "quiet"), emit)
 	if err != nil {
@@ -60,7 +60,7 @@ func (a *API) loadImages(w http.ResponseWriter, r *http.Request) {
 			writeDockerError(w, err)
 			return
 		}
-		_ = encoder.Encode(map[string]any{
+		_ = encodeDockerProgress(w, encoder, map[string]any{
 			"error":       err.Error(),
 			"errorDetail": map[string]string{"message": err.Error()},
 		})
@@ -69,7 +69,7 @@ func (a *API) loadImages(w http.ResponseWriter, r *http.Request) {
 	if !wrote {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = encoder.Encode(map[string]string{"stream": "Loaded image archive\n"})
+		_ = encodeDockerProgress(w, encoder, map[string]string{"stream": "Loaded image archive\n"})
 	}
 }
 
@@ -91,7 +91,7 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 			w.WriteHeader(http.StatusOK)
 			wrote = true
 		}
-		return encoder.Encode(map[string]string{"status": strings.TrimSpace(string(chunk.Data))})
+		return encodeDockerProgress(w, encoder, map[string]string{"status": strings.TrimSpace(string(chunk.Data))})
 	}
 	err = a.manager.StreamImportImage(
 		r.Context(),
@@ -106,7 +106,7 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 			writeDockerError(w, err)
 			return
 		}
-		_ = encoder.Encode(map[string]any{
+		_ = encodeDockerProgress(w, encoder, map[string]any{
 			"error":       err.Error(),
 			"errorDetail": map[string]string{"message": err.Error()},
 		})
@@ -115,7 +115,7 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 	if !wrote {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = encoder.Encode(map[string]string{"status": "Import complete"})
+		_ = encodeDockerProgress(w, encoder, map[string]string{"status": "Import complete"})
 	}
 }
 
@@ -142,7 +142,7 @@ func (a *API) pushImage(w http.ResponseWriter, r *http.Request) {
 		if status == "" {
 			return nil
 		}
-		return encoder.Encode(map[string]string{"status": status})
+		return encodeDockerProgress(w, encoder, map[string]string{"status": status})
 	}
 	err = a.manager.StreamPushImageWithAuth(
 		r.Context(),
@@ -156,7 +156,7 @@ func (a *API) pushImage(w http.ResponseWriter, r *http.Request) {
 			writeDockerError(w, err)
 			return
 		}
-		_ = encoder.Encode(map[string]any{
+		_ = encodeDockerProgress(w, encoder, map[string]any{
 			"error":       err.Error(),
 			"errorDetail": map[string]string{"message": err.Error()},
 		})
@@ -165,7 +165,7 @@ func (a *API) pushImage(w http.ResponseWriter, r *http.Request) {
 	if !wrote {
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
-		_ = encoder.Encode(map[string]string{"status": "Push complete"})
+		_ = encodeDockerProgress(w, encoder, map[string]string{"status": "Push complete"})
 	}
 }
 

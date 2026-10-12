@@ -53,6 +53,31 @@ They use the application version with `+ci.<run-number>` build metadata, so a
 test build is not immediately considered older than the same stable version.
 These are unsigned PR/test builds, not published releases.
 
+The development-client matrix runs real Docker SDK/CLI, Dev Containers 0.89.0,
+and Testcontainers 12.2.0 workflows against disposable local Linux containerd
+and native macOS/Windows Lima backends. Windows exercises Porto's named pipe.
+The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
+containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
+`PORTO_HOME` roots. Only their own processes and VM are removed.
+Hosted macOS runners use a small host-architecture QEMU guest under software emulation:
+their nested Virtualization.framework support is unavailable.
+The matching architecture keeps the guest agent/runtime helper aligned without
+cross-architecture x86 emulation; CPU counter assertions remain enabled.
+Windows CI
+uses the normal Porto QEMU guest and disables CGO for the daemon/test build,
+as the client suite does not require WinFsp. Linux bundles tools as the runner
+user and elevates only the isolated containerd/BuildKit workload.
+The workload verifies busy-container CPU percentages, exec, valid/corrupt image
+archives, ordinary tag/push to a disposable registry, and client-owned cleanup.
+It uses a named Dev Containers workspace volume and disables Ryuk while the
+harness owns cleanup; it does not grant an untrusted guest a host control socket.
+
+Client dependencies live under `scripts/docker-clients`, separate from the
+shipped dashboard/desktop. Their lockfile uses maintained glob 13 instead of
+archiver's deprecated glob 10. Optional protobuf/native SSH installation scripts
+are explicitly disabled; these tests use Unix sockets/named pipes, not SSH clients.
+Dependency installation and audit are required before these jobs run.
+
 The Windows installer job also checksum-verifies and installs the official
 WinFsp 2.1 driver on its disposable runner, then tests the **installed**
 `porto-files-mount.exe` against synthetic confined SFTP roots. Container,
@@ -99,6 +124,14 @@ architectures, linked guard, and interposition section, and must run before
 any future code signing/notarization. Cross-packaging macOS desktop apps on
 Linux fails explicitly; CLI archives can still be cross-built. macOS tar
 archives omit AppleDouble metadata and retain the existing release layout.
+
+macOS packages include a native Icon Composer `.icon` asset made from Porto's
+existing artwork, with glass effects disabled, alongside the unchanged `.icns`
+fallback. Electron Packager compiles the modern icon into `Assets.car`; native
+smoke tests check both icon resources and their `Info.plist` entries. Building
+macOS packages requires macOS 26 or newer and Xcode 26 or newer with `actool`
+available. Source development still uses the `.icns` icon and only requires
+Xcode Command Line Tools.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 

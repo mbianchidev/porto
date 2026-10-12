@@ -30,7 +30,7 @@ type LogCapabilities struct {
 }
 
 func (r *grpcContainerRuntime) directLogURI(ctx context.Context, logPath string) (*url.URL, error) {
-	if r.helperPath == "" {
+	if r.helperPath == "" && r.lima == "" {
 		return &url.URL{Scheme: "file", Path: filepath.ToSlash(logPath)}, nil
 	}
 	helper := r.helperPath
@@ -43,8 +43,12 @@ func (r *grpcContainerRuntime) directLogURI(ctx context.Context, logPath string)
 		if !path.IsAbs(helper) {
 			return nil, errors.New("runtime helper reported an invalid logger path")
 		}
+		return &url.URL{
+			Scheme: "binary", Path: helper,
+			RawQuery: url.Values{"-porto-log": {logPath}}.Encode(),
+		}, nil
 	}
-	return cio.LogURIGenerator("binary", helper, map[string]string{"porto-log": logPath})
+	return cio.LogURIGenerator("binary", helper, map[string]string{"-porto-log": logPath})
 }
 
 func logURIForLabels(labels map[string]string) string {
