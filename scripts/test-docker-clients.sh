@@ -122,7 +122,7 @@ else
   go build -o "$porto" ./cmd/porto
   created_lima=true
   if [ "$goos" = darwin ]; then
-    limactl start --tty=false --name=porto-engine --vm-type=qemu \
+    limactl start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu \
       --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user template:ubuntu-24.04
     export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
   else

@@ -68,7 +68,7 @@ diff --git a/pkg/osutil/osutil_windows.go b/pkg/osutil/osutil_windows.go
 +		}
 +		// The target may exit between the initial check and taskkill.
 +		var exitErr *exec.ExitError
-+		if errors.As(err, &exitErr) && exitErr.ExitCode() == 128 {
++		if errors.As(err, &exitErr) && (exitErr.ExitCode() == 128 || exitErr.ExitCode() == 255) {
 +			result, waitErr := windows.WaitForSingleObject(handle, 5000)
 +			if waitErr != nil {
 +				return fmt.Errorf("inspect process %d after failed forced stop: %w", pid, errors.Join(err, waitErr))

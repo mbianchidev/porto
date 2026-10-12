@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os/exec"
 	"sort"
@@ -17,7 +18,10 @@ import (
 	"github.com/mbianchidev/porto/internal/process"
 )
 
-const kubernetesForwardStopTimeout = 5 * time.Second
+const (
+	kubernetesForwardStartTimeout = 30 * time.Second
+	kubernetesForwardStopTimeout  = 5 * time.Second
+)
 
 type kubeForward struct {
 	cmd          *exec.Cmd
@@ -152,18 +156,49 @@ func (s *Server) startKubernetesForward(key string, spec kubernetesForwardSpec) 
 			log.Printf("Kubernetes port forward %s stopped: %v", key, waitErr)
 		}
 	}()
-	for range 40 {
-		if !ports.IsFree(spec.localPort) {
-			return forward, nil
+	startupContext, cancelStartup := context.WithTimeout(runContext, kubernetesForwardStartTimeout)
+	defer cancelStartup()
+	if err := waitForKubernetesForwardReady(startupContext, forward); err != nil {
+		return nil, errors.Join(
+			fmt.Errorf("Kubernetes port forward %s did not listen on port %d: %w", key, spec.localPort, err),
+			stopKubernetesForwardList([]*kubeForward{forward}),
+		)
+	}
+	return forward, nil
+}
+
+func waitForKubernetesForwardReady(ctx context.Context, forward *kubeForward) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	dialer := net.Dialer{Timeout: 250 * time.Millisecond}
+	address := fmt.Sprintf("127.0.0.1:%d", forward.port)
+	for {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if kubernetesForwardDone(forward) {
+			return errors.New("exited before listening")
+		}
+		connection, err := dialer.DialContext(ctx, "tcp", address)
+		if err == nil {
+			if err := connection.Close(); err != nil {
+				return fmt.Errorf("close port forward readiness connection: %w", err)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if kubernetesForwardDone(forward) {
+				return errors.New("exited before listening")
+			}
+			return nil
 		}
 		select {
+		case <-ctx.Done():
+			return ctx.Err()
 		case <-forward.done:
-			return nil, fmt.Errorf("Kubernetes service forward %s exited before listening", key)
-		case <-time.After(50 * time.Millisecond):
+		case <-ticker.C:
 		}
 	}
-	_ = process.Terminate(cmd)
-	return nil, fmt.Errorf("Kubernetes port forward %s did not listen on port %d", key, spec.localPort)
 }
 
 func (s *Server) captureKubernetesForward(key, stream string, reader interface {

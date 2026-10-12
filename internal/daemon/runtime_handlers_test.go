@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
@@ -307,26 +308,17 @@ func TestCreateKubernetesPortForwardRejectsUnsupportedResource(t *testing.T) {
 }
 
 func TestCreateAndStopKubernetesPortForward(t *testing.T) {
-	if runtime.GOOS == "windows" {
-		t.Skip("kubectl helper wrapper is Unix-specific")
+	for _, delay := range []time.Duration{0, 2500 * time.Millisecond} {
+		t.Run(delay.String(), func(t *testing.T) {
+			testCreateAndStopKubernetesPortForward(t, delay)
+		})
 	}
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("reserve local port: %v", err)
-	}
-	localPort := listener.Addr().(*net.TCPAddr).Port
-	if err := listener.Close(); err != nil {
-		t.Fatalf("release local port: %v", err)
-	}
+}
 
-	binDir := t.TempDir()
-	kubectlPath := filepath.Join(binDir, "kubectl")
-	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run=^TestKubernetesPortForwardHelperProcess$ -- \"$@\"\n", os.Args[0])
-	if err := os.WriteFile(kubectlPath, []byte(script), 0o700); err != nil {
-		t.Fatalf("write kubectl helper: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("PORTO_KUBERNETES_FORWARD_HELPER", "1")
+func testCreateAndStopKubernetesPortForward(t *testing.T, delay time.Duration) {
+	t.Helper()
+	configureKubernetesPortForwardHelper(t, delay)
+	localPort := freeKubernetesForwardTestPort(t)
 
 	runContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -337,7 +329,9 @@ func TestCreateAndStopKubernetesPortForward(t *testing.T) {
 	}
 	t.Cleanup(func() {
 		cancel()
-		_ = server.stopKubernetesForwards("porto-dev")
+		if err := server.stopKubernetesForwards("porto-dev"); err != nil {
+			t.Errorf("clean up port forwards: %v", err)
+		}
 	})
 
 	response := httptest.NewRecorder()
@@ -385,10 +379,163 @@ func TestCreateAndStopKubernetesPortForward(t *testing.T) {
 	}
 }
 
+func TestWaitForKubernetesForwardReady(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer listener.Close()
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	canceledContext, cancel := context.WithCancel(context.Background())
+	cancel()
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		exited  bool
+		wantErr string
+	}{
+		{name: "listening", ctx: context.Background()},
+		{name: "exited", ctx: context.Background(), exited: true, wantErr: "exited before listening"},
+		{name: "canceled", ctx: canceledContext, wantErr: context.Canceled.Error()},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(test.ctx, time.Second)
+			defer cancel()
+			forward := &kubeForward{port: localPort, done: make(chan struct{})}
+			if test.exited {
+				close(forward.done)
+			}
+			err := waitForKubernetesForwardReady(ctx, forward)
+			if test.wantErr == "" {
+				if err != nil {
+					t.Fatalf("wait for listener: %v", err)
+				}
+			} else if err == nil || err.Error() != test.wantErr {
+				t.Fatalf("startup error = %v, want %q", err, test.wantErr)
+			}
+		})
+	}
+	if err := listener.Close(); err != nil {
+		t.Fatalf("close listener: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	forward := &kubeForward{port: localPort, done: make(chan struct{})}
+	if err := waitForKubernetesForwardReady(ctx, forward); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("startup error = %v, want deadline exceeded", err)
+	}
+}
+
+func TestKubernetesPortForwardStartupCancellationReapsProcess(t *testing.T) {
+	configureKubernetesPortForwardHelper(t, time.Hour)
+	localPort := freeKubernetesForwardTestPort(t)
+	runContext, cancel := context.WithCancel(context.Background())
+	server := &Server{
+		kubeForwards:   map[string]*kubeForward{},
+		kubernetes:     kubernetes.New(nil),
+		runtimeContext: runContext,
+	}
+	t.Cleanup(func() {
+		cancel()
+		if err := server.stopKubernetesForwards("porto-dev"); err != nil {
+			t.Errorf("clean up port forwards: %v", err)
+		}
+	})
+	key := "porto-dev/manual/startup"
+	result := make(chan error, 1)
+	go func() {
+		_, err := server.startKubernetesForward(key, kubernetesForwardSpec{
+			contextName:  "porto-dev",
+			namespace:    "default",
+			resourceType: "deployment",
+			resourceName: "api",
+			localPort:    localPort,
+			remotePort:   8080,
+		})
+		result <- err
+	}()
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	var forward *kubeForward
+	for forward == nil {
+		server.mu.Lock()
+		forward = server.kubeForwards[key]
+		server.mu.Unlock()
+		if forward != nil {
+			break
+		}
+		select {
+		case err := <-result:
+			t.Fatalf("startup returned before cancellation: %v", err)
+		case <-deadline.C:
+			t.Fatal("port forward process did not start")
+		case <-ticker.C:
+		}
+	}
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startup error = %v, want context canceled", err)
+		}
+	case <-deadline.C:
+		t.Fatal("startup did not return after cancellation")
+	}
+	if !kubernetesForwardDone(forward) {
+		t.Fatal("startup returned before the process was reaped")
+	}
+	server.mu.Lock()
+	remaining := server.kubeForwards[key]
+	server.mu.Unlock()
+	if remaining != nil {
+		t.Fatal("canceled port forward remained registered")
+	}
+	if !ports.IsFree(localPort) {
+		t.Fatalf("local port %d remained occupied", localPort)
+	}
+}
+
+func freeKubernetesForwardTestPort(t *testing.T) int {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve local port: %v", err)
+	}
+	localPort := listener.Addr().(*net.TCPAddr).Port
+	if err := listener.Close(); err != nil {
+		t.Fatalf("release local port: %v", err)
+	}
+	return localPort
+}
+
+func configureKubernetesPortForwardHelper(t *testing.T, delay time.Duration) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("kubectl helper wrapper is Unix-specific")
+	}
+	binDir := t.TempDir()
+	kubectlPath := filepath.Join(binDir, "kubectl")
+	script := fmt.Sprintf("#!/bin/sh\nexec %q -test.run=^TestKubernetesPortForwardHelperProcess$ -- \"$@\"\n", os.Args[0])
+	if err := os.WriteFile(kubectlPath, []byte(script), 0o700); err != nil {
+		t.Fatalf("write kubectl helper: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PORTO_KUBERNETES_FORWARD_HELPER", "1")
+	t.Setenv("PORTO_KUBERNETES_FORWARD_HELPER_DELAY", delay.String())
+}
+
 func TestKubernetesPortForwardHelperProcess(t *testing.T) {
 	if os.Getenv("PORTO_KUBERNETES_FORWARD_HELPER") != "1" {
 		return
 	}
+	delay, err := time.ParseDuration(os.Getenv("PORTO_KUBERNETES_FORWARD_HELPER_DELAY"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "invalid synthetic kubectl startup delay: %v\n", err)
+		os.Exit(20)
+	}
+	time.Sleep(delay)
 	mapping := os.Args[len(os.Args)-1]
 	localPort, _, ok := strings.Cut(mapping, ":")
 	if !ok {
