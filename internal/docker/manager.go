@@ -1701,7 +1701,7 @@ func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample Co
 		return ContainerMetricSample{}, err
 	}
 	if inventory := m.activeContainerInventory(); inventory != nil {
-		if runtimeClient := inventory.metricRuntime(); runtimeClient != nil {
+		if runtimeClient := inventory.activeRuntime(); runtimeClient != nil {
 			if provider, ok := runtimeClient.(interface {
 				ContainerMetric(context.Context, string) (ContainerMetricSample, error)
 			}); ok {

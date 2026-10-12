@@ -648,7 +648,7 @@ func (i *containerInventory) snapshotValue() ContainerSnapshot {
 	return cloneContainerSnapshot(i.snapshot)
 }
 
-func (i *containerInventory) metricRuntime() containerRuntime {
+func (i *containerInventory) activeRuntime() containerRuntime {
 	i.mu.RLock()
 	defer i.mu.RUnlock()
 	if !i.snapshot.Available {
