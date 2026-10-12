@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -30,6 +31,11 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	t.Cleanup(cancel)
 	manager := New(nil)
 	backend := os.Getenv("PORTO_DOCKER_CLIENT_BACKEND")
+	softwareEmulation := os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1"
+	if softwareEmulation && (runtime.GOOS != "darwin" || os.Getenv("GITHUB_ACTIONS") != "true" ||
+		backend != "lima" || os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") != "1") {
+		t.Fatal("software-emulated CPU validation is restricted to the isolated macOS CI fixture")
+	}
 	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
 		limaHome := filepath.Clean(os.Getenv("LIMA_HOME"))
 		runnerTemporary := filepath.Clean(os.Getenv("RUNNER_TEMP"))
@@ -41,6 +47,10 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		}
 		if _, err := os.Stat(manager.engineStatePath()); !os.IsNotExist(err) {
 			t.Fatal("refusing to replace an existing engine ownership record")
+		}
+		helperPath, err := manager.runtimeHelperPath()
+		if err != nil || helperPath == "" {
+			t.Fatalf("fresh Lima fixture requires the bundled Linux runtime helper: path=%q, error=%v", helperPath, err)
 		}
 		owner := newInventoryInstanceID()
 		if err := manager.writeLimaOwnership(ctx, owner); err != nil {
@@ -194,9 +204,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 			hostDelta := sample.CPUStats.SystemUsage - baseline.SystemUsage
 			containerDelta := sample.CPUStats.CPUUsage.TotalUsage - baseline.CPUUsage.TotalUsage
 			percentage := float64(containerDelta) / float64(hostDelta) * float64(sample.CPUStats.OnlineCPUs) * 100
-			// Average five fixed intervals to smooth emulated tick accounting,
-			// retaining the same 5% quantization allowance and raw counters.
-			if !(percentage > 1 && percentage <= float64(sample.CPUStats.OnlineCPUs)*105) {
+			if !validDevelopmentClientCPUPercentage(percentage, sample.CPUStats.OnlineCPUs, softwareEmulation) {
 				t.Fatalf("busy-workload CPU percentage is invalid: %f, stats=%+v, baseline=%+v", percentage, sample.CPUStats, baseline)
 			}
 			t.Logf("real backend SDK CPU over five intervals: %.2f%% with %d online CPUs", percentage, sample.CPUStats.OnlineCPUs)
@@ -206,7 +214,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 	}
 	cpuOutput := strings.TrimSpace(string(runDocker("stats", "--no-stream", "--format", "{{.CPUPerc}}", busy.ID)))
 	cpuPercentage, err := strconv.ParseFloat(strings.TrimSuffix(cpuOutput, "%"), 64)
-	if err != nil || cpuPercentage <= 1 {
+	if err != nil || !(cpuPercentage > 1) || math.IsInf(cpuPercentage, 0) {
 		t.Fatalf("ordinary Docker CLI CPU percentage = %q, error=%v", cpuOutput, err)
 	}
 	execution, err := client.ExecCreate(ctx, busy.ID, dockerclient.ExecCreateOptions{
@@ -359,6 +367,11 @@ func readDevelopmentClientStats(
 		previous = sample.CPUStats
 	}
 	return sample, baseline
+}
+
+func validDevelopmentClientCPUPercentage(percentage float64, onlineCPUs uint32, softwareEmulation bool) bool {
+	return onlineCPUs > 0 && percentage > 1 && !math.IsInf(percentage, 0) &&
+		(softwareEmulation || percentage <= float64(onlineCPUs)*105)
 }
 
 func syntheticClientBuildArchive(t *testing.T) []byte {

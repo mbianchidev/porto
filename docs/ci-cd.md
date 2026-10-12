@@ -69,12 +69,24 @@ aligned without cross-architecture x86 emulation. Windows also avoids unused
 SSHFS home-folder mounts and their startup probes. The test harness records
 ownership only inside the isolated runner temporary directory, including native
 Windows paths. Windows disables CGO for the daemon/test build, as the client
-suite does not require WinFsp. Linux bundles tools as the runner user and
-elevates only the isolated containerd/BuildKit workload.
-CPU counter assertions remain enabled and average a fixed five-interval window
-to smooth emulated Linux tick accounting, without clamping raw counters or
-increasing the existing 5% quantization allowance. Every interval still checks
-available, monotonic backend counters; a two-minute deadline bounds each window.
+suite does not require WinFsp. The compiled client-test executable sits beside
+the bundled `runtime` directory, matching desktop helper discovery instead of
+asking Windows executable lookup to find a Linux ELF binary on `PATH`.
+Fresh Lima fixtures fail immediately if that helper is unavailable.
+Linux bundles tools as the runner user and elevates only the isolated
+containerd/BuildKit workload.
+CPU counter assertions remain enabled and average a fixed five-interval window.
+Every interval checks available, monotonic backend counters; each window must
+report finite, positive busy-workload activity and has a two-minute deadline.
+Linux, Windows, and hardware-accelerated macOS retain the existing CPU ceiling
+with its 5% quantization allowance. When macOS reports `kern.hv_support=0`, CI
+explicitly warns and gates only that physical ceiling for its software-emulated
+fixture: cgroup nanoseconds can outpace guest `/proc/stat` ticks even across a
+longer window. Linux documents these
+[tick-based CPU-accounting limitations](https://docs.kernel.org/admin-guide/cpu-load.html).
+Raw counters are never clamped or rescaled, and synthetic SDK/unit-conversion
+tests still enforce exact percentages. A real accelerated Mac is required to
+validate the physical ceiling on that platform.
 The workload verifies busy-container CPU percentages, exec, valid/corrupt image
 archives, ordinary tag/push to a disposable registry, and client-owned cleanup.
 It uses a named Dev Containers workspace volume and disables Ryuk while the

@@ -19,6 +19,7 @@ containerd_pid=""
 buildkit_pid=""
 created_lima=false
 porto="$temporary/porto"
+client_tests="$temporary/porto-client-tests"
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
@@ -48,7 +49,7 @@ trap 'exit 143' HUP TERM
 case "$(uname -s)" in
   Linux) goos=linux ;;
   Darwin) goos=darwin ;;
-  MINGW*|MSYS*) goos=windows; porto="$temporary/porto.exe" ;;
+  MINGW*|MSYS*) goos=windows; porto="$temporary/porto.exe"; client_tests="$temporary/porto-client-tests.exe" ;;
   *) echo "Unsupported CI host." >&2; exit 2 ;;
 esac
 case "$(uname -m)" in
@@ -66,6 +67,7 @@ export PATH="$runtime/bin:$runtime/lima/bin:$runtime/qemu:$PATH"
 export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
 export PORTO_DOCKER_CLIENT_BACKEND="$backend"
+export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
 
 if [ "$backend" = local ]; then
   if [ "$goos/$goarch" != linux/amd64 ]; then
@@ -120,10 +122,24 @@ else
     export CGO_ENABLED=0
   fi
   go build -o "$porto" ./cmd/porto
+  if [ "$goos" = darwin ]; then
+    case "$(sysctl -n kern.hv_support)" in
+      0)
+        export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
+        echo "::warning::Software-emulated macOS CPU ticks cannot enforce a physical CPU ceiling; raw counter, finite activity, and native-backend ceiling checks remain enabled."
+        ;;
+      1) ;;
+      *) echo "Cannot determine macOS hardware virtualization support." >&2; exit 1 ;;
+    esac
+  fi
   created_lima=true
   limactl start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu \
     --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user template:ubuntu-24.04
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 
-go test ./internal/docker -run '^TestDockerDevelopmentClientsIntegration$' -count=1 -timeout=25m -v
+go test -c -o "$client_tests" ./internal/docker
+(
+  cd "$root/internal/docker"
+  "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v
+)

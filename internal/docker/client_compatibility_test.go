@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -156,6 +157,31 @@ func TestDockerSDKStatsCalculatesBackendCPUUsage(t *testing.T) {
 		} else if samples.Load()-before != 1 || stats.PreCPUStats.SystemUsage != 0 {
 			t.Fatal("one-shot sampled twice or supplied invented previous counters")
 		}
+	}
+}
+
+func TestDevelopmentClientCPUValidationDistinguishesSoftwareEmulation(t *testing.T) {
+	for _, test := range []struct {
+		name              string
+		percentage        float64
+		cpus              uint32
+		softwareEmulation bool
+		valid             bool
+	}{
+		{"native-limit", 210, 2, false, true},
+		{"native-over-limit", 210.01, 2, false, false},
+		{"emulated-active", 250, 2, true, true},
+		{"emulated-missing-cpus", 250, 0, true, false},
+		{"emulated-idle", 0, 2, true, false},
+		{"emulated-insufficient-activity", 1, 2, true, false},
+		{"emulated-nan", math.NaN(), 2, true, false},
+		{"emulated-infinite", math.Inf(1), 2, true, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if valid := validDevelopmentClientCPUPercentage(test.percentage, test.cpus, test.softwareEmulation); valid != test.valid {
+				t.Fatalf("CPU percentage validation = %t, want %t", valid, test.valid)
+			}
+		})
 	}
 }
 
