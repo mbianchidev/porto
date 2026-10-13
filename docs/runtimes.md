@@ -143,7 +143,7 @@ clone/import/export/restore/empty/remove workflows and persisted local backups.
 Volume previews show current container/Compose mount ownership; existing
 containers and stopped managed-cluster nodes cannot be bypassed with force.
 Restore pins the verified archive checksum and publishes from isolated staging.
-**Storage and cleanup** reports unique content, configured Linux snapshots,
+**Storage** reports unique content, configured Linux snapshots,
 volume allocation, BuildKit records and all-namespace metadata separately. Object
 or category previews freeze exact protected cleanup boundaries; **Migrate runtime
 data** dry-runs source-preserving local

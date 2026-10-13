@@ -49,7 +49,7 @@ not supplied by the backend.
 
 ## Storage and scoped cleanup
 
-**Containers → Storage and cleanup** shows references, Compose ownership,
+**Containers → Storage** shows references, Compose ownership,
 packed image sizes, shared layers, writable snapshots, volume allocation, and
 BuildKit cache records, their descriptions, usage counts and last-use times.
 Search resource names, owning containers or Compose applications and filter by

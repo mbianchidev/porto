@@ -482,7 +482,7 @@ must provide the required native workers or binfmt/QEMU emulation.
 
 ## Storage accounting and volume lifecycle
 
-**Containers → Storage and cleanup** measures actual containerd content and
+**Containers → Storage** measures actual containerd content and
 snapshot usage in the configured Linux snapshotter(s), local volume allocation,
 non-shared BuildKit records and shared runtime metadata. Packed image sizes and
 shared cache/metadata scopes are not summed into a misleading total.
