@@ -703,11 +703,12 @@ Commands:
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker containers|images|builds|networks|volumes
-  porto docker storage usage|prune --category <type> [--confirm]
-  porto docker volume export|clone|import|restore|empty <args> [--confirm]
+  porto docker storage usage|prune --category <type>|--objects kind:name,... [--confirm]
+  porto docker volume export|clone|import|restore|empty|remove <args> [--confirm]
   porto docker backups schedule <volume> [--hours 24] [--retain 7] [--enabled]
-  porto docker backups run <id>
-  porto docker operations [id]|cancel <id>
+  porto docker backups update|pause|resume|run <id>
+  porto docker backups remove <id> --confirm
+  porto docker operations [id]|watch <id>|cancel <id>
   porto docker migrate --context <name> [--objects kind:name,...] [--allow-source-helper] [--confirm]
   porto docker files <container|image|volume|vm> <name> [--writable] --confirm
   porto docker context-install|activate|deactivate

@@ -36,11 +36,11 @@ func (m *Manager) FileDescriptor(ctx context.Context, kind, name string) (descri
 	if m.fileDescriptorReader != nil {
 		return m.fileDescriptorReader(ctx, kind, name)
 	}
-	client, err := m.runtimeConnector(ctx)
+	client, closeRuntime, err := m.storageRuntime(ctx)
 	if err != nil {
 		return descriptor, err
 	}
-	defer func() { err = errors.Join(err, client.Close()) }()
+	defer func() { err = errors.Join(err, closeRuntime()) }()
 	backend, ok := client.(*grpcContainerRuntime)
 	if !ok || backend.client == nil || backend.address == "" {
 		return descriptor, fmt.Errorf("%w: backend-local snapshot files require the packaged Linux runtime helper", datafiles.ErrUnsupported)
@@ -134,19 +134,31 @@ func (m *Manager) FileDescriptor(ctx context.Context, kind, name string) (descri
 			Name       string
 			Driver     string
 			Mountpoint string
-			CreatedAt  string
 			Options    map[string]string
 		}
 		if err := json.Unmarshal(document, &volume); err != nil {
 			return descriptor, err
 		}
-		if volume.Name != name || volume.Driver != "local" || !path.IsAbs(volume.Mountpoint) || volume.CreatedAt == "" || len(volume.Options) != 0 {
-			return descriptor, fmt.Errorf("%w: file access requires an identity-bearing local volume without external driver options", datafiles.ErrUnsupported)
+		if volume.Name != name || volume.Driver != "" && volume.Driver != "local" || !path.IsAbs(volume.Mountpoint) || len(volume.Options) != 0 {
+			return descriptor, fmt.Errorf("%w: file access requires a native local volume without external driver options", datafiles.ErrUnsupported)
 		}
 		descriptor.RootPath = volume.Mountpoint
-		descriptor.Resource.Name, descriptor.Resource.CreatedAt = volume.Name, volume.CreatedAt
-		hash := sha256.Sum256([]byte(volume.Name + "\x00" + volume.CreatedAt + "\x00" + volume.Mountpoint))
-		descriptor.Resource.ID = hex.EncodeToString(hash[:])
+		descriptor.Resource.Name, descriptor.Resource.ID = volume.Name, volume.Name
+		var output bytes.Buffer
+		if err := m.RunFileRequest(ctx, descriptor, datafiles.Request{
+			Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
+		}, nil, &output); err != nil {
+			return descriptor, err
+		}
+		var identified datafiles.Resource
+		if err := json.Unmarshal(output.Bytes(), &identified); err != nil {
+			return descriptor, err
+		}
+		if identified.Kind != "volume" || identified.Name != name || identified.Backend != descriptor.Resource.Backend ||
+			identified.ID == "" || identified.CreatedAt == "" || identified.ReadOnly {
+			return descriptor, fmt.Errorf("%w: the runtime helper returned an invalid volume identity", datafiles.ErrConflict)
+		}
+		descriptor.Resource, descriptor.VolumeIdentity = identified, identified.ID
 	}
 	return descriptor, nil
 }
@@ -171,6 +183,11 @@ func (m *Manager) RunFileRequest(ctx context.Context, descriptor runtimefiles.De
 		return err
 	}
 	defer release()
+	if descriptor.Resource.Kind == "volume" && (request.Action == "restore" || request.Action == "empty") {
+		if err := m.validateVolumeMutation(ctx, descriptor, false); err != nil {
+			return err
+		}
+	}
 	header, err := json.Marshal(runtimefiles.Envelope{Descriptor: descriptor, Request: request})
 	if err != nil {
 		return err

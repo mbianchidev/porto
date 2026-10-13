@@ -31,6 +31,22 @@ Synthetic container fixtures cover bounded stdout/stderr streams, cancellation,
 copy/filter controls, running/stopped/read-only files, confirmed mutations and
 downloads, recent resource counters, and sensitive metadata. These browser
 tests do not connect to a user's daemon or require a workload shell.
+Storage fixtures also cover exact category/object confirmation, referenced
+volume protection, visible mount ownership, backup-policy edits, cancellation
+and importing before a volume exists. Linux unit tests verify authoritative
+metadata allocation and stable native volume identity across data replacement.
+
+For an optional synthetic round trip against an **already running, owned**
+Lima engine, cross-build the current Linux helper and set
+`PORTO_STORAGE_INTEGRATION=1` / `PORTO_STORAGE_TEST_HELPER=<absolute-helper-path>`
+before running `go test ./internal/docker -run
+'^TestStorageVolumeLifecycleIntegration$' -count=1`. Match the helper architecture
+to the guest. The fixture uploads a private temporary helper, creates uniquely
+named synthetic volumes and cleans only identity-proven fixture resources; it
+never starts/stops the engine or replaces its installed helper. Its stdio tunnel
+uses a fixture-owned channel without changing the application's SSH master.
+`PORTO_STORAGE_RUNTIME_TEST=<absolute-cross-built-runtimefiles-test-path>` also
+runs the Linux-specific metadata/identity tests in the guest.
 
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches. A downloader override makes `app-builder-lib` use the same fetch-based

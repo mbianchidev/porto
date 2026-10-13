@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -21,6 +22,7 @@ import (
 
 func (s *Server) storageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/storage", s.requireRuntime("docker", s.dockerStorage))
+	mux.HandleFunc("GET /api/docker/volumes/{name}/storage", s.requireRuntime("docker", s.dockerVolumeStorage))
 	mux.HandleFunc("POST /api/docker/storage/preview", s.requireRuntime("docker", s.dataPreview))
 	mux.HandleFunc("GET /api/data/operations", s.dataOperations)
 	mux.HandleFunc("GET /api/data/operations/{id}", s.dataOperation)
@@ -29,7 +31,7 @@ func (s *Server) storageRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/data/operations/{id}/archive", s.dataOperationArchive)
 	mux.HandleFunc("PUT /api/data/archives", s.requireRuntime("docker", s.uploadVolumeArchive))
 	mux.HandleFunc("GET /api/docker/backups", s.backupSchedules)
-	mux.HandleFunc("POST /api/docker/backups", s.requireRuntime("docker", s.saveBackupSchedule))
+	mux.HandleFunc("POST /api/docker/backups", s.saveBackupSchedule)
 	mux.HandleFunc("DELETE /api/docker/backups/{id}", s.deleteBackupSchedule)
 	mux.HandleFunc("POST /api/docker/backups/{id}/run", s.requireRuntime("docker", s.runBackupSchedule))
 	mux.HandleFunc("GET /api/docker/migration/contexts", s.requireRuntime("docker", s.migrationContexts))
@@ -53,6 +55,11 @@ func (s *Server) dockerStorage(w http.ResponseWriter, r *http.Request) {
 	writeRuntimeResult(w, value, err)
 }
 
+func (s *Server) dockerVolumeStorage(w http.ResponseWriter, r *http.Request) {
+	value, err := s.docker.VolumeStorage(r.Context(), r.PathValue("name"))
+	writeRuntimeResult(w, value, err)
+}
+
 func (s *Server) dataPreview(w http.ResponseWriter, r *http.Request) {
 	var request dataops.Request
 	if !decodeRuntimeJSON(w, r, &request) {
@@ -65,7 +72,7 @@ func (s *Server) dataPreview(w http.ResponseWriter, r *http.Request) {
 	case "prune":
 		value, err := s.docker.PreviewPrune(r.Context(), request)
 		writeRuntimeResult(w, value, err)
-	case "volume-export", "volume-clone", "volume-import", "volume-restore", "volume-empty":
+	case "volume-export", "volume-clone", "volume-import", "volume-restore", "volume-empty", "volume-remove":
 		value, err := s.docker.PreviewVolume(r.Context(), request)
 		writeRuntimeResult(w, value, err)
 	default:
@@ -108,6 +115,11 @@ func (s *Server) dataOperation(w http.ResponseWriter, r *http.Request) {
 func (s *Server) createDataOperation(w http.ResponseWriter, r *http.Request) {
 	var request dataops.Request
 	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	if request.ScheduleID != 0 || request.Retention != 0 || request.Directory != "" ||
+		request.Trigger != "" && request.Trigger != "manual" {
+		writeRuntimeError(w, fmt.Errorf("%w: schedule, retention and backup directory fields are reserved for local backup jobs", datafiles.ErrInvalid))
 		return
 	}
 	if !request.Confirm || request.Preview == "" {
@@ -183,7 +195,9 @@ func (s *Server) launchDataOperationLocked(run dataops.Operation) {
 			}
 		}
 		if operationErr == nil && run.Request.ScheduleID != 0 && result.Archive != nil {
-			if err := s.applyBackupRetention(ctx, run, *result.Archive); err != nil {
+			if err := s.store.RecordDataArchive(ctx, run.ID, *result.Archive); err != nil {
+				status, message = "failed", "Backup verified, but its recovery record could not be saved; retention was not run: "+err.Error()
+			} else if err := s.applyBackupRetention(ctx, run, *result.Archive); err != nil {
 				status, message = "failed", "Backup verified, but retention failed: "+err.Error()
 			}
 		}
@@ -247,13 +261,22 @@ func (s *Server) executeDataOperation(ctx context.Context, run dataops.Operation
 			filepath.Join(directory, fmt.Sprintf("clone-%d.tar", run.ID)), progress)
 	case "volume-import":
 		return s.docker.ImportVolume(ctx, request.Destination, request.Archive, preview.Archive.SHA256, progress)
-	case "volume-restore", "volume-empty":
+	case "volume-restore", "volume-empty", "volume-remove":
 		ctx, release, err := s.docker.BeginDataTransaction(ctx)
 		if err != nil {
 			return result, err
 		}
 		defer release()
-		if request.Action == "volume-restore" {
+		if request.Action == "volume-remove" {
+			descriptor, descriptorErr := s.docker.FileDescriptor(ctx, "volume", preview.Resource.Name)
+			if descriptorErr != nil {
+				return result, descriptorErr
+			}
+			if descriptor.Resource.Fingerprint() != request.Identity {
+				return result, datafiles.ErrConflict
+			}
+			err = s.docker.RemoveVolume(ctx, preview.Resource.Name, false)
+		} else if request.Action == "volume-restore" {
 			err = s.docker.RestoreVolume(ctx, preview.Resource, request.Identity, request.Archive, preview.Archive.SHA256, progress)
 		} else {
 			descriptor, descriptorErr := s.docker.FileDescriptor(ctx, "volume", preview.Resource.Name)
@@ -266,7 +289,11 @@ func (s *Server) executeDataOperation(ctx context.Context, run dataops.Operation
 			}, nil, &output)
 		}
 		if err == nil {
-			result.Steps = []dataops.Step{{Kind: "volume", Source: preview.Resource.Name, Destination: preview.Resource.Name, ID: preview.Resource.ID, Status: "succeeded"}}
+			destination := preview.Resource.Name
+			if request.Action == "volume-remove" {
+				destination = ""
+			}
+			result.Steps = []dataops.Step{{Kind: "volume", Source: preview.Resource.Name, Destination: destination, ID: preview.Resource.ID, Status: "succeeded"}}
 		}
 		return result, err
 	default:
@@ -391,16 +418,48 @@ func (s *Server) saveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &schedule) {
 		return
 	}
-	descriptor, err := s.docker.FileDescriptor(r.Context(), "volume", schedule.Resource.Name)
-	if err != nil {
-		writeRuntimeError(w, err)
-		return
+	if schedule.ID > 0 && !schedule.Enabled {
+		existing, err := s.store.BackupSchedules(r.Context())
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		found := false
+		for _, current := range existing {
+			if current.ID == schedule.ID {
+				if current.Resource.Fingerprint() != schedule.Resource.Fingerprint() {
+					writeRuntimeError(w, datafiles.ErrConflict)
+					return
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			http.Error(w, "Backup schedule not found.", http.StatusNotFound)
+			return
+		}
+	} else {
+		settings, err := s.store.Settings(r.Context())
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if !settings.DockerEnabled {
+			writeRuntimeError(w, fmt.Errorf("%w: enable Docker before scheduling or resuming volume backups", portodocker.ErrUnavailable))
+			return
+		}
+		descriptor, err := s.docker.FileDescriptor(r.Context(), "volume", schedule.Resource.Name)
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if schedule.Resource.ID != "" && schedule.Resource.Fingerprint() != descriptor.Resource.Fingerprint() {
+			writeRuntimeError(w, datafiles.ErrConflict)
+			return
+		}
+		schedule.Resource = descriptor.Resource
 	}
-	if schedule.Resource.ID != "" && schedule.Resource.Fingerprint() != descriptor.Resource.Fingerprint() {
-		writeRuntimeError(w, datafiles.ErrConflict)
-		return
-	}
-	schedule.Resource = descriptor.Resource
 	if schedule.Directory == "" {
 		root, err := config.Dir()
 		if err != nil {
@@ -420,8 +479,13 @@ func (s *Server) saveBackupSchedule(w http.ResponseWriter, r *http.Request) {
 		}
 		schedule.Directory = filepath.Join(root, "backups", schedule.Directory)
 	}
-	if _, _, err := datafiles.ManagedLocation(schedule.Directory); err != nil {
+	_, relative, err := datafiles.ManagedLocation(schedule.Directory)
+	if err != nil {
 		writeRuntimeError(w, err)
+		return
+	}
+	if relative != "backups" && !strings.HasPrefix(filepath.ToSlash(relative), "backups/") {
+		writeRuntimeError(w, fmt.Errorf("%w: backup schedules must stay in Porto's backups directory", datafiles.ErrInvalid))
 		return
 	}
 	schedule, err = s.store.SaveBackupSchedule(r.Context(), schedule, time.Now().UTC())
@@ -497,6 +561,11 @@ func (s *Server) applyBackupRetention(ctx context.Context, run dataops.Operation
 	if run.Request.Retention < 1 {
 		return errors.New("invalid backup retention; no archives were deleted")
 	}
+	stored, err := s.store.DataOperation(ctx, run.ID)
+	if err != nil || stored.Result.Archive == nil || stored.Result.Archive.Path != newest.Path ||
+		stored.Result.Archive.SHA256 != newest.SHA256 || newest.Resource.Fingerprint() != run.Request.Identity {
+		return errors.Join(errors.New("replacement backup has no durable, identity-matched recovery record; no archives were deleted"), err)
+	}
 	verified, err := portodocker.InspectVolumeArchive(ctx, newest.Path)
 	if err != nil || verified.SHA256 != newest.SHA256 {
 		return errors.Join(errors.New("replacement backup failed revalidation; no recovery point was deleted"), err)
@@ -522,11 +591,20 @@ func (s *Server) applyBackupRetention(ctx context.Context, run dataops.Operation
 		if err != nil || current.SHA256 != archive.SHA256 {
 			return errors.Join(errors.New("older backup ownership or integrity changed; it was not deleted"), err)
 		}
-		root, err := os.OpenRoot(filepath.Dir(archive.Path))
+		root, file, err := datafiles.OpenManagedArchive(archive.Path)
 		if err != nil {
 			return err
 		}
-		removeErr := root.Remove(filepath.Base(archive.Path))
+		_, relative, locationErr := datafiles.ManagedLocation(archive.Path)
+		info, statErr := file.Stat()
+		entry, currentErr := root.Lstat(relative)
+		if locationErr != nil || statErr != nil || currentErr != nil || !os.SameFile(info, entry) {
+			return errors.Join(datafiles.ErrConflict, locationErr, statErr, currentErr, file.Close(), root.Close())
+		}
+		if err := file.Close(); err != nil {
+			return errors.Join(err, root.Close())
+		}
+		removeErr := root.Remove(relative)
 		if err := errors.Join(removeErr, root.Close()); err != nil {
 			return err
 		}

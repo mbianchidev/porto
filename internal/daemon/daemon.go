@@ -218,6 +218,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	dockerManager.SetStorageReporter(server.recordDockerStorageOperation)
 	dockerManager.SetMigrationVolumeLedger(st.RecordMigratedVolume, st.KnownMigratedVolume)
 	dockerManager.SetMigrationTemporaryLedger(st.ReserveMigrationTemporary, st.ClearMigrationTemporary, st.MigrationTemporaries)
+	dockerManager.SetVolumeTransferLedger(st.ReserveVolumeTemporary, st.ClearVolumeTemporary, st.VolumeTemporaries)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
 	return server
 }
@@ -317,6 +318,10 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 	if settings.DockerEnabled {
 		recovery, cancelRecovery := context.WithTimeout(ctx, 30*time.Second)
+		volumeRecoveryErr := s.docker.RecoverVolumeTransfers(recovery)
+		if volumeRecoveryErr != nil {
+			log.Printf("recover interrupted volume transfers: %v; ownership reservations remain for retry", volumeRecoveryErr)
+		}
 		helperRecoveryErr := s.docker.RecoverMigrationHelpers(recovery)
 		cancelRecovery()
 		if helperRecoveryErr != nil {

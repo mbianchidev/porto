@@ -21,6 +21,7 @@ import (
 	introspectionapi "github.com/containerd/containerd/api/services/introspection/v1"
 	namespacesapi "github.com/containerd/containerd/api/services/namespaces/v1"
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
+	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	apitypes "github.com/containerd/containerd/api/types"
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/core/content"
@@ -33,6 +34,7 @@ import (
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/connectivity"
 	"google.golang.org/grpc/health"
 	grpc_health_v1 "google.golang.org/grpc/health/grpc_health_v1"
 	"google.golang.org/grpc/metadata"
@@ -192,6 +194,7 @@ type snapshotterTestServer struct {
 	image       *imagesapi.Image
 	container   *containersapi.Container
 	layer       *apitypes.Descriptor
+	usage       map[string]*snapshotsapi.UsageResponse
 }
 
 func (s *snapshotterTestServer) check(ctx context.Context, snapshotter string) error {
@@ -217,6 +220,36 @@ func (s *snapshotterTestServer) Stat(ctx context.Context, request *snapshotsapi.
 	return &snapshotsapi.StatSnapshotResponse{Info: &snapshotsapi.Info{
 		Name: request.GetKey(), Kind: snapshotsapi.Kind_COMMITTED,
 	}}, nil
+}
+
+func (s *snapshotterTestServer) List(request *snapshotsapi.ListSnapshotsRequest, stream snapshotsapi.Snapshots_ListServer) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check(stream.Context(), request.GetSnapshotter()); err != nil {
+		return err
+	}
+	infos := make([]*snapshotsapi.Info, 0, len(s.usage))
+	for name := range s.usage {
+		kind := snapshotsapi.Kind_COMMITTED
+		if name == "synthetic-write" {
+			kind = snapshotsapi.Kind_ACTIVE
+		}
+		infos = append(infos, &snapshotsapi.Info{Name: name, Kind: kind})
+	}
+	return stream.Send(&snapshotsapi.ListSnapshotsResponse{Info: infos})
+}
+
+func (s *snapshotterTestServer) Usage(ctx context.Context, request *snapshotsapi.UsageRequest) (*snapshotsapi.UsageResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.check(ctx, request.GetSnapshotter()); err != nil {
+		return nil, err
+	}
+	value, ok := s.usage[request.GetKey()]
+	if !ok {
+		return nil, status.Error(codes.NotFound, "synthetic snapshot is absent")
+	}
+	return value, nil
 }
 
 func (s *snapshotterTestServer) Prepare(ctx context.Context, request *snapshotsapi.PrepareSnapshotRequest) (*snapshotsapi.PrepareSnapshotResponse, error) {
@@ -280,6 +313,16 @@ type snapshotterImageServer struct {
 	state *snapshotterTestServer
 }
 
+func (s *snapshotterImageServer) List(context.Context, *imagesapi.ListImagesRequest) (*imagesapi.ListImagesResponse, error) {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	response := &imagesapi.ListImagesResponse{}
+	if s.state.image != nil {
+		response.Images = []*imagesapi.Image{s.state.image}
+	}
+	return response, nil
+}
+
 func (s *snapshotterImageServer) Get(_ context.Context, request *imagesapi.GetImageRequest) (*imagesapi.GetImageResponse, error) {
 	s.state.mu.Lock()
 	defer s.state.mu.Unlock()
@@ -299,6 +342,33 @@ func (s *snapshotterImageServer) Create(_ context.Context, request *imagesapi.Cr
 type snapshotterContainerServer struct {
 	containersapi.UnimplementedContainersServer
 	state *snapshotterTestServer
+}
+
+func (s *snapshotterContainerServer) List(context.Context, *containersapi.ListContainersRequest) (*containersapi.ListContainersResponse, error) {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	response := &containersapi.ListContainersResponse{}
+	if s.state.container != nil {
+		response.Containers = []*containersapi.Container{s.state.container}
+	}
+	return response, nil
+}
+
+func (s *snapshotterContainerServer) Get(_ context.Context, request *containersapi.GetContainerRequest) (*containersapi.GetContainerResponse, error) {
+	s.state.mu.Lock()
+	defer s.state.mu.Unlock()
+	if s.state.container == nil || request.ID != s.state.container.ID {
+		return nil, status.Error(codes.NotFound, "synthetic container is absent")
+	}
+	return &containersapi.GetContainerResponse{Container: s.state.container}, nil
+}
+
+type snapshotterTaskServer struct {
+	tasksapi.UnimplementedTasksServer
+}
+
+func (*snapshotterTaskServer) List(context.Context, *tasksapi.ListTasksRequest) (*tasksapi.ListTasksResponse, error) {
+	return &tasksapi.ListTasksResponse{}, nil
 }
 
 func (s *snapshotterContainerServer) Create(_ context.Context, request *containersapi.CreateContainerRequest) (*containersapi.CreateContainerResponse, error) {
@@ -367,6 +437,7 @@ func newSnapshotterTestRuntime(
 	snapshotsapi.RegisterSnapshotsServer(server, service)
 	imagesapi.RegisterImagesServer(server, &snapshotterImageServer{state: service})
 	containersapi.RegisterContainersServer(server, &snapshotterContainerServer{state: service})
+	tasksapi.RegisterTasksServer(server, &snapshotterTaskServer{})
 	diffapi.RegisterDiffServer(server, &snapshotterDiffServer{state: service})
 	introspectionapi.RegisterIntrospectionServer(server, &snapshotterIntrospectionServer{snapshotter: service.snapshotter})
 	go func() {
@@ -394,8 +465,10 @@ func newSnapshotterTestRuntime(
 		t.Fatal(fmt.Errorf("connect synthetic containerd: %w", err))
 	}
 	t.Cleanup(func() {
-		if err := runtimeClient.Close(); err != nil {
-			t.Errorf("close synthetic containerd: %v", err)
+		if runtimeClient.connection.GetState() != connectivity.Shutdown {
+			if err := runtimeClient.Close(); err != nil {
+				t.Errorf("close synthetic containerd: %v", err)
+			}
 		}
 	})
 	return runtimeClient

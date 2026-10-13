@@ -58,6 +58,10 @@ CREATE TABLE IF NOT EXISTS migration_source_temporaries (
  reserved_at TEXT NOT NULL,
  PRIMARY KEY(owner,kind)
 );
+CREATE TABLE IF NOT EXISTS volume_transfer_temporaries (
+ owner TEXT PRIMARY KEY,
+ destination TEXT NOT NULL UNIQUE
+);
 `)
 	if err != nil {
 		return err
@@ -187,6 +191,26 @@ func (s *Store) FinishDataOperation(ctx context.Context, id int64, status string
 	return nil
 }
 
+func (s *Store) RecordDataArchive(ctx context.Context, id int64, archive dataops.Archive) error {
+	if archive.Path == "" || archive.SHA256 == "" || archive.Manifest == "" || archive.Resource.Kind != "volume" {
+		return errors.New("only a verified volume archive can be persisted as a recovery point")
+	}
+	document, err := json.Marshal(dataops.Result{Archive: &archive})
+	if err != nil {
+		return err
+	}
+	updated, err := s.db.ExecContext(ctx, `UPDATE data_operations SET result=?,phase='archive-verified'
+WHERE id=? AND resource_key=? AND status='running'`, string(document), id, archive.Resource.Fingerprint())
+	if err != nil {
+		return err
+	}
+	count, err := updated.RowsAffected()
+	if err == nil && count != 1 {
+		return errors.New("archive source changed or its operation is no longer running")
+	}
+	return err
+}
+
 func (s *Store) RecoverDataOperations(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE data_operations SET status='interrupted',phase='interrupted',completed_at=?,error=?
 WHERE status='running'`, now.UTC().Format(time.RFC3339Nano),
@@ -282,6 +306,13 @@ func (s *Store) ClaimBackup(ctx context.Context, now time.Time) (*dataops.Operat
 		return nil, err
 	}
 	defer tx.Rollback()
+	var active int
+	if err := tx.QueryRowContext(ctx, `SELECT COUNT(*) FROM data_operations WHERE status='running'`).Scan(&active); err != nil {
+		return nil, err
+	}
+	if active != 0 {
+		return nil, nil
+	}
 	schedule, err := scanBackupSchedule(tx.QueryRowContext(ctx, `SELECT b.id,b.resource,b.enabled,b.interval_hours,b.retention,b.directory,b.next_run_at
 FROM volume_backup_schedules b JOIN settings s ON s.id=1 WHERE b.enabled=1 AND s.docker_enabled=1 AND julianday(b.next_run_at)<=julianday(?)
 ORDER BY julianday(b.next_run_at),b.id LIMIT 1`, now.UTC().Format(time.RFC3339Nano)))
@@ -315,7 +346,10 @@ ORDER BY julianday(b.next_run_at),b.id LIMIT 1`, now.UTC().Format(time.RFC3339Na
 
 func (s *Store) VerifiedBackupOperations(ctx context.Context, scheduleID int64) ([]dataops.Operation, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT `+dataOperationColumns+` FROM data_operations
-WHERE status='succeeded' AND json_extract(request,'$.scheduleId')=? ORDER BY id DESC`, scheduleID)
+WHERE status IN ('succeeded','failed','interrupted','cancelled') AND json_extract(request,'$.scheduleId')=?
+AND COALESCE(json_extract(result,'$.archive.path'),'')!=''
+AND COALESCE(json_extract(result,'$.archive.sha256'),'')!=''
+AND COALESCE(json_extract(result,'$.archive.manifest'),'')!='' ORDER BY id DESC`, scheduleID)
 	if err != nil {
 		return nil, err
 	}
@@ -334,7 +368,7 @@ WHERE status='succeeded' AND json_extract(request,'$.scheduleId')=? ORDER BY id 
 
 func (s *Store) ExpireBackupArchive(ctx context.Context, id int64) error {
 	result, err := s.db.ExecContext(ctx, `UPDATE data_operations SET result=json_set(result,'$.archive.path',''),
-phase='archive-expired' WHERE id=? AND status='succeeded'`, id)
+phase='archive-expired' WHERE id=? AND status!='running'`, id)
 	if err != nil {
 		return err
 	}
@@ -360,4 +394,34 @@ func (s *Store) KnownMigratedVolume(ctx context.Context, source, identity, desti
 		return false, nil
 	}
 	return stored == destinationIdentity, err
+}
+
+func (s *Store) ReserveVolumeTemporary(ctx context.Context, temporary dataops.VolumeTemporary) error {
+	if len(temporary.Owner) != 32 || temporary.Destination == "" {
+		return errors.New("invalid volume transfer ownership reservation")
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO volume_transfer_temporaries(owner,destination) VALUES(?,?)`, temporary.Owner, temporary.Destination)
+	return err
+}
+
+func (s *Store) ClearVolumeTemporary(ctx context.Context, temporary dataops.VolumeTemporary) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM volume_transfer_temporaries WHERE owner=? AND destination=?`, temporary.Owner, temporary.Destination)
+	return err
+}
+
+func (s *Store) VolumeTemporaries(ctx context.Context) ([]dataops.VolumeTemporary, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT owner,destination FROM volume_transfer_temporaries ORDER BY owner`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	result := make([]dataops.VolumeTemporary, 0)
+	for rows.Next() {
+		var temporary dataops.VolumeTemporary
+		if err := rows.Scan(&temporary.Owner, &temporary.Destination); err != nil {
+			return nil, err
+		}
+		result = append(result, temporary)
+	}
+	return result, rows.Err()
 }

@@ -139,12 +139,25 @@ Windows named pipes cannot be replaced with a reversible symbolic link.
 
 The container inspector includes bounded Logs, shell-independent Files, recent
 Stats and redacted Inspect views. Volumes add file browsing, verified
-clone/import/export/restore/empty workflows and persisted local backups.
-**Storage and cleanup** reports shared-store accounting and exact protected
-prune previews; **Migrate runtime data** dry-runs source-preserving local
+clone/import/export/restore/empty/remove workflows and persisted local backups.
+Volume previews show current container/Compose mount ownership; existing
+containers and stopped managed-cluster nodes cannot be bypassed with force.
+Restore pins the verified archive checksum and publishes from isolated staging.
+**Storage and cleanup** reports unique content, configured Linux snapshots,
+volume allocation, BuildKit records and all-namespace metadata separately. Object
+or category previews freeze exact protected cleanup boundaries; **Migrate runtime
+data** dry-runs source-preserving local
 transfers. Capability-supported native file bridges open real host paths without
 implicit copy-back. See [runtime data management](data-management.md) for safety,
 backup consistency, CLI workflows and the host/backend capability matrix.
+
+Local backups need no cloud account. Their dashboard policies support interval,
+retention, pause/resume and manual runs; progress, cancellation and failures stay
+visible in Activity. A replacement is durably verified before retention, and
+missed schedules run once without overlap. Copies are crash-consistent rather
+than application-consistent database backups. Local Linux or Porto's Lima guest
+uses the bundled helper; unsupported external volume-driver options, ownership
+maps and native filesystem capabilities fail explicitly without replacing data.
 
 ```sh
 porto docker status

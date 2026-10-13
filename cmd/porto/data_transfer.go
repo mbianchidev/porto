@@ -1,14 +1,16 @@
 package main
 
 import (
-	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"time"
@@ -59,24 +61,16 @@ func readDataTransferError(response *http.Response) error {
 }
 
 func downloadCompletedVolumeExport(id int64, destination string) (err error) {
-	for {
-		var response bytes.Buffer
-		if err := api("GET", "/api/data/operations/"+strconv.FormatInt(id, 10), nil, &response); err != nil {
-			return err
-		}
-		var operation dataops.Operation
-		if err := json.Unmarshal(response.Bytes(), &operation); err != nil {
-			return err
-		}
-		fmt.Fprintf(os.Stderr, "Operation %d: %s (%d bytes)\n", id, operation.Phase, operation.Bytes)
-		if operation.Status == "running" {
-			time.Sleep(time.Second)
-			continue
-		}
-		if operation.Status != "succeeded" || operation.Result.Archive == nil {
-			return fmt.Errorf("export %d %s: %s", id, operation.Status, operation.Error)
-		}
-		break
+	operation, err := waitDataOperation(id)
+	if err != nil {
+		return err
+	}
+	if operation.Result.Archive == nil {
+		return fmt.Errorf("export %d completed without a verified archive", id)
+	}
+	available, err := datafiles.AvailableSpace(filepath.Dir(destination))
+	if err != nil || uint64(operation.Result.Archive.Bytes) > available {
+		return errors.Join(errors.New("insufficient local space for the verified export"), err)
 	}
 	directory := filepath.Dir(destination)
 	temporary, err := os.CreateTemp(directory, ".porto-download-")
@@ -84,7 +78,13 @@ func downloadCompletedVolumeExport(id int64, destination string) (err error) {
 		return err
 	}
 	defer func() { err = errors.Join(err, temporary.Close(), os.Remove(temporary.Name())) }()
-	response, err := http.Get("http://" + config.DaemonAddr + "/api/data/operations/" + strconv.FormatInt(id, 10) + "/archive")
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+config.DaemonAddr+"/api/data/operations/"+strconv.FormatInt(id, 10)+"/archive", nil)
+	if err != nil {
+		return err
+	}
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return err
 	}
@@ -92,10 +92,14 @@ func downloadCompletedVolumeExport(id int64, destination string) (err error) {
 	if response.StatusCode >= 300 {
 		return readDataTransferError(response)
 	}
-	if _, err := io.Copy(temporary, response.Body); err != nil {
+	hash := sha256.New()
+	if _, err := io.Copy(io.MultiWriter(temporary, hash), response.Body); err != nil {
 		return err
 	}
-	if _, err := datafiles.Validate(context.Background(), temporary); err != nil {
+	if hex.EncodeToString(hash.Sum(nil)) != operation.Result.Archive.SHA256 {
+		return errors.New("downloaded volume archive checksum does not match the verified operation; no local file was published")
+	}
+	if _, err := datafiles.Validate(ctx, temporary); err != nil {
 		return err
 	}
 	if err := temporary.Sync(); err != nil {
@@ -105,4 +109,49 @@ func downloadCompletedVolumeExport(id int64, destination string) (err error) {
 		return fmt.Errorf("publish downloaded archive without overwriting an existing file: %w", err)
 	}
 	return writeOutput(map[string]any{"operationId": id, "path": destination, "verified": true})
+}
+
+func watchDataOperation(id int64) error {
+	operation, err := waitDataOperation(id)
+	if outputErr := writeOutput(operation); outputErr != nil {
+		return errors.Join(err, outputErr)
+	}
+	return err
+}
+
+func waitDataOperation(id int64) (dataops.Operation, error) {
+	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer cancel()
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+config.DaemonAddr+"/api/data/operations/"+strconv.FormatInt(id, 10), nil)
+		if err != nil {
+			return dataops.Operation{}, err
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return dataops.Operation{}, err
+		}
+		if response.StatusCode >= 300 {
+			readErr := readDataTransferError(response)
+			return dataops.Operation{}, errors.Join(readErr, response.Body.Close())
+		}
+		var operation dataops.Operation
+		decodeErr := json.NewDecoder(response.Body).Decode(&operation)
+		if err := errors.Join(decodeErr, response.Body.Close()); err != nil {
+			return dataops.Operation{}, err
+		}
+		fmt.Fprintf(os.Stderr, "Operation %d: %s (%d bytes)\n", id, operation.Phase, operation.Bytes)
+		if operation.Status == "running" {
+			select {
+			case <-ctx.Done():
+				return operation, fmt.Errorf("stopped watching operation %d; the job continues. Cancel it with 'porto docker operations cancel %d': %w", id, id, ctx.Err())
+			case <-time.After(time.Second):
+			}
+			continue
+		}
+		if operation.Status != "succeeded" {
+			return operation, fmt.Errorf("data operation %d %s: %s", id, operation.Status, operation.Error)
+		}
+		return operation, nil
+	}
 }

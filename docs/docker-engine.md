@@ -217,14 +217,14 @@ before any backend operation. Escaped image names remain intact.
 
 | Resource | Status | Operations and boundaries |
 | --- | --- | --- |
-| System | Supported | `/_ping`, `/version`, `/info`, and container lifecycle `/events` |
-| Containers | Supported | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, filesystem export, one-shot/streaming stats, resource and restart-policy update, remove, named checkpoint |
+| System | Supported | `/_ping`, `/version`, `/info`, `/system/df` with explicit shared-store provenance, and container lifecycle `/events` |
+| Containers | Supported | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, filesystem export, one-shot/streaming stats, resource and restart-policy update, remove, category prune, named checkpoint |
 | Container mounts | Partial | structured bind, local volume, and tmpfs mounts with read-only, supported propagation, `nocopy`, size, mode, and basic tmpfs flags; unsupported recursive bind, subpath, driver, label, and security semantics fail before creation |
 | Container restore | Capability-gated | restore is advertised only when the owned backend reports CRIU support |
-| Images | Supported | list, inspect, pull, save, archive load, request-body rootfs import, container commit, tag, authenticated push, and remove |
-| Networks | Supported | list, create, inspect, connect, disconnect, remove |
-| Volumes | Supported | list, create, inspect, remove |
-| Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, and registry push |
+| Images | Supported | list, inspect, pull, save, archive load, request-body rootfs import, container commit, tag, authenticated push, remove and category prune |
+| Networks | Supported | list, create, inspect, connect, disconnect, remove and category prune |
+| Volumes | Supported | list, create, inspect, reference-protected remove and category prune; Porto API adds local file/transfer/backup tools |
+| Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, registry push and selective cache prune |
 | Orchestration | Unsupported | Swarm services/tasks/nodes, generic engine plugins, and Windows containers return explicit errors |
 
 ### Endpoint and version boundaries
@@ -310,7 +310,7 @@ Ryuk reaper. Host bind mounts and other development-container features remain
 subject to the mount/capability matrix.
 
 Porto does not claim generic drop-in
-compatibility for remote TCP, Swarm, system prune/disk-usage APIs, remote-URL
+compatibility for remote TCP, Swarm, broad system prune, remote-URL
 imports, extra custom network aliases, or other operations listed as unsupported.
 
 Run the live suite against an **already running, owned** Lima engine without
@@ -480,6 +480,27 @@ CLI-only users can apply the same setup to an existing engine with
 local containerd/BuildKit installations are not modified: their administrator
 must provide the required native workers or binfmt/QEMU emulation.
 
+## Storage accounting and volume lifecycle
+
+**Containers → Storage and cleanup** measures actual containerd content and
+snapshot usage in the configured Linux snapshotter(s), local volume allocation,
+non-shared BuildKit records and shared runtime metadata. Packed image sizes and
+shared cache/metadata scopes are not summed into a misleading total.
+Partially downloaded foreign-platform image content remains visible and
+protected instead of breaking the whole report. Select exact objects or one
+category, inspect its frozen preview and confirm. Backend ownership and
+active-build checks run again before each removal.
+
+Volumes expose file browsing, container/Compose mount relationships, clone,
+empty, local import/export, staged restore and confirmed removal. Scheduled
+local backups use SQLite-backed schedules and operation history. Retention
+requires a durable verified replacement first, and never removes an unproven
+archive. Copies are **crash-consistent**, not application-consistent database
+backups: explicitly stop or quiesce writers when needed. Linux helper/backend
+capabilities and external volume drivers/options remain explicit limitations.
+See [runtime data management](data-management.md) for CLI commands, archive
+integrity/ownership, cancellation, restore safety and local backup controls.
+
 ## Unused image and build-cache cleanup
 
 The Settings page offers opt-in weekly cleanup and a separate **Run now**
@@ -549,7 +570,8 @@ Not implemented:
 - remote-URL rootfs import; request-body import, container commit/export, and image save/load use Docker-compatible endpoints
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
-- system prune and system disk-usage details
+- broad `/system/prune`; `/system/df` and category prune APIs are supported,
+  but exact released bytes across shared stores remain unavailable
 - namespace overrides beyond KinD's host/private modes, combined resource and restart-policy updates, and resource limits beyond CPU/memory container updates
 - more than the standard Compose container-name/service-name network alias pair;
   extra custom aliases fail before container creation

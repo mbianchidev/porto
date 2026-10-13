@@ -3,10 +3,17 @@ import { bytesLabel, type DataOperation } from '../dataTypes'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 
-export function DataOperations({ resourceName }: { resourceName?: string }) {
+export function DataOperations({ resourceName, onComplete }: { resourceName?: string; onComplete?: () => void }) {
   const { notifyError } = useMessages()
   const operations = usePolledResource<DataOperation[]>((signal) => apiGet('/api/data/operations', signal), 2000, [], 'data:operations')
   const rows = (operations.data ?? []).filter((run) => !resourceName || run.request.resource?.name === resourceName || run.request.destination === resourceName)
+  const completed = useRef<Set<number> | null>(null)
+  useEffect(() => {
+    if (!operations.data) return
+    const finished = operations.data.filter((run) => run.status !== 'running')
+    if (completed.current && finished.some((run) => !completed.current?.has(run.id))) onComplete?.()
+    completed.current = new Set(finished.map((run) => run.id))
+  }, [operations.data, onComplete])
   async function cancel(id: number) {
     try { await apiSend(`/api/data/operations/${id}`, 'DELETE'); operations.reload() }
     catch (err) { notifyError('data', errorMessage(err, 'Unable to cancel data operation')) }
@@ -19,10 +26,16 @@ export function DataOperations({ resourceName }: { resourceName?: string }) {
     <div className="dataTableScroll"><table className="dataTable">
       <thead><tr><th>Operation / source</th><th>Progress / result</th><th>Controls</th></tr></thead>
       <tbody>{rows.map((run) => <tr key={run.id}>
-        <td><strong>#{run.id} {run.request.action}</strong><br />{run.request.resource?.name || run.request.context}<br />{new Date(run.startedAt).toLocaleString()}</td>
+        <td><strong>#{run.id} {run.request.action}</strong><br />{run.request.resource?.name || run.request.context}
+          {run.request.destination && <p>Destination: {run.request.destination}</p>}
+          {run.request.archive && <p>Archive: {run.request.archive}</p>}
+          {run.request.selections?.map((selection) => <p key={`${selection.kind}:${selection.id}`}>{selection.kind}: {selection.name}</p>)}
+          {run.request.scheduleId && <p>Backup schedule {run.request.scheduleId} / {run.request.trigger}</p>}
+          <br />{new Date(run.startedAt).toLocaleString()}</td>
         <td><span role={run.status === 'running' ? 'status' : undefined}>{run.status} · {run.phase} · {bytesLabel(run.bytes)}</span>
           {run.error && <p className="errorLine">{run.error}</p>}
           {run.result.message && <p>{run.result.message}</p>}
+          {run.request.action === 'prune' && <p>Actual reclaimed bytes: {bytesLabel(run.result.bytesReclaimed)}</p>}
           {run.result.steps?.map((step, index) => <p key={index}>{step.kind}: {step.source} → {step.destination || 'removed'} · {step.status} {step.message}</p>)}
         </td>
         <td>{run.status === 'running' && <button type="button" onClick={() => void cancel(run.id)}>Cancel operation {run.id}</button>}
@@ -33,3 +46,4 @@ export function DataOperations({ resourceName }: { resourceName?: string }) {
     </table></div>
   </section>
 }
+import { useEffect, useRef } from 'react'

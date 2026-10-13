@@ -3,9 +3,14 @@
 package datafiles
 
 import (
+	"errors"
 	"fmt"
 	"os"
+	"path"
 	"syscall"
+	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 func fileMetadata(info os.FileInfo) (int, int, int64) {
@@ -25,6 +30,16 @@ func fileIdentity(info os.FileInfo) string {
 func preserveFileOwnership(file *os.File, original os.FileInfo) error {
 	uid, gid, _ := fileMetadata(original)
 	return file.Chown(uid, gid)
+}
+
+func restoreSymlinkTime(root *os.Root, relative string, modified time.Time) error {
+	parent, err := root.Open(path.Dir(relative))
+	if err != nil {
+		return err
+	}
+	timestamp := unix.NsecToTimespec(modified.UnixNano())
+	err = unix.UtimesNanoAt(int(parent.Fd()), path.Base(relative), []unix.Timespec{timestamp, timestamp}, unix.AT_SYMLINK_NOFOLLOW)
+	return errors.Join(err, parent.Close())
 }
 
 func AvailableSpace(directory string) (uint64, error) {

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 )
@@ -144,7 +145,7 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 }
 
 func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) error {
-	ctx, release, err := m.dataReadGate(ctx)
+	ctx, release, err := m.BeginDataTransaction(ctx)
 	if err != nil {
 		return err
 	}
@@ -157,12 +158,26 @@ func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) err
 			return err
 		}
 	}
-	containers, err := m.Containers(ctx)
+	document, err := m.InspectVolume(ctx, name)
+	if err != nil {
+		return err
+	}
+	var volume struct {
+		Name       string
+		Mountpoint string
+	}
+	if err := json.Unmarshal(document, &volume); err != nil {
+		return err
+	}
+	if volume.Name != name {
+		return fmt.Errorf("%w: volume identity changed during removal", ErrConflict)
+	}
+	containers, err := m.storageContainers(ctx)
 	if err != nil {
 		return err
 	}
 	for _, container := range containers {
-		if containerUsesVolume(container, name, "") {
+		if containerUsesVolume(container, name, volume.Mountpoint) {
 			return fmt.Errorf("%w: volume %s is referenced by container %s; remove or detach its mount first", ErrConflict, name, container.Name)
 		}
 	}
