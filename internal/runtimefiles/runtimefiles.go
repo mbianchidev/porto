@@ -11,6 +11,7 @@ import (
 	"os"
 	"path"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
@@ -162,9 +163,19 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 	case "download":
 		return datafiles.Download(ctx, descriptor.RootPath, request.Path, output, datafiles.MaxUploadBytes)
 	case "write":
-		content, readErr := io.ReadAll(io.LimitReader(input, datafiles.MaxUploadBytes+1))
+		limit := datafiles.MaxUploadBytes
+		if request.SHA256 != "" {
+			limit = datafiles.MaxTextBytes
+		}
+		content, readErr := io.ReadAll(io.LimitReader(input, int64(limit)+1))
 		if readErr != nil {
 			return readErr
+		}
+		if len(content) > limit {
+			return fmt.Errorf("%w: maximum write size is %d bytes", datafiles.ErrLimit, limit)
+		}
+		if request.SHA256 != "" && (!utf8.Valid(content) || bytes.ContainsRune(content, 0)) {
+			return fmt.Errorf("%w: edits require UTF-8 text without NUL bytes", datafiles.ErrUnsupported)
 		}
 		uid, gid, ownerErr := descriptor.hostOwner(0, 0)
 		if ownerErr != nil {

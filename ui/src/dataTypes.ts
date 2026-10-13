@@ -1,3 +1,6 @@
+export const MAX_TEXT_BYTES = 256 * 1024
+export const MAX_FILE_TRANSFER_BYTES = 64 * 1024 * 1024
+
 export type FileResource = {
   kind: 'container' | 'image' | 'volume' | 'vm'
   name: string

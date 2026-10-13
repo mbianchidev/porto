@@ -5,9 +5,8 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
-import { ContainerInspect, ContainerLogs, ContainerStats } from '../components/ContainerDataInspector'
 import { RuntimeFiles } from '../components/RuntimeFiles'
-import { Inspector, InspectorTabs } from '../components/Inspector'
+import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
 import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
@@ -33,6 +32,18 @@ const EMPTY_CREATE_DRAFT = {
 const InteractiveTerminal = lazy(async () => {
   const terminal = await import('../components/VMTerminal')
   return { default: terminal.InteractiveTerminal }
+})
+const ContainerLogs = lazy(async () => {
+  const inspector = await import('../components/ContainerDataInspector')
+  return { default: inspector.ContainerLogs }
+})
+const ContainerStats = lazy(async () => {
+  const inspector = await import('../components/ContainerDataInspector')
+  return { default: inspector.ContainerStats }
+})
+const ContainerInspect = lazy(async () => {
+  const inspector = await import('../components/ContainerDataInspector')
+  return { default: inspector.ContainerInspect }
 })
 const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
 type TerminalShell = (typeof TERMINAL_SHELLS)[number]
@@ -486,10 +497,14 @@ export function Containers() {
               </>
             )}
             {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
-            {containerTab === 'logs' && <ContainerLogs key={selected.id} id={selected.id} />}
             {containerTab === 'files' && <RuntimeFiles key={selected.id} kind="container" name={selected.id} />}
-            {containerTab === 'stats' && <ContainerStats key={selected.id} id={selected.id} running={containerState(selected) === 'running'} />}
-            {containerTab === 'inspect' && <ContainerInspect key={selected.id} id={selected.id} />}
+            <InspectorErrorBoundary key={`${selected.id}:${containerTab}`} resourceName="Container">
+              <Suspense fallback={<p role="status">Loading container data view…</p>}>
+                {containerTab === 'logs' && <ContainerLogs key={selected.id} id={selected.id} />}
+                {containerTab === 'stats' && <ContainerStats key={selected.id} id={selected.id} running={containerState(selected) === 'running'} />}
+                {containerTab === 'inspect' && <ContainerInspect key={selected.id} id={selected.id} />}
+              </Suspense>
+            </InspectorErrorBoundary>
             {containerTab === 'layers' && <DiveTerminal image={selected.image} />}
             </div>
           </Inspector>

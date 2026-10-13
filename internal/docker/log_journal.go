@@ -143,8 +143,14 @@ func (backend *grpcContainerRuntime) streamJournal(ctx context.Context, journal 
 			pending = pending[newline+1:]
 		}
 	}
+	var err error
 	if backend.lima != "" {
-		return backend.streamLimaLog(ctx, journal, tail, follow, parse)
+		err = backend.streamLimaLog(ctx, journal, tail, follow, parse)
+	} else {
+		err = streamLocalLog(ctx, journal, tail, follow, parse)
 	}
-	return streamLocalLog(ctx, journal, tail, follow, parse)
+	if err == nil && len(pending) > 0 {
+		return errors.New("container log journal ended with an incomplete record")
+	}
+	return err
 }

@@ -27,7 +27,7 @@ async function readErrorMessage(response: Response): Promise<string> {
   return text
 }
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function fetchResponse(path: string, init?: RequestInit): Promise<Response> {
   let response: Response
   try {
     response = await fetch(path, init)
@@ -38,6 +38,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   if (!response.ok) {
     throw new ApiError(await readErrorMessage(response), response.status)
   }
+  return response
+}
+
+async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const response = await fetchResponse(path, init)
   if (response.status === 204) return undefined as T
   const contentType = response.headers.get('content-type') ?? ''
   if (contentType.includes('application/json')) {
@@ -48,6 +53,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function apiGet<T>(path: string, signal?: AbortSignal): Promise<T> {
   return request<T>(path, { signal })
+}
+
+export async function apiDownload(path: string, signal?: AbortSignal): Promise<Blob> {
+  return (await fetchResponse(path, { signal })).blob()
 }
 
 export function apiSend<T>(

@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -262,13 +263,16 @@ func streamLocalLog(
 	}
 	reader := bufio.NewReader(file)
 	for {
-		data, readErr := reader.ReadBytes('\n')
+		if err := context.Cause(ctx); err != nil {
+			return err
+		}
+		data, readErr := reader.ReadSlice('\n')
 		if len(data) > 0 {
-			if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: data}); err != nil {
+			if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: bytes.Clone(data)}); err != nil {
 				return err
 			}
 		}
-		if readErr == nil {
+		if readErr == nil || errors.Is(readErr, bufio.ErrBufferFull) {
 			continue
 		}
 		if !errors.Is(readErr, io.EOF) {

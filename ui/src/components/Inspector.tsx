@@ -11,7 +11,7 @@ type InspectorProps = {
 }
 
 export class InspectorErrorBoundary extends Component<
-  { children: ReactNode },
+  { children: ReactNode; resourceName?: string },
   { failed: boolean }
 > {
   state = { failed: false }
@@ -21,7 +21,7 @@ export class InspectorErrorBoundary extends Component<
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    console.error('Pod inspector view failed', error, info)
+    console.error(`${this.props.resourceName ?? 'Pod'} inspector view failed`, error, info)
   }
 
   render() {
@@ -29,7 +29,10 @@ export class InspectorErrorBoundary extends Component<
       return (
         <section className="drawerPanel" role="alert">
           <h3>Inspector view unavailable</h3>
-          <p className="errorLine">This view could not be rendered. Switch tabs or refresh the pod inventory.</p>
+          <p className="errorLine">{this.props.resourceName
+            ? 'This view could not be loaded or rendered. Switch tabs or reload Porto to retry.'
+            : 'This view could not be rendered. Switch tabs or refresh the pod inventory.'}</p>
+          {this.props.resourceName && <button type="button" onClick={() => window.location.reload()}>Reload Porto</button>}
         </section>
       )
     }

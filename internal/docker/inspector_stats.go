@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"errors"
 	"time"
 )
 
@@ -28,8 +29,17 @@ type InspectorStats struct {
 }
 
 func (m *Manager) InspectorStats(ctx context.Context, id string) (InspectorStats, error) {
+	if err := context.Cause(ctx); err != nil {
+		return InspectorStats{}, err
+	}
 	sample, err := m.ContainerMetric(ctx, id)
+	if ctx.Err() != nil {
+		return InspectorStats{}, context.Cause(ctx)
+	}
 	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return InspectorStats{}, err
+		}
 		m.metricHistoryMu.Lock()
 		history := append([]InspectorStatsPoint(nil), m.metricHistory[id]...)
 		m.metricHistoryMu.Unlock()
