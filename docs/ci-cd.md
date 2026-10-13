@@ -31,6 +31,10 @@ Synthetic container fixtures cover bounded stdout/stderr streams, cancellation,
 copy/filter controls, running/stopped/read-only files, confirmed mutations and
 downloads, recent resource counters, and sensitive metadata. These browser
 tests do not connect to a user's daemon or require a workload shell.
+The log stress case renders all 5,000 retained rows after a 6,000-record burst,
+checks the discard count and locale-formatted timestamps, and keeps the same
+assertion deadlines. Log rendering shares one time formatter per render rather
+than creating one for every record.
 
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches. A downloader override makes `app-builder-lib` use the same fetch-based

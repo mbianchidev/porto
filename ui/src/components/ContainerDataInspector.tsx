@@ -75,6 +75,7 @@ export function ContainerLogs({ id }: { id: string }) {
   }, [id, follow, generation])
   const search = query.toLocaleLowerCase()
   const filtered = records.filter((record) => (stream === 'all' || record.stream === stream) && record.text.toLocaleLowerCase().includes(search))
+  const timeFormatter = new Intl.DateTimeFormat([], { hour: 'numeric', minute: 'numeric', second: 'numeric', hour12: false })
   async function copy() {
     try { await writeClipboard(filtered.map((record) => `${record.timestamp ?? 'untimed'} ${record.stream} ${record.text}${record.text.endsWith('\n') ? '' : '\n'}`).join('')) }
     catch (err) { notifyError('logs', errorMessage(err, 'Unable to copy logs')) }
@@ -109,7 +110,7 @@ export function ContainerLogs({ id }: { id: string }) {
     <p className="hintLine">At most 5,000 records / 4 MiB retained · {dropped} older record(s) discarded. Clear keeps the live subscription; reconnect/resume reloads retained history. Captured timestamps are not invented for legacy logs.</p>
     <div className="logViewport" role="log" aria-label="Container output" aria-live="off" tabIndex={0}>
       {filtered.map((record) => <div className={`logLine ${record.stream === 'stderr' ? 'stderr' : 'stdout'}`} key={record.sequence}>
-        <time dateTime={record.timestamp}>{record.timestamp ? new Date(record.timestamp).toLocaleTimeString([], { hour12: false }) : 'untimed'}</time>
+        <time dateTime={record.timestamp}>{record.timestamp ? timeFormatter.format(new Date(record.timestamp)) : 'untimed'}</time>
         <span className="streamLabel">{record.stream}</span><span className="logMessage">{record.text}</span>
       </div>)}
     </div>
