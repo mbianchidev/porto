@@ -26,6 +26,12 @@ failing the matrix; vulnerability reports and invalid lockfiles still fail.
 The desktop test command initializes Electron before parallel test workers
 start, preventing concurrent first-run extraction of its runtime.
 
+The Node 24 job also runs the Playwright data-dashboard suite with Chromium.
+Synthetic container fixtures cover bounded stdout/stderr streams, cancellation,
+copy/filter controls, running/stopped/read-only files, confirmed mutations and
+downloads, recent resource counters, and sensitive metadata. These browser
+tests do not connect to a user's daemon or require a workload shell.
+
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches. A downloader override makes `app-builder-lib` use the same fetch-based
 `@electron/get` 5.x downloader as Electron and Electron Packager, removing its

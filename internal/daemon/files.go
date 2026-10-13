@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"os"
 	"path"
@@ -39,13 +40,21 @@ func (s *Server) dataRoutes(mux *http.ServeMux) {
 
 func (s *Server) dockerFiles(kind, action string) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		relative := r.URL.Query().Get("path")
+		if relative == "" {
+			relative = "."
+		}
+		if err := datafiles.ValidatePath(relative); err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
 		descriptor, err := s.docker.FileDescriptor(r.Context(), kind, r.PathValue("id"))
 		if err != nil {
 			writeRuntimeError(w, err)
 			return
 		}
 		request := datafiles.Request{
-			Action: action, Path: r.URL.Query().Get("path"), Identity: r.URL.Query().Get("identity"),
+			Action: action, Path: relative, Identity: r.URL.Query().Get("identity"),
 			SHA256: r.URL.Query().Get("sha256"), Confirm: queryBool(r, "confirm"),
 		}
 		if request.Identity == "" && action == "list" {
@@ -57,7 +66,11 @@ func (s *Server) dockerFiles(kind, action string) http.HandlerFunc {
 		}
 		var input io.Reader
 		if action == "write" {
-			r.Body = http.MaxBytesReader(w, r.Body, datafiles.MaxUploadBytes)
+			limit := int64(datafiles.MaxUploadBytes)
+			if request.SHA256 != "" {
+				limit = datafiles.MaxTextBytes
+			}
+			r.Body = http.MaxBytesReader(w, r.Body, limit)
 			input = r.Body
 		}
 		if action == "download" {
@@ -90,7 +103,7 @@ func (s *Server) dockerFiles(kind, action string) http.HandlerFunc {
 				return
 			}
 			w.Header().Set("Content-Type", "application/octet-stream")
-			w.Header().Set("Content-Disposition", "attachment")
+			w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{"filename": path.Base(request.Path)}))
 			http.ServeContent(w, r, path.Base(request.Path), info.ModTime(), file)
 			return
 		}

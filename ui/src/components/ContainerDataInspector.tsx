@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { startTransition, useEffect, useRef, useState } from 'react'
 import { apiGet, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
 import { isLogRecord, LogBuffer, type BufferedLog } from '../containerLogs'
@@ -22,42 +22,61 @@ export function ContainerLogs({ id }: { id: string }) {
     if (!follow) return
     const current = new LogBuffer()
     buffer.current = current
+    let active = true
     let frame = 0
     const source = new EventSource(`/api/docker/containers/${encodeURIComponent(id)}/logs/stream?tail=500`)
-    source.onopen = () => setConnection('Live')
+    function disconnect(reason: string) {
+      if (!active) return
+      active = false
+      source.close()
+      if (frame) { cancelAnimationFrame(frame); frame = 0 }
+      setRecords(current.snapshot())
+      setDropped(current.dropped)
+      setMessage(reason)
+      setConnection('Disconnected')
+    }
+    source.onopen = () => { if (active) setConnection('Live') }
     source.addEventListener('capabilities', (event) => {
+      if (!active) return
       try {
         const value: unknown = JSON.parse(event.data)
-        if (value && typeof value === 'object' && 'message' in value && typeof value.message === 'string') setMessage(value.message)
-      } catch (err) { setMessage(errorMessage(err, 'Invalid log capability response')); source.close() }
+        if (!value || typeof value !== 'object' || !('timestamps' in value) || typeof value.timestamps !== 'boolean'
+          || !('streams' in value) || typeof value.streams !== 'boolean') throw new Error('Invalid log capability response')
+        if ('message' in value && typeof value.message === 'string') setMessage(value.message)
+      } catch (err) { disconnect(errorMessage(err, 'Invalid log capability response')) }
     })
     source.addEventListener('log', (event) => {
+      if (!active) return
       try {
         const value: unknown = JSON.parse(event.data)
         if (!isLogRecord(value)) throw new Error('Invalid bounded log record')
         current.push({ ...value, text: stripTerminalNoise(value.text) })
         if (!frame) frame = requestAnimationFrame(() => {
           frame = 0
-          setRecords(current.snapshot())
-          setDropped(current.dropped)
+          if (!active) return
+          const snapshot = current.snapshot()
+          const discarded = current.dropped
+          startTransition(() => {
+            setRecords(snapshot)
+            setDropped(discarded)
+          })
         })
-      } catch (err) { setMessage(errorMessage(err, 'Invalid log record')); source.close(); setConnection('Disconnected') }
+      } catch (err) { disconnect(errorMessage(err, 'Invalid log record')) }
     })
     source.addEventListener('failure', (event) => {
+      if (!active) return
       try {
         const value: unknown = JSON.parse(event.data)
-        setMessage(value && typeof value === 'object' && 'message' in value && typeof value.message === 'string' ? value.message : 'Log stream failed')
-      } catch (err) { setMessage(errorMessage(err, 'Log stream failed')) }
-      source.close()
-      setConnection('Disconnected')
+        disconnect(value && typeof value === 'object' && 'message' in value && typeof value.message === 'string' ? value.message : 'Log stream failed')
+      } catch (err) { disconnect(errorMessage(err, 'Log stream failed')) }
     })
-    source.onerror = () => { source.close(); setConnection('Disconnected'); setMessage('Log connection lost. Reconnect to reload retained history.') }
-    return () => { source.close(); if (frame) cancelAnimationFrame(frame) }
+    source.onerror = () => disconnect('Log connection lost. Reconnect to reload retained history.')
+    return () => { active = false; source.close(); if (frame) cancelAnimationFrame(frame) }
   }, [id, follow, generation])
   const search = query.toLocaleLowerCase()
   const filtered = records.filter((record) => (stream === 'all' || record.stream === stream) && record.text.toLocaleLowerCase().includes(search))
   async function copy() {
-    try { await writeClipboard(filtered.map((record) => `${record.timestamp ?? 'untimed'} ${record.stream} ${record.text}`).join('')) }
+    try { await writeClipboard(filtered.map((record) => `${record.timestamp ?? 'untimed'} ${record.stream} ${record.text}${record.text.endsWith('\n') ? '' : '\n'}`).join('')) }
     catch (err) { notifyError('logs', errorMessage(err, 'Unable to copy logs')) }
   }
   function reconnect() {
@@ -68,18 +87,26 @@ export function ContainerLogs({ id }: { id: string }) {
     setFollow(true)
     setGeneration((value) => value + 1)
   }
-  return <section className="logConsole">
+  function clear() {
+    buffer.current.clear()
+    setRecords([])
+    setDropped(0)
+  }
+  return <section className="logConsole containerLogs">
     <div className="consoleHeader"><h3>Container logs</h3><span role="status">{follow ? connection : 'Paused'}</span></div>
     <div className="inspectorForm inline">
       <label><span>Search logs</span><input type="search" value={query} onChange={(event) => setQuery(event.target.value)} /></label>
       <label><span>Log stream</span><select value={stream} onChange={(event) => setStream(event.target.value)}><option value="all">All streams</option><option value="stdout">stdout</option><option value="stderr">stderr</option><option value="combined">Legacy combined</option></select></label>
-      <button type="button" onClick={() => { if (follow) setFollow(false); else reconnect() }}>{follow ? 'Pause logs' : 'Resume logs'}</button>
+      <button type="button" onClick={() => {
+        if (follow) { setRecords(buffer.current.snapshot()); setDropped(buffer.current.dropped); setFollow(false) }
+        else reconnect()
+      }}>{follow ? 'Pause logs' : 'Resume logs'}</button>
       <button type="button" onClick={reconnect}>Reconnect logs</button>
       <button type="button" disabled={!filtered.length} onClick={() => void copy()}>Copy logs</button>
-      <button type="button" onClick={reconnect}>Clear buffer</button>
+      <button type="button" onClick={clear}>Clear buffer</button>
     </div>
     {message && <p className="hintLine" role="status">{message}</p>}
-    <p className="hintLine">At most 5,000 records / 4 MiB retained · {dropped} older record(s) discarded. Reconnecting resets the buffer; captured timestamps are not invented for legacy logs.</p>
+    <p className="hintLine">At most 5,000 records / 4 MiB retained · {dropped} older record(s) discarded. Clear keeps the live subscription; reconnect/resume reloads retained history. Captured timestamps are not invented for legacy logs.</p>
     <div className="logViewport" role="log" aria-label="Container output" aria-live="off" tabIndex={0}>
       {filtered.map((record) => <div className={`logLine ${record.stream === 'stderr' ? 'stderr' : 'stdout'}`} key={record.sequence}>
         <time dateTime={record.timestamp}>{record.timestamp ? new Date(record.timestamp).toLocaleTimeString([], { hour12: false }) : 'untimed'}</time>
@@ -89,29 +116,87 @@ export function ContainerLogs({ id }: { id: string }) {
   </section>
 }
 
+const HISTORY_METRICS = [
+  { key: 'memoryBytes', label: 'Memory', unit: 'bytes' },
+  { key: 'cpuMillicores', label: 'CPU', unit: 'cpu' },
+  { key: 'pids', label: 'Processes', unit: 'count' },
+  { key: 'networkRX', label: 'Network RX', unit: 'bytes' },
+  { key: 'networkTX', label: 'Network TX', unit: 'bytes' },
+  { key: 'blockRead', label: 'Block read', unit: 'bytes' },
+  { key: 'blockWrite', label: 'Block write', unit: 'bytes' },
+] as const
+
+type HistoryMetric = (typeof HISTORY_METRICS)[number]
+
+function statsLabel(value: number | undefined, unit: HistoryMetric['unit']) {
+  if (value === undefined || !Number.isFinite(value) || value < 0) return 'Unavailable'
+  if (unit === 'bytes') return bytesLabel(value)
+  return unit === 'cpu' ? `${value}m` : String(value)
+}
+
 export function ContainerStats({ id, running }: { id: string; running: boolean }) {
+  const [metric, setMetric] = useState<HistoryMetric>(HISTORY_METRICS[0])
   const stats = usePolledResource<InspectorStats>(
     (signal) => apiGet(`/api/docker/containers/${encodeURIComponent(id)}/stats`, signal), running ? 3000 : 0,
     [id, running], `docker:stats:${id}`,
   )
-  const point = stats.data?.current
-  const memory = (stats.data?.history ?? []).map((entry) => entry.memoryBytes).filter((value): value is number => value !== undefined)
-  const maximum = Math.max(1, ...memory)
-  const plot = memory.map((value, index) => `${index * 300 / Math.max(1, memory.length - 1)},${80 - value / maximum * 75}`).join(' ')
+  const history = (stats.data?.history ?? []).slice(-180)
+  const point = stats.data?.current ?? history.at(-1)
+  const values = history.map((entry) => entry[metric.key]).filter((value): value is number => value !== undefined && Number.isFinite(value) && value >= 0)
+  const maximum = Math.max(1, ...values)
+  const startedAt = Date.parse(history[0]?.read ?? '')
+  const duration = Math.max(1, Date.parse(history.at(-1)?.read ?? '') - startedAt)
+  const segments: Array<Array<{ x: number; y: number }>> = []
+  let segment: Array<{ x: number; y: number }> = []
+  for (const entry of history) {
+    const value = entry[metric.key]
+    const read = Date.parse(entry.read)
+    if (value === undefined || !Number.isFinite(value) || value < 0 || !Number.isFinite(read)) {
+      if (segment.length) segments.push(segment)
+      segment = []
+    } else {
+      segment.push({ x: 5 + (read - startedAt) / duration * 290, y: 80 - value / maximum * 75 })
+    }
+  }
+  if (segment.length) segments.push(segment)
   return <section className="drawerPanel">
     <h3>Live and recent statistics</h3>
     {!running && <p className="hintLine">Live metrics require a running task. Previously collected samples remain until the daemon restarts.</p>}
+    {stats.loading && !stats.data && <p role="status">Reading resource counters…</p>}
     {stats.error && <p role="alert" className="errorLine">Disconnected / unavailable: {stats.error}</p>}
     {stats.data && !stats.data.available && <p role="status">Live task disconnected or stopped; showing retained samples.</p>}
     <dl className="runtimeGrid">
-      <div><dt>CPU</dt><dd>{point?.cpuMillicores === undefined ? 'Unavailable' : `${point.cpuMillicores}m`}</dd></div>
+      <div><dt>CPU</dt><dd>{statsLabel(point?.cpuMillicores, 'cpu')}</dd></div>
       <div><dt>Memory</dt><dd>{bytesLabel(point?.memoryBytes)} / {bytesLabel(point?.memoryLimit)}</dd></div>
-      <div><dt>Processes</dt><dd>{point?.pids ?? 'Unavailable'}</dd></div>
+      <div><dt>Processes</dt><dd>{statsLabel(point?.pids, 'count')}</dd></div>
       <div><dt>Network RX / TX</dt><dd>{bytesLabel(point?.networkRX)} / {bytesLabel(point?.networkTX)}</dd></div>
       <div><dt>Block read / write</dt><dd>{bytesLabel(point?.blockRead)} / {bytesLabel(point?.blockWrite)}</dd></div>
     </dl>
-    {memory.length > 0 && <svg className="statsHistory" viewBox="0 0 300 85" role="img" aria-label="Recent memory history"><polyline points={plot} fill="none" stroke="currentColor" strokeWidth="2" /></svg>}
-    <p className="hintLine">{stats.data?.history.length ?? 0} recent sample(s). {stats.data?.message}</p>
+    <div className="inspectorForm inline">
+      <label><span>History metric</span><select value={metric.key} onChange={(event) => {
+        const next = HISTORY_METRICS.find((entry) => entry.key === event.target.value)
+        if (next) setMetric(next)
+      }}>{HISTORY_METRICS.map((entry) => <option key={entry.key} value={entry.key}>{entry.label}</option>)}</select></label>
+    </div>
+    {segments.length > 0
+      ? <svg className="statsHistory" viewBox="0 0 300 85" role="img" aria-label={`Recent ${metric.label.toLowerCase()} history`}>
+        <title>{metric.label} over recorded sample times; missing counters create gaps.</title>
+        {segments.map((points, index) => <g key={index}>
+          <polyline points={points.map(({ x, y }) => `${x},${y}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="2" />
+          {points.length === 1 && <circle cx={points[0].x} cy={points[0].y} r="2" fill="currentColor" />}
+        </g>)}
+      </svg>
+      : <p role="status">Recent {metric.label.toLowerCase()} counters are unavailable from this backend.</p>}
+    <p className="hintLine">{history.length} recent sample(s). {stats.data?.message} Network and block-I/O values are cumulative byte counters, not transfer rates.</p>
+    <details><summary>Recent samples</summary>
+      <div className="dataTableScroll statsSamples"><table className="dataTable" aria-label={`Recent ${metric.label.toLowerCase()} samples`}>
+        <thead><tr><th>Sample time</th><th>{metric.label}</th></tr></thead>
+        <tbody>{history.map((entry) => <tr key={entry.read}>
+          <td><time dateTime={entry.read}>{new Date(entry.read).toLocaleTimeString([], { hour12: false })}</time></td>
+          <td>{statsLabel(entry[metric.key], metric.unit)}</td>
+        </tr>)}</tbody>
+      </table></div>
+    </details>
   </section>
 }
 
@@ -147,6 +232,7 @@ export function ContainerInspect({ id }: { id: string }) {
   return <section className="drawerPanel">
     <h3>Docker / OCI metadata</h3>
     {inspect.error && <p role="alert" className="errorLine">{inspect.error}</p>}
+    {inspect.loading && !inspect.data && <p role="status">Reading Docker / OCI metadata…</p>}
     <div className="dataActions">
       <button type="button" aria-pressed={revealed} onClick={() => { if (revealed || window.confirm('Reveal sensitive environment and label values already accessible through your Docker socket?')) setRevealed((value) => !value) }}>{revealed ? 'Hide sensitive values' : 'Reveal sensitive values'}</button>
       <button type="button" disabled={document === null} onClick={() => void copy()}>Copy inspect JSON</button>
@@ -157,7 +243,9 @@ export function ContainerInspect({ id }: { id: string }) {
         ['Environment', config.Env], ['Labels', config.Labels], ['Mounts', object(document).Mounts],
         ['Networks', object(document).NetworkSettings], ['Health', object(object(document).State).Health ?? config.Healthcheck],
         ['Restart configuration', host.RestartPolicy],
-      ].map(([label, value]) => <details key={String(label)}><summary>{String(label)}</summary><pre className="logRaw">{JSON.stringify(value ?? null, null, 2)}</pre></details>)}
+      ].map(([label, value]) => <details key={String(label)}><summary>{String(label)}</summary>
+        {value === undefined || value === null ? <p className="hintLine">Not supplied by this backend.</p> : <pre className="logRaw">{JSON.stringify(value, null, 2)}</pre>}
+      </details>)}
       <details><summary>Raw inspect JSON</summary><pre className="logRaw">{JSON.stringify(document, null, 2)}</pre></details>
     </>}
   </section>

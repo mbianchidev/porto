@@ -15,22 +15,37 @@ shown separately.
 Paths must remain inside the selected resource. Absolute/escaping symlinks,
 device files and unsupported special entries cannot be traversed or edited.
 Listings are bounded; enter a narrower directory when a listing is truncated.
-Text previews and edits are limited to 256 KiB, individual uploads/downloads to
-64 MiB. Upload creates a new file. An edit or deletion requires the preview's
-checksum; a concurrent change is rejected. Atomic replacement can break a
+Text previews and edits are limited to 256 KiB of UTF-8 text, individual
+uploads/downloads to 64 MiB. **Download** in each file row works for binary files
+and files too large for a text preview. Downloads, uploads, and previews expose
+**Cancel file operation** and stop when the view closes; connection failures
+remain visible and retryable. Upload creates a new file and never implicitly
+overwrites one. Editing/deletion requires a bounded text preview. Selecting
+another file or directory asks before discarding an unsaved edit. An edit or
+deletion requires the preview's checksum; a concurrent change is rejected.
+Atomic replacement can break a
 file's hardlink relationship, so use an archive when preserving links matters.
 
 New Porto-created containers retain timestamped stdout/stderr journals alongside
 their existing raw logs. Older containers retain combined, untimed history;
 Porto does not invent timestamps or rewrite it. The log viewer supports search,
 stream filtering and copying, retains at most 5,000 records / 4 MiB, and reports
-connection loss explicitly.
+connection loss explicitly. **Clear buffer** discards the visible history
+without reconnecting or replaying older logs. Pause closes the subscription;
+Resume/Reconnect reload the retained tail, so output outside that tail is not
+guaranteed to be recovered.
 
 Stats retain 180 recent samples per inspected container, with a bounded
-128-container daemon cache. Missing CPU, memory, network, process or block-I/O
-counters are unavailable, not zero. Inspect masks sensitive environment/label
+128-container daemon cache. **History metric** selects CPU, memory, process
+count, network RX/TX, or block read/write history; **Recent samples** shows
+the recorded times and values. Network and block-I/O counters are cumulative
+bytes, not transfer rates. Missing counters are unavailable, not zero, and
+produce gaps in the history rather than fabricated continuity. A stopped task
+or lost connection leaves retained samples visible with its limitation.
+Inspect masks sensitive environment/label
 values until an explicit reveal; raw data is the data already accessible through
-the local Docker socket.
+the local Docker socket. Missing structured metadata is explicitly marked as
+not supplied by the backend.
 
 ## Storage and scoped cleanup
 
