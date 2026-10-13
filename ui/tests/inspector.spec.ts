@@ -277,7 +277,7 @@ test('logs remain bounded, searchable, stream-filtered and close on tab switch',
       await page.goto('/#/containers')
       await page.getByText('fixture-api', { exact: true }).first().click()
       await page.getByRole('tab', { name: 'Logs', exact: true }).click()
-      await expect(page.getByText('Live', { exact: true })).toBeVisible()
+      await expect(page.locator('.containerLogs').getByRole('status').first()).toHaveText('Live')
       await page.evaluate(() => {
         const source = window.fixtureLogSources?.find((item) => !item.closed)
         if (!source) throw new Error('Fixture log stream missing')

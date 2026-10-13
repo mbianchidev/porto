@@ -171,7 +171,7 @@ func InspectVolumeArchive(ctx context.Context, archivePath string) (result datao
 }
 
 func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource, identity, destination string, progress func(string, int64) error) (result dataops.Archive, err error) {
-	ctx, release, err := m.dataReadGate(ctx)
+	ctx, release, err := m.BeginDataTransaction(ctx)
 	if err != nil {
 		return result, err
 	}

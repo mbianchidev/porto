@@ -145,7 +145,7 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 }
 
 func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) error {
-	ctx, release, err := m.BeginDataTransaction(ctx)
+	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err
 	}
