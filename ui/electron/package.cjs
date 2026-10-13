@@ -31,6 +31,7 @@ const args = [
   'Porto',
   '--overwrite',
   '--prune=true',
+  '--ignore=^/Porto-(darwin|linux|mas|win32)-[^/]+($|/)',
   `--icon=${path.join(__dirname, 'assets', 'porto')}`,
   `--extend-info=${path.join(__dirname, 'assets', 'Info.plist')}`,
   `--extra-resource=${path.join(__dirname, 'assets', 'porto.png')}`,

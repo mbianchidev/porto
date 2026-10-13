@@ -39,6 +39,9 @@ test('macOS power-notification workaround and upstream removal gate', {
   const environment = { ...process.env }
   delete environment.DYLD_INSERT_LIBRARIES
   delete environment.ELECTRON_RUN_AS_NODE
+  delete environment.ELECTRON_FORCE_IS_PACKAGED
+  // Deliberate crashes must not open AppKit's interactive saved-state recovery.
+  const smokeArguments = ['--disable-breakpad', '-ApplePersistenceIgnoreState', 'YES']
 
   function compile(source, output, library = true) {
     const result = spawnSync('xcrun', [
@@ -162,8 +165,9 @@ test('macOS power-notification workaround and upstream removal gate', {
   fs.writeFileSync(application, `
     const { app, BrowserWindow } = require('electron')
     const { realpathSync } = require('node:fs')
+    let phase = 'waiting for app readiness'
     const timeout = setTimeout(() => {
-      console.error('Timed out before rendering')
+      console.error('Timed out during ' + phase)
       app.exit(1)
     }, 30000)
     app.whenReady().then(async () => {
@@ -173,11 +177,14 @@ test('macOS power-notification workaround and upstream removal gate', {
       }
       console.log('PORTO_TEST_GUARD_INHERITED=' + Boolean(process.env.DYLD_INSERT_LIBRARIES))
       console.log('PORTO_TEST_PACKAGED=' + app.isPackaged)
+      phase = 'creating the sandboxed window'
       const window = new BrowserWindow({
         show: false,
         webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false },
       })
+      phase = 'loading the synthetic page'
       await window.loadURL('data:text/html,<main>Synthetic Porto startup</main>')
+      phase = 'executing the renderer script'
       const rendered = await window.webContents.executeJavaScript('document.querySelector("main")?.textContent')
       if (rendered !== 'Synthetic Porto startup') throw new Error('Renderer did not load')
       console.log('PORTO_TEST_RENDERED')
@@ -192,7 +199,7 @@ test('macOS power-notification workaround and upstream removal gate', {
 
   function launch(name, libraries) {
     const result = spawnSync(electron, [
-      application, `--user-data-dir=${path.join(directory, name)}`, '--disable-breakpad',
+      application, `--user-data-dir=${path.join(directory, name)}`, ...smokeArguments,
     ], {
       encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
       env: { ...environment, DYLD_INSERT_LIBRARIES: libraries },
@@ -202,14 +209,6 @@ test('macOS power-notification workaround and upstream removal gate', {
     return result
   }
 
-  await t.test('Electron starts and renders when power registration fails', () => {
-    const result = launch('guarded', `${failure}:${guard}`)
-    assert.equal(result.status, 0, result.stderr)
-    assert.match(result.stderr, /Continuing without sleep\/wake events/)
-    assert.match(result.stdout, /PORTO_TEST_RENDERED/)
-    assert.match(result.stdout, /PORTO_TEST_GUARD_INHERITED=false/)
-  })
-
   await t.test('the locked Electron still needs the temporary guard', () => {
     const result = launch('unguarded', failure)
     assert.notEqual(result.status, 0,
@@ -218,6 +217,14 @@ test('macOS power-notification workaround and upstream removal gate', {
       'and retain this injected-failure case as a passing, unguarded regression test.')
     assert.equal(result.signal, 'SIGSEGV',
       `Unexpected unguarded startup failure; do not treat it as proof the shim is needed:\n${result.stderr}`)
+  })
+
+  await t.test('Electron starts and renders after an unguarded power-registration crash', () => {
+    const result = launch('guarded', `${failure}:${guard}`)
+    assert.equal(result.status, 0, result.stderr)
+    assert.match(result.stderr, /Continuing without sleep\/wake events/)
+    assert.match(result.stdout, /PORTO_TEST_RENDERED/)
+    assert.match(result.stdout, /PORTO_TEST_GUARD_INHERITED=false/)
   })
 
   await t.test('the development app renders and reopens after failed power registration without CLI app arguments', async () => {
@@ -233,12 +240,12 @@ test('macOS power-notification workaround and upstream removal gate', {
     const executable = path.join(bundle, 'Contents', 'MacOS', 'Electron')
     for (const name of ['first launch', 'reopened']) {
       const result = spawnSync(executable, [
-        `--user-data-dir=${path.join(directory, `development profile ${name}`)}`, '--disable-breakpad',
+        `--user-data-dir=${path.join(directory, `development profile ${name}`)}`, ...smokeArguments,
       ], {
         encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
         env: { ...environment, PORTO_TEST_APP_PATH: source, DYLD_INSERT_LIBRARIES: failure },
       })
-      assert.ifError(result.error)
+      assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)
       assert.equal(result.status, 0, `Guarded dev startup failed (${result.signal}):\n${result.stdout}\n${result.stderr}`)
       assert.match(result.stderr, /PORTO_TEST_POWER_UNAVAILABLE/, 'Failure injection was not exercised')
       assert.match(result.stderr, /Continuing without sleep\/wake events/)
@@ -261,11 +268,28 @@ test('macOS power-notification workaround and upstream removal gate', {
     if (environment.PORTO_TEST_MACOS_APP) {
       fs.cpSync(environment.PORTO_TEST_MACOS_APP, bundle, { recursive: true, verbatimSymlinks: true })
     } else {
+      const repository = path.join(__dirname, '..')
+      const packageSource = path.join(directory, 'packaging source with spaces')
+      const source = path.join(packageSource, 'ui', 'electron')
+      fs.mkdirSync(source, { recursive: true })
+      for (const file of ['package.cjs', 'desktop-updater.cjs', 'package.json', 'apply-update.ps1', 'apply-update.sh']) {
+        fs.copyFileSync(path.join(repository, 'ui', 'electron', file), path.join(source, file))
+      }
+      fs.copyFileSync(application, path.join(source, 'main.js'))
+      fs.cpSync(path.join(repository, 'ui', 'electron', 'assets'), path.join(source, 'assets'), { recursive: true })
+      fs.symlinkSync(path.join(repository, 'scripts'), path.join(packageSource, 'scripts'), 'dir')
+      fs.symlinkSync(path.join(repository, 'ui', 'electron', 'node_modules'), path.join(source, 'node_modules'), 'dir')
+      fs.writeFileSync(path.join(source, 'package-fixture.txt'), 'Synthetic application resource')
+      for (const target of ['darwin-arm64', 'darwin-x64', 'linux-x64', 'mas-arm64', 'win32-x64']) {
+        const previousBuild = path.join(source, `Porto-${target}`)
+        fs.mkdirSync(previousBuild)
+        fs.writeFileSync(path.join(previousBuild, 'previous-build.txt'), 'Synthetic previous desktop build')
+      }
       const packaged = spawnSync(process.execPath, [
-        path.join(__dirname, '..', 'ui', 'electron', 'package.cjs'),
+        path.join(source, 'package.cjs'),
         '--platform=darwin', `--arch=${process.arch}`, `--out=${output}`,
       ], { encoding: 'utf8', env: environment, timeout: 120000 })
-      assert.ifError(packaged.error)
+      assert.equal(packaged.error, undefined, `${packaged.error?.message}\n${packaged.stdout}\n${packaged.stderr}`)
       assert.equal(packaged.status, 0, `${packaged.stdout}\n${packaged.stderr}`)
     }
     await t.test('accepts an already guarded app in a shared packaging directory', () => {
@@ -284,6 +308,14 @@ test('macOS power-notification workaround and upstream removal gate', {
     })
     const archive = path.join(resources, 'app.asar')
     assert.equal(fs.statSync(archive).isFile(), true)
+    await t.test('does not repackage previous desktop outputs when the destination changes', () => {
+      const entries = requireElectron('@electron/asar').listPackage(archive)
+      assert.equal(entries.some((entry) => /^\/Porto-(darwin|linux|mas|win32)-/.test(entry)), false,
+        'Previous desktop bundles must not be copied into the application archive')
+      if (!environment.PORTO_TEST_MACOS_APP) {
+        assert.ok(entries.includes('/package-fixture.txt'), 'Ordinary application resources must remain packaged')
+      }
+    })
     fs.unlinkSync(archive)
     const fixture = path.join(resources, 'app')
     fs.mkdirSync(fixture)
@@ -297,7 +329,7 @@ test('macOS power-notification workaround and upstream removal gate', {
     for (const injectFailure of [true, false]) {
       await t.test(injectFailure ? 'renders and exits after failed power registration' : 'renders and exits with no injected environment', () => {
         const result = spawnSync(executable, [
-          `--user-data-dir=${path.join(directory, `packaged profile ${injectFailure}`)}`, '--disable-breakpad',
+          `--user-data-dir=${path.join(directory, `packaged profile ${injectFailure}`)}`, ...smokeArguments,
         ], {
           encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
           env: { ...packagedEnvironment, ...(injectFailure ? { DYLD_INSERT_LIBRARIES: failure } : {}) },

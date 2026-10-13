@@ -123,8 +123,11 @@ macOS CI and DMG releases also run
 `hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
 ports, forces a failed power-registration call in an isolated Electron process,
 and verifies that a sandboxed renderer still loads with the temporary guard.
-It also packages a real macOS app and replaces its application archive with
-an isolated synthetic fixture before launching it. The packaged executable
+It also runs the production packager against an isolated synthetic source tree
+and replaces the resulting application archive with a synthetic fixture before
+launching it. Previous `Porto-<platform>-<architecture>` build directories must
+not enter the archive when the packaging destination changes; ordinary app
+resources and both icon formats remain included. The packaged executable
 must render and exit cleanly with failed power registration without an
 external guard, preserve Electron Node mode and its executable path, and
 repair closed standard streams. `PORTO_TEST_MACOS_APP=/path/to/Porto.app`
@@ -135,6 +138,12 @@ registration, and checks rendering and reopening without a command-line app
 path. `ui/electron/dev-launcher.test.cjs` checks normal argument-free reopen,
 preserved development-mode behavior, unchanged npm runtime files, cache reuse,
 and Windows/Linux source arguments.
+Synthetic macOS launches pass `-ApplePersistenceIgnoreState YES` so deliberate
+crashes cannot open AppKit's modal reopen-windows prompt on later runs. This
+affects only those test processes, not user defaults or normal Porto launches.
+The unguarded crash runs before the guarded rendering check to cover this
+recovery path. Startup deadlines stay unchanged, and failures include captured
+stdout/stderr plus the fixture's current startup phase.
 An unguarded probe deliberately fails with removal instructions when the
 locked Electron no longer needs the workaround. Keep that retirement gate
 until the helper is removed; see
