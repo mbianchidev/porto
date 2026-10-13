@@ -82,6 +82,12 @@ Windows paths. Windows disables CGO for the daemon/test build, as the client
 suite does not require WinFsp. The compiled client-test executable sits beside
 the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
+On software-emulated macOS, the host prepares Lima's pinned default containerd
+archive before boot: it verifies the downloaded gzip, decompresses it natively,
+and pins the resulting tar with its own SHA-256. The guest retains the same
+runtime version, rootless services, architecture, and 20-minute boot deadline,
+without repeatedly decompressing the large payload under QEMU. Failed boots
+print bounded host and guest cloud-init logs before the owned fixture is removed.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 Linux bundles tools as the runner user and elevates only the isolated
 containerd/BuildKit workload.
