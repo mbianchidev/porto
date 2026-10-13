@@ -189,13 +189,15 @@ export function RuntimeFiles({ kind, name }: { kind: keyof typeof PLURAL; name: 
       {listing.data && !unavailable && <>
         <p className="hintLine">{listing.data.readOnly ? 'Read-only access' : 'Writable access; edits are explicit'} · identity {listing.data.identity.slice(0, 12)}</p>
         <div className="dataTableScroll"><table className="dataTable">
-          <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Mode / UID:GID</th><th>Transfer</th></tr></thead>
+          <thead><tr><th>Name</th><th>Type</th><th>Size</th><th>Mode / UID:GID</th></tr></thead>
           <tbody>{listing.data.entries.map((entry) => <tr key={entry.path}>
-            <td><button type="button" disabled={busy} onClick={() => select(entry)}>{entry.path.split('/').pop()}</button>{entry.linkTarget && <small> → {entry.linkTarget}</small>}</td>
+            <td><div className="runtimeFileActions">
+              <button type="button" title={entry.path} disabled={busy} onClick={() => select(entry)}>{entry.path.split('/').pop()}</button>
+              {entry.type === 'file' && (entry.size <= MAX_FILE_TRANSFER_BYTES
+                ? <button type="button" aria-label={`Download ${entry.path}`} disabled={busy} onClick={() => void download(entry.path)}>Download</button>
+                : <small>Over 64 MiB; use an archive.</small>)}
+            </div>{entry.linkTarget && <small> → {entry.linkTarget}</small>}</td>
             <td>{entry.type}</td><td>{bytesLabel(entry.size)}</td><td>{entry.mode.toString(8).padStart(4, '0')} / {entry.uid}:{entry.gid}</td>
-            <td>{entry.type === 'file' && (entry.size <= MAX_FILE_TRANSFER_BYTES
-              ? <button type="button" aria-label={`Download ${entry.path}`} disabled={busy} onClick={() => void download(entry.path)}>Download</button>
-              : <small>Over 64 MiB; use an archive.</small>)}</td>
           </tr>)}</tbody>
         </table></div>
         {listing.data.entries.length === 0 && <p>Directory is empty.</p>}

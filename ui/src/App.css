@@ -2319,6 +2319,19 @@ button:disabled {
   max-width: 100%;
 }
 
+.runtimeFileActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.runtimeFileActions button {
+  max-width: 140px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .terminalModePicker {
   display: flex;
   gap: 5px;
