@@ -7,6 +7,10 @@ import { stripTerminalNoise } from '../format'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 
+const logTimeFormat = new Intl.DateTimeFormat(undefined, {
+  hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false,
+})
+
 export function ContainerLogs({ id }: { id: string }) {
   const { notifyError } = useMessages()
   const [follow, setFollow] = useState(true)
@@ -109,7 +113,7 @@ export function ContainerLogs({ id }: { id: string }) {
     <p className="hintLine">At most 5,000 records / 4 MiB retained · {dropped} older record(s) discarded. Clear keeps the live subscription; reconnect/resume reloads retained history. Captured timestamps are not invented for legacy logs.</p>
     <div className="logViewport" role="log" aria-label="Container output" aria-live="off" tabIndex={0}>
       {filtered.map((record) => <div className={`logLine ${record.stream === 'stderr' ? 'stderr' : 'stdout'}`} key={record.sequence}>
-        <time dateTime={record.timestamp}>{record.timestamp ? new Date(record.timestamp).toLocaleTimeString([], { hour12: false }) : 'untimed'}</time>
+        <time dateTime={record.timestamp}>{record.timestamp ? logTimeFormat.format(new Date(record.timestamp)) : 'untimed'}</time>
         <span className="streamLabel">{record.stream}</span><span className="logMessage">{record.text}</span>
       </div>)}
     </div>
