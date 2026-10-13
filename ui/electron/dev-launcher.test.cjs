@@ -106,5 +106,5 @@ test('macOS dev app opens source on first launch and reopens without an applicat
     `LaunchServices reopen did not load source:\n${fs.readFileSync(stderr, 'utf8')}`)
   const modifiedAt = fs.statSync(executable).mtimeMs
   assert.equal(await prepareMacOSDevelopmentApp(options), bundle)
-  assert.equal(fs.statSync(executable).mtimeMs, modifiedAt, 'Unchanged dev runs must reuse the guarded bundle')
+  assert.equal(fs.statSync(executable).mtimeMs, modifiedAt, 'Unchanged dev runs must reuse the cached source bundle')
 })

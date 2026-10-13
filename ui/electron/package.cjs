@@ -4,7 +4,6 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { normalizeElectronRuntimeSymlinks } = require('../../scripts/desktop-runtime-symlinks.cjs')
-const { installMacOSBootstrap } = require('../../scripts/macos-desktop-bootstrap.cjs')
 const { parseSemver, RELEASE_VERSION_FILE } = require('./desktop-updater.cjs')
 
 const packagerEntry = path.join(path.dirname(require.resolve('@electron/packager')), '..', 'bin', 'electron-packager.mjs')
@@ -51,6 +50,7 @@ const args = [
 const result = spawnSync(process.execPath, args, {
   cwd: __dirname,
   stdio: 'inherit',
+  env: { ...process.env, TMPDIR: metadataDirectory, TMP: metadataDirectory, TEMP: metadataDirectory },
 })
 
 if (result.error) {
@@ -82,7 +82,6 @@ if (result.error) {
       const macOSBundles = fs.readdirSync(packagedApp, { withFileTypes: true })
         .filter((entry) => entry.isDirectory() && entry.name.endsWith('.app'))
         .map((entry) => path.join(packagedApp, entry.name))
-      for (const bundle of macOSBundles) installMacOSBootstrap(bundle)
       const resourceRoots = [
         path.join(packagedApp, 'resources'),
         ...macOSBundles.map((bundle) => path.join(bundle, 'Contents', 'Resources')),

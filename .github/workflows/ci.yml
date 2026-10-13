@@ -252,7 +252,6 @@ jobs:
           node --check electron/package.cjs
           bash -n electron/apply-update.sh
           node --check ../scripts/desktop-runtime-symlinks.cjs
-          node --check ../scripts/macos-desktop-bootstrap.cjs
           node --check ../scripts/macos-development-app.cjs
 
       - name: Audit desktop dependencies
@@ -318,7 +317,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
-          node --test ui/electron/desktop-logging.test.cjs hacks/macos-power-notification-compat.test.cjs
+          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs
 
       - name: Validate Windows update helper
         if: runner.os == 'Windows'

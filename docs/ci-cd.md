@@ -130,9 +130,10 @@ at the default debug level, without duplicate records when stderr already
 points at that file. No user database or running daemon is used.
 
 macOS CI and DMG releases also run
-`hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
-ports, forces a failed power-registration call in an isolated Electron process,
-and verifies that a sandboxed renderer still loads with the temporary guard.
+`scripts/macos-startup.test.cjs`. It forces a failed power-registration call in
+an isolated Electron process and verifies that the unmodified Electron 44.7.1
+runtime still loads a sandboxed renderer and exits cleanly. The former native
+workaround and crash-expecting negative control have been removed.
 It also runs the production packager against an isolated synthetic source tree
 and replaces the resulting application archive with a synthetic fixture before
 launching it. Previous `Porto-<platform>-<architecture>` build directories must
@@ -148,26 +149,22 @@ registration, and checks rendering and reopening without a command-line app
 path. `ui/electron/dev-launcher.test.cjs` checks normal argument-free reopen,
 preserved development-mode behavior, unchanged npm runtime files, cache reuse,
 and Windows/Linux source arguments.
-Synthetic macOS launches pass `-ApplePersistenceIgnoreState YES` so deliberate
-crashes cannot open AppKit's modal reopen-windows prompt on later runs. This
+Synthetic macOS launches pass `-ApplePersistenceIgnoreState YES` so saved state
+from earlier abnormal exits cannot open AppKit's modal reopen-windows prompt. This
 affects only those test processes, not user defaults or normal Porto launches.
-The unguarded crash runs before the guarded rendering check to cover this
-recovery path. Startup deadlines stay unchanged, and failures include captured
-stdout/stderr plus the fixture's current startup phase.
-An unguarded probe deliberately fails with removal instructions when the
-locked Electron no longer needs the workaround. Keep that retirement gate
-until the helper is removed; see
-[macOS 27 recovery](installation.md#macos-27-power-notification-crash).
+The test-only failure injector clears its loader environment before child
+processes start. No native guard is linked or injected. Startup deadlines stay
+unchanged, and failures include captured stdout/stderr plus the fixture's current
+startup phase. Successful probes verify rendering, the locked runtime version,
+and the normal quit event instead of accepting a deliberate crash.
 The native tests are skipped on Windows and Linux; no macOS library is built
 or added to their packages.
 
 Both macOS DMGs and desktop tar archives are built on macOS from the same
-guarded app. `scripts/macos-desktop-bootstrap.cjs` links the shared guard into
-a native entry point that preserves Electron's fuse-aware Node dispatch and
-stdio initialization. It checks the original bootstrap imports, target
-architectures, linked guard, and interposition section, and must run before
-any future code signing/notarization. Cross-packaging macOS desktop apps on
-Linux fails explicitly; CLI archives can still be cross-built. macOS tar
+app, retaining Electron's original fuse-aware Node dispatch and stdio
+initialization. Packaging uses an invocation-private temporary directory so
+parallel builds cannot remove one another's staged icon catalog or application.
+Resource changes must precede any future code signing/notarization. macOS tar
 archives omit AppleDouble metadata and retain the existing release layout.
 
 macOS packages include a native Icon Composer `.icon` asset made from Porto's
@@ -175,8 +172,8 @@ existing artwork, with glass effects disabled, alongside the unchanged `.icns`
 fallback. Electron Packager compiles the modern icon into `Assets.car`; native
 smoke tests check both icon resources and their `Info.plist` entries. Building
 macOS packages requires macOS 26 or newer and Xcode 26 or newer with `actool`
-available. Source development still uses the `.icns` icon and only requires
-Xcode Command Line Tools.
+available. Source development still uses the `.icns` icon and prepares its cached
+bundle without compiling a native entry point.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
