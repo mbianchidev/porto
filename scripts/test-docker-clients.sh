@@ -20,10 +20,35 @@ buildkit_pid=""
 created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
+dump_lima_boot_logs() {
+  for name in serial.log ha.stderr.log ha.stdout.log; do
+    file="$LIMA_HOME/porto-engine/$name"
+    if [ -f "$file" ]; then
+      printf '\nCI Lima diagnostics: %s\n' "$name" >&2
+      if ! tail -n 120 "$file" >&2; then
+        echo "Unable to read CI Lima diagnostics from $file." >&2
+      fi
+    fi
+  done
+  if ! node -e '
+    const { spawnSync } = require("node:child_process")
+    const result = spawnSync("limactl", [
+      "shell", "--workdir=/", "porto-engine", "--", "sudo", "-n",
+      "tail", "-n", "200", "/var/log/cloud-init-output.log",
+    ], { stdio: ["ignore", 2, 2], timeout: 60000, killSignal: "SIGKILL" })
+    if (result.error) console.error("Unable to read CI guest boot logs: " + result.error.message)
+    process.exitCode = result.error ? 1 : (result.status ?? 1)
+  '; then
+    echo "CI guest boot diagnostics were unavailable; preserving the original failure." >&2
+  fi
+}
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
   if [ "$created_lima" = true ]; then
+    if [ "$result" -ne 0 ]; then
+      dump_lima_boot_logs
+    fi
     if ! "$porto" docker engine-remove --confirm; then
       if ! limactl delete --force porto-engine; then
         echo "Failed to remove the isolated CI Porto engine." >&2
@@ -132,9 +157,14 @@ else
       *) echo "Cannot determine macOS hardware virtualization support." >&2; exit 1 ;;
     esac
   fi
+  lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
+    --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user)
+  if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
+    archive_override="$(node scripts/lima-containerd-archive.cjs "$goarch" "$temporary/containerd-bootstrap")"
+    lima_options+=("--set=$archive_override")
+  fi
   created_lima=true
-  limactl start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu \
-    --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user template:ubuntu-24.04
+  limactl "${lima_options[@]}" template:ubuntu-24.04
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 

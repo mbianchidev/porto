@@ -52,12 +52,16 @@ test('macOS dev app opens source on first launch and reopens without an applicat
   const entry = `
     const { app, BrowserWindow } = require('electron')
     const fs = require('node:fs')
-    const timeout = setTimeout(() => { console.error('Timed out before source rendering'); app.exit(1) }, 30000)
+    let phase = 'waiting for app readiness'
+    const timeout = setTimeout(() => { console.error('Timed out during ' + phase); app.exit(1) }, 30000)
     app.whenReady().then(async () => {
       if (app.isPackaged) throw new Error('Dev app must not enable packaged daemon replacement or updates')
       if (fs.realpathSync(app.getAppPath()) !== fs.realpathSync(process.env.PORTO_TEST_DEV_SOURCE)) throw new Error('Wrong source application')
+      phase = 'creating the sandboxed window'
       const window = new BrowserWindow({ show: false, webPreferences: { sandbox: true, contextIsolation: true, nodeIntegration: false } })
+      phase = 'loading the synthetic page'
       await window.loadURL('data:text/html,<main>synthetic source renderer</main>')
+      phase = 'executing the renderer script'
       if (await window.webContents.executeJavaScript('document.querySelector("main").textContent') !== 'synthetic source renderer') throw new Error('No app rendered')
       console.log('PORTO_DEV_SOURCE_RENDERED')
       clearTimeout(timeout)
@@ -72,17 +76,18 @@ test('macOS dev app opens source on first launch and reopens without an applicat
   const bundle = await prepareMacOSDevelopmentApp(options)
   const executable = path.join(bundle, 'Contents', 'MacOS', 'Electron')
   assert.deepEqual(fs.readFileSync(electron), before, 'The npm-installed Electron runtime must not be edited')
-  const launch = developmentLaunch({ platform: 'darwin', developmentBundle: bundle, appDirectory: source, args: ['--disable-breakpad'] })
-  assert.deepEqual(launch.args, ['--disable-breakpad'], 'The cached app must not rely on the original CLI app path')
+  const args = ['--disable-breakpad', '-ApplePersistenceIgnoreState', 'YES']
+  const launch = developmentLaunch({ platform: 'darwin', developmentBundle: bundle, appDirectory: source, args })
+  assert.deepEqual(launch.args, args, 'The cached app must not rely on the original CLI app path')
   const environment = { ...process.env, PORTO_TEST_DEV_SOURCE: source }
   delete environment.ELECTRON_RUN_AS_NODE
   delete environment.ELECTRON_FORCE_IS_PACKAGED
   delete environment.DYLD_INSERT_LIBRARIES
   for (const attempt of ['first', 'reopened']) {
-    const result = spawnSync(executable, [`--user-data-dir=${path.join(directory, attempt)}`, '--disable-breakpad'], {
+    const result = spawnSync(executable, [`--user-data-dir=${path.join(directory, attempt)}`, ...launch.args], {
       cwd: directory, env: environment, encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL',
     })
-    assert.ifError(result.error)
+    assert.equal(result.error, undefined, `${result.error?.message}\n${result.stdout}\n${result.stderr}`)
     assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
     assert.match(result.stdout, /PORTO_DEV_SOURCE_RENDERED/)
   }
@@ -91,13 +96,15 @@ test('macOS dev app opens source on first launch and reopens without an applicat
   const reopened = spawnSync('/usr/bin/open', [
     '-n', '-W', bundle, '--stdout', stdout, '--stderr', stderr,
     '--env', `PORTO_TEST_DEV_SOURCE=${source}`,
-    '--args', `--user-data-dir=${path.join(directory, 'launch services profile')}`, '--disable-breakpad',
+    '--args', `--user-data-dir=${path.join(directory, 'launch services profile')}`, ...launch.args,
   ], { cwd: directory, env: environment, encoding: 'utf8', timeout: 45000, killSignal: 'SIGKILL' })
-  assert.ifError(reopened.error)
+  assert.equal(reopened.error, undefined,
+    `${reopened.error?.message}\n${reopened.stdout}\n${reopened.stderr}\n` +
+    [stdout, stderr].map((file) => fs.existsSync(file) ? fs.readFileSync(file, 'utf8') : `Missing ${file}`).join('\n'))
   assert.equal(reopened.status, 0, `${reopened.stdout}\n${reopened.stderr}`)
   assert.match(fs.readFileSync(stdout, 'utf8'), /PORTO_DEV_SOURCE_RENDERED/,
     `LaunchServices reopen did not load source:\n${fs.readFileSync(stderr, 'utf8')}`)
   const modifiedAt = fs.statSync(executable).mtimeMs
   assert.equal(await prepareMacOSDevelopmentApp(options), bundle)
-  assert.equal(fs.statSync(executable).mtimeMs, modifiedAt, 'Unchanged dev runs must reuse the guarded bundle')
+  assert.equal(fs.statSync(executable).mtimeMs, modifiedAt, 'Unchanged dev runs must reuse the cached source bundle')
 })

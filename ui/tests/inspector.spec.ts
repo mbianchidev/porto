@@ -288,8 +288,11 @@ test('logs remain bounded, searchable, stream-filtered and close on tab switch',
         }
       })
       const output = page.getByRole('log', { name: 'Container output' })
+      await expect(output.locator('.logLine')).toHaveCount(5000)
       await expect(output.getByText('synthetic-line-5999', { exact: true })).toBeVisible()
       await expect(output.getByText('synthetic-line-0', { exact: true })).toHaveCount(0)
+      await expect(output.locator('time').last()).toHaveText(await page.evaluate(() =>
+        new Date('2026-01-01T00:00:00Z').toLocaleTimeString([], { hour12: false })))
       await expect(page.getByText(/1000 older record/)).toBeVisible()
       await page.getByLabel('Search logs').fill('5999')
       await expect(output.getByText('synthetic-line-5999', { exact: true })).toBeVisible()

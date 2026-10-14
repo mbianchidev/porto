@@ -17,7 +17,7 @@ function developmentLaunch({
   delete launchEnvironment.ELECTRON_RUN_AS_NODE
   delete launchEnvironment.ELECTRON_FORCE_IS_PACKAGED
   if (platform === 'darwin') {
-    if (!developmentBundle) throw new Error('The guarded macOS development application is required')
+    if (!developmentBundle) throw new Error('The macOS development application is required')
     return {
       executable: path.join(developmentBundle, 'Contents', 'MacOS', 'Electron'),
       args: [...args], cwd: directory, environment: launchEnvironment,
