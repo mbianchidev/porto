@@ -14,6 +14,15 @@ function fixture(t) {
   return { source: path.join(directory, 'runtime.tar.gz'), destination: path.join(directory, 'runtime.tar') }
 }
 
+test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {
+  const script = fs.readFileSync(path.join(__dirname, 'test-docker-clients.sh'), 'utf8')
+  assert.match(script, /limactl "\$\{lima_options\[@\]\}" template:ubuntu-26\.04/)
+  assert.doesNotMatch(script, /template:ubuntu-24\.04/)
+  assert.match(script, /--containerd=user/)
+  assert.match(script, /--timeout=20m/)
+  assert.match(script, /--mount-none/)
+})
+
 test('selects the pinned Lima default without changing the runtime version or guest architecture', () => {
   const archives = ['x86_64', 'aarch64'].map((arch) => ({
     arch, location: `https://fixture.invalid/synthetic-${arch}.tar.gz`, digest: `sha256:${'1'.repeat(64)}`,

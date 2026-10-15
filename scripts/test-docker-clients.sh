@@ -164,7 +164,7 @@ else
     lima_options+=("--set=$archive_override")
   fi
   created_lima=true
-  limactl "${lima_options[@]}" template:ubuntu-24.04
+  limactl "${lima_options[@]}" template:ubuntu-26.04
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 
