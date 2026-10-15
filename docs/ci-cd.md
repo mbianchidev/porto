@@ -90,8 +90,8 @@ without repeatedly decompressing the large payload under QEMU. Failed boots
 print bounded host and guest cloud-init logs before the owned fixture is removed.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 
-Ubuntu 26.04 avoids the [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
-in Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,
+Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
+that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,
 leaving rootless provisioning waiting indefinitely for the user systemd socket.
 An `engine.json` missing during cleanup after a failed boot is secondary: the
 client test records Porto ownership only after Lima finishes starting.
