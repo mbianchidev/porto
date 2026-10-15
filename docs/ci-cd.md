@@ -43,10 +43,18 @@ before running `go test ./internal/docker -run
 '^TestStorageVolumeLifecycleIntegration$' -count=1`. Match the helper architecture
 to the guest. The fixture uploads a private temporary helper, creates uniquely
 named synthetic volumes and cleans only identity-proven fixture resources; it
-never starts/stops the engine or replaces its installed helper. Its stdio tunnel
-uses a fixture-owned channel without changing the application's SSH master.
+never starts/stops the engine or replaces its installed helper. It uses the
+production runtime connector, not a test-only transport override.
 `PORTO_STORAGE_RUNTIME_TEST=<absolute-cross-built-runtimefiles-test-path>` also
 runs the Linux-specific metadata/identity tests in the guest.
+
+`PORTO_DOCKER_TUNNEL_INTEGRATION=1 go test ./internal/docker -run
+'^TestLimaContainerdProductionConnectionIntegration$' -count=1` separately checks
+the real production connector on an already-running owned Lima engine without
+reading workload data. It connects twice, cancels completed dial contexts,
+checks containerd's health, and proves that closing each connection leaves
+Lima's shared shell usable. Unit fixtures reject independent SSH forwarding
+and cover helper failure diagnostics, pending cancellation and subprocess reaping.
 
 The log stress case renders all 5,000 retained rows after a 6,000-record burst,
 checks the discard count and locale-formatted timestamps, and keeps the same

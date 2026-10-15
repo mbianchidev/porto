@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"net"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -101,20 +100,6 @@ func TestStorageVolumeLifecycleIntegration(t *testing.T) {
 		}
 	}
 	manager := NewWithStateDir(storageIntegrationRunner{helper: guestHelper}, base.stateDir)
-	socket, namespace, err := manager.discoverLimaContainerd(ctx, state.Instance)
-	if err != nil {
-		t.Fatal(err)
-	}
-	manager.runtimeConnector = func(ctx context.Context) (containerRuntime, error) {
-		client, err := newGRPCContainerRuntime(ctx, namespace, "synthetic storage fixture", func(ctx context.Context, _ string) (net.Conn, error) {
-			return dialCommandConn(ctx, "synthetic storage tunnel",
-				limaContainerdStdioCommand(ctx, state.Instance, socket), buildKitAddr("porto"), buildKitAddr(socket))
-		}, nil, manager.stateDir, manager.runner, state.Instance, guestHelper, manager.networkLocks, manager.containerNameMu)
-		if err == nil {
-			client.address = socket
-		}
-		return client, err
-	}
 	home := t.TempDir()
 	t.Setenv("PORTO_HOME", home)
 	transfers := filepath.Join(home, "transfers")

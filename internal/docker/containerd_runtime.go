@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -176,20 +175,13 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		if discoveredNamespace != "" {
 			namespace = discoveredNamespace
 		}
-		var sshConfig string
-		if runtime.GOOS != "windows" {
-			sshConfig, err = m.discoverLimaSSHConfig(ctx, instance)
-			if err != nil {
-				return nil, err
-			}
-		}
 		helperPath, _ := m.lookPath("porto-runtime-helper")
 		client, err := newGRPCContainerRuntime(
 			ctx,
 			namespace,
 			backend.description,
 			func(dialContext context.Context, _ string) (net.Conn, error) {
-				return dialLimaContainerd(dialContext, instance, sshConfig, socket)
+				return dialLimaContainerd(dialContext, instance, socket)
 			},
 			m.containerInventoryEnricher(backend),
 			m.stateDir,
@@ -400,93 +392,14 @@ func (m *Manager) discoverLimaSSHConfig(ctx context.Context, instance string) (s
 	return configPath, nil
 }
 
-func dialLimaContainerd(ctx context.Context, instance, sshConfig, socket string) (net.Conn, error) {
-	if runtime.GOOS == "windows" {
-		return dialCommandConn(
-			ctx,
-			"containerd tunnel",
-			limaContainerdStdioCommand(ctx, instance, socket),
-			buildKitAddr("porto"),
-			buildKitAddr(socket),
-		)
-	}
-	directory, err := os.MkdirTemp("", "porto-containerd-tunnel-*")
-	if err != nil {
-		return nil, fmt.Errorf("create containerd tunnel directory: %w", err)
-	}
-	localSocket := filepath.Join(directory, "containerd.sock")
-	// Lima's ControlPersist master can background -N and exit successfully.
-	command := newTunnelCommand(
+func dialLimaContainerd(ctx context.Context, instance, socket string) (net.Conn, error) {
+	return dialCommandConn(
 		ctx,
-		"ssh",
-		"-F",
-		sshConfig,
-		"-S",
-		"none",
-		"-N",
-		"-T",
-		"-o",
-		"ControlMaster=no",
-		"-o",
-		"ControlPersist=no",
-		"-o",
-		"ForkAfterAuthentication=no",
-		"-o",
-		"ExitOnForwardFailure=yes",
-		"-o",
-		"StreamLocalBindUnlink=yes",
-		"-L",
-		localSocket+":"+socket,
-		"lima-"+instance,
+		"containerd tunnel",
+		limaContainerdStdioCommand(ctx, instance, socket),
+		buildKitAddr("porto"),
+		buildKitAddr(socket),
 	)
-	var stderr bytes.Buffer
-	command.Stderr = &stderr
-	if err := command.Start(); err != nil {
-		_ = os.RemoveAll(directory)
-		return nil, fmt.Errorf("start containerd SSH tunnel: %w", err)
-	}
-	done := make(chan error, 1)
-	go func() {
-		done <- command.Wait()
-	}()
-	timeout := time.NewTimer(10 * time.Second)
-	defer timeout.Stop()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		select {
-		case err := <-done:
-			_ = os.RemoveAll(directory)
-			message := strings.TrimSpace(stderr.String())
-			if message == "" {
-				message = "SSH exited with status 0"
-				if err != nil {
-					message = err.Error()
-				}
-			}
-			return nil, fmt.Errorf("containerd SSH tunnel exited before connecting: %s", message)
-		case <-ctx.Done():
-			_ = command.Process.Kill()
-			<-done
-			_ = os.RemoveAll(directory)
-			return nil, context.Cause(ctx)
-		case <-timeout.C:
-			_ = command.Process.Kill()
-			<-done
-			_ = os.RemoveAll(directory)
-			return nil, errors.New("timed out opening containerd SSH tunnel")
-		case <-ticker.C:
-			connection, err := (&net.Dialer{}).DialContext(ctx, "unix", localSocket)
-			if err == nil {
-				return &limaContainerdConn{
-					Conn:      connection,
-					command:   command,
-					done:      done,
-					directory: directory,
-				}, nil
-			}
-		}
-	}
 }
 
 func limaContainerdStdioCommand(ctx context.Context, instance, socket string) *exec.Cmd {
@@ -524,36 +437,6 @@ func (m *Manager) containerInventoryEnricher(backend commandBackend) func(contex
 		}
 		return decodeNerdctlContainers(output)
 	}
-}
-
-type limaContainerdConn struct {
-	net.Conn
-	command   *exec.Cmd
-	done      chan error
-	directory string
-	once      sync.Once
-}
-
-func (connection *limaContainerdConn) Close() error {
-	var closeErr error
-	connection.once.Do(func() {
-		closeErr = connection.Conn.Close()
-		if connection.command.Process != nil {
-			if err := connection.command.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-				closeErr = errors.Join(closeErr, err)
-			}
-		}
-		select {
-		case err := <-connection.done:
-			if err != nil && !strings.Contains(strings.ToLower(err.Error()), "signal: killed") {
-				closeErr = errors.Join(closeErr, fmt.Errorf("containerd SSH tunnel: %w", err))
-			}
-		case <-time.After(5 * time.Second):
-			closeErr = errors.Join(closeErr, errors.New("timed out stopping containerd SSH tunnel"))
-		}
-		closeErr = errors.Join(closeErr, os.RemoveAll(connection.directory))
-	})
-	return closeErr
 }
 
 func (r *grpcContainerRuntime) Namespace() string { return r.namespace }

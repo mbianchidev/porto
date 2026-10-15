@@ -80,18 +80,27 @@ Both created and exited containers can be started or removed without a
 running task; Stop and Restart remain disabled until the container is active.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
-inside the VM and keeps a tunnel open for the gRPC connection. Windows uses
-Lima shell standard input/output and the bundled guest helper; it never asks
-Windows OpenSSH to create a host Unix socket. macOS and Linux retain their
-Unix-socket SSH forwarding, using a dedicated foreground SSH connection rather
-than Lima's shared `ControlMaster`/`ControlPersist` session. This prevents a
-successful SSH background exit from being mistaken for a startup failure and
-keeps tunnel cleanup independent of Lima's other SSH sessions.
-A completed gRPC dial does not terminate the
-established tunnel. The connection and subscription are closed during runtime
+inside the VM and keeps a helper channel open for the gRPC connection. All host
+platforms use `limactl shell` standard input/output and the bundled guest helper's
+`dial-stdio` command, just as BuildKit uses its stdio transport. No host Unix
+socket or independent `ssh -N -L` connection is created. A healthy existing Lima
+SSH session can therefore carry containerd even when new connections to Lima's
+forwarded SSH port are closed before authentication.
+
+A completed or cancelled gRPC dial does not terminate an already established
+channel. Closing it reaps only its own subprocess/channel, without exiting
+Lima's shared SSH master or removing its socket. The connection and subscription
+are closed during runtime
 disable and daemon shutdown. Normal observation does not repeatedly run `nerdctl ps` or spawn
 `limactl shell` processes. Container lifecycle events and inventory failures
 also flow into the desktop Activity log.
+
+For a startup error containing `containerd SSH tunnel exited before connecting`
+and `Connection closed by 127.0.0.1`, check the read-only shell path with
+`limactl shell --workdir=/ porto-engine -- true`. If that works, containerd
+must use the helper channel rather than requiring a new SSH forward. Readiness
+deadlines are unchanged; helper/socket/ownership failures stay explicit and
+never authorize deleting or automatically recreating the guest.
 
 Ownership, socket discovery, and helper probes run from the guest root
 directory instead of entering a mounted host home directory. Capability probes
