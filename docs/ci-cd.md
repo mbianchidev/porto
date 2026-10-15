@@ -71,7 +71,7 @@ and native macOS/Windows Lima backends. Windows exercises Porto's named pipe.
 The Linux runtime is checksum-pinned nerdctl-full 2.4.1 with separate
 containerd/BuildKit sockets and state; Lima jobs use isolated `LIMA_HOME` and
 `PORTO_HOME` roots. Only their own processes and VM are removed.
-Hosted macOS and Windows runners use small host-architecture Ubuntu 24.04 QEMU
+Hosted macOS and Windows runners use small host-architecture Ubuntu 26.04 QEMU
 guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
 requires software emulation because nested Virtualization.framework support is
 unavailable; matching the host architecture keeps its guest agent/runtime helper
@@ -89,6 +89,13 @@ runtime version, rootless services, architecture, and 20-minute boot deadline,
 without repeatedly decompressing the large payload under QEMU. Failed boots
 print bounded host and guest cloud-init logs before the owned fixture is removed.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
+
+Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
+that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,
+leaving rootless provisioning waiting indefinitely for the user systemd socket.
+An `engine.json` missing during cleanup after a failed boot is secondary: the
+client test records Porto ownership only after Lima finishes starting.
+
 Linux bundles tools as the runner user and elevates only the isolated
 containerd/BuildKit workload.
 CPU counter assertions remain enabled and average a fixed five-interval window.
