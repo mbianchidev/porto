@@ -100,7 +100,6 @@ jobs:
           node --check ui/electron/package.cjs
           bash -n ui/electron/apply-update.sh
           node --check scripts/desktop-runtime-symlinks.cjs
-          node --check scripts/macos-desktop-bootstrap.cjs
           node --check scripts/macos-development-app.cjs
           bash -n scripts/download-file.sh
           bash -n scripts/bundle-desktop-runtime.sh
@@ -227,7 +226,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
-          node --test ui/electron/desktop-logging.test.cjs hacks/macos-power-notification-compat.test.cjs
+          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs
 
       - name: Package DMGs and desktop archives
         env:

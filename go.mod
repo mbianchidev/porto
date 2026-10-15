@@ -3,7 +3,7 @@ module github.com/mbianchidev/porto
 go 1.26.9
 
 require (
-	github.com/Microsoft/go-winio v0.6.3-0.20251027160822-ad3df93bed29
+	github.com/Microsoft/go-winio v0.6.3
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/containerd/api v1.12.0
@@ -14,7 +14,7 @@ require (
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
-	github.com/moby/buildkit v0.33.1
+	github.com/moby/buildkit v0.34.0
 	github.com/moby/moby/api v1.56.1
 	github.com/moby/moby/client v0.6.2
 	github.com/opencontainers/go-digest v1.0.0
@@ -23,7 +23,7 @@ require (
 	github.com/pkg/sftp v1.13.11
 	github.com/winfsp/cgofuse v1.6.0
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/sys v0.48.0
+	golang.org/x/sys v0.49.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
@@ -40,7 +40,7 @@ require (
 	github.com/containerd/log v0.2.0 // indirect
 	github.com/containerd/log/otel v0.1.0 // indirect
 	github.com/containerd/plugin v1.1.0 // indirect
-	github.com/containerd/ttrpc v1.2.9 // indirect
+	github.com/containerd/ttrpc v1.2.10 // indirect
 	github.com/containernetworking/cni v1.3.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/docker/go-connections v0.8.2 // indirect
@@ -51,7 +51,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
 	github.com/google/uuid v1.6.0 // indirect
-	github.com/klauspost/compress v1.20.0 // indirect
+	github.com/klauspost/compress v1.20.1 // indirect
 	github.com/kr/fs v0.1.0 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/mattn/go-isatty v0.0.24 // indirect

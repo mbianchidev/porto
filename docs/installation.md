@@ -275,56 +275,18 @@ named `porto` context because named-pipe takeover cannot be reversed safely.
 
 ### macOS 27 power-notification crash
 
-On an affected macOS 27 host, `IORegisterForSystemPower` can return a null
-notification port and Electron can crash in `IONotificationPortGetRunLoopSource`
-before Porto starts or creates its diagnostic log. This was reproduced in the
-bundled v1.2.12 release, and Electron 44.5.1 still crashes when registration
-fails. Removing quarantine does not fix this native crash.
+Electron 44.7.1 handles failed `IORegisterForSystemPower` registration without
+dereferencing a null notification port. Its upstream fix is tracked in
+[Chromium 69403d85](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
+and [issue 562777834](https://issues.chromium.org/issues/562777834).
+Porto no longer includes a power-notification library, replacement native entry
+point, or recovery launcher. Install the current package and launch it normally;
+no loader environment or macOS security-setting change is needed.
 
-Until the bundled Electron includes the
-[upstream Chromium fix](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
-for [issue 562777834](https://issues.chromium.org/issues/562777834), new macOS
-DMGs and desktop archives include a temporary native guard. Install the
-package and launch Porto normally; no source checkout, compiler, or recovery
-command is required. The guard is linked only to Porto's macOS main executable,
-not to Windows/Linux builds or Electron helper processes. It does not set
-`DYLD_INSERT_LIBRARIES` or change system security settings.
-
-Valid notification ports pass through unchanged. Only a null port receives an
-inert run-loop source. If this fallback is needed, sleep/wake notifications
-are unavailable for that Porto process, and the guard reports this to stderr.
-Battery and thermal monitoring remain independent.
-
-For **older releases without the bundled guard**, an opt-in recovery launcher
-remains available. From a source checkout, with Xcode Command Line Tools
-installed and the Porto desktop closed, run:
-
-```sh
-bash hacks/open-porto-macos-27.sh /Applications/Porto.app
-```
-
-Pass `$HOME/Applications/Porto.app` instead for a per-user installation. The
-launcher builds a universal Intel/Apple Silicon library in
-`~/Library/Caches/Porto/macos-power-notification`, then loads it only into that
-Porto desktop process. It preserves valid notification ports and uses an inert
-run-loop source only for a null port. If that fallback is needed, sleep/wake
-notifications are unavailable and the helper reports this to stderr.
-The loader environment is cleared before Porto launches child processes.
-
-The recovery launcher does not modify the installed application, daemon, VM
-disks, or macOS security settings. The script itself is not bundled and refuses
-Windows, Linux, and other macOS versions. Do not disable SIP, Gatekeeper, or
-library validation if a signed application refuses the helper.
-
-**Removal requirement:** whenever Electron is upgraded, run
-`node --test hacks/macos-power-notification-compat.test.cjs` on macOS. The test
-forces power registration to fail without touching real app data. Once the
-locked Electron starts without the guard, the test fails with removal
-instructions: verify the upstream fix, delete the temporary helpers and
-packaged native bootstrap, remove their packaging hooks and these recovery
-instructions, and keep the injected-failure case as an unguarded regression
-test. Preserve the packaged-app rendering and clean-shutdown checks.
-`AGENTS.md` records the same requirement for future agents.
+`node --test scripts/macos-startup.test.cjs` verifies the locked runtime,
+cached development app, and packaged app with an isolated synthetic registration
+failure. Each must render and exit cleanly without the former workaround.
+The test no longer expects or deliberately produces an Electron crash.
 
 ### Manual archive installation
 
@@ -407,11 +369,12 @@ npm --prefix ui run desktop
 ```
 
 On macOS, `desktop` (or `npm --prefix ui/electron start`) prepares a cached
-**Porto Dev.app** with the same native power-notification guard as the desktop
-package. The first preparation requires Xcode Command Line Tools. It copies
+**Porto Dev.app** using Electron's original native executable. It copies
 Electron into a checkout/runtime-specific directory under
 `~/Library/Caches/Porto/development/`; it never edits the npm-installed
-`Electron.app`, installed Porto application, or helper processes.
+`Electron.app`, installed Porto application, or helper processes. The copied
+bundle embeds the source entry and is ad-hoc signed for local development;
+preparation no longer compiles or links a native workaround.
 
 The launcher prints the exact app path. Reopen **Porto Dev.app** from that path
 or its Dock icon: the bundle remembers this checkout and loads its current
@@ -425,8 +388,7 @@ running, and source edits are loaded without repackaging.
 This remains development mode: packaged-only updates, login registration, and
 bundled-daemon replacement are not enabled by the cached wrapper. Windows and
 Linux keep using their installed Electron runtime with an absolute source app
-path. The macOS guard is linked only into the cached main executable, not
-inherited through a loader environment by renderers or other children.
+path.
 
 The resulting `porto` binary contains the daemon and CLI. It looks for dashboard assets in this order:
 

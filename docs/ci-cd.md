@@ -48,6 +48,11 @@ uses a fixture-owned channel without changing the application's SSH master.
 `PORTO_STORAGE_RUNTIME_TEST=<absolute-cross-built-runtimefiles-test-path>` also
 runs the Linux-specific metadata/identity tests in the guest.
 
+The log stress case renders all 5,000 retained rows after a 6,000-record burst,
+checks the discard count and locale-formatted timestamps, and keeps the same
+assertion deadlines. Log rendering shares one time formatter per render rather
+than creating one for every record.
+
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches. A downloader override makes `app-builder-lib` use the same fetch-based
 `@electron/get` 5.x downloader as Electron and Electron Packager, removing its
@@ -94,6 +99,12 @@ Windows paths. Windows disables CGO for the daemon/test build, as the client
 suite does not require WinFsp. The compiled client-test executable sits beside
 the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
+On software-emulated macOS, the host prepares Lima's pinned default containerd
+archive before boot: it verifies the downloaded gzip, decompresses it natively,
+and pins the resulting tar with its own SHA-256. The guest retains the same
+runtime version, rootless services, architecture, and 20-minute boot deadline,
+without repeatedly decompressing the large payload under QEMU. Failed boots
+print bounded host and guest cloud-init logs before the owned fixture is removed.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 Linux bundles tools as the runner user and elevates only the isolated
 containerd/BuildKit workload.
@@ -136,11 +147,15 @@ at the default debug level, without duplicate records when stderr already
 points at that file. No user database or running daemon is used.
 
 macOS CI and DMG releases also run
-`hacks/macos-power-notification-compat.test.cjs`. It checks valid/null IOKit
-ports, forces a failed power-registration call in an isolated Electron process,
-and verifies that a sandboxed renderer still loads with the temporary guard.
-It also packages a real macOS app and replaces its application archive with
-an isolated synthetic fixture before launching it. The packaged executable
+`scripts/macos-startup.test.cjs`. It forces a failed power-registration call in
+an isolated Electron process and verifies that the unmodified Electron 44.7.1
+runtime still loads a sandboxed renderer and exits cleanly. The former native
+workaround and crash-expecting negative control have been removed.
+It also runs the production packager against an isolated synthetic source tree
+and replaces the resulting application archive with a synthetic fixture before
+launching it. Previous `Porto-<platform>-<architecture>` build directories must
+not enter the archive when the packaging destination changes; ordinary app
+resources and both icon formats remain included. The packaged executable
 must render and exit cleanly with failed power registration without an
 external guard, preserve Electron Node mode and its executable path, and
 repair closed standard streams. `PORTO_TEST_MACOS_APP=/path/to/Porto.app`
@@ -151,20 +166,22 @@ registration, and checks rendering and reopening without a command-line app
 path. `ui/electron/dev-launcher.test.cjs` checks normal argument-free reopen,
 preserved development-mode behavior, unchanged npm runtime files, cache reuse,
 and Windows/Linux source arguments.
-An unguarded probe deliberately fails with removal instructions when the
-locked Electron no longer needs the workaround. Keep that retirement gate
-until the helper is removed; see
-[macOS 27 recovery](installation.md#macos-27-power-notification-crash).
+Synthetic macOS launches pass `-ApplePersistenceIgnoreState YES` so saved state
+from earlier abnormal exits cannot open AppKit's modal reopen-windows prompt. This
+affects only those test processes, not user defaults or normal Porto launches.
+The test-only failure injector clears its loader environment before child
+processes start. No native guard is linked or injected. Startup deadlines stay
+unchanged, and failures include captured stdout/stderr plus the fixture's current
+startup phase. Successful probes verify rendering, the locked runtime version,
+and the normal quit event instead of accepting a deliberate crash.
 The native tests are skipped on Windows and Linux; no macOS library is built
 or added to their packages.
 
 Both macOS DMGs and desktop tar archives are built on macOS from the same
-guarded app. `scripts/macos-desktop-bootstrap.cjs` links the shared guard into
-a native entry point that preserves Electron's fuse-aware Node dispatch and
-stdio initialization. It checks the original bootstrap imports, target
-architectures, linked guard, and interposition section, and must run before
-any future code signing/notarization. Cross-packaging macOS desktop apps on
-Linux fails explicitly; CLI archives can still be cross-built. macOS tar
+app, retaining Electron's original fuse-aware Node dispatch and stdio
+initialization. Packaging uses an invocation-private temporary directory so
+parallel builds cannot remove one another's staged icon catalog or application.
+Resource changes must precede any future code signing/notarization. macOS tar
 archives omit AppleDouble metadata and retain the existing release layout.
 
 macOS packages include a native Icon Composer `.icon` asset made from Porto's
@@ -172,8 +189,8 @@ existing artwork, with glass effects disabled, alongside the unchanged `.icns`
 fallback. Electron Packager compiles the modern icon into `Assets.car`; native
 smoke tests check both icon resources and their `Info.plist` entries. Building
 macOS packages requires macOS 26 or newer and Xcode 26 or newer with `actool`
-available. Source development still uses the `.icns` icon and only requires
-Xcode Command Line Tools.
+available. Source development still uses the `.icns` icon and prepares its cached
+bundle without compiling a native entry point.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 

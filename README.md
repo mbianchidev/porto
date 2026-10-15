@@ -108,9 +108,9 @@ selects a different retention period. See
 [application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
 for exact paths and the `PORTO_LOG_LEVEL` setting.
 
-macOS desktop packages include a temporary native guard for a macOS 27
-power-notification startup crash. No recovery command is needed for new
-packages; see [compatibility and older-release recovery](docs/installation.md#macos-27-power-notification-crash).
+Electron 44.7.1 fixes the macOS 27 power-notification startup crash without
+Porto's former native workaround. See
+[macOS compatibility](docs/installation.md#macos-27-power-notification-crash).
 
 ### 4. Start a project
 

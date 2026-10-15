@@ -4,8 +4,6 @@ const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 
-const { installMacOSBootstrap, validateMacOSBootstrap } = require('./macos-desktop-bootstrap.cjs')
-
 const MARKER = 'porto-development.json'
 
 function run(command, args) {
@@ -30,7 +28,10 @@ function validateDevelopmentApp(bundle, key) {
   }
   fs.accessSync(path.join(resources, 'app', 'package.json'), fs.constants.R_OK)
   fs.accessSync(path.join(resources, 'app', 'main.cjs'), fs.constants.R_OK)
-  validateMacOSBootstrap(bundle, { executableName: 'Electron' })
+  fs.accessSync(path.join(bundle, 'Contents', 'MacOS', 'Electron'), fs.constants.X_OK)
+  if (fs.existsSync(path.join(bundle, 'Contents', 'Frameworks', 'libporto-power-notification.dylib'))) {
+    throw new Error('Porto Dev cache contains the retired power-notification workaround')
+  }
 }
 
 async function prepareMacOSDevelopmentApp({
@@ -38,7 +39,7 @@ async function prepareMacOSDevelopmentApp({
   electronExecutable,
   cacheRoot = path.join(os.homedir(), 'Library', 'Caches', 'Porto', 'development'),
 }) {
-  if (process.platform !== 'darwin') throw new Error('Prepare the guarded Porto Dev application on macOS')
+  if (process.platform !== 'darwin') throw new Error('Prepare the Porto Dev application on macOS')
   const source = fs.realpathSync(appDirectory)
   const executable = fs.realpathSync(electronExecutable)
   const runtimeBundle = path.dirname(path.dirname(path.dirname(executable)))
@@ -56,9 +57,6 @@ async function prepareMacOSDevelopmentApp({
     String(frameworkStat.size), String(frameworkStat.mtimeMs),
     fs.readFileSync(executable),
     fs.readFileSync(__filename),
-    fs.readFileSync(path.join(__dirname, 'macos-desktop-bootstrap.cjs')),
-    fs.readFileSync(path.join(__dirname, 'macos-desktop-main.cc')),
-    fs.readFileSync(path.join(__dirname, '..', 'hacks', 'macos-power-notification-compat.c')),
   ])
   const scope = fingerprint([source]).slice(0, 16)
   const directory = path.join(path.resolve(cacheRoot), scope, key)
@@ -104,10 +102,7 @@ async function prepareMacOSDevelopmentApp({
       '',
     ].join('\n'), { mode: 0o600 })
     fs.writeFileSync(path.join(resources, MARKER), JSON.stringify({ key, source, version }), { mode: 0o600 })
-    installMacOSBootstrap(staged, { executableName: 'Electron' })
-    // Only the isolated cached dev bundle is ad-hoc signed, after native edits.
-    run('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none',
-      path.join(staged, 'Contents', 'Frameworks', 'libporto-power-notification.dylib')])
+    // Sign only the isolated cached bundle after its source entry is embedded.
     run('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', staged])
     validateDevelopmentApp(staged, key)
     try {
