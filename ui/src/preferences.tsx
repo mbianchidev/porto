@@ -3,6 +3,8 @@ import type { ReactNode } from 'react'
 import {
   DEFAULT_EXPERIENCE_PREFERENCES,
   normalizeExperiencePreferences,
+  normalizeTheme,
+  resolveTheme,
   type ExperiencePreferences,
 } from './experiencePreferences'
 import { PreferencesContext } from './preferencesContext'
@@ -17,6 +19,7 @@ function loadCachedPreferences(): ExperiencePreferences {
     const parsed = JSON.parse(raw) as Partial<ExperiencePreferences>
     return {
       interfaceDensity: parsed.interfaceDensity === 'comfortable' ? 'comfortable' : 'compact',
+      theme: normalizeTheme(parsed.theme),
       reduceMotion: typeof parsed.reduceMotion === 'boolean' ? parsed.reduceMotion : DEFAULT_EXPERIENCE_PREFERENCES.reduceMotion,
       terminalFontSize: typeof parsed.terminalFontSize === 'number' && parsed.terminalFontSize >= 10 && parsed.terminalFontSize <= 24
         ? parsed.terminalFontSize
@@ -55,6 +58,17 @@ export function PreferencesProvider({ settings, children }: { settings: Settings
       }
     }
   }, [preferences, settings])
+
+  useEffect(() => {
+    const applyTheme = () => {
+      document.documentElement.dataset.theme = resolveTheme(preferences.theme)
+    }
+    applyTheme()
+    if (preferences.theme !== 'system' || !window.matchMedia) return
+    const query = window.matchMedia('(prefers-color-scheme: light)')
+    query.addEventListener('change', applyTheme)
+    return () => query.removeEventListener('change', applyTheme)
+  }, [preferences.theme])
 
   return <PreferencesContext.Provider value={preferences}>{children}</PreferencesContext.Provider>
 }

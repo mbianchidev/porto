@@ -18,7 +18,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'builds', label: 'Builds', icon: 'builds' },
       { id: 'volumes', label: 'Volumes', icon: 'volumes' },
       { id: 'networks', label: 'Networks', icon: 'networks' },
-      { id: 'docker-storage', label: 'Storage and cleanup', icon: 'volumes' },
+      { id: 'docker-storage', label: 'Storage', icon: 'volumes' },
       { id: 'migration', label: 'Migrate runtime data', icon: 'images' },
     ],
   },

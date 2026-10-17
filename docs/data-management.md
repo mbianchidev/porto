@@ -49,28 +49,40 @@ not supplied by the backend.
 
 ## Storage and scoped cleanup
 
-**Containers → Storage and cleanup** shows references, Compose ownership,
+**Containers → Storage** shows references, Compose ownership,
 packed image sizes, shared layers, writable snapshots, volume allocation, and
-BuildKit cache records. Select individual unused objects before previewing.
-No broad cleanup is selected by default.
+BuildKit cache records, their descriptions, usage counts and last-use times.
+Search resource names, owning containers or Compose applications and filter by
+resource type, in-use, unused or dangling state. Select individual unused objects
+or choose one explicit cleanup category. No broad cleanup is selected by default.
 
 Content blobs and snapshots are counted once; snapshot usage excludes parents.
-Per-image logical sizes overlap and cannot be summed. Shared BuildKit records
-and containerd's cross-namespace metadata database are not presented as a
-fabricated grand total. Cleanup upper bounds and unavailable reclaimed-byte
-totals are labelled explicitly.
+Per-image logical sizes are locally stored packed blobs, overlap and cannot be
+summed. Partially pulled multi-platform images retain their missing-content
+warning and are protected from cleanup. Non-shared BuildKit records are counted
+separately from shared records. Containerd's metadata plugin supplies the
+authoritative database location; the Linux helper measures it in the backend's
+filesystem namespace. Metadata covers **all** containerd namespaces, not just
+Porto, and excludes content/snapshot stores. Missing measurements are unavailable,
+not zero. These overlapping scopes are not presented as a fabricated grand
+total. Cleanup upper bounds and unavailable reclaimed-byte totals are explicit.
 
 Referenced volumes/images/networks, managed Kubernetes node containers, native
 attachments and active builds are protected at the backend. A changed identity
-invalidates a preview. Cleanup outcomes remain in Activity, including partial
-failures. Existing opt-in weekly image/cache cleanup remains separate from
-explicit category/object cleanup.
+invalidates a preview. A category preview freezes the exact candidate identities;
+new unused objects never join a confirmed run. Ownership, protections and active
+builds are checked again before each removal. BuildKit must report the selected
+record actually removed before Porto records success. Cleanup outcomes remain
+in Activity, including partial failures. Existing opt-in weekly image/cache
+cleanup remains separate from explicit category/object cleanup.
 
 ```sh
 porto docker storage usage
 porto docker storage prune --category image          # dry run
 porto docker storage prune --category image --confirm
+porto docker storage prune --objects volume:fixture-data,cache:cache-record-id
 porto docker operations
+porto docker operations watch 12
 porto docker operations cancel 12
 ```
 
@@ -80,12 +92,21 @@ rather than inventing zero or summing shared layers.
 
 ## Volume archives and backups
 
-Open a volume's **Files** or **Data and backups** tab. Clone/import creates a new
-volume. Restore and Empty require an exact preview and explicit confirmation;
-active writers must be stopped first. Restore validates the archive in staging
+Open a volume's **Files** or **Data and backups** tab. Overview and transfer
+previews show owning containers, Compose project/service, mount destinations,
+read-only/writable relationships and managed-cluster protections. **Import local
+archive** works even before any volume exists. Clone/import creates a new
+volume. Restore, Empty and Remove require an exact preview and explicit
+confirmation; active mounts must be stopped before replacement and all
+container references detached before removal. Force is not a bypass.
+Stopped managed-cluster data stays protected. Restore validates the archive in staging
 and atomically publishes it only after validation and a final ownership check.
 Cancellation, corrupt archives or insufficient space before publish preserve
-the original directory.
+the original directory, and pins the previewed whole-archive checksum in the Linux
+helper before extraction. Temporary destination ownership is reserved in SQLite
+before creation. After interruption, recovery deletes only exact
+label-proven unfinished volumes; foreign or unverifiable objects are retained
+with an explicit failure instead of guessed cleanup.
 
 Archives are tar files containing `data/` members and a final
 `porto-manifest.json` (format version 1). The manifest records resource identity,
@@ -94,13 +115,21 @@ symlinks, hardlinks, per-file SHA-256 and manifest integrity. Runtime exports us
 logical containerd-namespace ownership and translate rootless UID/GID ranges
 when restoring. Unsupported identity ranges, absolute links, devices, sockets,
 FIFOs and special permission bits fail explicitly rather than being dropped.
+Regular-file/directory permissions, supported ownership and link timestamps are
+preserved. Symbolic-link mode bits follow the destination filesystem (Linux
+links are always `0777`); they are never applied by following the link's target.
+Native volume identity comes from the guest's stable `volume.json` inode and
+birth time, not Docker-only creation fields absent from nerdctl. Replacing
+`_data` does not retarget a backup schedule, while recreating a volume does.
 
 The daemon reads/writes archives only inside Porto's managed `transfers/` and
 `backups/` roots, using filesystem-confined handles that reject symlink escapes.
 Dashboard imports upload an archive, and exports are downloaded after
 verification. The CLI reads a user-selected local import file and uploads it;
 for export it downloads the verified result into the user-selected local path
-without overwriting an existing file. HTTP requests cannot select arbitrary
+without overwriting an existing file, checking available space and the
+operation's archive checksum before publication. An existing local destination
+is rejected before starting an export. HTTP requests cannot select arbitrary
 host files or destination directories. Backup folder choices are relative to
 Porto's `backups/` directory.
 
@@ -115,16 +144,34 @@ porto docker volume clone fixture fixture-copy --confirm
 porto docker volume import ./fixture.tar restored-fixture --confirm
 porto docker volume restore restored-fixture ./fixture.tar --confirm
 porto docker volume empty restored-fixture --confirm
+porto docker volume remove restored-fixture --confirm
 porto docker backups schedule fixture --hours 24 --retain 7 --enabled
+porto docker backups update 1 --hours 12 --retain 3
+porto docker backups pause 1
+porto docker backups resume 1
 porto docker backups run 1
+porto docker backups remove 1 --confirm
 ```
 
 Local backup schedules, deadlines, progress and outcomes survive a daemon
 restart in SQLite. Missed deadlines run once and move forward from the current
 time, without overlap or replay storms. Retention removes only identity- and
 checksum-proven older archives after a replacement is verified; it never removes
-the last verified recovery point before replacement. Pausing/removing a schedule
-does not delete its archives. Failures and interrupted jobs remain visible.
+the last verified recovery point before replacement. The verified replacement
+is durably recorded before retention begins; interrupted backups with such a
+record remain downloadable recovery points. The dashboard provides **Edit
+backup policy**, **Pause/Resume**, **Back up now**, and **Remove backup schedule**.
+Pausing/removing a schedule does not delete its archives, and a failed schedule
+can be paused while its source is unavailable. Failures and interrupted jobs
+remain visible in operation history and Activity. **Cancel** stops the job;
+closing a view or stopping the CLI watcher does not silently cancel it.
+
+Filesystem transfer and metadata measurement require the bundled Linux helper:
+local Linux containerd, or Porto's Linux Lima backend on macOS/Windows. External
+volume drivers/options, unsupported ownership ranges and unavailable native
+filesystem capabilities fail explicitly. Archives have bounded 64 GiB logical
+data / 100,000-entry limits. Native host file access is optional, not required
+for in-app browsing, archives or backups.
 
 ## Migration
 

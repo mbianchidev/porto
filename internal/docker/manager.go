@@ -91,6 +91,9 @@ type Manager struct {
 	migrationTemporaryReserve func(context.Context, dataops.SourceTemporary) error
 	migrationTemporaryClear   func(context.Context, dataops.SourceTemporary) error
 	migrationTemporaryPending func(context.Context) ([]dataops.SourceTemporary, error)
+	volumeTemporaryReserve    func(context.Context, dataops.VolumeTemporary) error
+	volumeTemporaryClear      func(context.Context, dataops.VolumeTemporary) error
+	volumeTemporaryPending    func(context.Context) ([]dataops.VolumeTemporary, error)
 	nativeClose               func(context.Context) error
 }
 

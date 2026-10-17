@@ -17,7 +17,7 @@ import (
 )
 
 func dispatchRuntimeNamespace(ctx context.Context, descriptor Descriptor, request datafiles.Request, input io.Reader, output io.Writer) (bool, error) {
-	if descriptor.RuntimePID <= 0 || (descriptor.Resource.Kind != "container" && descriptor.Resource.Kind != "image") {
+	if descriptor.RuntimePID <= 0 || (descriptor.Resource.Kind != "container" && descriptor.Resource.Kind != "image" && descriptor.Resource.Kind != "runtime") {
 		return false, nil
 	}
 	if descriptor.Resource.Kind == "container" && descriptor.PID > 0 && request.Action != "attach" && request.Action != "detach" {

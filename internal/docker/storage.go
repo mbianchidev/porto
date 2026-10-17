@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"slices"
 	"strings"
@@ -20,17 +21,21 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"google.golang.org/grpc"
 )
 
 type StorageOwner struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	State          string `json:"state"`
-	ComposeProject string `json:"composeProject,omitempty"`
-	ComposeService string `json:"composeService,omitempty"`
+	ID             string            `json:"id"`
+	Name           string            `json:"name"`
+	State          string            `json:"state"`
+	ComposeProject string            `json:"composeProject,omitempty"`
+	ComposeService string            `json:"composeService,omitempty"`
+	Managed        bool              `json:"managed"`
+	Mounts         []datafiles.Mount `json:"mounts,omitempty"`
+	Protection     string            `json:"protection,omitempty"`
 }
 
 type StorageResource struct {
@@ -45,6 +50,10 @@ type StorageResource struct {
 	Reason         string             `json:"reason,omitempty"`
 	Owners         []StorageOwner     `json:"owners"`
 	Labels         map[string]string  `json:"labels,omitempty"`
+	Description    string             `json:"description,omitempty"`
+	CacheType      string             `json:"cacheType,omitempty"`
+	LastUsedAt     string             `json:"lastUsedAt,omitempty"`
+	UsageCount     int64              `json:"usageCount,omitempty"`
 }
 
 type StorageUsage struct {
@@ -76,22 +85,24 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 		Resources: make([]StorageResource, 0), Warnings: make([]string, 0),
 		Accounting: "Content counts each visible containerd blob once. Snapshot Usage excludes parents and counts each snapshot once. Volume allocated bytes exclude duplicate hardlinks within a volume. Image logical sizes overlap and must not be summed. BuildKit shared records and containerd's shared metadata database are not added to a fabricated grand total.",
 	}
-	runtimeClient, err := m.runtimeConnector(ctx)
+	runtimeClient, closeRuntime, err := m.storageRuntime(ctx)
 	if err != nil {
 		return usage, err
 	}
-	defer func() { err = errors.Join(err, runtimeClient.Close()) }()
+	defer func() { err = errors.Join(err, closeRuntime()) }()
 	backend, ok := runtimeClient.(*grpcContainerRuntime)
 	if !ok || backend.client == nil {
 		return usage, fmt.Errorf("%w: exact storage accounting requires containerd metadata", ErrUnsupported)
 	}
 	ctx = namespaces.WithNamespace(ctx, backend.namespace)
-	containers, err := m.Containers(ctx)
+	containers, err := backend.Snapshot(ctx)
 	if err != nil {
 		return usage, err
 	}
-	if snapshot := m.ContainerSnapshot(); snapshot.Stale {
-		return usage, fmt.Errorf("%w: storage ownership inventory is stale; reconnect before cleanup", ErrUnavailable)
+	for _, container := range containers {
+		if container.InventoryError != "" {
+			return usage, fmt.Errorf("%w: cannot establish storage ownership for %s: %s", ErrUnavailable, container.Name, container.InventoryError)
+		}
 	}
 	blobSizes := make(map[string]int64)
 	if err := backend.client.ContentStore().Walk(ctx, func(info content.Info) error {
@@ -109,6 +120,7 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 		return usage, err
 	}
 	imageBlobs := make(map[string][]string)
+	incompleteImages := make(map[string]bool)
 	references := make(map[string]int)
 	for _, image := range nativeImages {
 		seen := make(map[string]bool)
@@ -118,6 +130,10 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 				seen[key] = true
 				imageBlobs[image.Name()] = append(imageBlobs[image.Name()], key)
 				references[key]++
+			}
+			if _, stored := blobSizes[key]; !stored {
+				incompleteImages[image.Name()] = true
+				return nil, nil
 			}
 			return images.Children(ctx, backend.client.ContentStore(), descriptor)
 		}), image.Target()); err != nil {
@@ -138,37 +154,29 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 			Backend: backend.backend + "/" + backend.namespace,
 		}
 		item := StorageResource{Resource: resource, LogicalBytes: &logical, SharedBytes: &shared, Owners: make([]StorageOwner, 0), Labels: image.Labels()}
+		if incompleteImages[image.Name()] {
+			item.Protected = true
+			item.Reason = "Some image platforms are not downloaded. Sizes include only local packed blobs; incomplete content references are protected from cleanup."
+		}
 		for _, container := range containers {
 			if normalizeNerdctlReference(container.Image) == image.Name() || container.ImageID == resource.ID ||
-				container.Labels[nerdctlImageDigestLabel] == resource.ID {
+				container.Labels[nerdctlImageDigestLabel] == resource.ID ||
+				slices.Contains(imageBlobs[image.Name()], container.ImageID) ||
+				slices.Contains(imageBlobs[image.Name()], container.Labels[nerdctlImageDigestLabel]) {
 				item.Owners = append(item.Owners, storageOwner(container))
 			}
 		}
 		item.InUse = len(item.Owners) > 0
-		item.Dangling = strings.Contains(image.Name(), "@") || strings.HasPrefix(image.Name(), "sha256:")
+		item.Dangling = strings.HasPrefix(image.Name(), buildKitMobyDanglingPrefix+"@") ||
+			strings.HasPrefix(image.Name(), "docker.io/library/"+buildKitMobyDanglingPrefix+"@") ||
+			strings.HasPrefix(image.Name(), "sha256:")
 		finishStorageResource(m, &item)
 		usage.Resources = append(usage.Resources, item)
 	}
-	if err := backend.client.SnapshotService("").Walk(ctx, func(_ context.Context, info snapshots.Info) error {
-		value, err := backend.client.SnapshotService("").Usage(ctx, info.Name)
-		if err != nil {
-			return err
-		}
-		usage.SnapshotBytes += value.Size
-		if info.Kind == snapshots.KindActive {
-			usage.WritableBytes += value.Size
-		}
-		return nil
-	}); err != nil {
-		return usage, fmt.Errorf("read snapshot allocation: %w", err)
-	}
+	type containerSnapshot struct{ snapshotter, key string }
+	containerSnapshots := make(map[string]containerSnapshot)
+	snapshotters := map[string]bool{backend.snapshotter: true}
 	for _, container := range containers {
-		resource := datafiles.Resource{Kind: "container", Name: container.Name, ID: container.ID, CreatedAt: container.CreatedAt, Backend: backend.backend + "/" + backend.namespace}
-		item := StorageResource{Resource: resource, Owners: make([]StorageOwner, 0), InUse: container.TaskPresent && containerdStateActive(container.State), Labels: container.Labels}
-		item.Protected = managedClusterContainer(container)
-		if item.Protected {
-			item.Reason = "Managed Kubernetes node; remove it through the cluster lifecycle."
-		}
 		native, err := backend.client.LoadContainer(ctx, container.ID)
 		if err != nil {
 			return usage, err
@@ -178,11 +186,45 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 			return usage, err
 		}
 		if info.SnapshotKey != "" {
-			allocation, err := backend.client.SnapshotService(info.Snapshotter).Usage(ctx, info.SnapshotKey)
+			snapshotter := firstNonEmpty(info.Snapshotter, backend.snapshotter)
+			snapshotters[snapshotter] = true
+			containerSnapshots[container.ID] = containerSnapshot{snapshotter, info.SnapshotKey}
+		}
+	}
+	allocations := make(map[string]map[string]int64)
+	for _, snapshotter := range slices.Sorted(maps.Keys(snapshotters)) {
+		store := backend.client.SnapshotService(snapshotter)
+		allocations[snapshotter] = make(map[string]int64)
+		if err := store.Walk(ctx, func(_ context.Context, info snapshots.Info) error {
+			value, err := store.Usage(ctx, info.Name)
 			if err != nil {
-				return usage, err
+				return err
 			}
-			size := allocation.Size
+			if value.Size < 0 {
+				return errors.New("containerd reported negative snapshot allocation")
+			}
+			allocations[snapshotter][info.Name] = value.Size
+			usage.SnapshotBytes += value.Size
+			if info.Kind == snapshots.KindActive {
+				usage.WritableBytes += value.Size
+			}
+			return nil
+		}); err != nil {
+			return usage, fmt.Errorf("read %s snapshot allocation: %w", snapshotter, err)
+		}
+	}
+	for _, container := range containers {
+		resource := datafiles.Resource{Kind: "container", Name: container.Name, ID: container.ID, CreatedAt: container.CreatedAt, Backend: backend.backend + "/" + backend.namespace}
+		item := StorageResource{Resource: resource, Owners: make([]StorageOwner, 0), InUse: container.TaskPresent && containerdStateActive(container.State), Labels: container.Labels}
+		item.Protected = managedClusterContainer(container)
+		if item.Protected {
+			item.Reason = "Managed Kubernetes node; remove it through the cluster lifecycle."
+		}
+		if snapshot, exists := containerSnapshots[container.ID]; exists {
+			size, exists := allocations[snapshot.snapshotter][snapshot.key]
+			if !exists {
+				return usage, fmt.Errorf("%w: container snapshot changed during storage measurement", ErrConflict)
+			}
 			item.AllocatedBytes = &size
 		}
 		finishStorageResource(m, &item)
@@ -201,31 +243,16 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 			item.Protected, item.Reason = true, err.Error()
 			volumesKnown = false
 		} else {
-			item.Resource = descriptor.Resource
-			for _, container := range containers {
-				if containerUsesVolume(container, volume.Name, descriptor.RootPath) {
-					item.Owners = append(item.Owners, storageOwner(container))
-				}
-			}
-			item.InUse = len(item.Owners) > 0
-			var result bytes.Buffer
-			err = m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "usage", Identity: descriptor.Resource.Fingerprint()}, nil, &result)
-			var measured struct {
-				LogicalBytes   int64  `json:"logicalBytes"`
-				AllocatedBytes *int64 `json:"allocatedBytes"`
-			}
-			if err == nil {
-				err = json.Unmarshal(result.Bytes(), &measured)
-			}
+			item, err = m.measureVolumeStorage(ctx, descriptor, containers)
+			item.Labels = volume.Labels
 			if err != nil {
 				item.Protected, item.Reason = true, err.Error()
 				volumesKnown = false
 			} else {
-				item.LogicalBytes, item.AllocatedBytes = &measured.LogicalBytes, measured.AllocatedBytes
-				if measured.AllocatedBytes == nil {
+				if item.AllocatedBytes == nil {
 					volumesKnown = false
 				} else {
-					volumeBytes += *measured.AllocatedBytes
+					volumeBytes += *item.AllocatedBytes
 				}
 			}
 		}
@@ -261,7 +288,10 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 		var cacheBytes int64
 		known := true
 		for _, item := range cache {
-			if item.AllocatedBytes == nil || item.SharedBytes != nil && *item.SharedBytes > 0 {
+			if item.SharedBytes != nil {
+				continue
+			}
+			if item.AllocatedBytes == nil {
 				known = false
 			} else {
 				cacheBytes += *item.AllocatedBytes
@@ -272,7 +302,25 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 		}
 		usage.Resources = append(usage.Resources, cache...)
 	}
-	usage.Warnings = append(usage.Warnings, "Containerd metadata is shared across namespaces; its database allocation is not attributed to Porto.")
+	descriptor := runtimefiles.Descriptor{
+		Resource: datafiles.Resource{Kind: "runtime", Name: "containerd-metadata", ID: backend.address, ReadOnly: true},
+		Address:  backend.address, Namespace: backend.namespace,
+	}
+	var metadata bytes.Buffer
+	metadataErr := m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "metadata-usage", Identity: descriptor.Resource.Fingerprint()}, nil, &metadata)
+	if metadataErr == nil {
+		var measured struct {
+			AllocatedBytes *int64 `json:"allocatedBytes"`
+		}
+		metadataErr = json.Unmarshal(metadata.Bytes(), &measured)
+		if metadataErr == nil {
+			usage.MetadataBytes = measured.AllocatedBytes
+		}
+	}
+	if metadataErr != nil {
+		usage.Warnings = append(usage.Warnings, "Runtime metadata allocation unavailable: "+metadataErr.Error())
+	}
+	usage.Warnings = append(usage.Warnings, "Containerd metadata allocation covers all namespaces, excludes content and snapshots, and is not added to namespace-specific totals.")
 	return usage, nil
 }
 
@@ -285,8 +333,134 @@ func finishStorageResource(manager *Manager, resource *StorageResource) {
 	}
 }
 
+func (m *Manager) storageRuntime(ctx context.Context) (containerRuntime, func() error, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if client := inventory.activeRuntime(); client != nil {
+			return client, func() error { return nil }, nil
+		}
+	}
+	client, err := m.runtimeConnector(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, client.Close, nil
+}
+
 func storageOwner(container Container) StorageOwner {
-	return StorageOwner{ID: container.ID, Name: container.Name, State: container.State, ComposeProject: container.ComposeProject, ComposeService: container.ComposeService}
+	return StorageOwner{ID: container.ID, Name: container.Name, State: container.State, ComposeProject: container.ComposeProject, ComposeService: container.ComposeService, Managed: managedClusterContainer(container)}
+}
+
+func (m *Manager) storageContainers(ctx context.Context) ([]Container, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		client := inventory.activeRuntime()
+		if client == nil {
+			return nil, fmt.Errorf("%w: current container ownership is unavailable", ErrUnavailable)
+		}
+		containers, err := client.Snapshot(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, container := range containers {
+			if container.InventoryError != "" {
+				return nil, fmt.Errorf("%w: ownership of %s could not be established: %s", ErrUnavailable, container.Name, container.InventoryError)
+			}
+		}
+		return containers, nil
+	}
+	return m.Containers(ctx)
+}
+
+func (m *Manager) volumeOwners(ctx context.Context, descriptor runtimefiles.Descriptor) ([]StorageOwner, error) {
+	containers, err := m.storageContainers(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return m.volumeOwnersFromContainers(ctx, descriptor, containers), nil
+}
+
+func (m *Manager) volumeOwnersFromContainers(ctx context.Context, descriptor runtimefiles.Descriptor, containers []Container) []StorageOwner {
+	owners := make([]StorageOwner, 0)
+	for _, container := range containers {
+		if !containerUsesVolume(container, descriptor.Resource.Name, descriptor.RootPath) {
+			continue
+		}
+		owner := storageOwner(container)
+		if m.managedContainerGuard != nil {
+			if err := m.managedContainerGuard(ctx, container.Name); err != nil {
+				owner.Managed, owner.Protection = true, err.Error()
+			}
+		}
+		for _, mounted := range container.MountDetails {
+			if mounted.Source == descriptor.Resource.Name || mounted.Source == descriptor.RootPath ||
+				strings.HasPrefix(mounted.Source, strings.TrimSuffix(descriptor.RootPath, "/")+"/") {
+				owner.Mounts = append(owner.Mounts, datafiles.Mount{
+					Path: mounted.Destination, Kind: "volume", Source: mounted.Source, ReadOnly: slices.Contains(mounted.Options, "ro"),
+				})
+			}
+		}
+		owners = append(owners, owner)
+	}
+	return owners
+}
+
+func (m *Manager) VolumeStorage(ctx context.Context, name string) (StorageResource, error) {
+	descriptor, err := m.FileDescriptor(ctx, "volume", name)
+	if err != nil {
+		return StorageResource{}, err
+	}
+	containers, err := m.storageContainers(ctx)
+	if err != nil {
+		return StorageResource{}, err
+	}
+	return m.measureVolumeStorage(ctx, descriptor, containers)
+}
+
+func (m *Manager) measureVolumeStorage(ctx context.Context, descriptor runtimefiles.Descriptor, containers []Container) (StorageResource, error) {
+	item := StorageResource{Resource: descriptor.Resource, Owners: m.volumeOwnersFromContainers(ctx, descriptor, containers)}
+	item.InUse = len(item.Owners) > 0
+	for _, owner := range item.Owners {
+		if owner.Managed {
+			item.Protected, item.Reason = true, firstNonEmpty(owner.Protection, "Managed Kubernetes node data; use its cluster lifecycle.")
+		}
+	}
+	finishStorageResource(m, &item)
+	var result bytes.Buffer
+	if err := m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "usage", Identity: item.Identity}, nil, &result); err != nil {
+		return item, err
+	}
+	var measured struct {
+		LogicalBytes   int64  `json:"logicalBytes"`
+		AllocatedBytes *int64 `json:"allocatedBytes"`
+	}
+	if err := json.Unmarshal(result.Bytes(), &measured); err != nil {
+		return item, err
+	}
+	if measured.LogicalBytes < 0 || measured.AllocatedBytes != nil && *measured.AllocatedBytes < 0 {
+		return item, errors.New("runtime helper reported negative volume allocation")
+	}
+	item.LogicalBytes, item.AllocatedBytes = &measured.LogicalBytes, measured.AllocatedBytes
+	return item, nil
+}
+
+func (m *Manager) validateVolumeMutation(ctx context.Context, descriptor runtimefiles.Descriptor, remove bool) error {
+	if m.nativeGuard != nil {
+		if err := m.nativeGuard("volume", descriptor.Resource.Name); err != nil {
+			return err
+		}
+	}
+	owners, err := m.volumeOwners(ctx, descriptor)
+	if err != nil {
+		return err
+	}
+	for _, owner := range owners {
+		if owner.Managed {
+			return fmt.Errorf("%w: volume belongs to managed Kubernetes node %s; %s", ErrConflict, owner.Name, firstNonEmpty(owner.Protection, "use its cluster lifecycle"))
+		}
+		if remove || containerdStateActive(owner.State) {
+			return fmt.Errorf("%w: volume is referenced by %s (%s); stop writers before replacing data, or detach all mounts before removal", ErrConflict, owner.Name, owner.State)
+		}
+	}
+	return nil
 }
 
 func containerdStateActive(state string) bool {
@@ -323,7 +497,13 @@ func (m *Manager) BuildCacheUsage(ctx context.Context) ([]StorageResource, error
 			created = record.CreatedAt.AsTime().UTC().Format(time.RFC3339Nano)
 		}
 		resource := datafiles.Resource{Kind: "cache", Name: record.ID, ID: record.ID, CreatedAt: created, Backend: "Porto BuildKit"}
-		item := StorageResource{Resource: resource, InUse: record.InUse, Owners: make([]StorageOwner, 0)}
+		item := StorageResource{
+			Resource: resource, InUse: record.InUse, Owners: make([]StorageOwner, 0),
+			Description: record.Description, CacheType: record.RecordType, UsageCount: record.UsageCount,
+		}
+		if record.LastUsedAt != nil {
+			item.LastUsedAt = record.LastUsedAt.AsTime().UTC().Format(time.RFC3339Nano)
+		}
 		if record.Size >= 0 {
 			size := record.Size
 			item.LogicalBytes = &size
@@ -359,9 +539,22 @@ func (m *Manager) PreviewPrune(ctx context.Context, request dataops.Request) (Pr
 			return PrunePreview{}, fmt.Errorf("%w: unknown prune category %q", datafiles.ErrInvalid, category)
 		}
 	}
+	for _, choice := range request.Selections {
+		if !slices.Contains([]string{"image", "container", "volume", "network", "cache"}, choice.Kind) ||
+			choice.Name == "" || choice.ID == "" {
+			return PrunePreview{}, fmt.Errorf("%w: cleanup selections require a supported kind, name and exact ID", datafiles.ErrInvalid)
+		}
+	}
 	usage, err := m.StorageUsage(ctx)
 	if err != nil {
 		return PrunePreview{}, err
+	}
+	for _, choice := range request.Selections {
+		if !slices.ContainsFunc(usage.Resources, func(item StorageResource) bool {
+			return choice.Kind == item.Resource.Kind && choice.Name == item.Resource.Name && choice.ID == item.Resource.ID
+		}) {
+			return PrunePreview{}, fmt.Errorf("%w: selected %s %s no longer has the previewed identity", datafiles.ErrConflict, choice.Kind, choice.Name)
+		}
 	}
 	preview := PrunePreview{
 		Request: request, Candidates: make([]StorageResource, 0), Excluded: make([]StorageResource, 0),
@@ -400,6 +593,13 @@ func (m *Manager) PreviewPrune(ctx context.Context, request dataops.Request) (Pr
 	for _, item := range preview.Candidates {
 		identities = append(identities, item.Identity)
 	}
+	preview.Request.Categories = nil
+	preview.Request.Selections = make([]dataops.Selection, 0, len(preview.Candidates))
+	for _, item := range preview.Candidates {
+		preview.Request.Selections = append(preview.Request.Selections, dataops.Selection{
+			Kind: item.Resource.Kind, Name: item.Resource.Name, ID: item.Resource.ID,
+		})
+	}
 	document, err := json.Marshal(struct {
 		Action     string
 		Identities []string
@@ -409,6 +609,7 @@ func (m *Manager) PreviewPrune(ctx context.Context, request dataops.Request) (Pr
 	}
 	hash := sha256.Sum256(document)
 	preview.Token = hex.EncodeToString(hash[:])
+	preview.Request.Preview = preview.Token
 	return preview, nil
 }
 
@@ -452,6 +653,15 @@ func (m *Manager) Prune(ctx context.Context, request dataops.Request, progress f
 		if err := ensureBuildKitIdle(ctx, client); err != nil {
 			return result, err
 		}
+		current, err := m.PreviewPrune(ctx, dataops.Request{Action: "prune", Selections: []dataops.Selection{{
+			Kind: item.Resource.Kind, Name: item.Resource.Name, ID: item.Resource.ID,
+		}}})
+		if err != nil {
+			return result, err
+		}
+		if len(current.Candidates) != 1 || current.Candidates[0].Identity != item.Identity {
+			return result, fmt.Errorf("%w: %s %s acquired a reference or protection; no further objects were removed", ErrConflict, item.Resource.Kind, item.Resource.Name)
+		}
 		var removeErr error
 		switch item.Resource.Kind {
 		case "image":
@@ -468,6 +678,7 @@ func (m *Manager) Prune(ctx context.Context, request dataops.Request, progress f
 				removeErr = err
 				break
 			}
+			removed := false
 			for {
 				record, err := stream.Recv()
 				if err == io.EOF {
@@ -481,6 +692,10 @@ func (m *Manager) Prune(ctx context.Context, request dataops.Request, progress f
 					removeErr = errors.New("BuildKit prune violated the selected-record boundary")
 					break
 				}
+				removed = true
+			}
+			if removeErr == nil && !removed {
+				removeErr = fmt.Errorf("%w: BuildKit did not remove the selected cache record; refresh its references before retrying", ErrConflict)
 			}
 		}
 		step := dataops.Step{Kind: item.Resource.Kind, Source: item.Resource.Name, Status: "succeeded", ID: item.Resource.ID}
@@ -503,11 +718,11 @@ func (m *Manager) SetManagedContainerGuard(guard func(context.Context, string) e
 }
 
 func (m *Manager) removePreviewedImage(ctx context.Context, resource datafiles.Resource) (err error) {
-	client, err := m.runtimeConnector(ctx)
+	client, closeRuntime, err := m.storageRuntime(ctx)
 	if err != nil {
 		return err
 	}
-	defer func() { err = errors.Join(err, client.Close()) }()
+	defer func() { err = errors.Join(err, closeRuntime()) }()
 	backend, ok := client.(*grpcContainerRuntime)
 	if !ok || backend.client == nil {
 		return ErrUnsupported

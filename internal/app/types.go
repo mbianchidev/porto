@@ -48,6 +48,7 @@ type Settings struct {
 	KubernetesEnabled      bool     `json:"kubernetesEnabled"`
 	VMsEnabled             bool     `json:"vmsEnabled"`
 	InterfaceDensity       string   `json:"interfaceDensity"`
+	Theme                  string   `json:"theme"`
 	ReduceMotion           bool     `json:"reduceMotion"`
 	TerminalFontSize       int      `json:"terminalFontSize"`
 	TerminalLineHeight     float64  `json:"terminalLineHeight"`
@@ -58,6 +59,7 @@ type Settings struct {
 
 const (
 	DefaultInterfaceDensity   = "compact"
+	DefaultTheme              = "dark"
 	DefaultTerminalFontSize   = 12
 	DefaultTerminalLineHeight = 1.35
 	DefaultTerminalScrollback = 5000

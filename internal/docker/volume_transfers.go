@@ -43,7 +43,7 @@ func (m *Manager) PreviewVolume(ctx context.Context, request dataops.Request) (p
 		Consistency:  "crash-consistent",
 		Consequences: "Running writers are not stopped or quiesced. A filesystem copy is not an application-consistent database backup. Imports restore into staging and publish only after full validation.",
 	}
-	if !slices.Contains([]string{"volume-export", "volume-clone", "volume-import", "volume-restore", "volume-empty"}, request.Action) {
+	if !slices.Contains([]string{"volume-export", "volume-clone", "volume-import", "volume-restore", "volume-empty", "volume-remove"}, request.Action) {
 		return preview, fmt.Errorf("%w: invalid volume transfer action", datafiles.ErrInvalid)
 	}
 	var descriptor runtimefiles.Descriptor
@@ -57,20 +57,19 @@ func (m *Manager) PreviewVolume(ctx context.Context, request dataops.Request) (p
 		}
 		preview.Resource = descriptor.Resource
 		preview.Request.Resource, preview.Request.Identity = descriptor.Resource, descriptor.Resource.Fingerprint()
-		containers, err := m.Containers(ctx)
+		preview.Owners, err = m.volumeOwners(ctx, descriptor)
 		if err != nil {
 			return preview, err
 		}
-		for _, container := range containers {
-			if containerUsesVolume(container, descriptor.Resource.Name, descriptor.RootPath) {
-				preview.Owners = append(preview.Owners, storageOwner(container))
-			}
-		}
-		if m.nativeGuard != nil && (request.Action == "volume-empty" || request.Action == "volume-restore") {
-			if err := m.nativeGuard("volume", descriptor.Resource.Name); err != nil {
+		if request.Action == "volume-empty" || request.Action == "volume-restore" || request.Action == "volume-remove" {
+			if err := m.validateVolumeMutation(ctx, descriptor, request.Action == "volume-remove"); err != nil {
 				return preview, err
 			}
 		}
+	}
+	if request.Action == "volume-remove" {
+		preview.Consequences = "Remove local volume " + descriptor.Resource.Name + " and all of its data permanently. Every container mount must be detached first. Other volumes and container definitions are unchanged."
+		preview.Destination = "permanently removed"
 	}
 	if request.Action == "volume-clone" || request.Action == "volume-import" {
 		if !volumeNamePattern.MatchString(request.Destination) {
@@ -172,6 +171,11 @@ func InspectVolumeArchive(ctx context.Context, archivePath string) (result datao
 }
 
 func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource, identity, destination string, progress func(string, int64) error) (result dataops.Archive, err error) {
+	ctx, release, err := m.BeginDataTransaction(ctx)
+	if err != nil {
+		return result, err
+	}
+	defer release()
 	descriptor, err := m.FileDescriptor(ctx, "volume", resource.Name)
 	if err != nil {
 		return result, err
@@ -207,7 +211,7 @@ func (m *Manager) ExportVolume(ctx context.Context, resource datafiles.Resource,
 	if err := json.Unmarshal(measured.Bytes(), &usage); err != nil {
 		return result, err
 	}
-	available, err := datafiles.AvailableSpace(base)
+	available, err := datafiles.AvailableSpace(filepath.Join(base, parent))
 	if err != nil || usage.LogicalBytes < 0 || uint64(usage.LogicalBytes)+64*1024*1024 > available {
 		return result, errors.Join(fmt.Errorf("%w: insufficient local space for export", datafiles.ErrLimit), err)
 	}
@@ -272,7 +276,7 @@ func (m *Manager) RestoreVolume(ctx context.Context, resource datafiles.Resource
 	}
 	var output bytes.Buffer
 	return m.RunFileRequest(ctx, descriptor, datafiles.Request{
-		Action: "restore", Identity: identity, Confirm: true,
+		Action: "restore", Identity: identity, Confirm: true, SHA256: archiveSHA,
 	}, &transferReader{ctx: ctx, input: file, progress: progress}, &output)
 }
 
@@ -320,6 +324,12 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 		return result, err
 	}
 	owner := hex.EncodeToString(token)
+	temporary := dataops.VolumeTemporary{Owner: owner, Destination: destination}
+	if m.volumeTemporaryReserve != nil {
+		if err := m.volumeTemporaryReserve(ctx, temporary); err != nil {
+			return result, fmt.Errorf("persist temporary volume ownership before creation: %w", err)
+		}
+	}
 	committed := false
 	defer func() {
 		if committed {
@@ -327,19 +337,7 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 		}
 		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 		defer cancel()
-		document, inspectErr := m.InspectVolume(cleanupContext, destination)
-		if missingDockerObject(inspectErr, "volume") {
-			return
-		}
-		var volume struct{ Labels map[string]string }
-		if inspectErr == nil {
-			inspectErr = json.Unmarshal(document, &volume)
-		}
-		if inspectErr != nil || volume.Labels[transferOwnerLabel] != owner {
-			err = errors.Join(err, errors.New("temporary volume ownership could not be proven; no volume was deleted"), inspectErr)
-			return
-		}
-		err = errors.Join(err, m.RemoveVolume(cleanupContext, destination, false))
+		err = errors.Join(err, m.cleanupVolumeTemporary(cleanupContext, temporary))
 	}()
 	created, createErr := m.CreateVolume(ctx, destination, "local", map[string]string{transferOwnerLabel: owner})
 	if createErr != nil {
@@ -352,10 +350,72 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 	if err := m.RestoreVolume(ctx, descriptor.Resource, descriptor.Resource.Fingerprint(), archivePath, archiveSHA, progress); err != nil {
 		return result, err
 	}
+	if m.volumeTemporaryClear != nil {
+		if err := m.volumeTemporaryClear(ctx, temporary); err != nil {
+			return result, fmt.Errorf("persist verified volume publication: %w", err)
+		}
+	}
 	committed = true
 	result.Steps = []dataops.Step{{Kind: "volume", Source: archivePath, Destination: destination, ID: descriptor.Resource.ID, Status: "succeeded"}}
 	result.Message = "Verified archive restored into a new local volume; the source is unchanged."
 	return result, nil
+}
+
+func (m *Manager) SetVolumeTransferLedger(
+	reserve func(context.Context, dataops.VolumeTemporary) error,
+	clear func(context.Context, dataops.VolumeTemporary) error,
+	pending func(context.Context) ([]dataops.VolumeTemporary, error),
+) {
+	m.volumeTemporaryReserve, m.volumeTemporaryClear, m.volumeTemporaryPending = reserve, clear, pending
+}
+
+func (m *Manager) cleanupVolumeTemporary(ctx context.Context, temporary dataops.VolumeTemporary) error {
+	if !volumeNamePattern.MatchString(temporary.Destination) {
+		return errors.New("temporary volume reservation has an invalid destination; nothing was deleted")
+	}
+	owner, err := hex.DecodeString(temporary.Owner)
+	if err != nil || len(owner) != 16 {
+		return errors.New("temporary volume reservation has invalid ownership; nothing was deleted")
+	}
+	document, inspectErr := m.InspectVolume(ctx, temporary.Destination)
+	if !missingDockerObject(inspectErr, "volume") {
+		var volume struct{ Labels map[string]string }
+		if inspectErr == nil {
+			inspectErr = json.Unmarshal(document, &volume)
+		}
+		if inspectErr != nil || volume.Labels[transferOwnerLabel] != temporary.Owner {
+			return errors.Join(errors.New("temporary volume ownership could not be proven; no volume was deleted"), inspectErr)
+		}
+		if err := m.RemoveVolume(ctx, temporary.Destination, false); err != nil {
+			return err
+		}
+	}
+	if m.volumeTemporaryClear != nil {
+		return m.volumeTemporaryClear(ctx, temporary)
+	}
+	return nil
+}
+
+func (m *Manager) RecoverVolumeTransfers(ctx context.Context) error {
+	if m.volumeTemporaryPending == nil {
+		return nil
+	}
+	ctx, release, err := m.BeginDataTransaction(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	pending, err := m.volumeTemporaryPending(ctx)
+	if err != nil {
+		return err
+	}
+	var failures []error
+	for _, temporary := range pending {
+		if err := m.cleanupVolumeTemporary(ctx, temporary); err != nil {
+			failures = append(failures, fmt.Errorf("recover interrupted volume %s: %w", temporary.Destination, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 type transferWriter struct {

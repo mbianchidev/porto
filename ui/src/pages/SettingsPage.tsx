@@ -225,9 +225,21 @@ export function SettingsPage({
       <section className="hygiene experienceSettings" aria-labelledby="experience-settings-title">
         <div className="hygieneIntro">
           <h2 id="experience-settings-title">Tune the control desk to your working rhythm.</h2>
-          <p>Choose how densely Porto packs information and how embedded terminals feel during longer sessions.</p>
+          <p>Choose the theme, how densely Porto packs information, and how embedded terminals feel during longer sessions.</p>
         </div>
         <div className="hygieneControls">
+          <label className="settingsField">
+            <span>Theme</span>
+            <select
+              value={draft?.theme ?? DEFAULT_EXPERIENCE_PREFERENCES.theme}
+              disabled={draftDisabled}
+              onChange={(event) => updateDraft('theme', event.target.value as Settings['theme'])}
+            >
+              <option value="dark">Dark</option>
+              <option value="light">Light</option>
+              <option value="system">Match system</option>
+            </select>
+          </label>
           <label className="settingsField">
             <span>Interface density</span>
             <select

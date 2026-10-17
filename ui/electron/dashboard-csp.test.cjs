@@ -31,12 +31,13 @@ test('applies cached preferences before the dashboard bundle loads', () => {
     localStorage: {
       getItem: () => JSON.stringify({
         interfaceDensity: 'comfortable',
+        theme: 'light',
         reduceMotion: true,
       }),
     },
   })
   assert.deepEqual(
     { ...document.documentElement.dataset },
-    { density: 'comfortable', reduceMotion: 'true' },
+    { density: 'comfortable', theme: 'light', reduceMotion: 'true' },
   )
 })

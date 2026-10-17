@@ -67,6 +67,7 @@ type RestoreOptions struct {
 	PreserveOwnership bool
 	AvailableBytes    func(string) (uint64, error)
 	MapOwner          func(int, int) (int, int, error)
+	ExpectedSHA256    string
 }
 
 type Listing struct {

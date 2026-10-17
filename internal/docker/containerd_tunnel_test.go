@@ -5,11 +5,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -17,179 +17,140 @@ import (
 	"github.com/mbianchidev/porto/internal/process"
 )
 
-func TestLimaContainerdSSHTunnelSurvivesDialCancellation(t *testing.T) {
-	fakeLimaContainerdSSH(t, "echo")
+func TestLimaContainerdUsesHelperWithoutIndependentSSHForward(t *testing.T) {
+	fakeLimaContainerdStdio(t, "echo")
 	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	connection, err := dialLimaContainerd(ctx, "test-engine", "synthetic-config", "/run/test/containerd.sock")
+	connection, err := dialLimaContainerd(ctx, "synthetic-engine", "/run/synthetic/containerd.sock")
 	if err != nil {
-		t.Fatalf("connect a foreground containerd SSH tunnel: %v", err)
+		t.Fatal(err)
 	}
 	defer connection.Close()
-
 	cancel()
-	if err := connection.SetDeadline(time.Now().Add(3 * time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := connection.Write([]byte("ping")); err != nil {
-		t.Fatal(err)
-	}
-	response := make([]byte, 4)
-	if _, err := io.ReadFull(connection, response); err != nil {
-		t.Fatalf("dial cancellation closed the established SSH tunnel: %v", err)
-	}
-	if string(response) != "ping" {
-		t.Fatalf("SSH tunnel response = %q, want ping", response)
-	}
+	assertLimaContainerdEcho(t, connection)
 	if err := connection.Close(); err != nil {
-		t.Fatalf("close containerd SSH tunnel: %v", err)
+		t.Fatal(err)
 	}
-	tunnel := connection.(*limaContainerdConn)
-	if tunnel.command.ProcessState == nil {
-		t.Fatal("closing the SSH tunnel did not reap its subprocess")
+	channel := connection.(*commandConn)
+	select {
+	case <-channel.done:
+	default:
+		t.Fatal("closing the helper channel did not reap its own subprocess")
 	}
-	if _, err := os.Stat(tunnel.directory); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("closing the SSH tunnel left its socket directory: %v", err)
+	if channel.command.ProcessState == nil {
+		t.Fatal("closing the channel left its subprocess unreaped")
 	}
 }
 
-func TestLimaContainerdSSHTunnelReportsCleanExit(t *testing.T) {
-	directory := fakeLimaContainerdSSH(t, "exit")
-	t.Setenv("TMPDIR", directory)
-	_, err := dialLimaContainerd(context.Background(), "test-engine", "synthetic-config", "/run/test/containerd.sock")
-	if err == nil || !strings.Contains(err.Error(), "SSH exited with status 0") {
-		t.Fatalf("clean SSH exit lost its diagnostic: %v", err)
-	}
-	assertNoLimaContainerdTunnelFiles(t, directory)
-}
-
-func TestLimaContainerdSSHTunnelReportsSubprocessFailures(t *testing.T) {
-	for _, test := range []struct {
-		name    string
-		mode    string
-		message string
-	}{
-		{"stderr", "fail", "synthetic SSH forwarding failure"},
-		{"exit status", "fail-silent", "exit status 7"},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			directory := fakeLimaContainerdSSH(t, test.mode)
-			t.Setenv("TMPDIR", directory)
-			_, err := dialLimaContainerd(context.Background(), "test-engine", "synthetic-config", "/run/test/containerd.sock")
-			if err == nil || !strings.Contains(err.Error(), test.message) {
-				t.Fatalf("SSH tunnel lost its subprocess failure: %v", err)
+func TestLimaContainerdHelperFailureIsExplicit(t *testing.T) {
+	for _, mode := range []string{"fail", "exit"} {
+		t.Run(mode, func(t *testing.T) {
+			fakeLimaContainerdStdio(t, mode)
+			connection, err := dialLimaContainerd(context.Background(), "synthetic-engine", "/run/synthetic/containerd.sock")
+			if err == nil {
+				defer connection.Close()
+				_, err = connection.Read(make([]byte, 1))
 			}
-			assertNoLimaContainerdTunnelFiles(t, directory)
+			if mode == "fail" && (err == nil || !strings.Contains(err.Error(), "synthetic runtime socket unavailable")) {
+				t.Fatalf("helper failure lost its diagnostic: %v", err)
+			}
+			if mode == "exit" && !errors.Is(err, io.EOF) && (err == nil || !strings.Contains(err.Error(), "exited before connecting")) {
+				t.Fatalf("a clean helper exit did not close its stream explicitly: %v", err)
+			}
 		})
 	}
 }
 
-func TestLimaContainerdSSHTunnelCancellationCleansPendingConnection(t *testing.T) {
-	directory := fakeLimaContainerdSSH(t, "stall")
-	t.Setenv("TMPDIR", directory)
-	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+func TestLimaContainerdPendingHelperHonorsCancellation(t *testing.T) {
+	fakeLimaContainerdStdio(t, "stall")
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
-	_, err := dialLimaContainerd(ctx, "test-engine", "synthetic-config", "/run/test/containerd.sock")
+	connection, err := dialLimaContainerd(ctx, "synthetic-engine", "/run/synthetic/containerd.sock")
+	if connection != nil {
+		_ = connection.Close()
+		t.Fatal("cancelled helper setup returned a connection")
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("pending SSH tunnel cancellation = %v, want deadline exceeded", err)
-	}
-	assertNoLimaContainerdTunnelFiles(t, directory)
-}
-
-func assertNoLimaContainerdTunnelFiles(t *testing.T, directory string) {
-	t.Helper()
-	entries, err := os.ReadDir(directory)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "ssh" {
-		t.Fatalf("SSH tunnel left temporary files: %v", entries)
+		t.Fatalf("pending helper cancellation = %v", err)
 	}
 }
 
-func fakeLimaContainerdSSH(t *testing.T, mode string) string {
+func fakeLimaContainerdStdio(t *testing.T, mode string) {
 	t.Helper()
 	if runtime.GOOS == "windows" {
-		t.Skip("Windows uses the Lima stdio tunnel")
+		t.Skip("native Windows subprocess ownership is covered by the platform-neutral stdio tests")
 	}
 	directory := t.TempDir()
-	script := "#!/bin/sh\nexec \"$PORTO_TEST_SSH_EXECUTABLE\" -test.run=^TestLimaContainerdSSHHelperProcess$ -- \"$@\"\n"
-	if err := os.WriteFile(filepath.Join(directory, "ssh"), []byte(script), 0o700); err != nil {
-		t.Fatal(err)
+	for name, script := range map[string]string{
+		"limactl": "#!/bin/sh\nexec \"$PORTO_TEST_LIMA_EXECUTABLE\" -test.run=^TestLimaContainerdStdioHelperProcess$ -- \"$@\"\n",
+		"ssh":     "#!/bin/sh\nprintf 'unexpected independent SSH forwarding attempt\\n' >&2\nexit 9\n",
+	} {
+		if err := os.WriteFile(filepath.Join(directory, name), []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	t.Setenv("PATH", directory+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("PORTO_TEST_SSH_EXECUTABLE", os.Args[0])
-	t.Setenv("PORTO_TEST_LIMA_SSH", mode)
-	return directory
+	t.Setenv("PORTO_TEST_LIMA_EXECUTABLE", os.Args[0])
+	t.Setenv("PORTO_TEST_LIMA_STDIO", mode)
 }
 
-func TestLimaContainerdSSHHelperProcess(t *testing.T) {
-	switch os.Getenv("PORTO_TEST_LIMA_SSH") {
-	case "":
+func TestLimaContainerdStdioHelperProcess(t *testing.T) {
+	mode := os.Getenv("PORTO_TEST_LIMA_STDIO")
+	if mode == "" {
 		return
+	}
+	start := slices.Index(os.Args, "--")
+	expected := []string{
+		"shell", "--workdir=/", "synthetic-engine", "--", "sh", "-c",
+		`exec "$HOME/.local/bin/porto-runtime-helper" dial-stdio "$1"`,
+		"porto-containerd", "/run/synthetic/containerd.sock",
+	}
+	if start < 0 || !reflect.DeepEqual(os.Args[start+1:], expected) {
+		fmt.Fprintln(os.Stderr, "invalid Lima helper channel arguments")
+		os.Exit(2)
+	}
+	switch mode {
+	case "fail":
+		fmt.Fprintln(os.Stderr, "synthetic runtime socket unavailable")
+		os.Exit(7)
 	case "exit":
 		os.Exit(0)
-	case "fail":
-		fmt.Fprintln(os.Stderr, "synthetic SSH forwarding failure")
-		os.Exit(7)
-	case "fail-silent":
-		os.Exit(7)
 	case "stall":
 		time.Sleep(time.Hour)
 		os.Exit(0)
 	case "echo":
+		if _, err := io.Copy(os.Stdout, os.Stdin); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		os.Exit(0)
 	default:
-		fmt.Fprintln(os.Stderr, "unknown synthetic SSH mode")
-		os.Exit(1)
+		os.Exit(2)
 	}
-	options := map[string]string{}
-	var forwarding string
-	for index := 0; index+1 < len(os.Args); index++ {
-		switch os.Args[index] {
-		case "-o":
-			option := strings.SplitN(os.Args[index+1], "=", 2)
-			if len(option) == 2 {
-				options[option[0]] = option[1]
-			}
-		case "-S":
-			options["ControlPath"] = os.Args[index+1]
-		case "-L":
-			forwarding = os.Args[index+1]
+}
+
+func assertLimaContainerdEcho(t *testing.T, connection io.ReadWriter) {
+	t.Helper()
+	result := make(chan error, 1)
+	go func() {
+		if _, err := connection.Write([]byte("ping")); err != nil {
+			result <- err
+			return
 		}
-	}
-	for option, value := range map[string]string{
-		"ControlMaster":           "no",
-		"ControlPath":             "none",
-		"ControlPersist":          "no",
-		"ForkAfterAuthentication": "no",
-	} {
-		if options[option] != value {
-			// Lima's inherited multiplexing can exit successfully after forwarding.
-			os.Exit(0)
+		payload := make([]byte, 4)
+		_, err := io.ReadFull(connection, payload)
+		if err == nil && string(payload) != "ping" {
+			err = fmt.Errorf("unexpected channel response %q", payload)
 		}
+		result <- err
+	}()
+	select {
+	case err := <-result:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("established containerd channel stopped responding")
 	}
-	localSocket, _, ok := strings.Cut(forwarding, ":")
-	if !ok {
-		fmt.Fprintln(os.Stderr, "synthetic SSH forwarding address is missing")
-		os.Exit(1)
-	}
-	listener, err := net.Listen("unix", localSocket)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	connection, err := listener.Accept()
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	if _, err := io.Copy(connection, connection); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
-	_ = connection.Close()
-	_ = listener.Close()
-	os.Exit(0)
 }
 
 func TestLimaContainerdStdioCommandAvoidsHostSocketForwarding(t *testing.T) {
@@ -218,30 +179,8 @@ func TestLimaContainerdStdioSurvivesDialCancellation(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer connection.Close()
-
 	cancel()
-
-	received := make(chan error, 1)
-	go func() {
-		if _, err := connection.Write([]byte("ping")); err != nil {
-			received <- err
-			return
-		}
-		data := make([]byte, 4)
-		_, err := io.ReadFull(connection, data)
-		if err == nil && string(data) != "ping" {
-			t.Errorf("unexpected tunnel response: %q", data)
-		}
-		received <- err
-	}()
-	select {
-	case err := <-received:
-		if err != nil {
-			t.Fatalf("dial cancellation closed the established connection: %v", err)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("established containerd tunnel stopped responding")
-	}
+	assertLimaContainerdEcho(t, connection)
 	if err := connection.Close(); err != nil {
 		t.Fatalf("close containerd tunnel: %v", err)
 	}
