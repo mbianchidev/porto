@@ -47,9 +47,11 @@ updates** in Porto's menu bar/system tray, or the software-update button in
 Settings. Installed builds show the result and reuse the verified download and
 restart flow; source builds and browser dashboards cannot update the desktop.
 
-The Settings page persists interface density, reduced motion, terminal font
-size, terminal line height, cursor blinking, and terminal scrollback. Density
-and motion preferences apply across the dashboard after saving. Terminal
+The Settings page persists the theme, interface density, reduced motion,
+terminal font size, terminal line height, cursor blinking, and terminal
+scrollback. Porto uses the dark theme by default; choose **Light** or **Match
+system** under **Theme**. Theme, density, and motion preferences apply across
+the dashboard after saving. Terminal
 preferences are used by VM and managed-cluster terminals, and reduced motion
 also disables cursor blinking.
 

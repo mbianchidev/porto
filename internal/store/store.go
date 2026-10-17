@@ -119,6 +119,7 @@ CREATE TABLE IF NOT EXISTS settings (
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
  vms_enabled INTEGER NOT NULL DEFAULT 0,
  interface_density TEXT NOT NULL DEFAULT 'compact',
+ theme TEXT NOT NULL DEFAULT 'dark',
  reduce_motion INTEGER NOT NULL DEFAULT 0,
  terminal_font_size INTEGER NOT NULL DEFAULT 12,
  terminal_line_height REAL NOT NULL DEFAULT 1.35,
@@ -185,6 +186,9 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("interface_density", "TEXT NOT NULL DEFAULT 'compact'"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("theme", "TEXT NOT NULL DEFAULT 'dark'"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("reduce_motion", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -511,7 +515,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
@@ -525,6 +529,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 			&kubernetesEnabled,
 			&vmsEnabled,
 			&settings.InterfaceDensity,
+			&settings.Theme,
 			&reduceMotion,
 			&settings.TerminalFontSize,
 			&settings.TerminalLineHeight,
@@ -557,6 +562,9 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if settings.InterfaceDensity == "" {
 		settings.InterfaceDensity = app.DefaultInterfaceDensity
 	}
+	if settings.Theme == "" {
+		settings.Theme = app.DefaultTheme
+	}
 	if settings.TerminalFontSize == 0 {
 		settings.TerminalFontSize = app.DefaultTerminalFontSize
 	}
@@ -582,7 +590,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -595,6 +603,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.KubernetesEnabled),
 		boolInt(settings.VMsEnabled),
 		settings.InterfaceDensity,
+		settings.Theme,
 		boolInt(settings.ReduceMotion),
 		settings.TerminalFontSize,
 		settings.TerminalLineHeight,

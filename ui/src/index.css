@@ -1,23 +1,106 @@
-:root {
-  --ink: #222521;
-  --ink-soft: #4c514b;
-  --ink-faint: #70756d;
-  --canvas: #c8c2b4;
-  --panel: #e9e5d9;
-  --panel-raised: #f4f0e5;
-  --panel-dark: #252925;
-  --line: #8c897e;
-  --line-strong: #343832;
+:root,
+:root[data-theme="dark"] {
+  color-scheme: dark;
+  --canvas: #141516;
+  --canvas-sunken: #101112;
+  --field: #101112;
+  --panel: #1b1c1e;
+  --panel-raised: #222326;
+  --panel-hover: #27292c;
+  --panel-selected: #2c2e32;
+  --panel-sunken: #18191b;
+  --panel-tint: rgba(255, 255, 255, 0.02);
+  --line: #2b2d31;
+  --line-strong: #3b3e43;
+  --line-hover: #50545a;
+  --ink: #e7e8ea;
+  --ink-soft: #a6a9ae;
+  --ink-faint: #7b7f86;
+  --chip: rgba(255, 255, 255, 0.07);
+  --olive: #8fa04f;
+  --olive-soft: rgba(143, 160, 79, 0.16);
+  --olive-text: #aebf68;
+  --amber: #d58d33;
+  --amber-soft: rgba(213, 141, 51, 0.16);
+  --amber-text: #e6a85a;
+  --red: #cf5a4c;
+  --red-soft: rgba(207, 90, 76, 0.16);
+  --red-text: #ec8678;
+  --link: #a9b8c6;
+  --link-underline: rgba(169, 184, 198, 0.4);
+  --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 8px 24px rgba(0, 0, 0, 0.35);
+  --shadow-pop: 0 12px 32px rgba(0, 0, 0, 0.5);
+  --scrim: rgba(0, 0, 0, 0.55);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --canvas: #f3f4f5;
+  --canvas-sunken: #e9eaec;
+  --field: #ffffff;
+  --panel: #ffffff;
+  --panel-raised: #ffffff;
+  --panel-hover: #f4f5f6;
+  --panel-selected: #eceef0;
+  --panel-sunken: #f7f8f9;
+  --panel-tint: rgba(0, 0, 0, 0.015);
+  --line: #e1e3e6;
+  --line-strong: #c7cacf;
+  --line-hover: #a4a8ae;
+  --ink: #17181a;
+  --ink-soft: #4d5057;
+  --ink-faint: #71757c;
+  --chip: rgba(0, 0, 0, 0.06);
   --olive: #64703a;
-  --olive-soft: #d5d9b8;
+  --olive-soft: rgba(100, 112, 58, 0.12);
+  --olive-text: #4f5b2a;
   --amber: #bd7725;
-  --amber-soft: #f1d3a8;
-  --red: #a43e32;
-  --red-soft: #ebc0b8;
-  --white: #fffdf7;
-  --sans: 'Avenir Next', Avenir, 'Helvetica Neue', Arial, sans-serif;
-  --mono: ui-monospace, 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
-  font: 15px/1.45 var(--sans);
+  --amber-soft: rgba(189, 119, 37, 0.13);
+  --amber-text: #855216;
+  --red: #b0443a;
+  --red-soft: rgba(176, 68, 58, 0.1);
+  --red-text: #8c2f26;
+  --link: #3a5368;
+  --link-underline: rgba(58, 83, 104, 0.4);
+  --shadow-sm: 0 1px 2px rgba(16, 18, 20, 0.06);
+  --shadow-md: 0 6px 20px rgba(16, 18, 20, 0.1);
+  --shadow-pop: 0 12px 32px rgba(16, 18, 20, 0.18);
+  --scrim: rgba(16, 18, 20, 0.4);
+}
+
+:root {
+  /* Instrument surfaces (rail, fleet rail, readouts, consoles, terminals) stay dark in every theme. */
+  --panel-dark: #0f1011;
+  --rail-bg: #0f1011;
+  --rail-edge: #050506;
+  --rail-ink: #b6b9be;
+  --rail-faint: #7f838a;
+  --rail-hover: rgba(255, 255, 255, 0.06);
+  --rail-active: rgba(255, 255, 255, 0.1);
+  --instrument-line: #2a2c30;
+  --instrument-line-strong: #43464c;
+  --instrument-ink: #dfe1e4;
+  --instrument-ink-soft: #a3a7ad;
+  --instrument-ink-faint: #767a81;
+  --instrument-ok: #b3c472;
+  --instrument-warn: #f0bd78;
+  --instrument-error: #ee9184;
+  --console-bg: #0c0d0e;
+  --console-deep: #08090a;
+  --console-label: #d4bd77;
+  --console-command: #e8e2c4;
+  --lamp-off: #6e7177;
+  --lamp-neutral: #8f9399;
+  --lamp-on: #82984a;
+  --white: #f5f6f7;
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+  --inspector-width: clamp(400px, 32vw, 560px);
+  --sans: -apple-system, BlinkMacSystemFont, 'SF Pro Text', 'Segoe UI', 'Helvetica Neue', Inter, Roboto, Arial, sans-serif;
+  --mono: ui-monospace, 'SF Mono', 'SFMono-Regular', Menlo, Monaco, Consolas, monospace;
+  font: 14px/1.45 var(--sans);
   color: var(--ink);
   background: var(--canvas);
   font-synthesis: none;
@@ -35,9 +118,11 @@ body {
   min-width: 320px;
   min-height: 100vh;
   overflow-x: clip;
-  background:
-    linear-gradient(rgba(34, 37, 33, 0.06) 1px, transparent 1px) 0 0 / 100% 24px,
-    var(--canvas);
+  background: var(--canvas);
+}
+
+::selection {
+  background: var(--amber-soft);
 }
 
 h1,
@@ -57,9 +142,10 @@ h4 {
 
 h1 {
   margin-bottom: 6px;
-  font-size: clamp(1.75rem, 3vw, 2.6rem);
-  line-height: 1.05;
-  letter-spacing: -0.035em;
+  font-size: clamp(1.45rem, 2vw, 1.8rem);
+  font-weight: 650;
+  line-height: 1.15;
+  letter-spacing: -0.02em;
 }
 
 code {

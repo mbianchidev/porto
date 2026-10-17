@@ -130,6 +130,7 @@ func TestNormalizeSettingsDefaultsAndValidatesExperience(t *testing.T) {
 		t.Fatal(err)
 	}
 	if normalized.InterfaceDensity != app.DefaultInterfaceDensity ||
+		normalized.Theme != app.DefaultTheme ||
 		normalized.TerminalFontSize != app.DefaultTerminalFontSize ||
 		normalized.TerminalLineHeight != app.DefaultTerminalLineHeight ||
 		normalized.TerminalScrollback != app.DefaultTerminalScrollback ||
@@ -141,6 +142,14 @@ func TestNormalizeSettingsDefaultsAndValidatesExperience(t *testing.T) {
 		t.Fatalf("invalid font size error = %v", err)
 	}
 	normalized.TerminalFontSize = app.DefaultTerminalFontSize
+	normalized.Theme = "sepia"
+	if _, err := normalizeSettings(normalized); err == nil || !strings.Contains(err.Error(), "theme") {
+		t.Fatalf("invalid theme error = %v", err)
+	}
+	normalized.Theme = "system"
+	if _, err := normalizeSettings(normalized); err != nil {
+		t.Fatalf("system theme rejected: %v", err)
+	}
 	normalized.LogRetentionDays = app.MaximumLogRetentionDays + 1
 	if _, err := normalizeSettings(normalized); err == nil || !strings.Contains(err.Error(), "log retention") {
 		t.Fatalf("invalid log retention error = %v", err)

@@ -767,6 +767,14 @@ func normalizeSettings(settings app.Settings) (app.Settings, error) {
 	default:
 		return settings, errors.New("interface density must be compact or comfortable")
 	}
+	if settings.Theme == "" {
+		settings.Theme = app.DefaultTheme
+	}
+	switch settings.Theme {
+	case "dark", "light", "system":
+	default:
+		return settings, errors.New("theme must be dark, light, or system")
+	}
 	if settings.TerminalFontSize == 0 {
 		settings.TerminalFontSize = app.DefaultTerminalFontSize
 	}

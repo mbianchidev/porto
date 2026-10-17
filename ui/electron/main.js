@@ -769,7 +769,7 @@ function createBootstrapWindow(show = true) {
     height: 210,
     resizable: false,
     show,
-    backgroundColor: '#252925',
+    backgroundColor: '#141516',
     title: APP_NAME,
     icon: APP_ICON,
     webPreferences: {
@@ -784,10 +784,10 @@ function createBootstrapWindow(show = true) {
     <meta charset="utf-8">
     <title>Preparing Porto</title>
     <style>
-      body { margin: 0; background: #252925; color: #dedfd7; font: 14px system-ui, sans-serif; }
+      body { margin: 0; background: #141516; color: #dfe1e4; font: 14px system-ui, sans-serif; }
       main { padding: 38px; }
-      h1 { margin: 0 0 12px; color: #fffdf7; font-size: 18px; letter-spacing: .08em; text-transform: uppercase; }
-      p { margin: 0; color: #d5d9b8; line-height: 1.5; }
+      h1 { margin: 0 0 12px; color: #f5f6f7; font-size: 18px; letter-spacing: .08em; text-transform: uppercase; }
+      p { margin: 0; color: #a6a9ae; line-height: 1.5; }
     </style>
   </head>
   <body><main><h1>Preparing Porto</h1><p>Starting the daemon and bundled container runtime. First launch can take a few minutes.</p></main></body>
@@ -802,7 +802,7 @@ function createWindow() {
     height: 900,
     minWidth: 960,
     minHeight: 600,
-    backgroundColor: '#252925',
+    backgroundColor: '#141516',
     title: APP_NAME,
     icon: APP_ICON,
     show: false,
@@ -859,7 +859,7 @@ function createWindow() {
           return
         }
         console.error('Porto dashboard loaded without rendering any content')
-        const html = `<!doctype html><html><body style="margin:0;background:#252925;color:#dedfd7;font:14px system-ui,sans-serif"><main style="padding:38px"><h1 style="color:#fffdf7">Dashboard failed to render</h1><p>Restart Porto. If this continues, reinstall the latest build.</p></main></body></html>`
+        const html = `<!doctype html><html><body style="margin:0;background:#141516;color:#dfe1e4;font:14px system-ui,sans-serif"><main style="padding:38px"><h1 style="color:#f5f6f7">Dashboard failed to render</h1><p>Restart Porto. If this continues, reinstall the latest build.</p></main></body></html>`
         window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
       } catch (error) {
         console.error('Unable to verify Porto dashboard rendering', error)

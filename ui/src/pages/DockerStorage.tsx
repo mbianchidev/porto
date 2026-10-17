@@ -85,7 +85,7 @@ export function DockerStorage() {
     </div>
     <div className="workArea storageWorkArea">
       <div className="dataWorkArea">
-        {usage.error && <p role="alert" className="errorLine">{usage.error}</p>}
+        {usage.error && <p role="alert" className="errorBanner">{usage.error}</p>}
         {usage.loading && !usage.data && <p role="status">Measuring stores and resource ownership...</p>}
         <section className="drawerPanel" aria-label="Storage allocation">
           <h3>Allocation and ownership</h3>
