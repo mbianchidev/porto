@@ -555,6 +555,12 @@ func gitContext(ctx context.Context, path string, args ...string) (string, error
 }
 
 func gitContextWithTimeout(parent context.Context, path string, timeout time.Duration, args ...string) (string, error) {
+	var lockTracker *indexLockTracker
+	if gitCommandWritesIndex(args) {
+		if lockPath, lockErr := gitIndexLockPath(parent, path); lockErr == nil {
+			lockTracker = startIndexLockTracker(lockPath)
+		}
+	}
 	ctx, cancel := context.WithTimeout(parent, timeout)
 	defer cancel()
 	cmd := process.NewCommand(ctx, path, "git", args...)
@@ -564,12 +570,6 @@ func gitContextWithTimeout(parent context.Context, path string, timeout time.Dur
 		"LC_ALL=C",
 		"LANG=C",
 	)
-	var lockTracker *indexLockTracker
-	if gitCommandWritesIndex(args) {
-		if lockPath, lockErr := gitIndexLockPath(path); lockErr == nil {
-			lockTracker = startIndexLockTracker(lockPath)
-		}
-	}
 	var buf bytes.Buffer
 	cmd.Stdout = &buf
 	cmd.Stderr = &buf
@@ -594,8 +594,8 @@ func gitCommandWritesIndex(args []string) bool {
 	return false
 }
 
-func gitIndexLockPath(repoPath string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+func gitIndexLockPath(parent context.Context, repoPath string) (string, error) {
+	ctx, cancel := context.WithTimeout(parent, 5*time.Second)
 	defer cancel()
 	command := process.NewCommand(ctx, repoPath, "git", "rev-parse", "--path-format=absolute", "--git-path", "index.lock")
 	command.Env = process.WithEnvironment(command.Environ(), "GIT_TERMINAL_PROMPT=0", "LC_ALL=C", "LANG=C")

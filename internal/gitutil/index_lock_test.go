@@ -1,6 +1,7 @@
 package gitutil
 
 import (
+	"context"
 	"errors"
 	"os"
 	"path/filepath"
@@ -19,10 +20,12 @@ func TestGitTimeoutRemovesLockCreatedByPortoProcess(t *testing.T) {
 	binDirectory := t.TempDir()
 	gitPath := filepath.Join(binDirectory, "git")
 	script := `#!/bin/sh
-	if [ "$LC_ALL" != "C" ] || [ "$LANG" != "C" ]; then
-	  exit 2
-	fi
-	if [ "$1" = "rev-parse" ]; then
+if [ "$LC_ALL" != "C" ] || [ "$LANG" != "C" ]; then
+  exit 2
+fi
+if [ "$1" = "rev-parse" ]; then
+  # Lock discovery must take longer than the command's execution timeout.
+  sleep 2
   printf '%s\n' "$PORTO_TEST_INDEX_LOCK"
   exit 0
 fi
@@ -40,10 +43,19 @@ sleep 10
 		t.Fatal("timed-out Git command unexpectedly succeeded")
 	}
 	if !strings.Contains(output, "Porto removed its stale Git index lock") {
-		t.Fatalf("cleanup message missing: %q", output)
+		t.Fatalf("cleanup message missing: %q (Git error: %v)", output, err)
 	}
 	if _, err := os.Stat(lockPath); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("Porto-owned lock still exists: %v", err)
+	}
+}
+
+func TestGitIndexLockPathHonorsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := gitIndexLockPath(ctx, t.TempDir()); !errors.Is(err, context.Canceled) {
+		t.Fatalf("index lock discovery error = %v, want context cancellation", err)
 	}
 }
 

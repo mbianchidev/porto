@@ -66,6 +66,9 @@ out or fails, Porto terminates the complete process tree and removes an
 operation. Locks that existed before the operation, were replaced afterward,
 or are reported as belonging to another Git process are preserved.
 
+Index-lock discovery has its own five-second deadline and honors caller
+cancellation. The Git command's execution timeout starts after this preflight.
+
 If a repository already contains a lock from an older crash, close any active
 Git/editor process and remove that lock manually once. Current Porto operations
 do not leave new pending index locks behind.
