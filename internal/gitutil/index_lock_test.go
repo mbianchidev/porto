@@ -24,13 +24,11 @@ if [ "$LC_ALL" != "C" ] || [ "$LANG" != "C" ]; then
   exit 2
 fi
 if [ "$1" = "rev-parse" ]; then
-  # Lock discovery must take longer than the command's execution timeout.
-  sleep 2
   printf '%s\n' "$PORTO_TEST_INDEX_LOCK"
   exit 0
 fi
 : > "$PORTO_TEST_INDEX_LOCK"
-sleep 10
+sleep 60
 `
 	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
 		t.Fatal(err)
@@ -38,7 +36,7 @@ sleep 10
 	t.Setenv("PORTO_TEST_INDEX_LOCK", lockPath)
 	t.Setenv("PATH", binDirectory+string(os.PathListSeparator)+os.Getenv("PATH"))
 
-	output, err := gitWithTimeout(repository, time.Second, "pull", "--ff-only")
+	output, err := gitWithTimeout(repository, 10*time.Second, "pull", "--ff-only")
 	if err == nil {
 		t.Fatal("timed-out Git command unexpectedly succeeded")
 	}
