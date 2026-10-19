@@ -7,22 +7,20 @@ function commandFailure(result) {
     || `command exited with ${result.signal ?? result.status}`
 }
 
-function macOSPackagingEnvironment(environment = process.env, run = spawnSync) {
+function macOSDeveloperDirectory(environment = process.env, run = spawnSync) {
   const failures = []
   const execute = (command, args, env) => run(command, args, {
     encoding: 'utf8', env, timeout: 30000,
   })
   const candidates = []
-  if (environment.DEVELOPER_DIR) {
-    candidates.push(environment.DEVELOPER_DIR)
+  const selected = execute('xcode-select', ['--print-path'], environment)
+  if (!selected.error && selected.status === 0 && selected.stdout?.trim()) {
+    candidates.push(selected.stdout.trim())
   } else {
-    const selected = execute('xcode-select', ['--print-path'], environment)
-    if (!selected.error && selected.status === 0 && selected.stdout?.trim()) {
-      candidates.push(selected.stdout.trim())
-    } else {
-      failures.push(`Unable to read the active developer directory: ${commandFailure(selected)}`)
-    }
-    if (!candidates.includes(defaultDeveloperDirectory)) candidates.push(defaultDeveloperDirectory)
+    failures.push(`Unable to read the active developer directory: ${commandFailure(selected)}`)
+  }
+  if (!environment.DEVELOPER_DIR && !candidates.includes(defaultDeveloperDirectory)) {
+    candidates.push(defaultDeveloperDirectory)
   }
 
   for (const directory of candidates) {
@@ -38,7 +36,7 @@ function macOSPackagingEnvironment(environment = process.env, run = spawnSync) {
       continue
     }
     const actool = execute('actool', ['--version'], env)
-    if (!actool.error && actool.status === 0 && actool.stdout?.trim()) return env
+    if (!actool.error && actool.status === 0 && actool.stdout?.trim()) return directory
     const diagnostic = !actool.error && actool.status === 0
       ? 'actool returned no version information'
       : commandFailure(actool)
@@ -56,11 +54,11 @@ function macOSPackagingEnvironment(environment = process.env, run = spawnSync) {
 
 if (require.main === module) {
   try {
-    console.log(macOSPackagingEnvironment().DEVELOPER_DIR)
+    console.log(macOSDeveloperDirectory())
   } catch (error) {
     console.error(error.message)
     process.exitCode = 1
   }
 }
 
-module.exports = { macOSPackagingEnvironment }
+module.exports = { macOSDeveloperDirectory }

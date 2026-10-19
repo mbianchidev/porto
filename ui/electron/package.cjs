@@ -4,7 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { normalizeElectronRuntimeSymlinks } = require('../../scripts/desktop-runtime-symlinks.cjs')
-const { macOSPackagingEnvironment } = require('../../scripts/macos-toolchain.cjs')
+const { macOSDeveloperDirectory } = require('../../scripts/macos-toolchain.cjs')
 const { parseSemver, RELEASE_VERSION_FILE } = require('./desktop-updater.cjs')
 
 const packagerEntry = path.join(path.dirname(require.resolve('@electron/packager')), '..', 'bin', 'electron-packager.mjs')
@@ -32,7 +32,7 @@ for (let index = 0; index < forwardedArgs.length; index += 1) {
 let environment = process.env
 if (process.platform === 'darwin' && platform.split(',').some((target) => ['darwin', 'mas', 'all'].includes(target))) {
   try {
-    environment = macOSPackagingEnvironment()
+    environment = { ...process.env, DEVELOPER_DIR: macOSDeveloperDirectory() }
   } catch (error) {
     console.error(`Unable to package Porto: ${error.message}`)
     process.exit(1)
