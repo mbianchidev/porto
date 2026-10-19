@@ -334,6 +334,11 @@ Requirements:
 
 The minimum Go version follows the `go` directive in `go.mod`.
 
+Building macOS desktop packages or running their startup regression tests also
+requires macOS 26 or newer and full Xcode 26 or newer, not just Command Line Tools.
+See [macOS packaging setup](ci-cd.md#ci-details) for scoped Xcode selection.
+Running the unpackaged desktop from source does not require the icon compiler.
+
 Source builds use standard host tools:
 
 - Docker CLI with Compose for the named Porto context and Compose project orchestration

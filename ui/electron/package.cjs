@@ -4,6 +4,7 @@ const os = require('node:os')
 const path = require('node:path')
 
 const { normalizeElectronRuntimeSymlinks } = require('../../scripts/desktop-runtime-symlinks.cjs')
+const { macOSDeveloperDirectory } = require('../../scripts/macos-toolchain.cjs')
 const { parseSemver, RELEASE_VERSION_FILE } = require('./desktop-updater.cjs')
 
 const packagerEntry = path.join(path.dirname(require.resolve('@electron/packager')), '..', 'bin', 'electron-packager.mjs')
@@ -14,6 +15,29 @@ const forwardedArgs = process.argv.slice(2).filter((argument) => {
   return false
 })
 releaseVersion = parseSemver(releaseVersion).version
+let output = __dirname
+let platform = process.platform
+for (let index = 0; index < forwardedArgs.length; index += 1) {
+  const argument = forwardedArgs[index]
+  if (argument.startsWith('--out=')) {
+    output = argument.slice('--out='.length)
+  } else if (argument === '--out' && forwardedArgs[index + 1]) {
+    output = forwardedArgs[index + 1]
+  } else if (argument.startsWith('--platform=')) {
+    platform = argument.slice('--platform='.length)
+  } else if (argument === '--platform' && forwardedArgs[index + 1]) {
+    platform = forwardedArgs[index + 1]
+  }
+}
+let environment = process.env
+if (process.platform === 'darwin' && platform.split(',').some((target) => ['darwin', 'mas', 'all'].includes(target))) {
+  try {
+    environment = { ...process.env, DEVELOPER_DIR: macOSDeveloperDirectory() }
+  } catch (error) {
+    console.error(`Unable to package Porto: ${error.message}`)
+    process.exit(1)
+  }
+}
 const metadataDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-release-metadata-'))
 const releaseVersionPath = path.join(metadataDirectory, RELEASE_VERSION_FILE)
 fs.writeFileSync(releaseVersionPath, `${releaseVersion}\n`, { encoding: 'utf8', mode: 0o600 })
@@ -50,7 +74,7 @@ const args = [
 const result = spawnSync(process.execPath, args, {
   cwd: __dirname,
   stdio: 'inherit',
-  env: { ...process.env, TMPDIR: metadataDirectory, TMP: metadataDirectory, TEMP: metadataDirectory },
+  env: { ...environment, TMPDIR: metadataDirectory, TMP: metadataDirectory, TEMP: metadataDirectory },
 })
 
 if (result.error) {
@@ -60,16 +84,6 @@ if (result.error) {
   process.exitCode = result.status ?? 1
 } else {
   try {
-    let output = __dirname
-    for (let index = 0; index < forwardedArgs.length; index += 1) {
-      const argument = forwardedArgs[index]
-      if (argument.startsWith('--out=')) {
-        output = argument.slice('--out='.length)
-      } else if (argument === '--out' && forwardedArgs[index + 1]) {
-        output = forwardedArgs[index + 1]
-      }
-    }
-
     const outputDirectory = path.resolve(__dirname, output)
     const packagedApps = fs.readdirSync(outputDirectory, { withFileTypes: true })
       .filter((entry) => entry.isDirectory() && entry.name.startsWith('Porto-'))
