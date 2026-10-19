@@ -126,7 +126,7 @@ function AppShell() {
         {/*
           THESIS: Porto is one dense operations desk, not a dashboard of cards, spanning
           local processes, containers, clusters, and VMs behind a single control surface.
-          OWN-WORLD: Painted graphite/putty metal, engraved mono labels, status lamps, and
+          OWN-WORLD: Neutral graphite instruments, engraved mono labels, status lamps, and
           a fixed left rail feeding a ranked inventory and a right inspector — olive healthy,
           amber attention, red fault, never a fourth hue.
           STORY: Pick a rail section, scan the section's signal rail and ranked inventory,

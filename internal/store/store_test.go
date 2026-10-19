@@ -40,6 +40,7 @@ func TestRuntimeFeatureSettingsDefaultDockerOnAndRoundTrip(t *testing.T) {
 		t.Fatalf("Docker must default on while optional runtimes default off: %+v", settings)
 	}
 	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
+		settings.Theme != app.DefaultTheme ||
 		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
 		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
 		!settings.TerminalCursorBlink ||
@@ -180,6 +181,7 @@ func TestSettingsRoundTrip(t *testing.T) {
 		KillSwitchEnabled:   true,
 		SendboxEnabled:      true,
 		InterfaceDensity:    "comfortable",
+		Theme:               "light",
 		ReduceMotion:        true,
 		TerminalFontSize:    15,
 		TerminalLineHeight:  1.5,
@@ -282,6 +284,7 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 		t.Fatalf("migration must not enable cleanup of existing images: %s", data)
 	}
 	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
+		settings.Theme != app.DefaultTheme ||
 		settings.TerminalFontSize != app.DefaultTerminalFontSize ||
 		settings.TerminalLineHeight != app.DefaultTerminalLineHeight ||
 		!settings.TerminalCursorBlink ||

@@ -5,7 +5,7 @@ const settings: Settings = {
   cleanupLocalMerged: false, cleanupRemoteMerged: false, pruneRemoteTracking: false,
   protectedBranches: ['main'], sqlNotSoLiteEnabled: false, killSwitchEnabled: false,
   sendboxEnabled: false, dockerEnabled: false, dockerAutoPruneEnabled: false,
-  kubernetesEnabled: false, vmsEnabled: false, interfaceDensity: 'compact',
+  kubernetesEnabled: false, vmsEnabled: false, interfaceDensity: 'compact', theme: 'dark',
   reduceMotion: true, terminalFontSize: 13, terminalLineHeight: 1.2,
   terminalCursorBlink: false, terminalScrollback: 1000, logRetentionDays: 7,
 }

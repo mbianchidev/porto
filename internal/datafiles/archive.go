@@ -252,6 +252,22 @@ func Validate(ctx context.Context, archive io.ReadSeeker) (Manifest, error) {
 }
 
 func Restore(ctx context.Context, archive io.ReadSeeker, destination string, options RestoreOptions) error {
+	if options.ExpectedSHA256 != "" {
+		expected, err := hex.DecodeString(options.ExpectedSHA256)
+		if err != nil || len(expected) != sha256.Size {
+			return fmt.Errorf("%w: restore requires an exact SHA-256 archive checksum", ErrInvalid)
+		}
+		if _, err := archive.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		hash := sha256.New()
+		if _, err := io.Copy(hash, contextReader{archive, ctx.Err}); err != nil {
+			return err
+		}
+		if hex.EncodeToString(hash.Sum(nil)) != options.ExpectedSHA256 {
+			return fmt.Errorf("%w: archive checksum changed after preview", ErrConflict)
+		}
+	}
 	manifest, err := Validate(ctx, archive)
 	if err != nil {
 		return err
@@ -333,12 +349,15 @@ func Restore(ctx context.Context, archive io.ReadSeeker, destination string, opt
 	// Apply directory permissions last so restrictive source modes do not prevent
 	// restoring their children. Never chmod a symbolic link.
 	for _, entry := range slices.Backward(manifest.Entries) {
-		if entry.Type == "symlink" {
-			continue
-		}
 		modified, err := time.Parse(time.RFC3339Nano, entry.ModifiedAt)
 		if err != nil {
 			return err
+		}
+		if entry.Type == "symlink" {
+			if err := restoreSymlinkTime(root, entry.Path, modified); err != nil {
+				return fmt.Errorf("restore symlink timestamp for %s without following its target: %w", entry.Path, err)
+			}
+			continue
 		}
 		if err := root.Chtimes(entry.Path, modified, modified); err != nil {
 			return err

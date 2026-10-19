@@ -27,6 +27,11 @@ type SourceTemporary struct {
 	Owner    string `json:"owner"`
 }
 
+type VolumeTemporary struct {
+	Owner       string `json:"owner"`
+	Destination string `json:"destination"`
+}
+
 type Request struct {
 	Action            string             `json:"action"`
 	Resource          datafiles.Resource `json:"resource"`
@@ -94,14 +99,17 @@ type Schedule struct {
 }
 
 func (s Schedule) Validate() error {
+	if s.ID < 0 {
+		return fmt.Errorf("%w: backup schedule ID cannot be negative", datafiles.ErrInvalid)
+	}
 	if s.Resource.Kind != "volume" || s.Resource.ID == "" || s.Resource.Name == "" || s.Resource.ReadOnly {
-		return errors.New("backup schedule requires an identity-bearing writable local volume")
+		return fmt.Errorf("%w: backup schedule requires an identity-bearing writable local volume", datafiles.ErrInvalid)
 	}
 	if s.IntervalHours < 1 || s.IntervalHours > 8760 || s.Retention < 1 || s.Retention > 365 {
-		return errors.New("invalid backup schedule: interval must be 1-8760 hours and retention 1-365 verified archives")
+		return fmt.Errorf("%w: backup interval must be 1-8760 hours and retention 1-365 verified archives", datafiles.ErrInvalid)
 	}
 	if !filepath.IsAbs(s.Directory) {
-		return errors.New("backup directory must be an absolute local path")
+		return fmt.Errorf("%w: backup directory must be an absolute local path", datafiles.ErrInvalid)
 	}
 	return nil
 }

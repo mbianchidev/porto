@@ -7,6 +7,9 @@ import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { RuntimeFiles } from '../components/RuntimeFiles'
 import { VolumeTools } from '../components/VolumeTools'
+import { VolumeOwnership } from '../components/VolumeOwnership'
+import { DataOperations } from '../components/DataOperations'
+import type { StorageResource } from '../dataTypes'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -23,9 +26,14 @@ export function Volumes() {
   const [driver, setDriver] = useState('')
   const [submitting, setSubmitting] = useState(false)
   const [tab, setTab] = useState('overview')
+  const [dataAction, setDataAction] = useState('volume-export')
+  const [importing, setImporting] = useState(false)
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const volumes = usePolledResource<DockerVolume[]>((signal) => apiGet('/api/docker/volumes', signal), 8000, [], 'docker:volumes')
+  const allocation = usePolledResource<StorageResource | null>((signal) => selectedName
+    ? apiGet(`/api/docker/volumes/${encodeURIComponent(selectedName)}/storage`, signal) : Promise.resolve(null),
+  selectedName ? 10000 : 0, [selectedName], selectedName ? `docker:volume-storage:${selectedName}` : undefined)
   const items = volumes.data ?? []
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((volume) => normalizedQuery === '' || volume.name.toLocaleLowerCase().includes(normalizedQuery))
@@ -50,16 +58,12 @@ export function Volumes() {
     }
   }
 
-  async function removeVolume(volume: DockerVolume, force: boolean) {
-    if (!window.confirm(`${force ? 'Force-remove' : 'Remove'} volume ${volume.name}?`)) return
-    try {
-      await apiSend(`/api/docker/volumes/${volume.name}${force ? '?force=true' : ''}`, 'DELETE')
-      notifyNotice('volumes', `Removed volume ${volume.name}.`)
-      if (selectedName === volume.name) setSelectedName(null)
-      volumes.reload()
-    } catch (err) {
-      notifyError('volumes', errorMessage(err, `Unable to remove volume ${volume.name}`))
-    }
+  function removeVolume(volume: DockerVolume) {
+    setCreating(false)
+    setImporting(false)
+    setSelectedName(volume.name)
+    setDataAction('volume-remove')
+    setTab('data')
   }
 
   return (
@@ -77,7 +81,8 @@ export function Volumes() {
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} volumes</span>
         <button className="refreshControl" type="button" onClick={volumes.reload}>Refresh</button>
-        <button type="button" disabled={!available} onClick={() => { setSelectedName(null); setCreating(true) }}>New volume</button>
+        <button type="button" disabled={!available} onClick={() => { setSelectedName(null); setImporting(false); setCreating(true) }}>New volume</button>
+        <button type="button" disabled={!available} onClick={() => { setSelectedName(null); setCreating(false); setImporting(true) }}>Import local archive</button>
       </div>
       <div className="workArea">
         {!available ? (
@@ -88,7 +93,7 @@ export function Volumes() {
             getKey={(volume) => volume.name}
             columnsTemplate={COLUMNS_TEMPLATE}
             selectedKey={selectedName}
-            onSelect={(volume) => { setCreating(false); setSelectedName(volume.name); setTab('overview') }}
+            onSelect={(volume) => { setCreating(false); setImporting(false); setSelectedName(volume.name); setDataAction('volume-export'); setTab('overview') }}
             ariaLabel="Docker volumes"
             emptyMessage={volumes.error || 'No volumes found.'}
             columns={[
@@ -98,7 +103,7 @@ export function Volumes() {
               { header: 'Scope', className: 'mono', render: (volume) => volume.scope },
             ]}
             renderActions={(volume) => (
-              <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(volume, false)} />
+              <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(volume)} />
             )}
           />
         )}
@@ -115,16 +120,17 @@ export function Volumes() {
                 <div><dt>Created</dt><dd>{selected.createdAt || '—'}</dd></div>
               </dl>
             </section>
+            {allocation.error && <p role="alert" className="errorLine">{allocation.error}</p>}
+            {allocation.data && <VolumeOwnership volume={allocation.data} />}
             <div className="maintenanceBar">
               <span>Maintenance controls</span>
               <div className="actions">
-                <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(selected, false)} />
-                <ActionButton className="removeButton" label="Force remove volume" icon="kill" onClick={() => removeVolume(selected, true)} />
+                <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(selected)} />
               </div>
             </div>
             </>}
             {tab === 'files' && <RuntimeFiles key={selected.name} kind="volume" name={selected.name} />}
-            {tab === 'data' && <VolumeTools key={selected.name} name={selected.name} />}
+            {tab === 'data' && <VolumeTools key={`${selected.name}:${dataAction}`} name={selected.name} initialAction={dataAction} />}
           </Inspector>
         )}
 
@@ -143,7 +149,9 @@ export function Volumes() {
             </form>
           </Inspector>
         )}
+        {importing && <Inspector title="Import local archive" subtitle="Restore a verified archive into a new volume" onClose={() => setImporting(false)}><VolumeTools initialAction="volume-import" /></Inspector>}
       </div>
+      {!selected && !importing && <div className="dataWorkArea"><DataOperations onComplete={volumes.reload} /></div>}
     </>
   )
 }

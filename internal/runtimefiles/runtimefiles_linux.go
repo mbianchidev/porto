@@ -4,9 +4,12 @@ package runtimefiles
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -257,6 +260,76 @@ func runtimeClient(descriptor Descriptor) (*containerd.Client, error) {
 	return containerd.New(descriptor.Address, containerd.WithDefaultNamespace(descriptor.Namespace))
 }
 
+func runtimeMetadataUsage(ctx context.Context, descriptor Descriptor, output io.Writer) (err error) {
+	client, err := runtimeClient(descriptor)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, client.Close()) }()
+	plugins, err := client.IntrospectionService().Plugins(ctx, "type==io.containerd.metadata.v1")
+	if err != nil {
+		return err
+	}
+	for _, plugin := range plugins.Plugins {
+		if plugin.Type != "io.containerd.metadata.v1" || plugin.ID != "bolt" || plugin.InitErr != nil {
+			continue
+		}
+		database := plugin.Exports["path"]
+		if !filepath.IsAbs(database) || filepath.Base(database) != "meta.db" || filepath.Dir(database) == string(filepath.Separator) {
+			return fmt.Errorf("%w: containerd did not expose its metadata database path", datafiles.ErrUnsupported)
+		}
+		logical, allocated, err := datafiles.DiskUsage(ctx, filepath.Dir(database))
+		if err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(map[string]any{
+			"logicalBytes": logical, "allocatedBytes": allocated,
+		})
+	}
+	return fmt.Errorf("%w: containerd metadata store discovery is unavailable", datafiles.ErrUnsupported)
+}
+
+func nativeVolumeResource(descriptor Descriptor) (datafiles.Resource, error) {
+	resource := descriptor.Resource
+	if !filepath.IsAbs(descriptor.RootPath) || filepath.Base(descriptor.RootPath) != "_data" || resource.Name == "" {
+		return resource, fmt.Errorf("%w: local volume metadata requires a native _data directory", datafiles.ErrUnsupported)
+	}
+	root, err := os.OpenRoot(filepath.Dir(descriptor.RootPath))
+	if err != nil {
+		return resource, err
+	}
+	defer root.Close()
+	data, err := root.Lstat("_data")
+	if err != nil || !data.IsDir() || data.Mode()&os.ModeSymlink != 0 {
+		return resource, errors.Join(fmt.Errorf("%w: native volume data is not a real directory", datafiles.ErrConflict), err)
+	}
+	info, err := root.Lstat("volume.json")
+	if err != nil || !info.Mode().IsRegular() {
+		return resource, errors.Join(fmt.Errorf("%w: native volume metadata is missing or not a regular file", datafiles.ErrUnsupported), err)
+	}
+	file, err := root.Open("volume.json")
+	if err != nil {
+		return resource, err
+	}
+	defer file.Close()
+	opened, err := file.Stat()
+	if err != nil || !os.SameFile(info, opened) {
+		return resource, errors.Join(datafiles.ErrConflict, err)
+	}
+	var stat unix.Statx_t
+	if err := unix.Statx(int(file.Fd()), "", unix.AT_EMPTY_PATH, unix.STATX_INO|unix.STATX_BTIME, &stat); err != nil {
+		return resource, err
+	}
+	if stat.Mask&unix.STATX_BTIME == 0 {
+		return resource, fmt.Errorf("%w: the volume filesystem cannot provide a stable metadata birth identity", datafiles.ErrUnsupported)
+	}
+	resource.CreatedAt = time.Unix(stat.Btime.Sec, int64(stat.Btime.Nsec)).UTC().Format(time.RFC3339Nano)
+	token := fmt.Sprintf("%s\x00%s\x00%d:%d:%d\x00%s", resource.Name, descriptor.RootPath, stat.Dev_major, stat.Dev_minor, stat.Ino, resource.CreatedAt)
+	hash := sha256.Sum256([]byte(token))
+	resource.ID = hex.EncodeToString(hash[:])
+	return resource, nil
+}
+
 func ensureVolumeIdle(ctx context.Context, descriptor Descriptor) error {
 	client, err := runtimeClient(descriptor)
 	if err != nil {
@@ -282,6 +355,13 @@ func ensureVolumeIdle(ctx context.Context, descriptor Descriptor) error {
 		}
 		if !references {
 			continue
+		}
+		info, err := container.Info(ctx)
+		if err != nil {
+			return err
+		}
+		if info.Labels["io.x-k8s.kind.cluster"] != "" || info.Labels["io.porto.kubernetes.cluster"] != "" {
+			return fmt.Errorf("%w: volume belongs to managed Kubernetes node %s; use its cluster lifecycle", datafiles.ErrConflict, container.ID())
 		}
 		task, err := container.Task(ctx, nil)
 		if errdefs.IsNotFound(err) {

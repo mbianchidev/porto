@@ -69,6 +69,9 @@ export type DataRequest = {
   allowSourceHelper?: boolean
   confirm?: boolean
   preview?: string
+  scheduleId?: number
+  retention?: number
+  trigger?: string
 }
 
 export type DataOperation = {
@@ -83,6 +86,7 @@ export type DataOperation = {
   result: {
     archive?: VolumeArchive
     message?: string
+    bytesReclaimed?: number
     steps?: Array<{ kind: string; source: string; destination: string; status: string; message?: string }>
   }
 }
@@ -116,7 +120,15 @@ export type StorageResource = {
   dangling: boolean
   protected: boolean
   reason?: string
-  owners: Array<{ id: string; name: string; state: string; composeProject?: string; composeService?: string }>
+  description?: string
+  cacheType?: string
+  lastUsedAt?: string
+  usageCount?: number
+  owners: Array<{
+    id: string; name: string; state: string; composeProject?: string; composeService?: string
+    managed?: boolean; protection?: string
+    mounts?: Array<{ path: string; kind: string; source?: string; readOnly: boolean }>
+  }>
 }
 
 export type StorageUsage = {
@@ -152,8 +164,8 @@ export type VolumePreview = {
   consequences: string
 }
 
-export function bytesLabel(bytes: number | undefined): string {
-  if (bytes === undefined || bytes < 0) return 'Unavailable'
+export function bytesLabel(bytes: number | undefined | null): string {
+  if (bytes == null || !Number.isFinite(bytes) || bytes < 0) return 'Unavailable'
   const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
   let value = bytes
   let unit = 0

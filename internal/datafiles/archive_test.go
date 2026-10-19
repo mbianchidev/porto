@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"io"
 	"os"
@@ -108,6 +110,14 @@ func TestArchiveLinksAndUnicode(t *testing.T) {
 	if first == nil || second == nil || !os.SameFile(first, second) {
 		t.Fatal("hardlink relationship was not preserved")
 	}
+	originalLink, err := os.Lstat(filepath.Join(source, "symlink"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	restoredLink, err := os.Lstat(filepath.Join(destination, "symlink"))
+	if err != nil || !restoredLink.ModTime().Equal(originalLink.ModTime()) {
+		t.Fatalf("symlink timestamp was not preserved without following its target: %+v, %v", restoredLink, err)
+	}
 }
 
 func TestArchiveCancellationAndLowSpace(t *testing.T) {
@@ -178,5 +188,50 @@ func TestArchiveRoundTrip(t *testing.T) {
 	}
 	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o640 {
 		t.Fatalf("permissions changed: %o", info.Mode().Perm())
+	}
+}
+
+func TestRestoreRejectsValidArchiveChangedAfterPreview(t *testing.T) {
+	source := t.TempDir()
+	sourceFile := filepath.Join(source, "synthetic.txt")
+	if err := os.WriteFile(sourceFile, []byte("previewed data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	resource := Resource{Kind: "volume", Name: "synthetic", ID: "volume-1"}
+	var previewed bytes.Buffer
+	if _, err := Export(context.Background(), &previewed, source, resource); err != nil {
+		t.Fatal(err)
+	}
+	checksum := sha256.Sum256(previewed.Bytes())
+	if err := os.WriteFile(sourceFile, []byte("different valid data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var changed bytes.Buffer
+	if _, err := Export(context.Background(), &changed, source, resource); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(t.TempDir(), "destination")
+	if err := os.Mkdir(destination, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	original := filepath.Join(destination, "original.txt")
+	if err := os.WriteFile(original, []byte("original stays intact"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	err := ReplaceDirectory(context.Background(), destination, func(stage string) error {
+		return Restore(context.Background(), bytes.NewReader(changed.Bytes()), stage, RestoreOptions{
+			ExpectedSHA256: hex.EncodeToString(checksum[:]),
+		})
+	}, nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("a different valid archive was not rejected: %v", err)
+	}
+	content, err := os.ReadFile(original)
+	if err != nil || string(content) != "original stays intact" {
+		t.Fatalf("restore changed original data: %q, %v", content, err)
+	}
+	entries, err := os.ReadDir(filepath.Dir(destination))
+	if err != nil || len(entries) != 1 {
+		t.Fatalf("failed restore left temporary staging behind: %+v, %v", entries, err)
 	}
 }

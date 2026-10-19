@@ -18,21 +18,22 @@ import (
 )
 
 type Descriptor struct {
-	Resource     datafiles.Resource `json:"resource"`
-	Address      string             `json:"address,omitempty"`
-	Namespace    string             `json:"namespace,omitempty"`
-	RootPath     string             `json:"rootPath,omitempty"`
-	Snapshotter  string             `json:"snapshotter,omitempty"`
-	SnapshotKey  string             `json:"snapshotKey,omitempty"`
-	PID          uint32             `json:"pid,omitempty"`
-	Mounts       []specs.Mount      `json:"mounts,omitempty"`
-	Display      []datafiles.Mount  `json:"display,omitempty"`
-	Owner        string             `json:"owner,omitempty"`
-	Platform     string             `json:"platform,omitempty"`
-	UIDMap       []IDMap            `json:"uidMap,omitempty"`
-	GIDMap       []IDMap            `json:"gidMap,omitempty"`
-	RuntimePID   int32              `json:"runtimePid,omitempty"`
-	NamespacePID int32              `json:"namespacePid,omitempty"`
+	Resource       datafiles.Resource `json:"resource"`
+	Address        string             `json:"address,omitempty"`
+	Namespace      string             `json:"namespace,omitempty"`
+	RootPath       string             `json:"rootPath,omitempty"`
+	Snapshotter    string             `json:"snapshotter,omitempty"`
+	SnapshotKey    string             `json:"snapshotKey,omitempty"`
+	PID            uint32             `json:"pid,omitempty"`
+	Mounts         []specs.Mount      `json:"mounts,omitempty"`
+	Display        []datafiles.Mount  `json:"display,omitempty"`
+	Owner          string             `json:"owner,omitempty"`
+	Platform       string             `json:"platform,omitempty"`
+	UIDMap         []IDMap            `json:"uidMap,omitempty"`
+	GIDMap         []IDMap            `json:"gidMap,omitempty"`
+	RuntimePID     int32              `json:"runtimePid,omitempty"`
+	NamespacePID   int32              `json:"namespacePid,omitempty"`
+	VolumeIdentity string             `json:"volumeIdentity,omitempty"`
 }
 
 type IDMap struct {
@@ -77,6 +78,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		return os.ErrPermission
 	}
 	descriptor := envelope.Descriptor
+	if descriptor.Resource.Kind == "runtime" && (envelope.Request.Action != "metadata-usage" ||
+		!descriptor.Resource.ReadOnly || descriptor.Resource.ID != descriptor.Address ||
+		descriptor.RootPath != "" || envelope.Request.Path != "") {
+		return datafiles.ErrInvalid
+	}
 	if descriptor.Resource.Kind == "vm" {
 		home, err := os.UserHomeDir()
 		if err != nil || descriptor.RootPath != home || envelope.Request.Action != "sftp" {
@@ -90,6 +96,24 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 	}
 	if handled, err := dispatchRuntimeNamespace(ctx, descriptor, envelope.Request, reader, output); handled {
 		return err
+	}
+	if descriptor.Resource.Kind == "runtime" {
+		return runtimeMetadataUsage(ctx, descriptor, output)
+	}
+	if descriptor.Resource.Kind == "volume" {
+		if envelope.Request.Action == "volume-identity" {
+			resource, err := nativeVolumeResource(descriptor)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(output).Encode(resource)
+		}
+		if descriptor.VolumeIdentity != "" {
+			current, err := nativeVolumeResource(descriptor)
+			if err != nil || current.ID != descriptor.VolumeIdentity || current.Fingerprint() != descriptor.Resource.Fingerprint() {
+				return errors.Join(datafiles.ErrConflict, err)
+			}
+		}
 	}
 	switch envelope.Request.Action {
 	case "attach":
@@ -249,6 +273,9 @@ func restoreVolume(ctx context.Context, descriptor Descriptor, request datafiles
 				return nil
 			})
 	}
+	if request.SHA256 == "" {
+		return fmt.Errorf("%w: restore requires the previewed archive checksum", datafiles.ErrInvalid)
+	}
 	file, err := os.CreateTemp(path.Dir(descriptor.RootPath), ".porto-archive-")
 	if err != nil {
 		return err
@@ -265,7 +292,7 @@ func restoreVolume(ctx context.Context, descriptor Descriptor, request datafiles
 	return datafiles.ReplaceDirectory(ctx, descriptor.RootPath, func(stage string) error {
 		return datafiles.Restore(ctx, file, stage, datafiles.RestoreOptions{
 			PreserveOwnership: true, AvailableBytes: datafiles.AvailableSpace,
-			MapOwner: descriptor.hostOwner,
+			MapOwner: descriptor.hostOwner, ExpectedSHA256: request.SHA256,
 		})
 	}, func() error { return ensureVolumeIdle(ctx, descriptor) })
 }

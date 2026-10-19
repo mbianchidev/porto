@@ -41,6 +41,7 @@ export type Settings = {
   kubernetesEnabled: boolean
   vmsEnabled: boolean
   interfaceDensity: 'compact' | 'comfortable'
+  theme: 'dark' | 'light' | 'system'
   reduceMotion: boolean
   terminalFontSize: number
   terminalLineHeight: number

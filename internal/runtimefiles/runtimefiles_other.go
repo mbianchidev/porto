@@ -4,6 +4,7 @@ package runtimefiles
 
 import (
 	"context"
+	"io"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 )
@@ -25,4 +26,12 @@ func detach(context.Context, Descriptor, string) error {
 
 func ensureVolumeIdle(context.Context, Descriptor) error {
 	return datafiles.ErrUnsupported
+}
+
+func runtimeMetadataUsage(context.Context, Descriptor, io.Writer) error {
+	return datafiles.ErrUnsupported
+}
+
+func nativeVolumeResource(descriptor Descriptor) (datafiles.Resource, error) {
+	return descriptor.Resource, datafiles.ErrUnsupported
 }
