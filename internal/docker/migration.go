@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net"
 	"net/http"
 	"net/url"
@@ -24,7 +25,10 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
-const migrationSourceLabel = "io.porto.migration.source"
+const (
+	migrationSourceLabel = "io.porto.migration.source"
+	migrationPlanLabel   = "io.porto.migration.plan"
+)
 
 type MigrationContext struct {
 	Name      string `json:"name"`
@@ -175,6 +179,7 @@ func (c *migrationClient) get(ctx context.Context, resource string, query url.Va
 type migrationContainer struct {
 	ID      string `json:"Id"`
 	Name    string
+	Image   string
 	Created string
 	State   struct{ Running, Paused, Restarting bool }
 	Config  struct {
@@ -182,6 +187,7 @@ type migrationContainer struct {
 		StopTimeout                                   *int
 		Cmd, Entrypoint, Env                          []string
 		Labels                                        map[string]string
+		ExposedPorts                                  map[string]json.RawMessage
 		Tty, OpenStdin                                bool
 		Healthcheck                                   *ContainerHealthcheck
 	}
@@ -195,7 +201,16 @@ type migrationContainer struct {
 		Sysctls                                                                   map[string]string
 		Tmpfs                                                                     map[string]string
 		Memory, MemorySwap, NanoCpus, ShmSize                                     int64
-		RestartPolicy                                                             struct {
+		CpuShares, CpuPeriod, CpuQuota, CpuRealtimePeriod, CpuRealtimeRuntime     int64
+		CpusetCpus, CpusetMems                                                    string
+		PidsLimit                                                                 *int64
+		ExtraHosts, GroupAdd                                                      []string
+		Ulimits                                                                   []json.RawMessage
+		LogConfig                                                                 struct {
+			Type   string
+			Config map[string]string
+		}
+		RestartPolicy struct {
 			Name              string
 			MaximumRetryCount int
 		}
@@ -207,8 +222,14 @@ type migrationContainer struct {
 	}
 	NetworkSettings struct {
 		Networks map[string]struct {
-			Aliases                         []string
-			IPAddress, IPPrefixLen, Gateway string
+			Aliases            []string
+			IPAddress, Gateway string
+			IPPrefixLen        int
+			DriverOpts         map[string]string
+			IPAMConfig         *struct {
+				IPv4Address, IPv6Address string
+				LinkLocalIPs             []string
+			}
 		}
 	}
 }
@@ -230,6 +251,16 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		host.ReadonlyRootfs || host.UsernsMode != "" && host.UsernsMode != "host" ||
 		host.Runtime != "" && host.Runtime != "runc" || host.AutoRemove {
 		return CreateContainerRequest{}, ContainerUpdate{}, fmt.Errorf("%w: source has unsupported host paths, namespace, device, DNS, capability, runtime or rootfs options; no destination container was created", ErrUnsupported)
+	}
+	if host.CpuShares != 0 || host.CpuPeriod != 0 || host.CpuQuota != 0 ||
+		host.CpuRealtimePeriod != 0 || host.CpuRealtimeRuntime != 0 || host.CpusetCpus != "" || host.CpusetMems != "" ||
+		host.PidsLimit != nil && *host.PidsLimit != 0 || len(host.Ulimits) > 0 ||
+		host.Memory < 0 || host.MemorySwap < 0 || host.NanoCpus < 0 {
+		return CreateContainerRequest{}, ContainerUpdate{}, fmt.Errorf("%w: CPU scheduling, PID/ulimit or unlimited swap settings cannot be preserved; no destination container was created", ErrUnsupported)
+	}
+	if len(host.ExtraHosts)+len(host.GroupAdd) > 0 || len(host.LogConfig.Config) > 0 ||
+		host.LogConfig.Type != "" && host.LogConfig.Type != "json-file" {
+		return CreateContainerRequest{}, ContainerUpdate{}, fmt.Errorf("%w: additional hosts/groups or custom logging settings cannot be preserved; no destination container was created", ErrUnsupported)
 	}
 	for _, environment := range source.Config.Env {
 		key, _, _ := strings.Cut(environment, "=")
@@ -254,6 +285,7 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		Healthcheck: source.Config.Healthcheck, Privileged: host.Privileged, SecurityOpt: host.SecurityOpt,
 		Tmpfs: host.Tmpfs, Sysctls: host.Sysctls, ShmSize: host.ShmSize, Userns: host.UsernsMode,
 		Cgroupns: host.CgroupnsMode, Restart: restart, TTY: source.Config.Tty, Interactive: source.Config.OpenStdin,
+		Expose: slices.Sorted(maps.Keys(source.Config.ExposedPorts)),
 	}
 	if host.Init != nil {
 		request.Init = *host.Init
@@ -268,16 +300,22 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		}
 		request.Volumes = append(request.Volumes, mount.Name+":"+mount.Destination+":"+mode)
 	}
-	for port, bindings := range host.PortBindings {
+	for _, port := range slices.Sorted(maps.Keys(host.PortBindings)) {
+		bindings := host.PortBindings[port]
 		for _, binding := range bindings {
 			hostIP := binding.HostIP
 			if hostIP == "" {
 				hostIP = "0.0.0.0"
 			}
-			request.Publish = append(request.Publish, hostIP+":"+binding.HostPort+":"+port)
+			request.Publish = append(request.Publish, net.JoinHostPort(hostIP, binding.HostPort)+":"+port)
 		}
 	}
-	for network, endpoint := range source.NetworkSettings.Networks {
+	for _, network := range slices.Sorted(maps.Keys(source.NetworkSettings.Networks)) {
+		endpoint := source.NetworkSettings.Networks[network]
+		if len(endpoint.DriverOpts) > 0 || endpoint.IPAMConfig != nil &&
+			(endpoint.IPAMConfig.IPv4Address != "" || endpoint.IPAMConfig.IPv6Address != "" || len(endpoint.IPAMConfig.LinkLocalIPs) > 0) {
+			return request, ContainerUpdate{}, fmt.Errorf("%w: static network addresses and endpoint driver options cannot be preserved", ErrUnsupported)
+		}
 		aliases := make([]string, 0)
 		for _, alias := range endpoint.Aliases {
 			if alias != source.ID && alias != source.ID[:min(12, len(source.ID))] {
@@ -293,7 +331,66 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		}
 		request.Networks = []ContainerNetwork{{Name: mode}}
 	}
+	if err := errors.Join(validateHealthcheck(request.Healthcheck), validateRestartPolicy(request.Restart)); err != nil {
+		return request, ContainerUpdate{}, err
+	}
 	return request, ContainerUpdate{Memory: host.Memory, MemorySwap: host.MemorySwap, NanoCPUs: host.NanoCpus}, nil
+}
+
+func (source *migrationClient) inspect(ctx context.Context, selection dataops.Selection) (json.RawMessage, error) {
+	resourcePath := map[string]string{"image": "/images/", "volume": "/volumes/", "network": "/networks/", "container": "/containers/"}[selection.Kind]
+	if resourcePath == "" {
+		return nil, datafiles.ErrInvalid
+	}
+	identifier := selection.ID
+	if selection.Kind == "volume" {
+		identifier = selection.Name
+	}
+	suffix := ""
+	if selection.Kind == "container" || selection.Kind == "image" {
+		suffix = "/json"
+	}
+	var metadata json.RawMessage
+	err := source.get(ctx, resourcePath+url.PathEscape(identifier)+suffix, nil, &metadata)
+	return metadata, err
+}
+
+func migrationPlanDigest(metadata []byte) string {
+	digest := sha256.Sum256(metadata)
+	return hex.EncodeToString(digest[:])
+}
+
+func migrationReplayPlan(metadata json.RawMessage, request dataops.Request, kind string) (string, error) {
+	if kind != "container" {
+		return migrationPlanDigest(metadata), nil
+	}
+	selections := slices.Clone(request.Selections)
+	for index := range selections {
+		selections[index].Destination = firstNonEmpty(selections[index].Destination, selections[index].Name)
+	}
+	slices.SortFunc(selections, func(left, right dataops.Selection) int {
+		return strings.Compare(left.Kind+"\x00"+left.ID, right.Kind+"\x00"+right.ID)
+	})
+	document, err := json.Marshal(struct {
+		Source     json.RawMessage
+		Selections []dataops.Selection
+	}{metadata, selections})
+	if err != nil {
+		return "", err
+	}
+	return migrationPlanDigest(document), nil
+}
+
+func migrationContainerImage(request dataops.Request, source migrationContainer) (string, error) {
+	for _, selection := range request.Selections {
+		if selection.Kind == "image" && source.Image != "" && selection.ID == source.Image {
+			if isImageDigest(selection.Name) {
+				return "", fmt.Errorf("%w: container recreation needs a selected named reference for its exact image; tag the original image explicitly before retrying", ErrUnsupported)
+			}
+			return selection.Name, nil
+		}
+	}
+	return "", fmt.Errorf("%w: select the container's exact original image %s; migration never pulls a replacement", ErrUnsupported, source.Image)
 }
 
 func (m *Manager) MigrationInventory(ctx context.Context, contextName string) (MigrationInventory, error) {
@@ -383,6 +480,27 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 	if request.Context == "" || len(request.Selections) == 0 {
 		return preview, fmt.Errorf("%w: choose a source context and individual resources", datafiles.ErrInvalid)
 	}
+	sources, destinations := make(map[string]bool), make(map[string]bool)
+	for _, selection := range request.Selections {
+		destination := firstNonEmpty(selection.Destination, selection.Name)
+		sourceKey, destinationKey := selection.Kind+"\x00"+selection.ID, selection.Kind+"\x00"+destination
+		if sources[sourceKey] {
+			preview.Conflicts = append(preview.Conflicts, selection.Kind+" "+selection.Name+" is selected more than once")
+		}
+		if destinations[destinationKey] {
+			preview.Conflicts = append(preview.Conflicts, "multiple selected "+selection.Kind+" objects target destination "+destination)
+		}
+		sources[sourceKey], destinations[destinationKey] = true, true
+		if err := validateObjectID(destination); err != nil {
+			preview.Conflicts = append(preview.Conflicts, "invalid destination for "+selection.Kind+" "+selection.Name+": "+err.Error())
+		}
+		if selection.Kind == "volume" && !volumeNamePattern.MatchString(destination) {
+			preview.Conflicts = append(preview.Conflicts, "invalid destination volume name "+destination)
+		}
+		if selection.Kind == "image" && destination != selection.Name {
+			preview.Conflicts = append(preview.Conflicts, "image "+selection.Name+": archive tags are preserved; rename the image explicitly after migration")
+		}
+	}
 	inventory, err := m.MigrationInventory(ctx, request.Context)
 	if err != nil {
 		return preview, err
@@ -414,24 +532,15 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 			if !object.Supported {
 				preview.Conflicts = append(preview.Conflicts, object.Kind+" "+object.Name+": "+object.Message)
 			}
-			var metadata json.RawMessage
-			resourcePath := map[string]string{"image": "/images/", "volume": "/volumes/", "network": "/networks/", "container": "/containers/"}[object.Kind]
-			if resourcePath == "" {
-				return preview, datafiles.ErrInvalid
-			}
-			identifier := object.ID
-			if object.Kind == "volume" {
-				identifier = object.Name
-			}
-			suffix := ""
-			if object.Kind == "container" || object.Kind == "image" {
-				suffix = "/json"
-			}
-			if err := source.get(ctx, resourcePath+url.PathEscape(identifier)+suffix, nil, &metadata); err != nil {
+			metadata, err := source.inspect(ctx, selection)
+			if err != nil {
 				return preview, err
 			}
-			digest := sha256.Sum256(metadata)
-			object.PlanDigest = hex.EncodeToString(digest[:])
+			object.PlanDigest = migrationPlanDigest(metadata)
+			replayPlan, err := migrationReplayPlan(metadata, request, object.Kind)
+			if err != nil {
+				return preview, err
+			}
 			switch object.Kind {
 			case "image":
 				var image struct {
@@ -508,14 +617,14 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 				}
 			case "network":
 				for _, target := range targetNetworks {
-					if target.Name == destination && target.Labels[migrationSourceLabel] != migrationIdentity(request.Context, "network", object.ID) {
-						preview.Conflicts = append(preview.Conflicts, "destination network "+destination+" already exists")
+					if target.Name == destination && (target.Labels[migrationSourceLabel] != migrationIdentity(request.Context, "network", object.ID) || target.Labels[migrationPlanLabel] != replayPlan) {
+						preview.Conflicts = append(preview.Conflicts, "destination network "+destination+" already exists without this verified source configuration")
 					}
 				}
 			case "container":
 				for _, target := range targetContainers {
-					if strings.TrimPrefix(target.Name, "/") == destination && target.Labels[migrationSourceLabel] != migrationIdentity(request.Context, "container", object.ID) {
-						preview.Conflicts = append(preview.Conflicts, "destination container "+destination+" already exists")
+					if strings.TrimPrefix(target.Name, "/") == destination && (target.Labels[migrationSourceLabel] != migrationIdentity(request.Context, "container", object.ID) || target.Labels[migrationPlanLabel] != replayPlan) {
+						preview.Conflicts = append(preview.Conflicts, "destination container "+destination+" already exists without this verified source configuration and dependency selection")
 					}
 				}
 			}
@@ -524,6 +633,13 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 				if err != nil {
 					preview.Conflicts = append(preview.Conflicts, object.Name+": "+err.Error())
 				} else {
+					var inspected migrationContainer
+					if err := json.Unmarshal(metadata, &inspected); err != nil {
+						return preview, err
+					}
+					if _, err := migrationContainerImage(request, inspected); err != nil {
+						preview.Conflicts = append(preview.Conflicts, object.Name+": "+err.Error())
+					}
 					for _, mounted := range configuration.Volumes {
 						name, _, _ := strings.Cut(mounted, ":")
 						if !slices.ContainsFunc(request.Selections, func(item dataops.Selection) bool { return item.Kind == "volume" && item.Name == name }) {
@@ -568,9 +684,12 @@ func migrationIdentity(contextName, kind, id string) string {
 	return hex.EncodeToString(hash[:])
 }
 
-func (m *Manager) Migrate(ctx context.Context, request dataops.Request, directory string, progress func(string, int64) error) (result dataops.Result, err error) {
+func (m *Manager) Migrate(ctx context.Context, request dataops.Request, directory string, progress func(string, int64) error, checkpoint func(dataops.Result) error) (result dataops.Result, err error) {
 	if !request.Confirm || request.Preview == "" {
 		return result, datafiles.ErrInvalid
+	}
+	if checkpoint == nil {
+		return result, errors.New("migration checkpoint persistence is unavailable; nothing was transferred")
 	}
 	ctx, release, err := m.BeginDataTransaction(ctx)
 	if err != nil {
@@ -594,38 +713,68 @@ func (m *Manager) Migrate(ctx context.Context, request dataops.Request, director
 	selections := append([]dataops.Selection(nil), request.Selections...)
 	order := map[string]int{"image": 0, "volume": 1, "network": 2, "container": 3}
 	slices.SortStableFunc(selections, func(left, right dataops.Selection) int { return order[left.Kind] - order[right.Kind] })
-	result.Steps = make([]dataops.Step, 0, len(selections))
-	for _, selection := range selections {
-		if err := ctx.Err(); err != nil {
-			return result, err
-		}
-		if err := progress("Migrating "+selection.Kind+" "+selection.Name, 0); err != nil {
-			return result, err
-		}
+	result.Message = "Successful destination resources remain; originals in the source are unchanged. Review a new dry run to resume pending, failed or interrupted objects."
+	result.Steps = make([]dataops.Step, len(selections))
+	plans := make(map[string]string, len(preview.Objects))
+	for _, object := range preview.Objects {
+		plans[object.Kind+"\x00"+object.ID] = object.PlanDigest
+	}
+	for index, selection := range selections {
 		destination := firstNonEmpty(selection.Destination, selection.Name)
-		step := dataops.Step{Kind: selection.Kind, Source: selection.Name, Destination: destination, Status: "succeeded"}
-		switch selection.Kind {
-		case "image":
-			err = m.migrateImage(ctx, source, selection, directory, progress)
-		case "volume":
-			err = m.migrateVolume(ctx, source, request, selection, destination, directory, progress)
-		case "network":
-			err = m.migrateNetwork(ctx, source, selection, destination)
-		case "container":
-			err = m.migrateContainer(ctx, source, request, selection, destination)
-		default:
-			err = datafiles.ErrInvalid
+		result.Steps[index] = dataops.Step{Kind: selection.Kind, Source: selection.Name, Destination: destination, ID: selection.ID, Status: "pending"}
+	}
+	if err := checkpoint(result); err != nil {
+		return result, fmt.Errorf("persist migration plan before transfer: %w", err)
+	}
+	for index, selection := range selections {
+		step := &result.Steps[index]
+		step.Status = "running"
+		if err := checkpoint(result); err != nil {
+			step.Status, step.Message = "pending", "Transfer was not started because its checkpoint could not be saved."
+			return result, fmt.Errorf("persist migration object before transfer: %w", err)
 		}
+		err = ctx.Err()
+		if err == nil {
+			err = progress("Migrating "+selection.Kind+" "+selection.Name, 0)
+		}
+		var metadata json.RawMessage
+		if err == nil {
+			metadata, err = source.inspect(ctx, selection)
+			if err == nil && migrationPlanDigest(metadata) != plans[selection.Kind+"\x00"+selection.ID] {
+				err = fmt.Errorf("%w: source configuration changed after confirmation; review a new dry run", datafiles.ErrConflict)
+			}
+		}
+		if err == nil {
+			switch selection.Kind {
+			case "image":
+				err = m.migrateImage(ctx, source, selection, directory, progress)
+			case "volume":
+				err = m.migrateVolume(ctx, source, request, selection, step.Destination, directory, progress)
+			case "network":
+				err = m.migrateNetwork(ctx, source, selection, step.Destination, metadata)
+			case "container":
+				err = m.migrateContainer(ctx, source, request, selection, step.Destination, metadata)
+			default:
+				err = datafiles.ErrInvalid
+			}
+		}
+		step.Status = "succeeded"
 		if err != nil {
 			step.Status, step.Message = "failed", err.Error()
-			result.Steps = append(result.Steps, step)
-			result.Message = "Partial migration is resumable. Successful destination resources remain; originals in the source are unchanged."
-			return result, err
+			if errors.Is(err, context.Canceled) {
+				step.Status = "cancelled"
+			}
 		}
-		result.Steps = append(result.Steps, step)
+		persistErr := checkpoint(result)
+		if err != nil || persistErr != nil {
+			if persistErr != nil {
+				persistErr = fmt.Errorf("persist migration object outcome: %w", persistErr)
+			}
+			return result, errors.Join(err, persistErr)
+		}
 	}
 	result.Message = "Selected local data migrated and validated. Source context and original resources are unchanged; remove the source runtime yourself only after validation."
-	return result, nil
+	return result, checkpoint(result)
 }
 
 func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, selection dataops.Selection, directory string, progress func(string, int64) error) (err error) {
@@ -680,8 +829,9 @@ func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, sel
 	return nil
 }
 
-func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, selection dataops.Selection, destination string) error {
+func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, selection dataops.Selection, destination string, document json.RawMessage) error {
 	identity := migrationIdentity(source.context.Name, "network", selection.ID)
+	plan := migrationPlanDigest(document)
 	existing, err := m.Networks(ctx)
 	if err != nil {
 		return err
@@ -698,7 +848,7 @@ func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, s
 		if err := json.Unmarshal(document, &metadata); err != nil {
 			return err
 		}
-		if metadata.Labels[migrationSourceLabel] == identity {
+		if metadata.Labels[migrationSourceLabel] == identity && metadata.Labels[migrationPlanLabel] == plan {
 			return nil
 		}
 		return fmt.Errorf("%w: destination network %s exists", ErrConflict, destination)
@@ -713,7 +863,7 @@ func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, s
 			Config []struct{ Subnet, Gateway string }
 		}
 	}
-	if err := source.get(ctx, "/networks/"+url.PathEscape(selection.ID), nil, &network); err != nil {
+	if err := json.Unmarshal(document, &network); err != nil {
 		return err
 	}
 	if network.ID != selection.ID || network.Driver != "bridge" || network.IPAM.Driver != "" && network.IPAM.Driver != "default" {
@@ -724,6 +874,7 @@ func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, s
 		labels = make(map[string]string)
 	}
 	labels[migrationSourceLabel] = identity
+	labels[migrationPlanLabel] = plan
 	request := CreateNetworkRequest{Name: destination, Driver: "bridge", Internal: network.Internal, EnableIPv6: network.EnableIPv6, Labels: labels, Options: network.Options}
 	for _, config := range network.IPAM.Config {
 		request.Subnets, request.Gateways = append(request.Subnets, config.Subnet), append(request.Gateways, config.Gateway)
@@ -732,22 +883,10 @@ func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, s
 	return err
 }
 
-func (m *Manager) migrateContainer(ctx context.Context, source *migrationClient, request dataops.Request, selection dataops.Selection, destination string) error {
+func (m *Manager) migrateContainer(ctx context.Context, source *migrationClient, request dataops.Request, selection dataops.Selection, destination string, document json.RawMessage) error {
 	identity := migrationIdentity(source.context.Name, "container", selection.ID)
-	containers, err := m.Containers(ctx)
+	plan, err := migrationReplayPlan(document, request, "container")
 	if err != nil {
-		return err
-	}
-	for _, container := range containers {
-		if strings.TrimPrefix(container.Name, "/") == destination {
-			if container.Labels[migrationSourceLabel] == identity {
-				return nil
-			}
-			return fmt.Errorf("%w: destination container name exists", ErrConflict)
-		}
-	}
-	var document json.RawMessage
-	if err := source.get(ctx, "/containers/"+url.PathEscape(selection.ID)+"/json", nil, &document); err != nil {
 		return err
 	}
 	var inspected migrationContainer
@@ -757,15 +896,59 @@ func (m *Manager) migrateContainer(ctx context.Context, source *migrationClient,
 	if inspected.ID != selection.ID {
 		return datafiles.ErrConflict
 	}
+	containers, err := m.Containers(ctx)
+	if err != nil {
+		return err
+	}
+	for _, container := range containers {
+		if strings.TrimPrefix(container.Name, "/") == destination {
+			if container.Labels[migrationSourceLabel] == identity && container.Labels[migrationPlanLabel] == plan {
+				if inspected.HostConfig.Memory != 0 || inspected.HostConfig.MemorySwap != 0 || inspected.HostConfig.NanoCpus != 0 {
+					document, err := m.InspectContainer(ctx, container.ID)
+					if err != nil {
+						return err
+					}
+					var current migrationContainer
+					if err := json.Unmarshal(document, &current); err != nil {
+						return err
+					}
+					if current.HostConfig.Memory != inspected.HostConfig.Memory ||
+						current.HostConfig.MemorySwap != inspected.HostConfig.MemorySwap || current.HostConfig.NanoCpus != inspected.HostConfig.NanoCpus {
+						return fmt.Errorf("%w: migrated container resource limits are incomplete or changed; inspect the destination explicitly before retrying", datafiles.ErrConflict)
+					}
+				}
+				return nil
+			}
+			return fmt.Errorf("%w: destination container name exists", ErrConflict)
+		}
+	}
 	configuration, update, err := migrationContainerRequest(document, request.IncludeSensitive)
 	if err != nil {
 		return err
+	}
+	configuration.Image, err = migrationContainerImage(request, inspected)
+	if err != nil {
+		return err
+	}
+	image, err := m.InspectImage(ctx, configuration.Image, "")
+	if err != nil {
+		return err
+	}
+	var currentImage struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(image, &currentImage); err != nil {
+		return err
+	}
+	if currentImage.ID != inspected.Image {
+		return fmt.Errorf("%w: destination image no longer matches the source container; no container was created", datafiles.ErrConflict)
 	}
 	configuration.Name = destination
 	if configuration.Labels == nil {
 		configuration.Labels = make(map[string]string)
 	}
 	configuration.Labels[migrationSourceLabel] = identity
+	configuration.Labels[migrationPlanLabel] = plan
 	for index, mounted := range configuration.Volumes {
 		sourceName, suffix, _ := strings.Cut(mounted, ":")
 		for _, choice := range request.Selections {

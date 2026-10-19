@@ -22,12 +22,30 @@ export function Migration() {
   const contexts = usePolledResource<SourceContext[]>((signal) => apiGet('/api/docker/migration/contexts', signal), 0, [], 'migration:contexts')
   const inventory = usePolledResource<Inventory>((signal) => context
     ? apiGet(`/api/docker/migration/inventory?context=${encodeURIComponent(context)}`, signal)
-    : Promise.resolve({ context: { name: '', endpoint: '', supported: false, desktop: false }, objects: [], warnings: [] }), 0, [context])
+    : Promise.resolve({ context: { name: '', endpoint: '', supported: false, desktop: false }, objects: [], warnings: [] }), 0, [context], `migration:inventory:${context}`)
   const keyFor = (item: SourceObject) => `${item.kind}:${item.id}`
+  const objects = inventory.data?.context.name === context ? inventory.data.objects : []
+  const selectedObjects = objects.filter((item) => item.supported && selected.has(keyFor(item)))
+  const unavailable = inventory.data && !inventory.loading && !inventory.error ? selected.size - selectedObjects.length : 0
+  function reviewMigration(request: DataRequest) {
+    if (!request.context || !request.selections?.length) {
+      notifyError('migration', 'Saved migration has no source selections. Choose a source and select its objects explicitly.')
+      return
+    }
+    setContext(request.context)
+    setSelected(new Set(request.selections.map((item) => `${item.kind}:${item.id}`)))
+    setDestinations(Object.fromEntries(request.selections.map((item) => [`${item.kind}:${item.id}`, item.destination || item.name])))
+    setSensitive(false)
+    setAllowHelpers(false)
+    setPreview(null)
+    inventory.reload()
+    notifyNotice('migration', 'Restored exact source selections. Review a fresh dry run and grant sensitive/helper consent again if needed.')
+  }
   async function prepare() {
     setBusy(true)
+    setPreview(null)
     try {
-      const selections = (inventory.data?.objects ?? []).filter((item) => selected.has(keyFor(item)))
+      const selections = selectedObjects
         .map((item) => ({ kind: item.kind, name: item.name, id: item.id, destination: destinations[keyFor(item)] || item.name }))
       setPreview(await apiSend<Preview>('/api/docker/storage/preview', 'POST', { action: 'migration', context, selections, includeSensitive: sensitive, allowSourceHelper: allowHelpers }))
     } catch (err) { notifyError('migration', errorMessage(err, 'Migration dry run failed')) }
@@ -50,7 +68,7 @@ export function Migration() {
         <h2>Select a source context</h2>
         <p>Docker Desktop contexts are detected alongside other local Docker sockets. Selecting one here never changes your active Docker context.</p>
         {contexts.error && <p role="alert" className="errorLine">{contexts.error}</p>}
-        <label className="inspectorForm">Source Docker context<select value={context} disabled={busy} onChange={(event) => { setContext(event.target.value); setSelected(new Set()); setAllowHelpers(false); setPreview(null) }}>
+        <label className="inspectorForm">Source Docker context<select value={context} disabled={busy} onChange={(event) => { setContext(event.target.value); setSelected(new Set()); setDestinations({}); setSensitive(false); setAllowHelpers(false); setPreview(null) }}>
           <option value="">Choose a source</option>{contexts.data?.map((source) => <option value={source.name} key={source.name} disabled={!source.supported}>{source.name}{source.desktop ? ' · Docker Desktop' : ''}{!source.supported ? ' · unavailable' : ''}</option>)}
         </select></label>
         {contexts.data?.filter((source) => !source.supported).map((source) => <p key={source.name}>{source.name}: {source.message}</p>)}
@@ -62,15 +80,19 @@ export function Migration() {
         <p className="hintLine">Select container dependencies (images, named volumes and custom networks) too. Unattached volumes can use an explicitly approved stopped helper with a read-only/no-copy mount. No source workload is started.</p>
         <div className="dataTableScroll"><table className="dataTable">
           <thead><tr><th>Select</th><th>Source</th><th>Destination / capability</th></tr></thead>
-          <tbody>{inventory.data?.objects.map((item) => <tr key={keyFor(item)}>
+          <tbody>{objects.map((item) => <tr key={keyFor(item)}>
             <td><input type="checkbox" aria-label={`Migrate ${item.kind} ${item.name}`} disabled={!item.supported || busy} checked={selected.has(keyFor(item))} onChange={(event) => { setSelected((current) => { const next = new Set(current); if (event.target.checked) next.add(keyFor(item)); else next.delete(keyFor(item)); return next }); setPreview(null) }} /></td>
             <td><strong>{item.name}</strong><br />{item.kind} · {bytesLabel(item.size)}<br />{item.composeProject && `${item.composeProject}/${item.composeService || ''}`}</td>
             <td>{item.kind === 'image' ? item.name : <input type="text" aria-label={`Destination for ${item.name}`} value={destinations[keyFor(item)] ?? item.name} disabled={busy} onChange={(event) => { setDestinations((current) => ({ ...current, [keyFor(item)]: event.target.value })); setPreview(null) }} />}{item.message && <p>{item.message}</p>}</td>
           </tr>)}</tbody>
         </table></div>
-        <label className="toggleRow"><span>Explicitly allow sensitive container environment values through this local socket transfer (never registry credentials)</span><input type="checkbox" checked={sensitive} onChange={(event) => { setSensitive(event.target.checked); setPreview(null) }} /></label>
+        {unavailable > 0 && <div>
+          <p role="alert" className="errorLine">{unavailable} selected source {unavailable === 1 ? 'identity is' : 'identities are'} no longer available or supported. Recreated names are not selected automatically.</p>
+          <button type="button" disabled={busy} onClick={() => { setSelected(new Set(selectedObjects.map(keyFor))); setPreview(null) }}>Clear unavailable selections</button>
+        </div>}
+        <label className="toggleRow"><span>Explicitly allow sensitive container environment values through this local socket transfer (never registry credentials)</span><input type="checkbox" checked={sensitive} disabled={busy} onChange={(event) => { setSensitive(event.target.checked); setPreview(null) }} /></label>
         <label className="toggleRow"><span>Allow temporary read-only source access for unattached volumes. Creates an empty helper image and stopped container; never starts it, never copies into the volume, and removes only owned helpers afterward.</span><input type="checkbox" checked={allowHelpers} disabled={busy} onChange={(event) => { setAllowHelpers(event.target.checked); setPreview(null) }} /></label>
-        <button type="button" disabled={busy || !selected.size || !context} onClick={() => void prepare()}>Dry-run selected migration</button>
+        <button type="button" disabled={busy || inventory.loading || !!inventory.error || !selectedObjects.length || unavailable > 0 || !context} onClick={() => void prepare()}>Dry-run selected migration</button>
       </section>
       {preview && <section className="drawerPanel" aria-label="Migration dry-run report">
         <h3>Dry-run report</h3><p>{preview.sourcePolicy}</p>
@@ -80,7 +102,7 @@ export function Migration() {
         <p>{preview.objects.length} exact source identities selected. Original source resources are never removed.</p>
         <button type="button" disabled={busy || preview.conflicts.length > 0} onClick={() => void start()}>Confirm selected migration</button>
       </section>}
-      <DataOperations />
+      <DataOperations onReviewMigration={reviewMigration} reviewDisabled={busy} />
     </div>
   </>
 }

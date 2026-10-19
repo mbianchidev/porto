@@ -148,7 +148,21 @@ volume allocation, BuildKit records and all-namespace metadata separately. Objec
 or category previews freeze exact protected cleanup boundaries; **Migrate runtime
 data** dry-runs source-preserving local
 transfers. Capability-supported native file bridges open real host paths without
-implicit copy-back. See [runtime data management](data-management.md) for safety,
+implicit copy-back. Migration records each selected object's pending, active and
+completed outcome before proceeding; after interruption, review the original
+identities and destinations through a new dry run rather than silently copying
+resources with reused names.
+
+Native access uses private `files/<resource-fingerprint>-ro` or `-rw` host paths
+(local Linux uses helper-owned `/run/porto-native/` mounts). Images stay read-only;
+container, volume and managed VM writes require explicit consent for the current
+resource identity. Capability reports check the named resource as well as the
+driver, without starting stopped workloads or installing a helper just to probe
+availability. Detach before changing storage. Engine stop, update and daemon
+shutdown release owned attachments; disconnected bridges and failed detach
+operations remain unavailable until cleanup/reconnect, never as empty successful
+mounts. Cleanup does not delete source data.
+See [runtime data management](data-management.md) for safety,
 backup consistency, CLI workflows and the host/backend capability matrix.
 
 Local backups need no cloud account. Their dashboard policies support interval,

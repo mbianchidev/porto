@@ -226,7 +226,11 @@ func (s *Server) executeDataOperation(ctx context.Context, run dataops.Operation
 		if err != nil {
 			return result, err
 		}
-		return s.docker.Migrate(ctx, request, directory, progress)
+		return s.docker.Migrate(ctx, request, directory, progress, func(result dataops.Result) error {
+			persist, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+			defer cancel()
+			return s.store.CheckpointDataOperation(persist, run.ID, result)
+		})
 	}
 	preview, err := s.docker.PreviewVolume(ctx, request)
 	if err != nil {

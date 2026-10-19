@@ -95,11 +95,6 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 			}
 		}
 	}()
-	if err := json.NewEncoder(process.Stdin()).Encode(MountRequest{
-		Resource: target.Resource, Identity: target.Identity, Path: record.Path, ReadOnly: !writable, Command: *target.SFTP,
-	}); err != nil {
-		return record, err
-	}
 	event := make(chan MountEvent, 1)
 	outputDone := make(chan error, 1)
 	go func() {
@@ -137,6 +132,11 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 		done <- errors.Join(outputErr, waitErr)
 		close(done)
 	}()
+	if err := json.NewEncoder(process.Stdin()).Encode(MountRequest{
+		Resource: target.Resource, Identity: target.Identity, Path: record.Path, ReadOnly: !writable, Command: *target.SFTP,
+	}); err != nil {
+		return record, err
+	}
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
 	select {
@@ -210,12 +210,14 @@ func windowsProcessStart(pid int) (uint64, error) {
 
 func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment) error {
 	if live.process == nil {
+		if _, err := os.Lstat(live.record.Path); errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return err
+		}
 		created, err := windowsProcessStart(live.record.BridgePID)
 		if err != nil {
-			if err := verifyWindowsMount(live.record); err == nil {
-				return errors.New("native mount process is absent but its host folder remains; refusing an unowned detach")
-			}
-			return nil
+			return errors.New("native mount process is absent but its host folder remains; refusing an unowned detach")
 		}
 		if created != live.record.BridgeStart {
 			return datafiles.ErrConflict
@@ -229,6 +231,17 @@ func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment)
 			return err
 		}
 	} else {
+		select {
+		case <-live.done:
+			live.cancel()
+			_ = live.process.Stdin().Close()
+			live.cancel, live.process, live.done = nil, nil, nil
+			if _, err := os.Lstat(live.record.Path); errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return errors.New("native bridge exited but its host folder remains; refusing to remove an unowned path")
+		default:
+		}
 		live.stdinMu.Lock()
 		err := json.NewEncoder(live.process.Stdin()).Encode(MountEvent{Event: "detach", Identity: live.record.Identity})
 		live.stdinMu.Unlock()
@@ -245,6 +258,7 @@ func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment)
 		}
 		live.cancel()
 		_ = live.process.Stdin().Close()
+		live.cancel, live.process, live.done = nil, nil, nil
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

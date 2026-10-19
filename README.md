@@ -32,7 +32,8 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.
 - **Inspect and protect runtime data.** Browse shell-independent files with cancellable downloads, stream bounded logs, inspect live/recent counters and redacted metadata, and use **Storage** for per-store usage and exact object/category previews. Clone, empty, restore, or remove volumes with ownership checks; make verified local archives and edit local backup schedules/retention without an account. See [runtime data management](docs/data-management.md).
 - **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
-  Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
+  Per-object migration checkpoints survive daemon interruptions; retries require a fresh dry run and never retarget recreated source names.
+  Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
 
 See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
 for supported, partial, capability-gated, and explicitly unsupported operations.

@@ -1,9 +1,14 @@
 import { apiGet, apiSend, errorMessage } from '../api'
-import { bytesLabel, type DataOperation } from '../dataTypes'
+import { bytesLabel, type DataOperation, type DataRequest } from '../dataTypes'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 
-export function DataOperations({ resourceName, onComplete }: { resourceName?: string; onComplete?: () => void }) {
+export function DataOperations({ resourceName, onComplete, onReviewMigration, reviewDisabled }: {
+  resourceName?: string
+  onComplete?: () => void
+  onReviewMigration?: (request: DataRequest) => void
+  reviewDisabled?: boolean
+}) {
   const { notifyError } = useMessages()
   const operations = usePolledResource<DataOperation[]>((signal) => apiGet('/api/data/operations', signal), 2000, [], 'data:operations')
   const rows = (operations.data ?? []).filter((run) => !resourceName || run.request.resource?.name === resourceName || run.request.destination === resourceName)
@@ -39,6 +44,8 @@ export function DataOperations({ resourceName, onComplete }: { resourceName?: st
           {run.result.steps?.map((step, index) => <p key={index}>{step.kind}: {step.source} → {step.destination || 'removed'} · {step.status} {step.message}</p>)}
         </td>
         <td>{run.status === 'running' && <button type="button" onClick={() => void cancel(run.id)}>Cancel operation {run.id}</button>}
+          {onReviewMigration && run.request.action === 'migration' && ['failed', 'cancelled', 'interrupted'].includes(run.status) &&
+            <button type="button" disabled={reviewDisabled} onClick={() => onReviewMigration(run.request)}>Review migration {run.id}</button>}
           {run.result.archive?.path && <a href={`/api/data/operations/${run.id}/archive`} download>Download verified archive</a>}
           {run.phase === 'archive-expired' && <span>Archive expired under retention</span>}
         </td>

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 func TestNativeFixtureServerProcess(t *testing.T) {
@@ -99,6 +100,7 @@ func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.
 					t.Fatalf("concurrent guest change hidden by native cache: %q %v", current, err)
 				}
 			}
+
 			if err := manager.Detach(ctx, attachment.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -110,5 +112,20 @@ func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.
 				t.Fatalf("native cleanup changed source data: %q %v", current, err)
 			}
 		})
+	}
+}
+
+func TestWindowsAbsentNativePathNeverStopsAReusedPID(t *testing.T) {
+	commands := 0
+	manager := New(t.TempDir(), nativeRunnerFunc(func(context.Context, runtimes.Command) ([]byte, error) {
+		commands++
+		return nil, errors.New("a reused process must never be stopped")
+	}))
+	live := &liveAttachment{record: Attachment{
+		Path:      filepath.Join(manager.root, "already-detached"),
+		BridgePID: os.Getpid(), BridgeStart: 1,
+	}}
+	if err := manager.detachWindowsLocked(context.Background(), live); err != nil || commands != 0 {
+		t.Fatalf("an absent mount led recovery to a reused PID: %v, commands=%d", err, commands)
 	}
 }

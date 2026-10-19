@@ -92,10 +92,30 @@ func (m *Manager) Recover(ctx context.Context, release func(context.Context, Att
 	return result
 }
 
-func (m *Manager) mounted(ctx context.Context, mountpoint string) (bool, error) {
+func (m *Manager) mounted(ctx context.Context, record Attachment) (bool, error) {
 	output, err := m.runner.Run(ctx, runtimes.Command{Name: "mount"})
 	if err != nil {
 		return false, err
 	}
-	return strings.Contains(string(output), " on "+mountpoint+" "), nil
+	unescape := strings.NewReplacer(`\040`, " ", `\011`, "\t", `\012`, "\n", `\134`, `\`)
+	for line := range strings.SplitSeq(string(output), "\n") {
+		source, location, ok := strings.Cut(line, " on ")
+		if !ok {
+			continue
+		}
+		if options := strings.LastIndex(location, " ("); options >= 0 {
+			location = location[:options]
+		}
+		if unescape.Replace(location) != record.Path {
+			filesystem := strings.LastIndex(location, " type ")
+			if filesystem < 0 || unescape.Replace(location[:filesystem]) != record.Path {
+				continue
+			}
+		}
+		if unescape.Replace(source) != "porto-"+record.ID {
+			return false, fmt.Errorf("%w: native mount ownership changed; refusing to open or detach an unrelated filesystem", datafiles.ErrConflict)
+		}
+		return true, nil
+	}
+	return false, nil
 }

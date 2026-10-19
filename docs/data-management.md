@@ -194,8 +194,13 @@ porto docker migrate --context desktop-linux \
 
 Container dependencies must be selected too. Unsupported host paths,
 namespace/device/DNS/capability/runtime options are rejected before creating
-that container. Sensitive environment transfer requires separate explicit
-local consent; registry credentials and source context authentication material
+that container. CPU scheduling/cpuset, PID/ulimit, additional host/group, custom
+logging, static endpoint and unlimited-swap settings that cannot be preserved
+are also rejected rather than dropped. Exposed ports, IPv6 host bindings and
+network aliases retain their inspected values. Container recreation requires a
+selected named reference for its exact original image digest; it never pulls a
+replacement for a missing or retagged image. Sensitive environment transfer
+requires separate explicit local consent; registry credentials and source context authentication material
 are never imported. Selected resources are transferred through local Unix
 sockets or Windows named pipes, not unauthenticated remote endpoints.
 
@@ -217,6 +222,27 @@ Completed destination objects remain on partial failure, with per-object
 results and deterministic conflicts. A persisted volume identity ledger permits
 resuming a verified transfer without silently duplicating a recreated name.
 
+Each selected object's identity and destination are checkpointed as **pending**
+before transfer, **running** before mutation, and **succeeded**, **failed** or
+**cancelled** afterward. A daemon restart preserves recorded successes and marks
+the active object's unrecorded outcome **interrupted**; it may already exist, so
+its completion is never guessed. A failed checkpoint stops further transfers.
+Source metadata is rechecked against the confirmed dry run immediately before
+each object is handled.
+
+Use **Review migration** in the operation history to restore exact selections
+and destination names, then run a new dry run. Sensitive/helper consent is
+cleared and must be granted again. Missing, unsupported or recreated source
+identities are shown explicitly and are not silently replaced by matching names.
+The CLI can repeat the original `migrate --context ... --objects ...` command;
+it also obtains a new preview before `--confirm`. Completed networks/containers
+must match both their source identity and saved configuration plan. Container
+retries retain the original selection set and dependency destinations. Older
+source-only labels, changed configuration/dependencies, and incomplete or
+altered container resource limits produce deterministic conflicts, not implicit
+replacement or a false successful skip. Inspect such destinations before
+explicitly removing or changing them yourself.
+
 ## Native file-manager access
 
 **Open files in native file manager** is opt-in. Images are always read-only;
@@ -232,6 +258,13 @@ porto docker files vm fixture-machine --confirm
 porto docker files                                  # attachment inventory
 porto docker files detach <attachment-id>
 ```
+
+Capability reports are scoped to the requested resource and write mode. They
+check current identity, ownership, stopped/running availability and read-only
+boundaries without allocating an attachment. The dashboard pins attachment
+requests and write consent to that identity; replacing a resource clears write
+consent and makes its old attachment unavailable. A supported capability is not
+itself evidence that a mount succeeded: the real host mount must become ready.
 
 | Host / backend | Native integration | Requirements / limitations |
 | --- | --- | --- |
@@ -287,3 +320,36 @@ the actual mounted volume's label/serial, not an empty directory; recovery
 checks the bridge PID and creation time before stopping a process. Failed detach operations
 remain visible; cleanup never removes source data. If a driver or backend is
 unavailable, use the in-app inspector, verified archives, or VM copy instead.
+
+SSHFS readiness and later opens verify an exact `porto-<attachment-id>` mount
+source, not just a directory or a mount at the same path. Spaces and non-ASCII
+paths are supported. A missing bridge, exited process or replaced mount is
+reported disconnected; replaced mounts are never unmounted as Porto-owned.
+Connecting records are persisted before launching the bridge, and failed
+startup/backend cleanup retains a retryable recovery record. Completed backend
+releases are checkpointed so a later host-path cleanup failure does not release
+the backend again after restart. No recursive source deletion is used.
+A legacy attachment without an ownership-marked mount
+can require explicitly unmounting that exact host path with the OS tools before
+retrying `porto docker files detach`; Porto does not guess ownership.
+
+### Acceptance coverage and limits
+
+Migration fixtures cover read-only source requests, exact image dependencies,
+unsupported settings, port/network fidelity, duplicate destinations, metadata
+changes, partial failures, cancellation and durable per-object restart recovery.
+The shared verified-archive tests separately cover corrupted members, low space,
+links/metadata and original-preserving restore failures; these are reused transfer
+guarantees, not a second migration implementation.
+
+Native lifecycle fixtures cover owned/replaced mounts, escaped paths, failed
+startup/cleanup and recovery. Confined direct-SFTP fixtures exercise long and
+non-ASCII paths, permissions, links, concurrent changes, connection loss and
+read-only access. The Windows installed-helper CI fixture exercises real WinFsp
+host folders for synthetic container/image/volume/VM roots.
+
+These fixtures do not establish every real resource/backend/platform combination.
+Docker Desktop source-to-Porto round trips and native macOS/Linux mount acceptance
+still require isolated real runtimes and the matrix's driver prerequisites.
+Neither an unavailable driver nor an archive or in-app inspection fallback counts
+as a successful native mount.

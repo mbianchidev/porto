@@ -168,3 +168,50 @@ func TestVolumeTransferReservationsSurviveRestartUntilExactCleanup(t *testing.T)
 		t.Fatalf("proven cleanup did not clear its exact reservation: %+v, %v", pending, err)
 	}
 }
+
+func TestMigrationCheckpointsRetainExactOutcomesAcrossDaemonInterruption(t *testing.T) {
+	ctx := context.Background()
+	database := filepath.Join(t.TempDir(), "synthetic.db")
+	st, err := Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	run, err := st.BeginDataOperation(ctx, dataops.Request{Action: "migration", Context: "synthetic-source"}, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	checkpoint := dataops.Result{Steps: []dataops.Step{
+		{Kind: "image", Source: "synthetic:latest", Destination: "synthetic:latest", ID: "image-1", Status: "succeeded"},
+		{Kind: "volume", Source: "synthetic-data", Destination: "synthetic-data", ID: "volume-1", Status: "running"},
+		{Kind: "container", Source: "synthetic-app", Destination: "synthetic-app", ID: "container-1", Status: "pending"},
+	}}
+	if err := st.CheckpointDataOperation(ctx, run.ID, checkpoint); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(database)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RecoverDataOperations(ctx, now.Add(time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	recovered, err := st.DataOperation(ctx, run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	steps := recovered.Result.Steps
+	if recovered.Status != "interrupted" || len(steps) != 3 ||
+		steps[0].Status != "succeeded" || steps[0].ID != "image-1" ||
+		steps[1].Status != "interrupted" || steps[1].ID != "volume-1" ||
+		steps[2].Status != "pending" {
+		t.Fatalf("interruption lost or misreported per-object outcomes: %+v", recovered)
+	}
+	if err := st.CheckpointDataOperation(ctx, run.ID, checkpoint); err == nil {
+		t.Fatal("a stale checkpoint overwrote a completed operation")
+	}
+}

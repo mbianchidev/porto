@@ -35,29 +35,32 @@ type Target struct {
 }
 
 type Capability struct {
-	Supported bool   `json:"supported"`
-	Driver    string `json:"driver"`
-	Message   string `json:"message"`
-	Fallback  string `json:"fallback"`
+	Supported bool                `json:"supported"`
+	Driver    string              `json:"driver"`
+	Message   string              `json:"message"`
+	Fallback  string              `json:"fallback"`
+	Resource  *datafiles.Resource `json:"resource,omitempty"`
+	Identity  string              `json:"identity,omitempty"`
 }
 
 type Attachment struct {
-	ID           string                   `json:"id"`
-	Resource     datafiles.Resource       `json:"resource"`
-	Identity     string                   `json:"identity"`
-	Path         string                   `json:"path"`
-	ReadOnly     bool                     `json:"readOnly"`
-	State        string                   `json:"state"`
-	Message      string                   `json:"message,omitempty"`
-	CreatedAt    string                   `json:"createdAt"`
-	Local        bool                     `json:"local"`
-	Backend      *runtimefiles.Descriptor `json:"backend,omitempty"`
-	Token        string                   `json:"token,omitempty"`
-	NamespacePID int32                    `json:"namespacePid,omitempty"`
-	Driver       string                   `json:"driver,omitempty"`
-	BridgePID    int                      `json:"bridgePid,omitempty"`
-	BridgeStart  uint64                   `json:"bridgeStart,omitempty"`
-	Serial       uint32                   `json:"serial,omitempty"`
+	ID              string                   `json:"id"`
+	Resource        datafiles.Resource       `json:"resource"`
+	Identity        string                   `json:"identity"`
+	Path            string                   `json:"path"`
+	ReadOnly        bool                     `json:"readOnly"`
+	State           string                   `json:"state"`
+	Message         string                   `json:"message,omitempty"`
+	CreatedAt       string                   `json:"createdAt"`
+	Local           bool                     `json:"local"`
+	Backend         *runtimefiles.Descriptor `json:"backend,omitempty"`
+	Token           string                   `json:"token,omitempty"`
+	NamespacePID    int32                    `json:"namespacePid,omitempty"`
+	Driver          string                   `json:"driver,omitempty"`
+	BridgePID       int                      `json:"bridgePid,omitempty"`
+	BridgeStart     uint64                   `json:"bridgeStart,omitempty"`
+	Serial          uint32                   `json:"serial,omitempty"`
+	BackendReleased bool                     `json:"backendReleased,omitempty"`
 }
 
 type liveAttachment struct {
@@ -111,6 +114,7 @@ func attachmentID(resource datafiles.Resource, writable bool) string {
 	return resource.Fingerprint() + suffix
 }
 
+// Attach owns the initialized target's release, including failed startup cleanup.
 func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (result Attachment, err error) {
 	if target.Resource.ID == "" || target.Identity != target.Resource.Fingerprint() {
 		return result, datafiles.ErrConflict
@@ -121,18 +125,20 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 	if target.Verify == nil || target.Release == nil {
 		return result, errors.New("native attachment lifecycle is not initialized")
 	}
-	if err := target.Verify(ctx); err != nil {
-		return result, err
-	}
-	capability := m.Capability(ctx, target.Local)
-	if !capability.Supported {
-		return result, fmt.Errorf("%w: %s %s", datafiles.ErrUnsupported, capability.Message, capability.Fallback)
-	}
+	registered := false
+	defer func() {
+		if err != nil && !registered {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			err = errors.Join(err, target.Release(cleanup))
+		}
+	}()
 	id := attachmentID(target.Resource, writable)
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if existing := m.attachments[id]; existing != nil {
-		return existing.record, nil
+		registered = true
+		return m.getLocked(ctx, id)
 	}
 	if err := os.MkdirAll(m.root, 0o700); err != nil {
 		return result, err
@@ -141,6 +147,13 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		return result, err
 	}
 	if runtime.GOOS == "windows" {
+		if err := target.Verify(ctx); err != nil {
+			return result, err
+		}
+		capability := m.Capability(ctx, target.Local)
+		if !capability.Supported {
+			return result, fmt.Errorf("%w: %s %s", datafiles.ErrUnsupported, capability.Message, capability.Fallback)
+		}
 		return m.attachWindowsLocked(ctx, target, writable)
 	}
 	result = Attachment{
@@ -163,6 +176,34 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		if err := os.Mkdir(result.Path, 0o700); err != nil {
 			return result, fmt.Errorf("native mountpoint already exists or cannot be created: %w", err)
 		}
+	}
+	live.record = result
+	if err := m.save(result); err != nil {
+		if !target.Local {
+			err = errors.Join(err, os.Remove(result.Path))
+		}
+		return result, err
+	}
+	m.attachments[id] = live
+	registered = true
+	defer func() {
+		if err != nil {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			err = errors.Join(err, m.detachLocked(cleanup, id))
+			if remaining := m.attachments[id]; remaining != nil {
+				result = remaining.record
+			}
+		}
+	}()
+	if err := target.Verify(ctx); err != nil {
+		return result, err
+	}
+	capability := m.Capability(ctx, target.Local)
+	if !capability.Supported {
+		return result, fmt.Errorf("%w: %s %s", datafiles.ErrUnsupported, capability.Message, capability.Fallback)
+	}
+	if !target.Local {
 		runner, ok := m.runner.(runtimes.ProcessRunner)
 		if !ok {
 			return result, datafiles.ErrUnsupported
@@ -173,7 +214,7 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		}
 		ownedContext, cancel := context.WithCancel(context.Background())
 		live.cancel = cancel
-		options := "contain_symlinks,default_permissions,idmap=user,direct_io,dir_cache=no,nodev,nosuid,noexec,ServerAliveInterval=5,ServerAliveCountMax=2"
+		options := "fsname=porto-" + id + ",contain_symlinks,default_permissions,idmap=user,direct_io,dir_cache=no,nodev,nosuid,noexec,ServerAliveInterval=5,ServerAliveCountMax=2"
 		if !writable {
 			options += ",ro"
 		}
@@ -189,30 +230,35 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		process, err := runner.Start(ownedContext, runtimes.Command{Name: binary, Args: args})
 		if err != nil {
 			cancel()
-			_ = os.Remove(result.Path)
+			live.cancel = nil
 			return result, err
 		}
 		live.process = process
-		_ = process.Stdin().Close()
-		diagnostics := make(chan error, 1)
+		var diagnostics limitedNativeErrors
+		stderrDone, stdoutDone := make(chan error, 1), make(chan error, 1)
 		go func() {
-			output, readErr := io.ReadAll(io.LimitReader(process.Stderr(), 4096))
-			if readErr != nil {
-				diagnostics <- readErr
-				return
-			}
-			if len(output) != 0 {
-				diagnostics <- fmt.Errorf("SSHFS: %.4096s", output)
-				return
-			}
-			diagnostics <- errors.New("SSHFS exited before its mount was ready")
+			_, err := io.Copy(&diagnostics, process.Stderr())
+			stderrDone <- err
 		}()
-		go func() { _, _ = io.Copy(io.Discard, process.Stdout()) }()
-		if err := m.waitMounted(ctx, result.Path, diagnostics); err != nil {
-			cancel()
-			_ = process.Kill()
-			_ = process.Wait()
-			_ = os.Remove(result.Path)
+		go func() {
+			_, err := io.Copy(io.Discard, process.Stdout())
+			stdoutDone <- err
+		}()
+		done := make(chan error, 1)
+		live.done = done
+		go func() {
+			outputErr, diagnosticErr := <-stdoutDone, <-stderrDone
+			waitErr := process.Wait()
+			if waitErr != nil {
+				waitErr = fmt.Errorf("SSHFS bridge failed: %w: %s", waitErr, diagnostics.String())
+			}
+			done <- errors.Join(outputErr, diagnosticErr, waitErr)
+			close(done)
+		}()
+		if err := process.Stdin().Close(); err != nil {
+			return result, err
+		}
+		if err := m.waitMounted(ctx, result, done); err != nil {
 			return result, err
 		}
 	}
@@ -225,23 +271,37 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		}
 		return result, err
 	}
-	m.attachments[id] = live
 	return result, nil
 }
 
-func (m *Manager) waitMounted(ctx context.Context, mountpoint string, diagnostics <-chan error) error {
+func (m *Manager) waitMounted(ctx context.Context, record Attachment, done <-chan error) error {
 	ctx, cancel := context.WithTimeout(ctx, 15*time.Second)
 	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		output, err := m.runner.Run(ctx, runtimes.Command{Name: "mount"})
-		if err == nil && strings.Contains(string(output), " on "+mountpoint+" ") {
+		select {
+		case err := <-done:
+			return errors.Join(errors.New("SSHFS exited before its mount was ready"), err)
+		default:
+		}
+		mounted, err := m.mounted(ctx, record)
+		if err != nil {
+			return err
+		}
+		if mounted {
+			info, err := os.Stat(record.Path)
+			if err != nil {
+				return fmt.Errorf("native mount is inaccessible: %w", err)
+			}
+			if !info.IsDir() {
+				return errors.New("native mount is not an accessible directory")
+			}
 			return nil
 		}
 		select {
-		case err := <-diagnostics:
-			return err
+		case err := <-done:
+			return errors.Join(errors.New("SSHFS exited before its mount was ready"), err)
 		case <-ctx.Done():
 			return fmt.Errorf("native filesystem mount did not become accessible: %w", ctx.Err())
 		case <-ticker.C:
@@ -273,31 +333,45 @@ func (m *Manager) List() []Attachment {
 
 func (m *Manager) Get(ctx context.Context, id string) (Attachment, error) {
 	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.getLocked(ctx, id)
+}
+
+func (m *Manager) getLocked(ctx context.Context, id string) (Attachment, error) {
 	live := m.attachments[id]
-	m.mu.Unlock()
 	if live == nil {
 		return Attachment{}, os.ErrNotExist
 	}
-	if err := live.target.Verify(ctx); err != nil {
-		m.mu.Lock()
-		live.record.State, live.record.Message = "disconnected", err.Error()
-		record := live.record
-		m.mu.Unlock()
-		return record, fmt.Errorf("%w: native resource is disconnected or its identity changed", datafiles.ErrConflict)
+	if live.record.State == "detach-failed" {
+		return live.record, fmt.Errorf("%w: native detach failed; retry detach before reconnecting", datafiles.ErrConflict)
 	}
-	if live.record.Driver == "winfsp" {
-		if err := verifyWindowsMount(live.record); err != nil {
-			m.mu.Lock()
-			live.record.State, live.record.Message = "disconnected", err.Error()
-			record := live.record
-			m.mu.Unlock()
-			return record, err
+	if live.record.State != "connected" {
+		return live.record, fmt.Errorf("%w: native attachment is %s; detach and explicitly reconnect", datafiles.ErrConflict, live.record.State)
+	}
+	err := live.target.Verify(ctx)
+	if err == nil && live.done != nil {
+		select {
+		case processErr := <-live.done:
+			err = errors.Join(errors.New("native filesystem bridge exited; detach and explicitly reconnect"), processErr)
+		default:
 		}
 	}
-	m.mu.Lock()
-	record := live.record
-	m.mu.Unlock()
-	return record, nil
+	if err == nil {
+		if live.record.Driver == "winfsp" {
+			err = verifyWindowsMount(live.record)
+		} else if !live.record.Local {
+			var mounted bool
+			mounted, err = m.mounted(ctx, live.record)
+			if err == nil && !mounted {
+				err = errors.New("native filesystem bridge is disconnected; detach and explicitly reconnect")
+			}
+		}
+	}
+	if err != nil {
+		live.record.State, live.record.Message = "disconnected", err.Error()
+		return live.record, errors.Join(err, m.save(live.record))
+	}
+	return live.record, nil
 }
 
 func (m *Manager) Guard(kind, name string) error {
@@ -314,26 +388,26 @@ func (m *Manager) Guard(kind, name string) error {
 func (m *Manager) Detach(ctx context.Context, id string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.detachLocked(ctx, id)
+}
+
+func (m *Manager) detachLocked(ctx context.Context, id string) (err error) {
 	live := m.attachments[id]
 	if live == nil {
 		return os.ErrNotExist
 	}
+	defer func() {
+		if err != nil {
+			live.record.State, live.record.Message = "detach-failed", err.Error()
+			err = errors.Join(err, m.save(live.record))
+		}
+	}()
 	if live.record.Driver == "winfsp" {
 		if err := m.detachWindowsLocked(ctx, live); err != nil {
-			live.record.State, live.record.Message = "detach-failed", err.Error()
-			return errors.Join(err, m.save(live.record))
-		}
-		if err := live.target.Release(ctx); err != nil {
 			return err
 		}
-		if err := os.Remove(filepath.Join(m.root, id+".json")); err != nil {
-			return err
-		}
-		delete(m.attachments, id)
-		return nil
-	}
-	if !live.target.Local {
-		mounted, err := m.mounted(ctx, live.record.Path)
+	} else if !live.target.Local {
+		mounted, err := m.mounted(ctx, live.record)
 		if err != nil {
 			return err
 		}
@@ -343,26 +417,37 @@ func (m *Manager) Detach(ctx context.Context, id string) error {
 		}
 		if mounted {
 			if _, err := m.runner.Run(ctx, command); err != nil {
-				live.record.State, live.record.Message = "detach-failed", err.Error()
-				return errors.Join(fmt.Errorf("native detach failed; source data was not removed: %w", err), m.save(live.record))
+				return fmt.Errorf("native detach failed; source data was not removed: %w", err)
 			}
 		}
 	}
 	if live.cancel != nil {
 		live.cancel()
-		_ = live.process.Kill()
-		_ = live.process.Wait()
+		if err := live.process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			return fmt.Errorf("stop owned native bridge: %w", err)
+		}
+		select {
+		case <-live.done:
+		case <-ctx.Done():
+			return fmt.Errorf("wait for owned native bridge cleanup: %w", ctx.Err())
+		}
+		live.cancel, live.process, live.done = nil, nil, nil
 	}
-	if err := live.target.Release(ctx); err != nil {
-		live.record.State, live.record.Message = "detach-failed", err.Error()
-		return errors.Join(err, m.save(live.record))
-	}
-	if !live.target.Local {
-		if err := os.Remove(live.record.Path); err != nil {
+	if !live.record.BackendReleased {
+		if err := live.target.Release(ctx); err != nil {
+			return err
+		}
+		live.record.BackendReleased = true
+		if err := m.save(live.record); err != nil {
 			return err
 		}
 	}
-	if err := os.Remove(filepath.Join(m.root, id+".json")); err != nil {
+	if !live.target.Local && live.record.Driver != "winfsp" {
+		if err := os.Remove(live.record.Path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := os.Remove(filepath.Join(m.root, id+".json")); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	delete(m.attachments, id)

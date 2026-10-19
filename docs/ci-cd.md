@@ -35,6 +35,14 @@ Storage fixtures also cover exact category/object confirmation, referenced
 volume protection, visible mount ownership, backup-policy edits, cancellation
 and importing before a volume exists. Linux unit tests verify authoritative
 metadata allocation and stable native volume identity across data replacement.
+Migration fixtures additionally verify source-bound retry selections, reset
+sensitive/helper consent, exact image dependencies, IPv6/exposed-port fidelity,
+stale metadata, conflicting destinations and durable per-object interruption
+outcomes. Native-access fixtures cover resource-bound write consent, unavailable
+or replaced bridges, explicit failed-detach states, escaped host paths, recovery,
+confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
+not count as successful OS-native mounts for every platform/backend row; see
+the [acceptance boundaries](data-management.md#acceptance-coverage-and-limits).
 
 For an optional synthetic round trip against an **already running, owned**
 Lima engine, cross-build the current Linux helper and set

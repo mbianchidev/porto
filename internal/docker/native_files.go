@@ -23,22 +23,40 @@ func (m *Manager) NativeFilesLocal(ctx context.Context) (bool, error) {
 	return backend.limaInstance == "" && runtime.GOOS == "linux", err
 }
 
-func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writable bool) (target nativefiles.Target, err error) {
-	descriptor, err := m.FileDescriptor(ctx, kind, name)
+func (m *Manager) nativeFilesDescriptor(ctx context.Context, kind, name string, writable bool) (descriptor runtimefiles.Descriptor, backend commandBackend, err error) {
+	descriptor, err = m.FileDescriptor(ctx, kind, name)
 	if err != nil {
-		return target, err
-	}
-	backend, err := m.backend(ctx)
-	if err != nil {
-		return target, err
+		return descriptor, backend, err
 	}
 	if writable && (descriptor.Resource.ReadOnly || kind == "image") {
-		return target, fmt.Errorf("%w: native image or read-only container writes are rejected", datafiles.ErrUnsupported)
+		return descriptor, backend, fmt.Errorf("%w: native image or read-only container writes are rejected", datafiles.ErrUnsupported)
+	}
+	backend, err = m.backend(ctx)
+	if err != nil {
+		return descriptor, backend, err
+	}
+	if backend.limaInstance == "" {
+		if runtime.GOOS != "linux" {
+			return descriptor, backend, fmt.Errorf("%w: native local runtime files require Linux; use the Porto Lima engine", datafiles.ErrUnsupported)
+		}
+		if kind == "container" && descriptor.PID > 0 {
+			return descriptor, backend, fmt.Errorf("%w: this rootless kernel locks the running container's mount subtree; use in-app Files or stop it explicitly before mounting its snapshot", datafiles.ErrUnsupported)
+		}
+	}
+	return descriptor, backend, nil
+}
+
+func (m *Manager) NativeFilesResource(ctx context.Context, kind, name string, writable bool) (datafiles.Resource, bool, error) {
+	descriptor, backend, err := m.nativeFilesDescriptor(ctx, kind, name, writable)
+	return descriptor.Resource, backend.limaInstance == "" && runtime.GOOS == "linux", err
+}
+
+func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writable bool) (target nativefiles.Target, err error) {
+	descriptor, backend, err := m.nativeFilesDescriptor(ctx, kind, name, writable)
+	if err != nil {
+		return target, err
 	}
 	if runtime.GOOS == "windows" {
-		if backend.limaInstance == "" {
-			return target, fmt.Errorf("%w: native Windows runtime files require the Porto Linux guest", datafiles.ErrUnsupported)
-		}
 		encoded, err := nativefiles.EncodeNativeRequest(descriptor, writable)
 		if err != nil {
 			return target, err
@@ -65,9 +83,6 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writ
 		return target, nil
 	}
 	if kind == "container" && descriptor.PID > 0 {
-		if backend.limaInstance == "" {
-			return target, fmt.Errorf("%w: this rootless kernel locks the running container's mount subtree; use in-app Files or stop it explicitly before mounting its snapshot", datafiles.ErrUnsupported)
-		}
 		config, err := m.discoverLimaSSHConfig(ctx, backend.limaInstance)
 		if err != nil {
 			return target, err
