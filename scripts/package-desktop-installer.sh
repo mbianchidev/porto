@@ -47,6 +47,11 @@ esac
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$repo_root"
 
+if [ "$goos" = "darwin" ]; then
+  DEVELOPER_DIR="$(node scripts/macos-toolchain.cjs)"
+  export DEVELOPER_DIR
+fi
+
 output_directory="$(mkdir -p "$output_directory" && cd "$output_directory" && pwd -P)"
 temporary="$(mktemp -d)"
 trap 'rm -rf "$temporary"' EXIT HUP INT TERM

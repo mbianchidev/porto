@@ -216,6 +216,12 @@ upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev
 git remote get-url origin >/dev/null 2>&1 ||
   fail "the origin remote is not configured"
 
+if [ "$(uname -s)" = "Darwin" ]; then
+  echo "Checking macOS desktop packaging toolchain"
+  DEVELOPER_DIR="$(node scripts/macos-toolchain.cjs)"
+  export DEVELOPER_DIR
+fi
+
 if ! $dry_run; then
   echo "Fetching origin/main and tags"
   git fetch --quiet origin "refs/heads/main:refs/remotes/origin/main" --tags

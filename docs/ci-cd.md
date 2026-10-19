@@ -204,8 +204,25 @@ existing artwork, with glass effects disabled, alongside the unchanged `.icns`
 fallback. Electron Packager compiles the modern icon into `Assets.car`; native
 smoke tests check both icon resources and their `Info.plist` entries. Building
 macOS packages requires macOS 26 or newer and Xcode 26 or newer with `actool`
-available. Source development still uses the `.icns` icon and prepares its cached
-bundle without compiling a native entry point.
+available. Command Line Tools alone cannot compile the modern icon. Install full
+Xcode and complete its first-launch setup before running the macOS desktop tests
+or preparing a release. Source development still uses the `.icns` icon and
+prepares its cached bundle without compiling a native entry point.
+
+Packaging honors an explicit `DEVELOPER_DIR`, otherwise checks the active Xcode
+and then `/Applications/Xcode.app/Contents/Developer`. It selects tools only for
+the current command, without changing the global `xcode-select` setting. A custom
+or versioned Xcode installation can be selected explicitly:
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./release.sh 0.2.0 --dry-run
+```
+
+`node scripts/macos-toolchain.cjs` checks Xcode and `actool` and prints the selected
+developer directory. On macOS, `release.sh` runs this preflight before fetching,
+changing release versions, or running validation; the native installer script
+also checks before building or downloading runtime inputs. Missing or unsupported
+tools fail with setup instructions rather than a late packaging assertion.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
