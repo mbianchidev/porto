@@ -713,7 +713,7 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
 	outside := "/tmp/" + fixture.prefix + "-outside.txt"
 	fixture.backendPathCommand(t, "sh", "-c", `set -eu; printf 'synthetic outside boundary' > "$1"`, "porto-native-fixture", outside)
-	fixture.t.Cleanup(func() { fixture.backendPathCommand(fixture.t, "rm", "--", outside) })
+	t.Cleanup(func() { fixture.backendPathCommand(t, "rm", "--", outside) })
 	volume := fixture.selection[slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == "volume" })]
 	descriptor, err := fixture.manager.FileDescriptor(fixture.ctx, "volume", volume.Destination)
 	if err != nil {
