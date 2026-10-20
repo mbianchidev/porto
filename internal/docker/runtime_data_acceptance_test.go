@@ -247,6 +247,14 @@ func (fixture *runtimeDataFixture) prepareSource() {
 		CPUs: 2, MemoryMiB: 1536, DiskGiB: 12, Start: true,
 	})
 	if err != nil {
+		if home := os.Getenv("LIMA_HOME"); home != "" {
+			diagnostics, diagnosticErr := os.ReadFile(filepath.Join(home, fixture.prefix, "ha.stderr.log"))
+			if diagnosticErr != nil {
+				t.Logf("isolated source VM diagnostics unavailable: %v", diagnosticErr)
+			} else {
+				t.Logf("isolated source VM diagnostics: %s", diagnostics[max(0, len(diagnostics)-16384):])
+			}
+		}
 		t.Fatal(err)
 	}
 	fixture.instance = instance
@@ -580,6 +588,13 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 	})
 	if err != nil {
 		_ = fixture.store.FinishDataOperation(fixture.ctx, run.ID, "failed", result, err.Error(), time.Now())
+		for _, selection := range fixture.selection {
+			if selection.Kind == "image" {
+				current, inspectErr := fixture.manager.InspectImage(fixture.ctx, selection.Destination, "")
+				t.Logf("synthetic source image metadata: %s", before["image"])
+				t.Logf("synthetic destination image metadata: %s; inspect error: %v", current, inspectErr)
+			}
+		}
 		if errors.Is(err, datafiles.ErrConflict) && len(result.Steps) == 0 {
 			for _, selection := range fixture.selection {
 				current, inspectErr := fixture.source.inspect(fixture.ctx, selection)
