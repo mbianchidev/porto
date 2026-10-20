@@ -1103,12 +1103,30 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 			stateMu.Unlock()
 			switch current {
 			case "created":
-				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
 			case "running":
-				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
+			case "exited":
+				return []byte(`[{"Id":"container-id","State":{"Status":"exited","Running":false,"ExitCode":23},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
 			default:
 				return nil, errors.New("no such container: container-id")
 			}
+		case reflect.DeepEqual(args, []string{"rm", "--volumes", "container-id"}):
+			stateMu.Lock()
+			if state != "exited" {
+				stateMu.Unlock()
+				return nil, fmt.Errorf("auto-removal attempted before container exit")
+			}
+			state = "removed"
+			stateMu.Unlock()
+			inventory.recordEvent(ContainerLifecycleEvent{
+				Topic:       "/containers/delete",
+				Type:        "container-delete",
+				ContainerID: "container-id",
+				Timestamp:   time.Now().UTC(),
+			})
+			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{})
+			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected command: %+v", command)
 		}
@@ -1134,7 +1152,7 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 		)
 		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
 			stateMu.Lock()
-			state = "removed"
+			state = "exited"
 			stateMu.Unlock()
 			exitCode := uint32(23)
 			inventory.recordEvent(ContainerLifecycleEvent{
@@ -1144,13 +1162,9 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 				ExitCode:    &exitCode,
 				Timestamp:   time.Now().UTC(),
 			})
-			inventory.recordEvent(ContainerLifecycleEvent{
-				Topic:       "/containers/delete",
-				Type:        "container-delete",
-				ContainerID: "container-id",
-				Timestamp:   time.Now().UTC(),
-			})
-			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{})
+			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{{
+				ID: "container-id", State: "exited", ExitCode: &exitCode,
+			}})
 			exitErr := exec.Command("sh", "-c", "exit 23").Run()
 			return []byte("attached start\n"), nil, exitErr
 		}), nil
@@ -1394,6 +1408,29 @@ func TestDockerAPIRemovedWaitPrefersRuntimeExitAfterAttachInterruption(t *testin
 	if !strings.Contains(response.Body.String(), `"StatusCode":17`) ||
 		strings.Contains(response.Body.String(), `"Error":{"Message"`) {
 		t.Fatalf("unexpected interrupted-attach response: %s", response.Body.String())
+	}
+}
+
+func TestDockerAPIRemovedWaitReportsAutoRemovalFailure(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		return []byte(`[{"Id":"container-id","State":{"Status":"exited","ExitCode":23}}]`), nil
+	}}
+	api := NewAPI(New(runner), "")
+	session := &containerAttachSession{
+		start:          make(chan containerAttachStart, 1),
+		startRequested: true,
+		done:           make(chan struct{}),
+	}
+	session.finish(23, true, errors.New("synthetic auto-removal failure"))
+	api.attaches["container-id"] = session
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodPost,
+		"/v1.47/containers/container-id/wait?condition=removed", nil).WithContext(ctx))
+	if !strings.Contains(response.Body.String(), `"StatusCode":23`) ||
+		!strings.Contains(response.Body.String(), `"Message":"synthetic auto-removal failure"`) {
+		t.Fatalf("auto-removal failure response = %s", response.Body.String())
 	}
 }
 

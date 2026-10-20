@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -424,7 +425,20 @@ func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
 		streamResult = <-streamDone
 	}
 	if startErr == nil {
-		session.complete(streamResult)
+		var cleanupErr error
+		if current.AutoRemove && streamResult.authoritative {
+			cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(processContext), defaultTimeout)
+			cleanupErr = a.manager.ContainerAction(cleanupContext, details.ID, "remove-volumes")
+			cleanupCancel()
+			if cleanupErr != nil && containerRemovalComplete(cleanupErr) {
+				cleanupErr = nil
+			}
+			if cleanupErr != nil {
+				cleanupErr = fmt.Errorf("auto-remove container %q: %w", details.ID, cleanupErr)
+				slog.Error("Container auto-removal failed", "container", details.ID, "error", cleanupErr)
+			}
+		}
+		session.finish(streamResult.exitCode, streamResult.authoritative, cleanupErr)
 	}
 	_ = connection.Close()
 }

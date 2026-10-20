@@ -12,9 +12,10 @@ import (
 )
 
 type containerAttachDetails struct {
-	ID    string
-	TTY   bool
-	State containerWaitState
+	ID         string
+	TTY        bool
+	AutoRemove bool
+	State      containerWaitState
 }
 
 type containerStartBaseline struct {
@@ -97,9 +98,12 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		return containerAttachDetails{}, err
 	}
 	var inspected struct {
-		ID     string             `json:"Id"`
-		Config struct{ TTY bool } `json:"Config"`
-		State  containerWaitState `json:"State"`
+		ID         string             `json:"Id"`
+		Config     struct{ TTY bool } `json:"Config"`
+		State      containerWaitState `json:"State"`
+		HostConfig struct {
+			AutoRemove bool `json:"AutoRemove"`
+		} `json:"HostConfig"`
 	}
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return containerAttachDetails{}, fmt.Errorf("decode container attach settings: %w", err)
@@ -108,9 +112,10 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		return containerAttachDetails{}, errors.New("container runtime returned an empty container identifier")
 	}
 	return containerAttachDetails{
-		ID:    inspected.ID,
-		TTY:   inspected.Config.TTY,
-		State: inspected.State.normalized(),
+		ID:         inspected.ID,
+		TTY:        inspected.Config.TTY,
+		AutoRemove: inspected.HostConfig.AutoRemove,
+		State:      inspected.State.normalized(),
 	}, nil
 }
 

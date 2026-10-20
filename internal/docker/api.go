@@ -826,7 +826,11 @@ func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 			case <-attachDone:
 				exitCode, authoritative, attachErr := attach.result()
 				attachDone = nil
-				if attachErr == nil && authoritative {
+				if authoritative {
+					if attachErr != nil {
+						code, err = exitCode, attachErr
+						goto waitComplete
+					}
 					attachedExitCode = &exitCode
 				}
 			case result := <-removed:
@@ -840,9 +844,11 @@ func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 					select {
 					case <-attach.done:
 						exitCode, authoritative, attachErr := attach.result()
-						if attachErr == nil && authoritative {
+						if authoritative {
 							code = exitCode
-							if err != nil && containerRemovalComplete(err) {
+							if attachErr != nil {
+								err = attachErr
+							} else if err != nil && containerRemovalComplete(err) {
 								err = nil
 							}
 						}
