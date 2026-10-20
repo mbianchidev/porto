@@ -59,6 +59,7 @@ function dependencyProvisionOverride() {
     '#!/bin/sh',
     'set -eu',
     "printf '%s\\n' 'Acquire::Languages \"none\";' 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";' 'Acquire::IndexTargets::deb::CNF::DefaultEnabled \"false\";' > /etc/apt/apt.conf.d/99porto-ci",
+    'rm -f /etc/apt/apt.conf.d/99needrestart',
     '',
   ].join('\n')
   return `.provision += ${JSON.stringify([{ mode: 'dependency', script }])}`

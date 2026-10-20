@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sync"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -41,17 +42,19 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 		return errors.Join(err, killErr, stderrErr, remote.Wait())
 	}
 	var remoteErrors, hostErrors limitedNativeErrors
+	closeRemoteInput := sync.OnceValue(remote.Stdin().Close)
+	closeHostInput := sync.OnceValue(host.Stdin().Close)
 	remoteStderr, hostStderr := make(chan error, 1), make(chan error, 1)
 	go func() { _, err := io.Copy(&remoteErrors, remote.Stderr()); remoteStderr <- err }()
 	go func() { _, err := io.Copy(&hostErrors, host.Stderr()); hostStderr <- err }()
 	up, down := make(chan error, 1), make(chan error, 1)
 	go func() {
 		_, err := io.Copy(remote.Stdin(), host.Stdout())
-		up <- errors.Join(err, remote.Stdin().Close())
+		up <- errors.Join(err, closeRemoteInput())
 	}()
 	go func() {
 		_, err := io.Copy(host.Stdin(), remote.Stdout())
-		down <- errors.Join(err, host.Stdin().Close())
+		down <- errors.Join(err, closeHostInput())
 	}()
 	done := make(chan error, 1)
 	live.done = done
@@ -69,10 +72,7 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 		close(done)
 	}()
 	live.closeBridge = func(ctx context.Context) error {
-		inputErr := errors.Join(host.Stdin().Close(), remote.Stdin().Close())
-		if errors.Is(inputErr, os.ErrClosed) {
-			inputErr = nil
-		}
+		inputErr := errors.Join(closeHostInput(), closeRemoteInput())
 		select {
 		case processErr := <-done:
 			cancel()
@@ -83,5 +83,8 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 			return errors.Join(inputErr, fmt.Errorf("wait for owned native SSHFS/SFTP cleanup: %w", ctx.Err()))
 		}
 	}
-	return m.waitMounted(ctx, live.record, live.done)
+	if err := m.waitMounted(ctx, live.record, live.done); err != nil {
+		return fmt.Errorf("native SSHFS startup failed: %w: SSHFS: %s; SFTP: %s", err, hostErrors.String(), remoteErrors.String())
+	}
+	return nil
 }
