@@ -81,6 +81,15 @@ func dockerInspectForVersion(value json.RawMessage, version string, image bool) 
 		}
 	} else if config, ok := document["Config"].(map[string]any); ok {
 		if labels, ok := config["Labels"].(map[string]any); ok {
+			if labels[portoTTYLabel] == "true" {
+				config["Tty"] = true
+			}
+			if labels[portoOpenStdinLabel] == "true" {
+				config["OpenStdin"] = true
+			}
+			if labels["io.porto.container.stdin-once"] == "true" {
+				config["StdinOnce"] = true
+			}
 			if encoded, ok := labels[portoExposedPortsLabel].(string); ok && encoded != "" {
 				var ports []string
 				if err := json.Unmarshal([]byte(encoded), &ports); err != nil {

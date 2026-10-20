@@ -339,36 +339,61 @@ type CreateNetworkRequest struct {
 }
 
 type CreateContainerRequest struct {
-	Name        string
-	Image       string
-	Platform    string
-	Command     []string
-	Entrypoint  []string
-	Environment []string
-	Labels      map[string]string
-	WorkingDir  string
-	User        string
-	Hostname    string
-	StopSignal  string
-	StopTimeout *int
-	Healthcheck *ContainerHealthcheck
-	Privileged  bool
-	SecurityOpt []string
-	Tmpfs       map[string]string
-	Sysctls     map[string]string
-	Devices     []ContainerDevice
-	Cgroupns    string
-	Userns      string
-	Init        bool
-	ShmSize     int64
-	Networks    []ContainerNetwork
-	Volumes     []string
-	Publish     []string
-	Expose      []string
-	Restart     string
-	TTY         bool
-	Interactive bool
-	Remove      bool
+	Name         string
+	Image        string
+	Platform     string
+	Command      []string
+	Entrypoint   []string
+	Environment  []string
+	Labels       map[string]string
+	WorkingDir   string
+	User         string
+	Hostname     string
+	StopSignal   string
+	StopTimeout  *int
+	Healthcheck  *ContainerHealthcheck
+	Privileged   bool
+	SecurityOpt  []string
+	Tmpfs        map[string]string
+	Sysctls      map[string]string
+	Devices      []ContainerDevice
+	Cgroupns     string
+	Userns       string
+	Init         bool
+	ShmSize      int64
+	Networks     []ContainerNetwork
+	Volumes      []string
+	Publish      []string
+	Expose       []string
+	Restart      string
+	TTY          bool
+	Interactive  bool
+	StdinOnce    bool
+	Remove       bool
+	Limits       ContainerUpdate
+	ReadOnly     bool
+	CapAdd       []string
+	CapDrop      []string
+	DNS          []string
+	DNSSearch    []string
+	DNSOptions   []string
+	ExtraHosts   []string
+	GroupAdd     []string
+	Ulimits      []ContainerUlimit
+	GPUs         []string
+	PublishAll   bool
+	ConsoleSize  [2]uint
+	Mounts       []string
+	IPC          string
+	PIDMode      string
+	UTS          string
+	CgroupParent string
+}
+
+type ContainerUlimit struct {
+	Name string `json:"Name"`
+	Soft int64  `json:"Soft"`
+	Hard int64  `json:"Hard"`
 }
 
 type ContainerHealthcheck struct {
@@ -392,11 +417,23 @@ type ContainerDevice struct {
 }
 
 type ContainerUpdate struct {
-	Memory      int64
-	MemorySwap  int64
-	NanoCPUs    int64
-	Restart     string
-	Healthcheck *ContainerHealthcheck
+	Memory             int64                 `json:"Memory"`
+	MemorySwap         int64                 `json:"MemorySwap"`
+	NanoCPUs           int64                 `json:"NanoCpus"`
+	CPUShares          int64                 `json:"CpuShares"`
+	CPUPeriod          int64                 `json:"CpuPeriod"`
+	CPUQuota           int64                 `json:"CpuQuota"`
+	CPUSetCPUs         string                `json:"CpusetCpus"`
+	CPUSetMems         string                `json:"CpusetMems"`
+	MemoryReservation  int64                 `json:"MemoryReservation"`
+	PidsLimit          *int64                `json:"PidsLimit"`
+	BlkioWeight        uint16                `json:"BlkioWeight"`
+	MemorySwappiness   *int64                `json:"MemorySwappiness"`
+	OomKillDisable     *bool                 `json:"OomKillDisable"`
+	CPURealtimePeriod  int64                 `json:"CpuRealtimePeriod"`
+	CPURealtimeRuntime int64                 `json:"CpuRealtimeRuntime"`
+	Restart            string                `json:"-"`
+	Healthcheck        *ContainerHealthcheck `json:"-"`
 }
 
 type ExecRequest struct {

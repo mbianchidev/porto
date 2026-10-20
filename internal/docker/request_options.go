@@ -55,19 +55,8 @@ func unsupportedDockerJSONOptions(raw json.RawMessage, target reflect.Type, path
 			if path != "" {
 				fieldPath = path + "." + name
 			}
-			index := -1
-			for candidate := range target.NumField() {
-				member := target.Field(candidate)
-				tag := strings.Split(member.Tag.Get("json"), ",")[0]
-				if tag == "" {
-					tag = member.Name
-				}
-				if tag != "-" && strings.EqualFold(tag, name) {
-					index = candidate
-					break
-				}
-			}
-			if index < 0 {
+			member, found := dockerJSONField(target, name)
+			if !found {
 				if !dockerJSONDefault(field) {
 					unsupported = append(unsupported, fieldPath)
 				}
@@ -85,7 +74,7 @@ func unsupportedDockerJSONOptions(raw json.RawMessage, target reflect.Type, path
 					return nil, fmt.Errorf("Docker option %s requires API %s or newer", fieldPath, minimum)
 				}
 			}
-			nested, err := unsupportedDockerJSONOptions(field, target.Field(index).Type, fieldPath, version)
+			nested, err := unsupportedDockerJSONOptions(field, member.Type, fieldPath, version)
 			if err != nil {
 				return nil, err
 			}
@@ -123,6 +112,25 @@ func unsupportedDockerJSONOptions(raw json.RawMessage, target reflect.Type, path
 		}
 	}
 	return unsupported, nil
+}
+
+func dockerJSONField(target reflect.Type, name string) (reflect.StructField, bool) {
+	for candidate := range target.NumField() {
+		member := target.Field(candidate)
+		tag := strings.Split(member.Tag.Get("json"), ",")[0]
+		if member.Anonymous && tag == "" && member.Type.Kind() == reflect.Struct {
+			if field, found := dockerJSONField(member.Type, name); found {
+				return field, true
+			}
+		}
+		if tag == "" {
+			tag = member.Name
+		}
+		if tag != "-" && strings.EqualFold(tag, name) {
+			return member, true
+		}
+	}
+	return reflect.StructField{}, false
 }
 
 func dockerJSONDefault(raw json.RawMessage) bool {

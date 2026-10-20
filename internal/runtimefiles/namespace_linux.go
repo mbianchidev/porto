@@ -20,7 +20,8 @@ func dispatchRuntimeNamespace(ctx context.Context, descriptor Descriptor, reques
 	if descriptor.RuntimePID <= 0 || (descriptor.Resource.Kind != "container" && descriptor.Resource.Kind != "image" && descriptor.Resource.Kind != "runtime") {
 		return false, nil
 	}
-	if descriptor.Resource.Kind == "container" && descriptor.PID > 0 && request.Action != "attach" && request.Action != "detach" {
+	if descriptor.Resource.Kind == "container" && descriptor.PID > 0 &&
+		request.Action != "attach" && request.Action != "detach" && request.Action != "changes" {
 		return false, nil
 	}
 	executable, err := os.Executable()

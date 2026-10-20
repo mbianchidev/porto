@@ -1,6 +1,8 @@
 package docker
 
 import (
+	"bytes"
+	"encoding/csv"
 	"errors"
 	"fmt"
 	"strconv"
@@ -39,13 +41,14 @@ type dockerStructuredMount struct {
 func structuredMountArguments(
 	mounts []dockerStructuredMount,
 	existingTmpfs map[string]string,
-) ([]string, map[string]string, error) {
+) ([]string, []string, map[string]string, error) {
 	volumes := make([]string, 0, len(mounts))
+	structured := make([]string, 0)
 	tmpfs := make(map[string]string, len(existingTmpfs))
 	targets := make(map[string]struct{}, len(mounts)+len(existingTmpfs))
 	for target, options := range existingTmpfs {
 		if err := validateContainerMountTarget(target); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		targets[target] = struct{}{}
 		tmpfs[target] = options
@@ -54,41 +57,95 @@ func structuredMountArguments(
 		mount.Type = strings.ToLower(strings.TrimSpace(mount.Type))
 		mount.Target = strings.TrimSpace(mount.Target)
 		if err := validateContainerMountTarget(mount.Target); err != nil {
-			return nil, nil, err
+			return nil, nil, nil, err
 		}
 		if _, exists := targets[mount.Target]; exists {
-			return nil, nil, fmt.Errorf("duplicate mount target %q", mount.Target)
+			return nil, nil, nil, fmt.Errorf("duplicate mount target %q", mount.Target)
 		}
 		targets[mount.Target] = struct{}{}
 		switch strings.ToLower(strings.TrimSpace(mount.Consistency)) {
 		case "", "default", "consistent":
 		default:
-			return nil, nil, fmt.Errorf("%w: mount consistency %q", ErrUnsupported, mount.Consistency)
+			return nil, nil, nil, fmt.Errorf("%w: mount consistency %q", ErrUnsupported, mount.Consistency)
 		}
 		switch mount.Type {
 		case "bind":
+			if bind := mount.BindOptions; bind != nil &&
+				(bind.NonRecursive || bind.ReadOnlyNonRecursive || bind.ReadOnlyForceRecursive) {
+				value, err := recursiveBindMount(mount)
+				if err != nil {
+					return nil, nil, nil, err
+				}
+				structured = append(structured, value)
+				continue
+			}
 			value, err := structuredBindMount(mount)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			volumes = append(volumes, value)
 		case "volume":
 			value, err := structuredVolumeMount(mount)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			volumes = append(volumes, value)
 		case "tmpfs":
 			options, err := structuredTmpfsMount(mount)
 			if err != nil {
-				return nil, nil, err
+				return nil, nil, nil, err
 			}
 			tmpfs[mount.Target] = options
 		default:
-			return nil, nil, fmt.Errorf("%w: mount type %q", ErrUnsupported, mount.Type)
+			return nil, nil, nil, fmt.Errorf("%w: mount type %q", ErrUnsupported, mount.Type)
 		}
 	}
-	return volumes, tmpfs, nil
+	return volumes, structured, tmpfs, nil
+}
+
+func recursiveBindMount(mount dockerStructuredMount) (string, error) {
+	bind := *mount.BindOptions
+	basic := mount
+	options := bind
+	options.NonRecursive, options.ReadOnlyNonRecursive, options.ReadOnlyForceRecursive = false, false, false
+	basic.BindOptions = &options
+	if _, err := structuredBindMount(basic); err != nil {
+		return "", err
+	}
+	if bind.ReadOnlyForceRecursive && (bind.NonRecursive || bind.ReadOnlyNonRecursive) {
+		return "", errors.New("invalid conflicting recursive bind options")
+	}
+	if (bind.ReadOnlyNonRecursive || bind.ReadOnlyForceRecursive) && !mount.ReadOnly {
+		return "", errors.New("invalid recursive read-only options on a writable bind")
+	}
+	fields := []string{"type=bind", "source=" + mount.Source, "target=" + mount.Target}
+	if mount.ReadOnly {
+		fields = append(fields, "readonly")
+	}
+	propagation := firstNonEmpty(bind.Propagation, "rprivate")
+	fields = append(fields, "bind-propagation="+propagation)
+	switch {
+	case bind.NonRecursive:
+		fields = append(fields, "bind-recursive=disabled")
+	case bind.ReadOnlyForceRecursive:
+		fields = append(fields, "bind-recursive=readonly")
+	case bind.ReadOnlyNonRecursive:
+		fields = append(fields, "bind-recursive=writable")
+	}
+	return dockerCSV(fields)
+}
+
+func dockerCSV(fields []string) (string, error) {
+	var output bytes.Buffer
+	writer := csv.NewWriter(&output)
+	if err := writer.Write(fields); err != nil {
+		return "", err
+	}
+	writer.Flush()
+	if err := writer.Error(); err != nil {
+		return "", err
+	}
+	return strings.TrimSuffix(output.String(), "\n"), nil
 }
 
 func structuredBindMount(mount dockerStructuredMount) (string, error) {

@@ -136,7 +136,7 @@ func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
 		`"KernelMemory":1024`, `"KernelMemoryTCP":1024`,
 		`"ContainerIDFile":"/tmp/synthetic-id"`, `"VolumeDriver":"external"`,
 		`"VolumesFrom":["other"]`, `"Links":["other:alias"]`,
-		`"Annotations":{"synthetic":"value"}`, `"ConsoleSize":[24,80]`,
+		`"Annotations":{"synthetic":"value"}`,
 		`"LogConfig":{"Type":"syslog","Config":{}}`,
 		`"LogConfig":{"Type":"json-file","Config":{"max-size":"1m"}}`,
 		`"MaskedPaths":[]`, `"ReadonlyPaths":[]`,
@@ -1659,7 +1659,7 @@ func TestDockerAPIRejectsUnsupportedMountSemanticsAndFollowsLogs(t *testing.T) {
 	handler.ServeHTTP(create, httptest.NewRequest(
 		http.MethodPost,
 		"/v1.47/containers/create",
-		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data","BindOptions":{"NonRecursive":true}}]}}`),
+		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data","BindOptions":{"CreateMountpoint":true}}]}}`),
 	))
 	if create.Code != http.StatusNotImplemented || !strings.Contains(create.Body.String(), "recursive bind") {
 		t.Fatalf("mount response = %d: %s", create.Code, create.Body.String())

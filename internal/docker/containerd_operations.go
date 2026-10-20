@@ -1224,8 +1224,16 @@ func (r *grpcContainerRuntime) UpdateRestartPolicy(ctx context.Context, id, poli
 		return err
 	}
 	id = resolvedID
-	if err := validateRestartPolicy(policy); err != nil {
+	updates, err := r.restartPolicyUpdates(ctx, id, policy)
+	if err != nil {
 		return err
+	}
+	return r.updateLabelsResolved(ctx, id, updates)
+}
+
+func (r *grpcContainerRuntime) restartPolicyUpdates(ctx context.Context, id, policy string) (map[string]string, error) {
+	if err := validateRestartPolicy(policy); err != nil {
+		return nil, err
 	}
 	updates := map[string]string{restartPolicyLabel: policy}
 	if policy == "" || policy == "no" {
@@ -1240,23 +1248,23 @@ func (r *grpcContainerRuntime) UpdateRestartPolicy(ctx context.Context, id, poli
 			&containersapi.GetContainerRequest{ID: id},
 		)
 		if err != nil {
-			return containerdOperationError("inspect restart metadata for", id, err)
+			return nil, containerdOperationError("inspect restart metadata for", id, err)
 		}
 		logPath := response.GetContainer().GetLabels()[portoLogPathLabel]
 		if logPath == "" {
-			return fmt.Errorf("%w: container %q has no persistent restart log", ErrUnsupported, id)
+			return nil, fmt.Errorf("%w: container %q has no persistent restart log", ErrUnsupported, id)
 		}
 		running := false
 		if process, taskErr := r.getTask(ctx, id); taskErr == nil {
 			running = containerdTaskActive(process.GetStatus())
 		} else if status.Code(taskErr) != codes.NotFound {
-			return containerdOperationError("inspect task for restart update", id, taskErr)
+			return nil, containerdOperationError("inspect task for restart update", id, taskErr)
 		}
 		updates[restartStatusLabel] = map[bool]string{true: "running", false: "stopped"}[running]
 		updates[restartStoppedLabel] = strconv.FormatBool(!running)
 		updates[restartLogURILabel] = logURIForLabels(response.GetContainer().GetLabels())
 	}
-	return r.updateLabelsResolved(ctx, id, updates)
+	return updates, nil
 }
 
 func (r *grpcContainerRuntime) setRestartDesired(ctx context.Context, id string, running bool) error {
@@ -1317,6 +1325,9 @@ func (r *grpcContainerRuntime) resetHealthState(ctx context.Context, id string, 
 }
 
 func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, update ContainerUpdate) error {
+	if err := update.validate(); err != nil {
+		return err
+	}
 	resolvedID, err := r.resolveContainerID(ctx, id)
 	if err != nil {
 		return err
@@ -1360,13 +1371,27 @@ func (r *grpcContainerRuntime) UpdateResources(ctx context.Context, id string, u
 	}
 
 	updatedRecord := proto.Clone(record).(*containersapi.Container)
+	updatePaths := []string{"spec"}
+	if update.Restart != "" {
+		labels, err := r.restartPolicyUpdates(ctx, id, update.Restart)
+		if err != nil {
+			return err
+		}
+		if updatedRecord.Labels == nil {
+			updatedRecord.Labels = make(map[string]string)
+		}
+		for key, value := range labels {
+			updatedRecord.Labels[key] = value
+			updatePaths = append(updatePaths, "labels."+key)
+		}
+	}
 	updatedRecord.Spec = &anypb.Any{
 		TypeUrl: record.GetSpec().GetTypeUrl(),
 		Value:   encodedSpec,
 	}
 	_, err = r.containers.Update(namespacedContext, &containersapi.UpdateContainerRequest{
 		Container:  updatedRecord,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: updatePaths},
 	})
 	if err != nil {
 		return containerdOperationError("update resource metadata for", id, err)
@@ -1635,6 +1660,49 @@ func (r *grpcContainerRuntime) Restore(ctx context.Context, id, checkpoint strin
 }
 
 func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdate) {
+	if resources.CPU == nil {
+		resources.CPU = &specs.LinuxCPU{}
+	}
+	if update.CPUPeriod != 0 {
+		period := uint64(update.CPUPeriod)
+		resources.CPU.Period = &period
+	}
+	if update.CPUQuota != 0 {
+		quota := update.CPUQuota
+		resources.CPU.Quota = &quota
+	}
+	if update.CPUShares != 0 {
+		shares := uint64(update.CPUShares)
+		resources.CPU.Shares = &shares
+	}
+	if update.CPURealtimePeriod != 0 {
+		period := uint64(update.CPURealtimePeriod)
+		resources.CPU.RealtimePeriod = &period
+	}
+	if update.CPURealtimeRuntime != 0 {
+		value := update.CPURealtimeRuntime
+		resources.CPU.RealtimeRuntime = &value
+	}
+	if update.CPUSetCPUs != "" {
+		resources.CPU.Cpus = update.CPUSetCPUs
+	}
+	if update.CPUSetMems != "" {
+		resources.CPU.Mems = update.CPUSetMems
+	}
+	if update.PidsLimit != nil {
+		value := *update.PidsLimit
+		if value == 0 {
+			value = -1
+		}
+		resources.Pids = &specs.LinuxPids{Limit: &value}
+	}
+	if update.BlkioWeight != 0 {
+		if resources.BlockIO == nil {
+			resources.BlockIO = &specs.LinuxBlockIO{}
+		}
+		weight := update.BlkioWeight
+		resources.BlockIO.Weight = &weight
+	}
 	if update.NanoCPUs > 0 {
 		if resources.CPU == nil {
 			resources.CPU = &specs.LinuxCPU{}
@@ -1644,7 +1712,8 @@ func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdat
 		resources.CPU.Period = &period
 		resources.CPU.Quota = &quota
 	}
-	if update.Memory > 0 || update.MemorySwap > 0 {
+	if update.Memory > 0 || update.MemorySwap != 0 || update.MemoryReservation != 0 ||
+		update.MemorySwappiness != nil || update.OomKillDisable != nil {
 		if resources.Memory == nil {
 			resources.Memory = &specs.LinuxMemory{}
 		}
@@ -1657,9 +1726,21 @@ func applyContainerUpdate(resources *specs.LinuxResources, update ContainerUpdat
 			resources.Memory.Swap = &memorySwap
 		}
 	}
-	if update.MemorySwap > 0 {
+	if update.MemorySwap != 0 {
 		memorySwap := update.MemorySwap
 		resources.Memory.Swap = &memorySwap
+	}
+	if update.MemoryReservation != 0 {
+		value := update.MemoryReservation
+		resources.Memory.Reservation = &value
+	}
+	if update.MemorySwappiness != nil && *update.MemorySwappiness != -1 {
+		value := uint64(*update.MemorySwappiness)
+		resources.Memory.Swappiness = &value
+	}
+	if update.OomKillDisable != nil {
+		value := *update.OomKillDisable
+		resources.Memory.DisableOOMKiller = &value
 	}
 }
 
@@ -1669,9 +1750,11 @@ func (r *grpcContainerRuntime) rollbackContainerSpec(
 	record *containersapi.Container,
 	operationErr error,
 ) error {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
+	defer cancel()
 	_, rollbackErr := r.containers.Update(ctx, &containersapi.UpdateContainerRequest{
 		Container:  record,
-		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec"}},
+		UpdateMask: &fieldmaskpb.FieldMask{Paths: []string{"spec", "labels"}},
 	})
 	if rollbackErr == nil {
 		return operationErr

@@ -90,6 +90,12 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	if args[0] == "https" {
 		return httpsAction(args[1:])
 	}
+	if args[0] == "docker" {
+		return dockerCmd(args[1:])
+	}
+	if dockerShortcut(args[0]) {
+		return runDockerCLI(args)
+	}
 	if args[0] == "diagnose" || args[0] == "diagnostics" {
 		db, dbErr := openStore()
 		if db != nil {
@@ -121,15 +127,13 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 		return killSwitchCmd(db, args[1:])
 	case "sendbox":
 		return sendboxAction(args[1:])
-	case "docker":
-		return dockerCmd(args[1:])
 	case "kubernetes", "k8s":
 		return kubernetesCmd(args[1:])
 	case "vm", "vms", "machine", "machines":
 		return vmCmd(args[1:])
 	case "runtime":
 		return runtimeCmd(db, args[1:])
-	case "container", "containers", "image", "images", "build", "builds", "network", "networks", "volume", "volumes":
+	case "containers", "builds", "networks", "volumes":
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
 		return daemonCmd(db, args[1:], diagnostics)
@@ -684,7 +688,7 @@ func api(method, path string, body any, out io.Writer) error {
 }
 
 func usage() {
-	fmt.Println(`Porto — local project orchestrator
+	fmt.Println(`Porto - local project orchestrator
 
 Commands:
   porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
@@ -699,12 +703,15 @@ Commands:
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
+  porto docker <Docker command> [args...]
+  porto ps|run|create|exec|rm|compose|buildx|image|images|network|volume [args...]
   porto docker cli <args...>
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
-  porto docker containers|images|builds|networks|volumes
+  porto docker containers|builds|networks|volumes
   porto docker storage usage|prune --category <type>|--objects kind:name,... [--confirm]
-  porto docker volume export|clone|import|restore|empty|remove <args> [--confirm]
+  porto docker volume export|clone|import|restore|empty <args> [--confirm]
+  porto docker data volume remove <args> --confirm
   porto docker backups schedule <volume> [--hours 24] [--retain 7] [--enabled]
   porto docker backups update|pause|resume|run <id>
   porto docker backups remove <id> --confirm
@@ -712,8 +719,8 @@ Commands:
   porto docker migrate --context <name> [--objects kind:name,...] [--allow-source-helper] [--confirm]
   porto docker files <container|image|volume|vm> <name> [--writable] --confirm
   porto docker context-install|activate|deactivate
-  porto docker container <start|stop|restart|pause|unpause|remove> <id>
-  porto docker build <context> [--tag name] [--file Dockerfile] [--no-cache]
+  porto docker container <Docker subcommand> [args...]
+  porto docker build [Docker build flags] <context>
   porto kubernetes status|contexts|pods|services|configmaps|configs|secrets|nodes|kubeconfig|context-install
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>

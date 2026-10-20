@@ -50,15 +50,34 @@ For an installed desktop package, use either the non-conflicting `docker`
 command created by the install script or the explicit bundled entry point:
 
 ```sh
-porto docker cli --context porto info
-porto docker cli --context porto compose up --detach
-porto docker cli --context porto buildx build --load --tag demo .
+porto docker info
+porto docker compose up --detach
+porto docker buildx build --load --tag demo .
+porto ps --all
+porto exec -it demo sh
 porto docker dive demo
 ```
 
 The bundled CLI loads Porto's pinned plugins before user and system plugins,
 while preserving the user's Docker contexts, credentials, plugin files, and
 Buildx state.
+
+`porto docker <command> [args...]` forwards the original argument array and
+standard streams to Docker, defaults to Porto's endpoint, and preserves the
+client's exit code. An inherited Docker host, context, or TLS setting cannot
+silently redirect the default connection. Explicit Docker connection flags keep
+their normal meaning. `porto docker cli ...` remains an equivalent entry point.
+The same supported operations work through `docker --context porto ...`.
+Source builds need a Docker CLI in `PATH`; desktop packages include it.
+
+Top-level `porto ps`, `run`, `create`, `exec`, `rm`, `images`, `image`, `build`,
+`network`, `volume`, `compose`, and `buildx` use Docker's command syntax.
+Existing project commands `start`, `stop`, `restart`, `kill`, and `logs` remain
+project operations; use `porto docker stop`, `porto docker logs`, and their
+equivalents for containers. Porto-specific inventory and data commands remain
+available. Use `porto docker data volume remove ... --confirm` for Porto's
+identity-checked volume-removal workflow; `porto docker volume remove` is now
+Docker's standard removal alias.
 
 Inspect or install provider tools:
 
@@ -171,7 +190,8 @@ porto docker container restart <container>
 porto docker pull alpine:latest
 ```
 
-Top-level inventory aliases are also available:
+Top-level inventories are also available; `images` uses Docker's normal output
+and flags, while the other plural inventories retain Porto's JSON output:
 
 ```sh
 porto containers

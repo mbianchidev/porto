@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
 	"strings"
 	"syscall"
@@ -15,7 +16,7 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "5"
+const helperVersion = "6"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -81,6 +82,24 @@ func main() {
 		ctx, cancel := context.WithTimeout(base, 2*time.Hour)
 		defer cancel()
 		if err := runtimefiles.Run(ctx, os.Stdin, os.Stdout); err != nil {
+			fail(err)
+		}
+	case "filesystem-changes":
+		if len(os.Args) != 4 {
+			fail(errors.New("filesystem-changes requires lower and upper directories"))
+		}
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		if err := runtimefiles.CompareDirectories(ctx, os.Args[2], os.Args[3], os.Stdout); err != nil {
+			fail(err)
+		}
+	case "pty-command":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		if err := runPTYCommand(ctx, os.Args[2:], os.Stdin, os.Stdout); err != nil {
+			if exit, ok := err.(*exec.ExitError); ok && exit.ExitCode() > 0 {
+				os.Exit(exit.ExitCode())
+			}
 			fail(err)
 		}
 	case "files-sftp":
