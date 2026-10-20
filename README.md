@@ -73,7 +73,7 @@ checkpoint capability discovery.
 
 New Windows container engines use Ubuntu 24.04 LTS instead of Lima's moving
 default image. Windows packages include Lima's stale-process recovery and
-consoleless force-stop fixes; normal shutdown recovery does not require
+consoleless graceful/forced shutdown fixes; normal shutdown recovery does not require
 deleting PID files or recreating the runtime VM. See
 [Windows guest recovery](docs/installation.md#windows-guest-recovery) for an
 existing crashed engine.
