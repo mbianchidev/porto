@@ -161,6 +161,7 @@ func TestStorageVolumeLifecycleIntegration(t *testing.T) {
 		}
 		created = append(created, descriptor.Resource)
 		nativeFixture := runtimeDataFixture{ctx: ctx, manager: manager, destinationHelper: guestHelper}
+		nativeFixture.backendPathCommand(t, "ln", "-s", "--", "/synthetic-outside-root", descriptor.RootPath+"/escape-link")
 		target, err := nativeFixture.nativeTarget("volume", destination, true)
 		if err != nil {
 			t.Fatal(err)
@@ -172,6 +173,12 @@ func TestStorageVolumeLifecycleIntegration(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		if _, err := client.ReadDir("/"); err != nil {
+			t.Fatalf("read actual confined volume metadata: %v", errors.Join(err, closeConnection()))
+		}
+		if _, err := client.ReadLink("/escape-link"); err == nil {
+			t.Fatalf("native volume exposed an escaping link: %v", closeConnection())
+		}
 		space, spaceErr := client.StatVFS("/")
 		if err := errors.Join(spaceErr, closeConnection()); err != nil {
 			t.Fatalf("query actual confined volume filesystem capacity: %v", err)
@@ -179,6 +186,7 @@ func TestStorageVolumeLifecycleIntegration(t *testing.T) {
 		if space.Bsize == 0 || space.Blocks == 0 || space.Bavail > space.Blocks {
 			t.Fatalf("invalid actual volume filesystem capacity: %+v", space)
 		}
+		nativeFixture.backendPathCommand(t, "rm", "--", descriptor.RootPath+"/escape-link")
 		exported, err := manager.ExportVolume(ctx, descriptor.Resource, descriptor.Resource.Fingerprint(), filepath.Join(transfers, "captured-"+suffix+".tar"), progress)
 		if err != nil {
 			t.Fatal(err)

@@ -133,9 +133,6 @@ func RunNativeMount(ctx context.Context, input io.Reader, output io.Writer) (err
 	if request.ReadOnly {
 		options = append(options, "-o", "ro")
 	}
-	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("PORTO_RUNTIME_DATA_ACCEPTANCE") == "1" {
-		options = append(options, "-d")
-	}
 	go func() { mounted <- host.Mount(request.Path, options) }()
 	select {
 	case <-ready:

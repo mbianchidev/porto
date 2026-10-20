@@ -719,7 +719,7 @@ func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.backendPathCommand(t, "sudo", "-n", "ln", "-s", "--", outside, path.Join(descriptor.RootPath, "escape-link"))
+	fixture.backendPathCommand(t, "ln", "-s", "--", outside, path.Join(descriptor.RootPath, "escape-link"))
 	for _, kind := range []string{"container", "image", "volume", "vm"} {
 		t.Run(kind, func(t *testing.T) {
 			name := fixture.instance.Name
