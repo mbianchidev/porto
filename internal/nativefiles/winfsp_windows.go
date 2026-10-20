@@ -98,6 +98,9 @@ func RunNativeMount(ctx context.Context, input io.Reader, output io.Writer) (err
 	if _, err := client.Stat("/"); err != nil {
 		return err
 	}
+	if _, err := client.StatVFS("/"); err != nil {
+		return fmt.Errorf("query confined native filesystem capacity: %w", err)
+	}
 	core := NewDirectSFTP(client, request.ReadOnly)
 	ready := make(chan struct{})
 	filesystem := &winfspFilesystem{core: core, ready: ready}
@@ -129,6 +132,9 @@ func RunNativeMount(ctx context.Context, input io.Reader, output io.Writer) (err
 	}
 	if request.ReadOnly {
 		options = append(options, "-o", "ro")
+	}
+	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("PORTO_RUNTIME_DATA_ACCEPTANCE") == "1" {
+		options = append(options, "-d")
 	}
 	go func() { mounted <- host.Mount(request.Path, options) }()
 	select {
@@ -205,6 +211,7 @@ func nativeErrno(err error) int {
 	case errors.Is(err, datafiles.ErrUnsupported):
 		return -fuse.ENOTSUP
 	default:
+		fmt.Fprintln(os.Stderr, "Porto: native filesystem operation failed:", err)
 		return -fuse.EIO
 	}
 }

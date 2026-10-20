@@ -98,6 +98,8 @@ export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
 export PORTO_DOCKER_CLIENT_BACKEND="$backend"
 export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
+PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cjs --dependencies)"
+export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
   export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu neoverse-n1"
@@ -180,7 +182,8 @@ else
   memory=3
   if [ "$suite" = data ]; then memory=2; fi
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
-    --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user)
+    --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user
+    "--set=$PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES")
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
     if [ "$goarch" = arm64 ]; then
       lima_options+=('--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"')

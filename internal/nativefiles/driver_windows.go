@@ -163,7 +163,7 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 			return record, errors.Join(errors.New("native mount exited before becoming accessible"), processErr)
 		case <-startup.Done():
 			return record, errors.Join(
-				fmt.Errorf("WinFsp did not expose the owned host folder: %w", startup.Err()),
+				fmt.Errorf("WinFsp did not expose the owned host folder: %w: %s", startup.Err(), diagnostics.String()),
 				verificationErr,
 			)
 		}

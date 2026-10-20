@@ -166,6 +166,11 @@ Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
 source VM, avoiding the EDK2 LPA2 boot hang reported in
 [tianocore/edk2#11962](https://github.com/tianocore/edk2/issues/11962).
 The 20-minute guest startup budget and resource assertions remain unchanged.
+The isolated Ubuntu guests omit only APT translation, AppStream and
+command-not-found indexes; signed package indexes and normal dependency
+resolution remain enabled. Source Docker installation omits optional
+recommendations. This keeps software-emulated setup from spending its boot
+budget on unrelated desktop/package-search metadata.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

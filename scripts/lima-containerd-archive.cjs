@@ -54,6 +54,16 @@ function run(command, args, capture = false) {
   return capture ? result.stdout.trim() : ''
 }
 
+function dependencyProvisionOverride() {
+  const script = [
+    '#!/bin/sh',
+    'set -eu',
+    "printf '%s\\n' 'Acquire::Languages \"none\";' 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";' 'Acquire::IndexTargets::deb::CNF::DefaultEnabled \"false\";' > /etc/apt/apt.conf.d/99porto-ci",
+    '',
+  ].join('\n')
+  return `.provision += ${JSON.stringify([{ mode: 'dependency', script }])}`
+}
+
 async function prepareContainerdArchive(goarch, directory) {
   const archive = selectArchive(JSON.parse(run('limactl', ['info'], true)), goarch)
   const destination = path.resolve(directory)
@@ -69,8 +79,10 @@ async function prepareContainerdArchive(goarch, directory) {
 
 if (require.main === module) {
   const args = process.argv.slice(2)
-  if (args.length !== 2) {
-    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory>')
+  if (args.length === 1 && args[0] === '--dependencies') {
+    process.stdout.write(`${dependencyProvisionOverride()}\n`)
+  } else if (args.length !== 2) {
+    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies')
     process.exitCode = 2
   } else {
     prepareContainerdArchive(...args).then((expression) => {
@@ -82,4 +94,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectArchive, decompressArchive }
+module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride }

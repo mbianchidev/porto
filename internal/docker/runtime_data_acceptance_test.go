@@ -42,6 +42,9 @@ type runtimeDataVMRunner struct {
 func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Command {
 	if len(command.Args) > 0 && command.Args[0] == "create" {
 		command.Args = append([]string{"create", "--mount-none", "--containerd=none"}, command.Args[1:]...)
+		if dependencies := os.Getenv("PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES"); dependencies != "" {
+			command.Args = append(command.Args, "--set="+dependencies)
+		}
 		if runtime.GOARCH == "arm64" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
 			command.Args = append(command.Args, `--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"`)
 		}
@@ -283,7 +286,7 @@ func (fixture *runtimeDataFixture) prepareSource() {
 	})
 	const provision = `set -eu
 sudo -n apt-get update -qq
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq docker.io
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends docker.io
 sudo -n systemctl start docker
 sudo -n docker version --format '{{.Server.Version}}'
 `
@@ -388,6 +391,15 @@ func (fixture *runtimeDataFixture) sourceJSON(method, resource string, query url
 func (fixture *runtimeDataFixture) prepareObjects() {
 	t := fixture.t
 	response, err := fixture.source.request(fixture.ctx, http.MethodPost, "/images/create", url.Values{"fromImage": {"busybox"}, "tag": {"1.37.0"}}, nil)
+	for attempt := 1; err != nil && attempt < 3; attempt++ {
+		t.Logf("temporary synthetic image setup pull failed (%d/3): %v", attempt, err)
+		select {
+		case <-fixture.ctx.Done():
+			t.Fatal(fixture.ctx.Err())
+		case <-time.After(time.Duration(attempt*2) * time.Second):
+		}
+		response, err = fixture.source.request(fixture.ctx, http.MethodPost, "/images/create", url.Values{"fromImage": {"busybox"}, "tag": {"1.37.0"}}, nil)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}

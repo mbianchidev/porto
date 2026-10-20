@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/mbianchidev/porto/internal/nativefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -159,6 +160,25 @@ func TestStorageVolumeLifecycleIntegration(t *testing.T) {
 			t.Fatal(err)
 		}
 		created = append(created, descriptor.Resource)
+		nativeFixture := runtimeDataFixture{ctx: ctx, manager: manager, destinationHelper: guestHelper}
+		target, err := nativeFixture.nativeTarget("volume", destination, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if target.SFTP == nil {
+			t.Fatal("the Lima volume has no native SFTP transport")
+		}
+		client, _, closeConnection, err := nativefiles.ConnectNativeSFTP(ctx, *target.SFTP)
+		if err != nil {
+			t.Fatal(err)
+		}
+		space, spaceErr := client.StatVFS("/")
+		if err := errors.Join(spaceErr, closeConnection()); err != nil {
+			t.Fatalf("query actual confined volume filesystem capacity: %v", err)
+		}
+		if space.Bsize == 0 || space.Blocks == 0 || space.Bavail > space.Blocks {
+			t.Fatalf("invalid actual volume filesystem capacity: %+v", space)
+		}
 		exported, err := manager.ExportVolume(ctx, descriptor.Resource, descriptor.Resource.Fingerprint(), filepath.Join(transfers, "captured-"+suffix+".tar"), progress)
 		if err != nil {
 			t.Fatal(err)
