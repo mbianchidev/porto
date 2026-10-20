@@ -85,7 +85,7 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return errors.New("usage: porto docker run [options] <image> [command...]|cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
 	}
 	switch args[0] {
 	case "storage", "volume", "backups", "operations":
@@ -94,12 +94,25 @@ func dockerCmd(args []string) error {
 		return dockerMigrationCmd(args[1:])
 	case "files":
 		return dockerFilesCmd(args[1:])
-	case "cli":
+	case "run", "cli":
 		if len(args) == 1 {
+			if args[0] == "run" {
+				return errors.New("usage: porto docker run [options] <image> [command...]")
+			}
 			return errors.New("usage: porto docker cli <args...>")
 		}
-		command := exec.Command("docker", args[1:]...)
-		command.Env = os.Environ()
+		dockerArgs := args[1:]
+		environment := os.Environ()
+		if args[0] == "run" {
+			endpoint, err := config.DockerEndpoint()
+			if err != nil {
+				return err
+			}
+			dockerArgs = append([]string{"--host", endpoint}, args...)
+			environment = process.WithEnvironment(environment, "DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=")
+		}
+		command := exec.Command("docker", dockerArgs...)
+		command.Env = environment
 		command.Stdin = os.Stdin
 		command.Stdout = os.Stdout
 		command.Stderr = os.Stderr

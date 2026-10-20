@@ -129,6 +129,10 @@ rather than sending Porto-owned OCI metadata to nerdctl after a redundant
 connection probe times out.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
+After an attached auto-remove container exits, Porto removes it and its
+anonymous volumes before completing Docker's removal wait. The container's exit
+code is retained, and cleanup failures are logged and returned to the waiting
+client rather than leaving `docker run --rm` waiting indefinitely.
 
 ## Private registry credentials
 
@@ -257,6 +261,7 @@ before any backend operation. Escaped image names remain intact.
 | Image, command/entrypoint, environment, labels, user, working directory, hostname, exposed/published ports, health checks, TTY/stdin, restart policy, auto-remove | supported; compatibility-owned requests can preflight to `nerdctl` |
 | Structured bind, local volume, tmpfs | basic supported mount options; local/default volume driver declarations are accepted |
 | `HostConfig.LogConfig` | default/`json-file` without custom options; other drivers or configuration are rejected |
+| `HostConfig.ConsoleSize` | accepted and ignored when `Tty` is false or omitted, including nonzero dimensions sent by Docker for ordinary `run` commands; nonzero initial TTY sizing remains unsupported |
 | CPU/memory/PID/OOM/block-I/O create constraints | unsupported non-default values are rejected, including every per-device block-I/O field; the update endpoint supports its documented CPU/memory limits |
 | Capabilities, custom namespace/security profiles, device requests/rules, masked/read-only path overrides, volume inheritance, annotations, and unknown fields | unsupported settings are rejected before creation; supported device mappings, sysctls, and explicit unconfined/no-new-privileges options retain their compatibility path |
 | Defaults | omitted, null, false, zero, empty strings/collections, and documented default enum/sentinel values remain compatible with normal client payloads; an explicit empty masked/read-only path list is an override, not a default |

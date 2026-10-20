@@ -136,7 +136,7 @@ func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
 		`"KernelMemory":1024`, `"KernelMemoryTCP":1024`,
 		`"ContainerIDFile":"/tmp/synthetic-id"`, `"VolumeDriver":"external"`,
 		`"VolumesFrom":["other"]`, `"Links":["other:alias"]`,
-		`"Annotations":{"synthetic":"value"}`, `"ConsoleSize":[24,80]`,
+		`"Annotations":{"synthetic":"value"}`,
 		`"LogConfig":{"Type":"syslog","Config":{}}`,
 		`"LogConfig":{"Type":"json-file","Config":{"max-size":"1m"}}`,
 		`"MaskedPaths":[]`, `"ReadonlyPaths":[]`,
@@ -154,6 +154,44 @@ func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
 			}
 			if len(runner.commands) != 0 {
 				t.Fatalf("unsupported option mutated the backend: %+v", runner.commands)
+			}
+		})
+	}
+}
+
+func TestDockerAPICreateAcceptsConsoleSizeWithoutTTY(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tty    string
+		status int
+	}{
+		{"omitted", "", http.StatusCreated},
+		{"disabled", `"Tty":false,`, http.StatusCreated},
+		{"enabled", `"Tty":true,`, http.StatusNotImplemented},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				want := []string{"create", "--rm", "alpine:latest", "echo", "hello"}
+				if !reflect.DeepEqual(command.Args, want) {
+					t.Fatalf("non-TTY create arguments = %v, want %v", command.Args, want)
+				}
+				return []byte("synthetic-container\n"), nil
+			}}
+			response := httptest.NewRecorder()
+			body := `{` + test.tty + `"Image":"alpine:latest","Cmd":["echo","hello"],
+				"AttachStdout":true,"AttachStderr":true,
+				"HostConfig":{"AutoRemove":true,"ConsoleSize":[24,80]}}`
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(body)))
+			if response.Code != test.status {
+				t.Fatalf("create with console size = %d: %s", response.Code, response.Body.String())
+			}
+			if test.status == http.StatusCreated {
+				if len(runner.commands) != 1 || !strings.Contains(response.Body.String(), `"Id":"synthetic-container"`) {
+					t.Fatalf("unexpected create result: %s; commands=%+v", response.Body.String(), runner.commands)
+				}
+			} else if len(runner.commands) != 0 || !strings.Contains(response.Body.String(), "ConsoleSize") {
+				t.Fatalf("unsupported TTY sizing = %s; commands=%+v", response.Body.String(), runner.commands)
 			}
 		})
 	}
@@ -1065,12 +1103,30 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 			stateMu.Unlock()
 			switch current {
 			case "created":
-				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"","Running":false,"StartedAt":"","FinishedAt":""},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
 			case "running":
-				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false}}]`), nil
+				return []byte(`[{"Id":"container-id","State":{"Status":"running","Running":true},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
+			case "exited":
+				return []byte(`[{"Id":"container-id","State":{"Status":"exited","Running":false,"ExitCode":23},"Config":{"Tty":false},"HostConfig":{"AutoRemove":true}}]`), nil
 			default:
 				return nil, errors.New("no such container: container-id")
 			}
+		case reflect.DeepEqual(args, []string{"rm", "--volumes", "container-id"}):
+			stateMu.Lock()
+			if state != "exited" {
+				stateMu.Unlock()
+				return nil, fmt.Errorf("auto-removal attempted before container exit")
+			}
+			state = "removed"
+			stateMu.Unlock()
+			inventory.recordEvent(ContainerLifecycleEvent{
+				Topic:       "/containers/delete",
+				Type:        "container-delete",
+				ContainerID: "container-id",
+				Timestamp:   time.Now().UTC(),
+			})
+			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{})
+			return nil, nil
 		default:
 			return nil, fmt.Errorf("unexpected command: %+v", command)
 		}
@@ -1096,7 +1152,7 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 		)
 		return newFakeProcess(func([]byte) ([]byte, []byte, error) {
 			stateMu.Lock()
-			state = "removed"
+			state = "exited"
 			stateMu.Unlock()
 			exitCode := uint32(23)
 			inventory.recordEvent(ContainerLifecycleEvent{
@@ -1106,13 +1162,9 @@ func TestDockerCLIRunUsesAttachedStartAndWaitsForAutoRemoval(t *testing.T) {
 				ExitCode:    &exitCode,
 				Timestamp:   time.Now().UTC(),
 			})
-			inventory.recordEvent(ContainerLifecycleEvent{
-				Topic:       "/containers/delete",
-				Type:        "container-delete",
-				ContainerID: "container-id",
-				Timestamp:   time.Now().UTC(),
-			})
-			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{})
+			inventory.publishContainers("default", "test containerd", time.Now().UTC(), []Container{{
+				ID: "container-id", State: "exited", ExitCode: &exitCode,
+			}})
 			exitErr := exec.Command("sh", "-c", "exit 23").Run()
 			return []byte("attached start\n"), nil, exitErr
 		}), nil
@@ -1356,6 +1408,29 @@ func TestDockerAPIRemovedWaitPrefersRuntimeExitAfterAttachInterruption(t *testin
 	if !strings.Contains(response.Body.String(), `"StatusCode":17`) ||
 		strings.Contains(response.Body.String(), `"Error":{"Message"`) {
 		t.Fatalf("unexpected interrupted-attach response: %s", response.Body.String())
+	}
+}
+
+func TestDockerAPIRemovedWaitReportsAutoRemovalFailure(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		return []byte(`[{"Id":"container-id","State":{"Status":"exited","ExitCode":23}}]`), nil
+	}}
+	api := NewAPI(New(runner), "")
+	session := &containerAttachSession{
+		start:          make(chan containerAttachStart, 1),
+		startRequested: true,
+		done:           make(chan struct{}),
+	}
+	session.finish(23, true, errors.New("synthetic auto-removal failure"))
+	api.attaches["container-id"] = session
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	response := httptest.NewRecorder()
+	api.ServeHTTP(response, httptest.NewRequest(http.MethodPost,
+		"/v1.47/containers/container-id/wait?condition=removed", nil).WithContext(ctx))
+	if !strings.Contains(response.Body.String(), `"StatusCode":23`) ||
+		!strings.Contains(response.Body.String(), `"Message":"synthetic auto-removal failure"`) {
+		t.Fatalf("auto-removal failure response = %s", response.Body.String())
 	}
 }
 
