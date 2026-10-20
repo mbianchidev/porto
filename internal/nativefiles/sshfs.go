@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"sync"
+	"syscall"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -58,6 +60,9 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 	}()
 	done := make(chan error, 1)
 	live.done = done
+	var completed struct {
+		streams, remote, host error
+	}
 	go func() {
 		upErr, downErr := <-up, <-down
 		remoteErr, hostErr := <-remoteStderr, <-hostStderr
@@ -68,16 +73,24 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 		if hostWait != nil {
 			hostWait = fmt.Errorf("SSHFS bridge failed: %w: %s", hostWait, hostErrors.String())
 		}
-		done <- errors.Join(upErr, downErr, remoteErr, hostErr, remoteWait, hostWait)
+		completed.streams = errors.Join(upErr, downErr, remoteErr, hostErr)
+		completed.remote, completed.host = remoteWait, hostWait
+		done <- errors.Join(completed.streams, completed.remote, completed.host)
 		close(done)
 	}()
 	live.closeBridge = func(ctx context.Context) error {
 		inputErr := errors.Join(closeHostInput(), closeRemoteInput())
 		select {
-		case processErr := <-done:
+		case <-done:
 			cancel()
 			live.closeBridge, live.done = nil, nil
-			return errors.Join(inputErr, processErr)
+			hostErr := completed.host
+			// SSHFS can signal itself on transport EOF after a successful unmount.
+			// Only explicit detach accepts that signal; monitoring retains the failure.
+			if sshfsUnmountSignal(hostErr) {
+				hostErr = nil
+			}
+			return errors.Join(inputErr, completed.streams, completed.remote, hostErr)
 		case <-ctx.Done():
 			cancel()
 			return errors.Join(inputErr, fmt.Errorf("wait for owned native SSHFS/SFTP cleanup: %w", ctx.Err()))
@@ -87,4 +100,13 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 		return fmt.Errorf("native SSHFS startup failed: %w: SSHFS: %s; SFTP: %s", err, hostErrors.String(), remoteErrors.String())
 	}
 	return nil
+}
+
+func sshfsUnmountSignal(err error) bool {
+	var exited *exec.ExitError
+	if !errors.As(err, &exited) || exited.ProcessState == nil {
+		return false
+	}
+	status, ok := exited.Sys().(syscall.WaitStatus)
+	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
 }
