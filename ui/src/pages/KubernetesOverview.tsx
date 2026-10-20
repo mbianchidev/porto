@@ -10,6 +10,7 @@ import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ClusterUpgrade } from './ClusterUpgrade'
 import type {
   KubernetesCluster,
   KubernetesContext,
@@ -20,7 +21,7 @@ import type {
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
 const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
 
-type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import'
+type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
 
 type ClusterMutationControl = {
   disabled: boolean
@@ -33,7 +34,7 @@ function isRunning(cluster: KubernetesCluster) {
 }
 
 function isLifecycleLocked(cluster: KubernetesCluster) {
-  return ['creating', 'error', 'orphaned'].includes(cluster.state)
+  return ['creating', 'error', 'orphaned', 'upgrading', 'upgrade-failed'].includes(cluster.state)
 }
 
 function clusterElapsed(cluster: KubernetesCluster, now: number) {
@@ -476,13 +477,16 @@ export function KubernetesOverview({
             {selectedCluster && !creatingCluster && (
               <Inspector title={selectedCluster.name} subtitle={selectedCluster.context} onClose={() => setSelectedClusterName(null)}>
                 <InspectorTabs
-                  tabs={isLifecycleLocked(selectedCluster)
+                  tabs={selectedCluster.state === 'upgrade-failed'
+                    ? [{ id: 'overview', label: 'Overview' }, { id: 'upgrade', label: 'Upgrade' }]
+                    : isLifecycleLocked(selectedCluster)
                     ? [{ id: 'overview', label: 'Overview' }]
                     : [
                         { id: 'overview', label: 'Overview' },
                         { id: 'terminal', label: 'k9s terminal' },
                         { id: 'nodeGroup', label: 'Node group' },
                         { id: 'importImage', label: 'Import image' },
+                        { id: 'upgrade', label: 'Upgrade' },
                       ]}
                   activeID={clusterTab}
                   onSelect={setClusterTab}
@@ -502,12 +506,15 @@ export function KubernetesOverview({
                     {selectedCluster.state === 'broken' && (
                       <p className="errorLine">The control-plane node is missing. Starting a KinD cluster will recreate it from the saved cluster configuration.</p>
                     )}
+                    {selectedCluster.state === 'upgrading' && <p className="hintLine" role="status">Upgrading Kubernetes. Cluster mutations are locked until all nodes and applications are ready.</p>}
+                    {selectedCluster.state === 'upgrade-failed' && <p className="errorLine" role="alert">{selectedCluster.message} Open Upgrade to retry or recover.</p>}
                     {pendingMutations[selectedCluster.name] === 'stop' && selectedCluster.provider === 'kind' && (
                       <p className="hintLine" role="status">Stopping KinD worker containers before the control plane. This can take a while.</p>
                     )}
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
+                      <div><dt>Version</dt><dd>{selectedCluster.version || 'Unpinned'}</dd></div>
                       <div><dt>State</dt><dd>{selectedCluster.state}</dd></div>
                       {clusterElapsed(selectedCluster, clock) && <div><dt>Elapsed</dt><dd>{clusterElapsed(selectedCluster, clock)}</dd></div>}
                       <div><dt>Server</dt><dd>{selectedCluster.server || '—'}</dd></div>
@@ -552,7 +559,7 @@ export function KubernetesOverview({
                           className="removeButton"
                           label={pendingMutations[selectedCluster.name] === 'delete' ? 'Deleting cluster' : 'Delete cluster'}
                           icon="remove"
-                          disabled={pendingMutations[selectedCluster.name] !== undefined}
+                          disabled={selectedCluster.state === 'upgrading' || pendingMutations[selectedCluster.name] !== undefined}
                           onClick={() => deleteCluster(selectedCluster)}
                         />
                       </div>
@@ -583,6 +590,16 @@ export function KubernetesOverview({
                       begin: () => beginClusterMutation(selectedCluster.name, 'import'),
                       end: () => endClusterMutation(selectedCluster.name),
                     }}
+                  />
+                )}
+                {clusterTab === 'upgrade' && (
+                  <ClusterUpgrade
+                    key={selectedCluster.name}
+                    cluster={selectedCluster}
+                    disabled={pendingMutations[selectedCluster.name] !== undefined}
+                    begin={() => beginClusterMutation(selectedCluster.name, 'upgrade')}
+                    end={() => endClusterMutation(selectedCluster.name)}
+                    onChanged={() => { clusters.reload(); status.reload() }}
                   />
                 )}
               </Inspector>

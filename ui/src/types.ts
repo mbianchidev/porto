@@ -736,6 +736,13 @@ export type KubernetesCluster = {
   nodes: string[]
   message?: string
   stateSince?: string
+  version?: string
+  upgrade?: {
+    version: string
+    startedAt: string
+    backupPath?: string
+    error?: string
+  }
 }
 
 // --- Virtual machines -----------------------------------------------------------

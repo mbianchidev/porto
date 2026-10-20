@@ -214,18 +214,21 @@ type ClusterRequest struct {
 	APIPort      int             `json:"apiPort,omitempty"`
 	ControlPlane MachineSpec     `json:"controlPlane"`
 	NodeGroups   []NodeGroupSpec `json:"nodeGroups"`
+	Upgrade      *UpgradeState   `json:"upgrade,omitempty"`
 }
 
 type Cluster struct {
-	Name           string   `json:"name"`
-	Provider       string   `json:"provider"`
-	State          string   `json:"state"`
-	Context        string   `json:"context"`
-	KubeconfigPath string   `json:"kubeconfigPath"`
-	Server         string   `json:"server"`
-	Nodes          []string `json:"nodes"`
-	Message        string   `json:"message,omitempty"`
-	StateSince     string   `json:"stateSince,omitempty"`
+	Name           string        `json:"name"`
+	Provider       string        `json:"provider"`
+	State          string        `json:"state"`
+	Context        string        `json:"context"`
+	KubeconfigPath string        `json:"kubeconfigPath"`
+	Server         string        `json:"server"`
+	Nodes          []string      `json:"nodes"`
+	Message        string        `json:"message,omitempty"`
+	StateSince     string        `json:"stateSince,omitempty"`
+	Version        string        `json:"version,omitempty"`
+	Upgrade        *UpgradeState `json:"upgrade,omitempty"`
 }
 
 func NewClusterProvisioner(
@@ -1209,6 +1212,13 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 				return nil, err
 			}
 		}
+		if request.Phase == "upgrading" && !p.runtimeNameReserved(clusterRuntimeName(request), request.Name) {
+			request.Phase = "upgrade-failed"
+			request.Error = "Cluster upgrade was interrupted. Retry the same version for k3s/k0s, or recover the original kind cluster before retrying."
+			if err := p.writeClusterMetadata(request); err != nil {
+				return nil, err
+			}
+		}
 		cluster := Cluster{
 			Name:           name,
 			Provider:       normalizeProvider(request.Provider),
@@ -1216,8 +1226,10 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Context:        clusterContextName(request),
 			KubeconfigPath: p.clusterKubeconfigPath(name),
 			Message:        request.Error,
+			Version:        request.Version,
+			Upgrade:        request.Upgrade,
 		}
-		if request.Phase == "creating" || request.Phase == "error" {
+		if request.Phase != "" {
 			cluster.State = request.Phase
 		}
 		managedKubeconfigs[cluster.KubeconfigPath] = struct{}{}
@@ -2110,7 +2122,7 @@ func (p *ClusterProvisioner) readMutableClusterMetadata(clusterName string) (Clu
 	if err != nil {
 		return ClusterRequest{}, err
 	}
-	if request.Phase == "creating" || request.Phase == "error" {
+	if request.Phase != "" {
 		return ClusterRequest{}, fmt.Errorf(
 			"Kubernetes cluster %s is %s; only deletion is allowed",
 			clusterName,

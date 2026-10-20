@@ -108,6 +108,8 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/rename", s.requireRuntime("kubernetes", s.renameKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade", s.requireRuntime("kubernetes", s.upgradeKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade-recover", s.requireRuntime("kubernetes", s.recoverKubernetesUpgrade))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/images/import", s.requireRuntime("kubernetes", s.importKubernetesImage))
 	mux.HandleFunc("GET /api/kubernetes/clusters/{name}/terminal", s.requireRuntime("kubernetes", s.kubernetesClusterTerminal))

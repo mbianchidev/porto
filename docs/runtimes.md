@@ -402,6 +402,17 @@ porto kubernetes cluster create k0s-dev --provider k0s --workers 2
 kind node topology is fixed at creation time. Recreate a kind cluster to
 change its node count; k3s and k0s node groups can be scaled in place.
 
+### Upgrade a cluster
+
+Open the managed cluster's **Upgrade** tab or run
+`porto kubernetes cluster upgrade <name> --version <release> --confirm`.
+k3s and k0s upgrade in place, controller first. kind upgrades create a
+replacement, preserving supported local-path PVs, application images and
+manifests, then reattach claims and restart applications. The original stopped
+nodes remain available for recovery. Unsupported storage blocks replacement
+before shutdown. See [cluster upgrades and recovery](kubernetes-upgrades.md)
+for consistency boundaries, version rules, and recovery commands.
+
 ### Open a cluster terminal
 
 Desktop releases bundle k9s. Select a managed cluster in the dashboard and
