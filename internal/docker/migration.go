@@ -23,6 +23,7 @@ import (
 
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
 	"github.com/mbianchidev/porto/internal/datafiles"
@@ -1051,6 +1052,9 @@ func (m *Manager) migrationOCIImageMatches(ctx context.Context, name string, sou
 	ctx = namespaces.WithNamespace(ctx, backend.namespace)
 	image, err := backend.client.GetImage(ctx, named.String())
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return false, fmt.Errorf("%w: image %q: %v", ErrNotFound, name, err)
+		}
 		return false, err
 	}
 	current, err := image.Config(ctx)
@@ -1094,6 +1098,9 @@ func (m *Manager) migrationImageConfigDigest(ctx context.Context, name string) (
 	ctx = namespaces.WithNamespace(ctx, backend.namespace)
 	image, err := backend.client.GetImage(ctx, named.String())
 	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return "", fmt.Errorf("%w: image %q: %v", ErrNotFound, name, err)
+		}
 		return "", err
 	}
 	// Docker identifies image configuration bytes; containerd's target identifies its manifest.

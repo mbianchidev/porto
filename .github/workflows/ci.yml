@@ -241,7 +241,10 @@ jobs:
           sudo apt-get install -y -qq acl fuse3 sshfs qemu-system qemu-utils
           if [ ! -c /dev/fuse ]; then sudo modprobe fuse; fi
           test -c /dev/fuse
-          if [ -c /dev/kvm ]; then sudo setfacl -m "u:$(id -u):rw" /dev/kvm; fi
+          if [ -c /dev/kvm ]; then
+            sudo usermod -aG kvm "$(id -un)"
+            sudo setfacl -m "u:$(id -u):rw" /dev/kvm
+          fi
       - name: Install macOS VM prerequisite
         if: runner.os == 'macOS'
         run: brew install qemu
@@ -261,6 +264,8 @@ jobs:
               "GITHUB_ACTIONS=$GITHUB_ACTIONS" "RUNNER_TEMP=$RUNNER_TEMP" \
               "RUNNER_ARCH=$RUNNER_ARCH" "GOTOOLCHAIN=${GOTOOLCHAIN:-auto}" \
               bash scripts/test-docker-clients.sh local data
+          elif [ "$RUNNER_OS" = Linux ] && [ -c /dev/kvm ]; then
+            sg kvm -c 'bash scripts/test-docker-clients.sh lima data'
           else
             bash scripts/test-docker-clients.sh lima data
           fi

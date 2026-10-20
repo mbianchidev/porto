@@ -49,8 +49,9 @@ native resource mounts on Linux x64/ARM64 with both local containerd and Lima,
 macOS Intel/Apple Silicon, and Windows x64/ARM64. They reuse the disposable
 runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
 normal development-client jobs retain their existing scope. Linux installs
-FUSE3/SSHFS and QEMU and grants only the runner UID access to an available KVM
-device. Rootful jobs explicitly forward the CI identity, temporary directory,
+FUSE3/SSHFS and QEMU and grants the runner access to an available KVM
+device. A fresh KVM-group process retains access in both destination and source
+QEMU children. Rootful jobs explicitly forward the CI identity, temporary directory,
 architecture and toolchain environment across elevation, including Ubuntu 26's
 sudo-rs. Windows checksum-verifies the explicitly selected WinFsp driver; macOS
 uses its built-in WebDAV driver without macFUSE.

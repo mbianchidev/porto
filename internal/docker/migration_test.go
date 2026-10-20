@@ -423,7 +423,7 @@ func TestMigrationOCIImageIdentityAllowsInspectorDefaultsButRejectsChangedConten
 }
 
 func TestMigrationOCIImageIdentityVerifiesPinnedConfigDespiteInspectorLayerDifferences(t *testing.T) {
-	for _, scenario := range []string{"unchanged", "changed configuration", "changed layers", "missing source manifest"} {
+	for _, scenario := range []string{"unchanged", "changed configuration", "changed layers", "missing source manifest", "missing destination image", "missing legacy destination image"} {
 		t.Run(scenario, func(t *testing.T) {
 			service := &snapshotterTestServer{snapshotter: "overlayfs"}
 			backend := newSnapshotterTestRuntime(t, "synthetic-engine", "", service)
@@ -462,9 +462,20 @@ func TestMigrationOCIImageIdentityVerifiesPinnedConfigDespiteInspectorLayerDiffe
 				service.mu.Unlock()
 			} else if scenario == "missing source manifest" {
 				sourceManifest.Digest = digest.FromString("synthetic-missing-source-manifest")
+			} else if strings.HasPrefix(scenario, "missing") {
+				service.mu.Lock()
+				service.image = nil
+				service.mu.Unlock()
+				if scenario == "missing legacy destination image" {
+					sourceManifest = ocispec.Descriptor{}
+				}
+			}
+			sourceID := sourceManifest.Digest.String()
+			if scenario == "missing legacy destination image" {
+				sourceID = fixture.config.Digest.String()
 			}
 			source, err := json.Marshal(map[string]any{
-				"Id": sourceManifest.Digest.String(), "Descriptor": sourceManifest,
+				"Id": sourceID, "Descriptor": sourceManifest,
 				"Architecture": "arm64", "Os": "linux", "Config": map[string]any{"Cmd": []string{"true"}},
 				"RootFS": map[string]any{"Type": "layers", "Layers": []string{"sha256:source-inspector-layer"}},
 			})
@@ -481,8 +492,12 @@ func TestMigrationOCIImageIdentityVerifiesPinnedConfigDespiteInspectorLayerDiffe
 			manager.runtimeConnector = func(context.Context) (containerRuntime, error) { return backend, nil }
 			matches, err := manager.migrationImageMatches(context.Background(), "synthetic:latest", source)
 			if scenario == "missing source manifest" {
-				if err == nil || matches {
+				if err == nil || matches || missingDockerObject(err, "image") {
 					t.Fatalf("missing pinned OCI metadata was accepted: matches=%v, %v", matches, err)
+				}
+			} else if strings.HasPrefix(scenario, "missing") {
+				if matches || !missingDockerObject(err, "image") {
+					t.Fatalf("a missing destination blocked initial import: matches=%v, %v", matches, err)
 				}
 			} else if err != nil || matches != (scenario == "unchanged") {
 				t.Fatalf("canonical configuration identity was not enforced: matches=%v, %v", matches, err)
