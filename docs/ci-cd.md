@@ -161,6 +161,11 @@ runtime version, rootless services, architecture, and 20-minute boot deadline,
 without repeatedly decompressing the large payload under QEMU. Failed boots
 print bounded host and guest cloud-init logs before the owned fixture is removed.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
+Linux runners without `/dev/kvm` use the same host-side archive preparation.
+Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
+source VM, avoiding the EDK2 LPA2 boot hang reported in
+[tianocore/edk2#11962](https://github.com/tianocore/edk2/issues/11962).
+The 20-minute guest startup budget and resource assertions remain unchanged.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

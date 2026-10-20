@@ -100,9 +100,13 @@ export PORTO_DOCKER_CLIENT_BACKEND="$backend"
 export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
-  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu max"
+  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu neoverse-n1"
   export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
   echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."
+fi
+if [ "$goos" = linux ] && [ ! -c /dev/kvm ]; then
+  export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
+  echo "::notice::This hosted Linux runner has no KVM device; preparing the rootless runtime archive on the host for QEMU TCG."
 fi
 
 if [ "$backend" = local ]; then
@@ -178,6 +182,9 @@ else
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
     --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user)
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
+    if [ "$goarch" = arm64 ]; then
+      lima_options+=('--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"')
+    fi
     archive_override="$(node scripts/lima-containerd-archive.cjs "$goarch" "$temporary/containerd-bootstrap")"
     lima_options+=("--set=$archive_override")
   fi

@@ -41,6 +41,9 @@ type runtimeDataVMRunner struct {
 func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Command {
 	if len(command.Args) > 0 && command.Args[0] == "create" {
 		command.Args = append([]string{"create", "--mount-none", "--containerd=none"}, command.Args[1:]...)
+		if runtime.GOARCH == "arm64" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
+			command.Args = append(command.Args, `--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"`)
+		}
 		for index, argument := range command.Args {
 			if argument == "template:ubuntu-24.04" {
 				command.Args[index] = "template:ubuntu-26.04"
