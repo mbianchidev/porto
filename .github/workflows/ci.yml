@@ -277,6 +277,8 @@ jobs:
               bash scripts/test-docker-clients.sh local data
           elif [ "$RUNNER_OS" = Linux ] && [ -c /dev/kvm ]; then
             sg kvm -c 'bash scripts/test-docker-clients.sh lima data'
+          elif [ "$RUNNER_OS" = macOS ]; then
+            nice -n 10 bash scripts/test-docker-clients.sh lima data
           else
             bash scripts/test-docker-clients.sh lima data
           fi
