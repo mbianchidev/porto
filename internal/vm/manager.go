@@ -21,8 +21,8 @@ import (
 
 const defaultTimeout = 2 * time.Minute
 
-// Lima downloads/prepares the image during start, before its 10-minute boot watch.
-const firstStartTimeout = 20 * time.Minute
+// Image preparation and software-emulated restarts share the same bounded boot budget.
+const startTimeout = 20 * time.Minute
 
 var (
 	ErrUnavailable = errors.New("Lima is unavailable; install limactl to manage Porto virtual machines")
@@ -386,7 +386,7 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
-		if err := m.start(ctx, request.Name, firstStartTimeout); err != nil {
+		if err := m.start(ctx, request.Name, startTimeout); err != nil {
 			return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
 		}
 		if strings.TrimSpace(request.Provision) != "" {
@@ -462,7 +462,7 @@ func (m *Manager) EnsureStandalone(name string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {
-	return m.start(ctx, name, 5*time.Minute)
+	return m.start(ctx, name, startTimeout)
 }
 
 func (m *Manager) start(ctx context.Context, name string, timeout time.Duration) error {
@@ -494,7 +494,7 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 		if _, err := m.run(ctx, 2*time.Minute, "recover broken Lima instance", "stop", "--force", name); err != nil {
 			return errors.Join(startErr, err)
 		}
-		if _, err := m.run(ctx, 5*time.Minute, "start recovered Lima instance", "start", name); err != nil {
+		if _, err := m.run(ctx, startTimeout, "start recovered Lima instance", "start", name); err != nil {
 			return errors.Join(startErr, err)
 		}
 	}

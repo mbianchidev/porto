@@ -54,7 +54,7 @@ func TestCreateNodeDisablesUnneededHostIntegration(t *testing.T) {
 	}
 }
 
-func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
+func TestNodeBootAndRestartShareTheBoundedStartupBudget(t *testing.T) {
 	var startBudgets []time.Duration
 	created := false
 	runner := vmRunnerFunc(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
@@ -91,9 +91,9 @@ func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
 	if len(startBudgets) != 2 {
 		t.Fatalf("start budgets = %v, want first boot and restart", startBudgets)
 	}
-	for index, want := range []time.Duration{20 * time.Minute, 5 * time.Minute} {
+	for index, want := range []time.Duration{20 * time.Minute, 20 * time.Minute} {
 		if got := startBudgets[index]; got < want-time.Second || got > want {
-			t.Errorf("start %d budget = %s, want %s (initial image preparation must not consume the boot deadline)", index, got, want)
+			t.Errorf("start %d budget = %s, want %s (image preparation and emulated restart must retain the same bounded deadline)", index, got, want)
 		}
 	}
 }
