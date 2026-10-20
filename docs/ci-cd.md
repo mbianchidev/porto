@@ -369,8 +369,9 @@ native packaging smoke tests execute `dive --version`.
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
 `scripts/patches/lima-2.2.0-windows-stop.patch` and
-`scripts/patches/lima-2.2.0-windows-graceful-stop.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.5`. The PID change is an upstream backport; the
+`scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
+`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and rebuilds only
+`limactl.exe` as `v2.2.0+porto.6`. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.
@@ -380,6 +381,9 @@ restart, and deletion. Graceful QEMU stops use the owned QMP socket's ACPI
 powerdown command instead of an unavailable console event, then wait for normal
 host-agent exit and actual stopped state. The real Windows resource suite
 exercises VM loss/reconnect and engine update/shutdown through that path.
+The ARM64 fix reads the Windows-populated `x/sys/cpu` feature bits even when
+its `Initialized` flag is false, matching that library's platform behavior.
+Native ARM64 packaging checks that AES detection agrees with the OS feature bit.
 Other signals keep upstream behavior. All patches and the Apache-2.0 license
 ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
 Other platforms keep their verified upstream binaries. Remove each patch
