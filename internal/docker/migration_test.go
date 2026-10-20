@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,9 +17,14 @@ import (
 	"sync/atomic"
 	"testing"
 
+	apitypes "github.com/containerd/containerd/api/types"
+	"github.com/containerd/containerd/v2/core/content"
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/opencontainers/go-digest"
+	imagespec "github.com/opencontainers/image-spec/specs-go"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 func TestMigrationRejectsRunningAndUnsupportedContainersBeforeCreation(t *testing.T) {
@@ -413,6 +419,75 @@ func TestMigrationOCIImageIdentityAllowsInspectorDefaultsButRejectsChangedConten
 		if err != nil || matches == changed {
 			t.Fatalf("inspector compatibility changed image identity: matches=%v changed=%v err=%v", matches, changed, err)
 		}
+	}
+}
+
+func TestMigrationOCIImageIdentityVerifiesPinnedConfigDespiteInspectorLayerDifferences(t *testing.T) {
+	for _, scenario := range []string{"unchanged", "changed configuration", "changed layers", "missing source manifest"} {
+		t.Run(scenario, func(t *testing.T) {
+			service := &snapshotterTestServer{snapshotter: "overlayfs"}
+			backend := newSnapshotterTestRuntime(t, "synthetic-engine", "", service)
+			fixture := seedSnapshotterTestImage(t, backend, service)
+			sourceManifest := fixture.manifest
+			if scenario == "changed configuration" || scenario == "changed layers" {
+				write := func(mediaType string, value any) ocispec.Descriptor {
+					t.Helper()
+					document, err := json.Marshal(value)
+					if err != nil {
+						t.Fatal(err)
+					}
+					descriptor := ocispec.Descriptor{MediaType: mediaType, Digest: digest.FromBytes(document), Size: int64(len(document))}
+					if err := content.WriteBlob(context.Background(), fixture.store, descriptor.Digest.String(), bytes.NewReader(document), descriptor); err != nil {
+						t.Fatal(err)
+					}
+					return descriptor
+				}
+				image := ocispec.Image{
+					Platform: ocispec.Platform{OS: "linux", Architecture: "arm64"},
+					Config:   ocispec.ImageConfig{Cmd: []string{"true"}},
+					RootFS:   ocispec.RootFS{Type: "layers", DiffIDs: []digest.Digest{fixture.layer.Digest}},
+				}
+				if scenario == "changed configuration" {
+					image.Config.Cmd = []string{"false"}
+				} else {
+					image.RootFS.DiffIDs = []digest.Digest{digest.FromString("synthetic-changed-layer")}
+				}
+				configuration := write(ocispec.MediaTypeImageConfig, image)
+				manifest := write(ocispec.MediaTypeImageManifest, ocispec.Manifest{
+					Versioned: imagespec.Versioned{SchemaVersion: 2}, MediaType: ocispec.MediaTypeImageManifest,
+					Config: configuration, Layers: []ocispec.Descriptor{fixture.layer},
+				})
+				service.mu.Lock()
+				service.image.Target = &apitypes.Descriptor{MediaType: manifest.MediaType, Digest: manifest.Digest.String(), Size: manifest.Size}
+				service.mu.Unlock()
+			} else if scenario == "missing source manifest" {
+				sourceManifest.Digest = digest.FromString("synthetic-missing-source-manifest")
+			}
+			source, err := json.Marshal(map[string]any{
+				"Id": sourceManifest.Digest.String(), "Descriptor": sourceManifest,
+				"Architecture": "arm64", "Os": "linux", "Config": map[string]any{"Cmd": []string{"true"}},
+				"RootFS": map[string]any{"Type": "layers", "Layers": []string{"sha256:source-inspector-layer"}},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				if slices.Contains(command.Args, "inspect") {
+					return []byte(`[{"Architecture":"arm64","Os":"linux","Config":{"Cmd":["true"]},"RootFS":{"Type":"layers","Layers":["sha256:destination-inspector-layer"]}}]`), nil
+				}
+				return nil, nil
+			}})
+			manager.directCLI = false
+			manager.runtimeConnector = func(context.Context) (containerRuntime, error) { return backend, nil }
+			matches, err := manager.migrationImageMatches(context.Background(), "synthetic:latest", source)
+			if scenario == "missing source manifest" {
+				if err == nil || matches {
+					t.Fatalf("missing pinned OCI metadata was accepted: matches=%v, %v", matches, err)
+				}
+			} else if err != nil || matches != (scenario == "unchanged") {
+				t.Fatalf("canonical configuration identity was not enforced: matches=%v, %v", matches, err)
+			}
+		})
 	}
 }
 

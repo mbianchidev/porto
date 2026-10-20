@@ -217,6 +217,9 @@ Untagged images require an explicit source tag, rather than importing under a
 generic name that could replace unrelated content. Legacy Docker config IDs and
 newer OCI manifest/index IDs are resolved to checksum-verified configuration
 bytes before load; destination config content is verified afterward.
+Native containerd migration compares configuration digests pinned by the
+original source OCI manifest, not an inspector's potentially rewritten unpacked
+layer presentation. Changed execution settings or rootfs diff IDs still conflict.
 Volume data always uses
 the selected source's read-only container archive API. A Unix socket can forward
 to another machine or VM; a source-reported mountpoint is never treated as host

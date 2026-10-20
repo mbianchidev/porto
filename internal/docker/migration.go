@@ -21,7 +21,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/dataops"
@@ -959,8 +961,9 @@ func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, sel
 
 func (m *Manager) migrationImageMatches(ctx context.Context, name string, source json.RawMessage) (bool, error) {
 	var expected struct {
-		ID         string `json:"Id"`
-		Descriptor ocispec.Descriptor
+		ID                        string `json:"Id"`
+		Descriptor                ocispec.Descriptor
+		Architecture, Os, Variant string
 	}
 	if err := json.Unmarshal(source, &expected); err != nil {
 		return false, err
@@ -968,6 +971,16 @@ func (m *Manager) migrationImageMatches(ctx context.Context, name string, source
 	if expected.Descriptor.Digest == "" {
 		digest, err := m.migrationImageConfigDigest(ctx, name)
 		return digest == expected.ID, err
+	}
+	if !m.directCLI {
+		if expected.Architecture == "" || expected.Os == "" || expected.Descriptor.MediaType == "" {
+			return false, errors.New("source OCI image identity metadata is incomplete")
+		}
+		// Inspectors can report unpacked layer digests instead of original OCI diff IDs.
+		// Compare config bytes pinned by the source manifest and the current image.
+		return m.migrationOCIImageMatches(ctx, name, expected.Descriptor, ocispec.Platform{
+			OS: expected.Os, Architecture: expected.Architecture, Variant: expected.Variant,
+		})
 	}
 	current, err := m.InspectImage(ctx, name, "")
 	if err != nil {
@@ -1021,12 +1034,42 @@ func (m *Manager) migrationImageMatches(ctx context.Context, name string, source
 	return reflect.DeepEqual(left, right), nil
 }
 
-func (m *Manager) migrationImageConfigDigest(ctx context.Context, name string) (digest string, err error) {
-	document, err := m.InspectImage(ctx, name, "")
+func (m *Manager) migrationOCIImageMatches(ctx context.Context, name string, source ocispec.Descriptor, platform ocispec.Platform) (matches bool, err error) {
+	client, closeRuntime, err := m.storageRuntime(ctx)
 	if err != nil {
-		return "", err
+		return false, err
 	}
+	defer func() { err = errors.Join(err, closeRuntime()) }()
+	backend, ok := client.(*grpcContainerRuntime)
+	if !ok || backend.client == nil {
+		return false, ErrUnsupported
+	}
+	named, err := reference.ParseDockerRef(normalizeNerdctlReference(name))
+	if err != nil {
+		return false, err
+	}
+	ctx = namespaces.WithNamespace(ctx, backend.namespace)
+	image, err := backend.client.GetImage(ctx, named.String())
+	if err != nil {
+		return false, err
+	}
+	current, err := image.Config(ctx)
+	if err != nil {
+		return false, err
+	}
+	expected, err := images.Config(ctx, backend.client.ContentStore(), source, platforms.Only(platform))
+	if err != nil {
+		return false, fmt.Errorf("resolve pinned source OCI image configuration: %w", err)
+	}
+	return current.Digest == expected.Digest, nil
+}
+
+func (m *Manager) migrationImageConfigDigest(ctx context.Context, name string) (digest string, err error) {
 	if m.directCLI {
+		document, err := m.InspectImage(ctx, name, "")
+		if err != nil {
+			return "", err
+		}
 		var image struct {
 			ID string `json:"Id"`
 		}

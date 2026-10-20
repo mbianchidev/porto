@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -59,11 +60,30 @@ func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Com
 }
 
 func (runner runtimeDataVMRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
-	return runner.ExecRunner.Run(ctx, runner.command(command))
+	output, err := runner.ExecRunner.Run(ctx, runner.command(command))
+	return runtimeDataVMDiagnostics(command, output, err)
 }
 
 func (runner runtimeDataVMRunner) RunStreaming(ctx context.Context, command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
-	return runner.ExecRunner.RunStreaming(ctx, runner.command(command), emit)
+	output, err := runner.ExecRunner.RunStreaming(ctx, runner.command(command), emit)
+	return runtimeDataVMDiagnostics(command, output, err)
+}
+
+func runtimeDataVMDiagnostics(command runtimes.Command, output []byte, err error) ([]byte, error) {
+	if err == nil || len(command.Args) < 2 || command.Args[0] != "start" {
+		return output, err
+	}
+	name := command.Args[len(command.Args)-1]
+	home := os.Getenv("LIMA_HOME")
+	if home == "" || filepath.Base(name) != name || !strings.HasPrefix(name, "porto-data-") {
+		return output, err
+	}
+	diagnostics, diagnosticErr := os.ReadFile(filepath.Join(home, name, "ha.stderr.log"))
+	if diagnosticErr != nil {
+		return append(output, []byte(fmt.Sprintf("\nisolated source VM diagnostics unavailable: %v\n", diagnosticErr))...), err
+	}
+	output = append(output, []byte("\nisolated source VM diagnostics:\n")...)
+	return append(output, diagnostics[max(0, len(diagnostics)-16384):]...), err
 }
 
 type runtimeDataFixture struct {
@@ -247,14 +267,6 @@ func (fixture *runtimeDataFixture) prepareSource() {
 		CPUs: 2, MemoryMiB: 1536, DiskGiB: 12, Start: true,
 	})
 	if err != nil {
-		if home := os.Getenv("LIMA_HOME"); home != "" {
-			diagnostics, diagnosticErr := os.ReadFile(filepath.Join(home, fixture.prefix, "ha.stderr.log"))
-			if diagnosticErr != nil {
-				t.Logf("isolated source VM diagnostics unavailable: %v", diagnosticErr)
-			} else {
-				t.Logf("isolated source VM diagnostics: %s", diagnostics[max(0, len(diagnostics)-16384):])
-			}
-		}
 		t.Fatal(err)
 	}
 	fixture.instance = instance
