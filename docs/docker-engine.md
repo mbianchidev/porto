@@ -158,6 +158,12 @@ rejected. Registry search uses Docker Hub's search API, or a named registry's
 legacy search API when that registry implements one; OCI Distribution alone
 does not define a search endpoint.
 
+The Docker API is an owner-trusted control interface: Unix sockets are mode
+`0600`, Windows named pipes grant access only to their owner, and Porto does
+not provide a TCP Docker listener. As in Docker Engine, authorized callers
+deliberately choose registry and import destinations, including private-network
+hosts. Do not expose this interface through an unauthenticated network proxy.
+
 Container creation uses the containerd v2 client for image resolution and
 unpack, writable snapshot allocation, OCI spec generation, metadata creation,
 and ordered cleanup. Porto selects this path only after preflight confirms that

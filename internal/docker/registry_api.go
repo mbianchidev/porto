@@ -16,6 +16,8 @@ import (
 	"github.com/mbianchidev/porto/internal/registries"
 )
 
+const maxRegistrySearchResults = 100
+
 func registryHTTPClient() *http.Client {
 	return &http.Client{
 		Timeout:   30 * time.Second,
@@ -133,7 +135,7 @@ func (a *API) registrySearch(w http.ResponseWriter, r *http.Request) {
 	if raw := r.URL.Query().Get("limit"); raw != "" {
 		var err error
 		limit, err = strconv.Atoi(raw)
-		if err != nil || limit < 1 || limit > 100 {
+		if err != nil || limit < 1 || limit > maxRegistrySearchResults {
 			writeDockerError(w, errors.New("registry search limit must be between 1 and 100"))
 			return
 		}
@@ -214,7 +216,7 @@ func (a *API) registrySearch(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, fmt.Errorf("decode registry search: %w", err))
 		return
 	}
-	result := make([]searchResult, 0, min(limit, len(document.Results)))
+	result := make([]searchResult, 0, maxRegistrySearchResults)
 	for _, item := range document.Results {
 		if item.StarCount < stars ||
 			!filters.matchesValue("is-official", strconv.FormatBool(item.IsOfficial)) ||

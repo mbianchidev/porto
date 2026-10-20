@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -333,7 +334,7 @@ func TestDockerSecurityProfilesArePrivateAndRemoved(t *testing.T) {
 					t.Fatalf("staged profile = %q: %v", data, err)
 				}
 				info, err := os.Stat(profilePath)
-				if err != nil || info.Mode().Perm() != 0o600 {
+				if err != nil || (runtime.GOOS != "windows" && info.Mode().Perm() != 0o600) {
 					t.Fatalf("profile permissions: %v %v", info, err)
 				}
 			}
