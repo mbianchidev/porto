@@ -3,11 +3,11 @@ module github.com/mbianchidev/porto
 go 1.26.9
 
 require (
-	github.com/Microsoft/go-winio v0.6.3
+	github.com/Microsoft/go-winio v0.6.4
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/containerd/api v1.12.0
-	github.com/containerd/containerd/v2 v2.4.1
+	github.com/containerd/containerd/v2 v2.4.2
 	github.com/containerd/continuity v0.5.0
 	github.com/containerd/errdefs v1.0.0
 	github.com/containerd/go-cni v1.1.14

@@ -50,13 +50,21 @@ For an installed desktop package, use either the non-conflicting `docker`
 command created by the install script or the explicit bundled entry point:
 
 ```sh
+porto docker run --rm alpine:latest echo hello
 porto docker info
 porto docker compose up --detach
 porto docker buildx build --load --tag demo .
 porto ps --all
 porto exec -it demo sh
+porto docker cli --context porto run --rm alpine:latest echo hello
 porto docker dive demo
 ```
+
+`porto docker run` forwards Docker's run options, image, and container command
+unchanged to the bundled CLI, targeting Porto's endpoint even when `DOCKER_HOST`
+or `DOCKER_CONTEXT` selects another engine. Standard input/output/error and the
+container's exit code are preserved. `porto docker cli` remains an unrestricted
+passthrough and honors explicit Docker context/host options and environment.
 
 The bundled CLI loads Porto's pinned plugins before user and system plugins,
 while preserving the user's Docker contexts, credentials, plugin files, and
@@ -66,7 +74,8 @@ Buildx state.
 standard streams to Docker, defaults to Porto's endpoint, and preserves the
 client's exit code. An inherited Docker host, context, or TLS setting cannot
 silently redirect the default connection. Explicit Docker connection flags keep
-their normal meaning. `porto docker cli ...` remains an equivalent entry point.
+their normal meaning. `porto docker cli ...` remains an unrestricted raw entry
+point that also retains inherited Docker connection settings.
 The same supported operations work through `docker --context porto ...`.
 Source builds need a Docker CLI in `PATH`; desktop packages include it.
 

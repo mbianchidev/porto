@@ -14,6 +14,7 @@ import (
 type containerAttachDetails struct {
 	ID          string
 	TTY         bool
+	AutoRemove  bool
 	State       containerWaitState
 	ConsoleSize [2]uint
 }
@@ -112,7 +113,10 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 			TTY    bool
 			Labels map[string]string
 		} `json:"Config"`
-		State containerWaitState `json:"State"`
+		State      containerWaitState `json:"State"`
+		HostConfig struct {
+			AutoRemove bool `json:"AutoRemove"`
+		} `json:"HostConfig"`
 	}
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return containerAttachDetails{}, fmt.Errorf("decode container attach settings: %w", err)
@@ -121,9 +125,10 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		return containerAttachDetails{}, errors.New("container runtime returned an empty container identifier")
 	}
 	details := containerAttachDetails{
-		ID:    inspected.ID,
-		TTY:   inspected.Config.TTY,
-		State: inspected.State.normalized(),
+		ID:         inspected.ID,
+		TTY:        inspected.Config.TTY,
+		AutoRemove: inspected.HostConfig.AutoRemove,
+		State:      inspected.State.normalized(),
 	}
 	if inspected.Config.Labels[portoTTYLabel] == "true" {
 		details.TTY = true

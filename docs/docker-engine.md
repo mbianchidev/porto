@@ -129,6 +129,10 @@ rather than sending Porto-owned OCI metadata to nerdctl after a redundant
 connection probe times out.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
+After an attached auto-remove container exits, Porto removes it and its
+anonymous volumes before completing Docker's removal wait. The container's exit
+code is retained, and cleanup failures are logged and returned to the waiting
+client rather than leaving `docker run --rm` waiting indefinitely.
 
 ## Private registry credentials
 
@@ -276,6 +280,7 @@ before any backend operation. Escaped image names remain intact.
 | Security options and namespaces | custom AppArmor/SELinux profiles, unconfined/no-new-privileges settings, cgroup/IPC/PID/UTS options use backend validation. Docker seccomp profile JSON is staged privately beside the backend and removed after creation; daemon-host filenames are not accepted as profile JSON |
 | Structured bind, local volume, tmpfs | basic supported mount options; local/default volume driver declarations are accepted |
 | `HostConfig.LogConfig` | default/`json-file` without custom options; other drivers or configuration are rejected |
+| `HostConfig.ConsoleSize` | accepted and ignored when `Tty` is false or omitted, including nonzero dimensions sent by Docker for ordinary `run` commands; TTY requests retain initial dimensions and support task resize |
 | Windows-only CPU/I/O settings, per-device block-I/O create fields, device-cgroup rules, masked/read-only path overrides, volume inheritance, annotations, and unknown fields | unsupported settings are rejected before creation; supported device mappings and sysctls retain their compatibility path. Docker cannot dynamically update device/GPU/ulimit settings |
 | Defaults | omitted, null, false, zero, empty strings/collections, and documented default enum/sentinel values remain compatible with normal client payloads; an explicit empty masked/read-only path list is an override, not a default |
 

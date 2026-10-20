@@ -706,6 +706,7 @@ Commands:
   porto docker <Docker command> [args...]
   porto ps|run|create|exec|rm|compose|buildx|image|images|network|volume [args...]
   porto docker cli <args...>
+  porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker containers|builds|networks|volumes

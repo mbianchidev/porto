@@ -5,15 +5,139 @@ import (
 	"errors"
 	"flag"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 )
+
+func TestDockerRunAndCLIPreserveArgumentsEnvironmentAndExitCode(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := t.TempDir()
+	capture := filepath.Join(t.TempDir(), "docker.txt")
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(
+		"#!/bin/sh\nprintf '%s\\n' \"$DOCKER_HOST\" \"$DOCKER_CONTEXT\" \"$@\" > \"$DOCKER_CAPTURE\"\nexit \"$DOCKER_EXIT_CODE\"\n",
+	), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PORTO_HOME", t.TempDir())
+	t.Setenv("DOCKER_CAPTURE", capture)
+	t.Setenv("DOCKER_HOST", "unix:///synthetic-other.sock")
+	t.Setenv("DOCKER_CONTEXT", "synthetic-other")
+	endpoint, err := config.DockerEndpoint()
+	if err != nil {
+		t.Fatal(err)
+	}
+	runArgs := []string{"run", "--rm", "--env", "SYNTHETIC=value with spaces", "alpine:latest", "echo", "hello docker", "--literal"}
+	for _, test := range []struct {
+		name string
+		args []string
+		want []string
+	}{
+		{
+			name: "run",
+			args: append([]string{"docker"}, runArgs...),
+			want: append([]string{endpoint, "", "--host", endpoint}, runArgs...),
+		},
+		{
+			name: "cli",
+			args: append([]string{"docker", "cli", "--context", "porto"}, runArgs...),
+			want: append([]string{"unix:///synthetic-other.sock", "synthetic-other", "--context", "porto"}, runArgs...),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, code := range []string{"0", "23", "125"} {
+				t.Run(code, func(t *testing.T) {
+					t.Setenv("DOCKER_EXIT_CODE", code)
+					err := runCommand(test.args)
+					if code == "0" {
+						if err != nil {
+							t.Fatalf("docker command: %v", err)
+						}
+					} else {
+						var exitError *exec.ExitError
+						if !errors.As(err, &exitError) || strconv.Itoa(exitError.ExitCode()) != code {
+							t.Fatalf("docker exit error = %v, want exit code %s", err, code)
+						}
+					}
+					data, err := os.ReadFile(capture)
+					if err != nil {
+						t.Fatal(err)
+					}
+					want := strings.Join(test.want, "\n") + "\n"
+					if string(data) != want {
+						t.Fatalf("docker invocation = %q, want %q", data, want)
+					}
+				})
+			}
+		})
+	}
+}
+
+func TestDockerRunRequiresArguments(t *testing.T) {
+	err := dockerCmd([]string{"run"})
+	if err == nil || !strings.Contains(err.Error(), "usage: porto docker run") {
+		t.Fatalf("docker run without arguments = %v", err)
+	}
+}
+
+func TestDockerRunAndCLIPreserveStandardStreams(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell fixture")
+	}
+	bin := t.TempDir()
+	if err := os.WriteFile(filepath.Join(bin, "docker"),
+		[]byte("#!/bin/sh\ncat\nprintf 'synthetic stderr\\n' >&2\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	t.Setenv("PORTO_HOME", t.TempDir())
+	for _, command := range []string{"run", "cli"} {
+		t.Run(command, func(t *testing.T) {
+			directory := t.TempDir()
+			var streams [3]*os.File
+			for index, name := range []string{"stdin", "stdout", "stderr"} {
+				stream, err := os.Create(filepath.Join(directory, name))
+				if err != nil {
+					t.Fatal(err)
+				}
+				streams[index] = stream
+				t.Cleanup(func() {
+					if err := stream.Close(); err != nil {
+						t.Errorf("close %s: %v", name, err)
+					}
+				})
+			}
+			if _, err := streams[0].WriteString("synthetic stdin\n"); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := streams[0].Seek(0, 0); err != nil {
+				t.Fatal(err)
+			}
+			stdin, stdout, stderr := os.Stdin, os.Stdout, os.Stderr
+			t.Cleanup(func() { os.Stdin, os.Stdout, os.Stderr = stdin, stdout, stderr })
+			os.Stdin, os.Stdout, os.Stderr = streams[0], streams[1], streams[2]
+			if err := dockerCmd([]string{command, "alpine:latest", "cat"}); err != nil {
+				t.Fatalf("docker %s: %v", command, err)
+			}
+			for name, want := range map[string]string{"stdout": "synthetic stdin\n", "stderr": "synthetic stderr\n"} {
+				data, err := os.ReadFile(filepath.Join(directory, name))
+				if err != nil || string(data) != want {
+					t.Fatalf("%s = %q, error = %v; want %q", name, data, err, want)
+				}
+			}
+		})
+	}
+}
 
 func TestDockerPrivilegeHintPreservesRequestedOperation(t *testing.T) {
 	t.Setenv("PORTO_HOME", filepath.Join(t.TempDir(), "Porto state"))

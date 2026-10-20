@@ -104,11 +104,17 @@ func dockerCmd(args []string) error {
 		return dockerMigrationCmd(args[1:])
 	case "files":
 		return dockerFilesCmd(args[1:])
-	case "cli":
+	case "run", "cli":
 		if len(args) == 1 {
+			if args[0] == "run" {
+				return errors.New("usage: porto docker run [options] <image> [command...]")
+			}
 			return errors.New("usage: porto docker cli <args...>")
 		}
-		return runDockerCLI(args[1:])
+		if args[0] == "run" {
+			return runDockerCLI(args)
+		}
+		return executeDockerCLI(args[1:], os.Environ())
 	case "dive":
 		if len(args) == 1 {
 			return errors.New("usage: porto docker dive [--container name] <image> [dive args...]")
@@ -301,9 +307,16 @@ func runDockerCLI(args []string) error {
 	if err != nil {
 		return err
 	}
+	if len(args) > 0 && args[0] == "run" {
+		args = append([]string{"--host", endpoint}, args...)
+	}
+	return executeDockerCLI(args, process.WithEnvironment(os.Environ(),
+		"DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=", "DOCKER_TLS_VERIFY=", "DOCKER_CERT_PATH="))
+}
+
+func executeDockerCLI(args []string, environment []string) error {
 	command := exec.Command("docker", args...)
-	command.Env = process.WithEnvironment(os.Environ(),
-		"DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=", "DOCKER_TLS_VERIFY=", "DOCKER_CERT_PATH=")
+	command.Env = environment
 	command.Stdin = os.Stdin
 	command.Stdout = os.Stdout
 	command.Stderr = os.Stderr

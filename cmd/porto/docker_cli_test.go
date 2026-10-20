@@ -58,13 +58,18 @@ func TestDockerShortcutsPreserveArgumentsAndTargetPorto(t *testing.T) {
 				t.Fatal(err)
 			}
 			forwarded := args
+			raw := false
 			if forwarded[0] == "docker" {
 				forwarded = forwarded[1:]
 				if forwarded[0] == "cli" {
+					raw = true
 					forwarded = forwarded[1:]
 				}
 			}
 			want := append([]string{endpoint, "", "", ""}, forwarded...)
+			if raw {
+				want = append([]string{"tcp://unrelated.example.test:2376", "unrelated", "1", "/synthetic/certs"}, forwarded...)
+			}
 			got := strings.Split(strings.TrimSuffix(string(data), "\n"), "\n")
 			if !reflect.DeepEqual(got, want) {
 				t.Fatalf("forwarded = %q, want %q", got, want)
