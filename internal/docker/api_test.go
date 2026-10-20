@@ -136,7 +136,7 @@ func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
 		`"KernelMemory":1024`, `"KernelMemoryTCP":1024`,
 		`"ContainerIDFile":"/tmp/synthetic-id"`, `"VolumeDriver":"external"`,
 		`"VolumesFrom":["other"]`, `"Links":["other:alias"]`,
-		`"Annotations":{"synthetic":"value"}`, `"ConsoleSize":[24,80]`,
+		`"Annotations":{"synthetic":"value"}`,
 		`"LogConfig":{"Type":"syslog","Config":{}}`,
 		`"LogConfig":{"Type":"json-file","Config":{"max-size":"1m"}}`,
 		`"MaskedPaths":[]`, `"ReadonlyPaths":[]`,
@@ -154,6 +154,44 @@ func TestDockerAPIRejectsUnhandledCreateOptionsBeforeMutation(t *testing.T) {
 			}
 			if len(runner.commands) != 0 {
 				t.Fatalf("unsupported option mutated the backend: %+v", runner.commands)
+			}
+		})
+	}
+}
+
+func TestDockerAPICreateAcceptsConsoleSizeWithoutTTY(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		tty    string
+		status int
+	}{
+		{"omitted", "", http.StatusCreated},
+		{"disabled", `"Tty":false,`, http.StatusCreated},
+		{"enabled", `"Tty":true,`, http.StatusNotImplemented},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				want := []string{"create", "--rm", "alpine:latest", "echo", "hello"}
+				if !reflect.DeepEqual(command.Args, want) {
+					t.Fatalf("non-TTY create arguments = %v, want %v", command.Args, want)
+				}
+				return []byte("synthetic-container\n"), nil
+			}}
+			response := httptest.NewRecorder()
+			body := `{` + test.tty + `"Image":"alpine:latest","Cmd":["echo","hello"],
+				"AttachStdout":true,"AttachStderr":true,
+				"HostConfig":{"AutoRemove":true,"ConsoleSize":[24,80]}}`
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(body)))
+			if response.Code != test.status {
+				t.Fatalf("create with console size = %d: %s", response.Code, response.Body.String())
+			}
+			if test.status == http.StatusCreated {
+				if len(runner.commands) != 1 || !strings.Contains(response.Body.String(), `"Id":"synthetic-container"`) {
+					t.Fatalf("unexpected create result: %s; commands=%+v", response.Body.String(), runner.commands)
+				}
+			} else if len(runner.commands) != 0 || !strings.Contains(response.Body.String(), "ConsoleSize") {
+				t.Fatalf("unsupported TTY sizing = %s; commands=%+v", response.Body.String(), runner.commands)
 			}
 		})
 	}

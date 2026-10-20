@@ -457,7 +457,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if request.HostConfig.VolumeDriver != "" && request.HostConfig.VolumeDriver != "local" {
 		unsupported = append(unsupported, "VolumeDriver")
 	}
-	if request.HostConfig.ConsoleSize != [2]uint{} {
+	if request.Tty && request.HostConfig.ConsoleSize != [2]uint{} {
 		unsupported = append(unsupported, "ConsoleSize")
 	}
 	if (request.HostConfig.LogConfig.Type != "" && request.HostConfig.LogConfig.Type != "json-file") ||

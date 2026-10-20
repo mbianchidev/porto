@@ -700,6 +700,7 @@ Commands:
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
   porto docker cli <args...>
+  porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker containers|images|builds|networks|volumes
