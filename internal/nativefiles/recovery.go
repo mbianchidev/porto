@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -63,15 +65,30 @@ func (m *Manager) Recover(ctx context.Context, release func(context.Context, Att
 			result = errors.Join(result, datafiles.ErrConflict)
 			continue
 		}
-		if record.Driver != "" && record.Driver != "winfsp" {
+		if record.Driver != "" && record.Driver != "winfsp" && record.Driver != "webdav" {
 			result = errors.Join(result, datafiles.ErrInvalid)
 			continue
+		}
+		if record.Driver == "webdav" && record.Endpoint != "" {
+			endpoint, err := url.Parse(record.Endpoint)
+			if err != nil || endpoint.Scheme != "http" || endpoint.Hostname() != "127.0.0.1" ||
+				endpoint.Port() == "" || endpoint.Path != webDAVMountPath(record.ID) || endpoint.User != nil || endpoint.RawQuery != "" || endpoint.Fragment != "" {
+				result = errors.Join(result, datafiles.ErrInvalid)
+				continue
+			}
+			if _, _, err := net.SplitHostPort(endpoint.Host); err != nil {
+				result = errors.Join(result, datafiles.ErrInvalid)
+				continue
+			}
 		}
 		if record.Driver == "winfsp" && (record.BridgePID < 1 || record.BridgeStart == 0 || record.Serial == 0) {
 			result = errors.Join(result, datafiles.ErrInvalid)
 			continue
 		}
 		captured := record
+		if record.Driver == "webdav" {
+			record.State = "disconnected"
+		}
 		target := Target{
 			Resource: record.Resource, Identity: record.Identity, Local: record.Local,
 			Verify: func(context.Context) error {
@@ -106,13 +123,24 @@ func (m *Manager) mounted(ctx context.Context, record Attachment) (bool, error) 
 		if options := strings.LastIndex(location, " ("); options >= 0 {
 			location = location[:options]
 		}
-		if unescape.Replace(location) != record.Path {
+		mountpoint := unescape.Replace(location)
+		if mountpoint != record.Path {
 			filesystem := strings.LastIndex(location, " type ")
-			if filesystem < 0 || unescape.Replace(location[:filesystem]) != record.Path {
-				continue
+			if filesystem >= 0 {
+				mountpoint = unescape.Replace(location[:filesystem])
+			}
+			if mountpoint != record.Path {
+				parent, err := filepath.EvalSymlinks(filepath.Dir(record.Path))
+				if err != nil || filepath.Join(parent, filepath.Base(record.Path)) != mountpoint {
+					continue
+				}
 			}
 		}
-		if unescape.Replace(source) != "porto-"+record.ID {
+		expected := "porto-" + record.ID
+		if record.Driver == "webdav" {
+			expected = record.Endpoint
+		}
+		if strings.TrimSuffix(unescape.Replace(source), "/") != expected {
 			return false, fmt.Errorf("%w: native mount ownership changed; refusing to open or detach an unrelated filesystem", datafiles.ErrConflict)
 		}
 		return true, nil

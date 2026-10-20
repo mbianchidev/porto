@@ -204,9 +204,11 @@ requires separate explicit local consent; registry credentials and source contex
 are never imported. Selected resources are transferred through local Unix
 sockets or Windows named pipes, not unauthenticated remote endpoints.
 
-Image content is loaded and its config digest checked. Volume data uses the
-source's read-only container archive API or an already accessible local
-mountpoint. For an unattached Docker Desktop volume, select **Allow temporary
+Image content is loaded and its config digest checked. Volume data always uses
+the selected source's read-only container archive API. A Unix socket can forward
+to another machine or VM; a source-reported mountpoint is never treated as host
+data merely because a path with that name exists locally.
+For an unattached volume, select **Allow temporary
 read-only source access** (CLI: `--allow-source-helper`). Porto loads a uniquely
 labelled empty scratch image and creates a stopped helper container. Its volume
 mount is **read-only with NoCopy**, its network disabled, and it is never started.
@@ -269,10 +271,10 @@ itself evidence that a mount succeeded: the real host mount must become ready.
 | Host / backend | Native integration | Requirements / limitations |
 | --- | --- | --- |
 | Linux / local containerd | Owned Linux bind mount | Linux mount permission, kernel 5.12+ recursive safe attributes; stopped snapshots do not start workloads |
-| macOS / Porto Lima | Foreground SSHFS over Lima SSH | macFUSE and a maintained SSHFS build proving `contain_symlinks`; sudo SFTP access inside the Porto guest |
+| macOS / Porto Lima | Built-in macOS WebDAV filesystem over confined SFTP | No third-party filesystem driver. Private loopback authentication; images are read-only. Unix link creation and host chmod/chown are unavailable. |
 | Linux / Porto Lima | Foreground SSHFS over Lima SSH | FUSE3 and containment-capable SSHFS |
 | Windows x64/ARM64 / Porto Lima | WinFsp host folder with direct confined SFTP | Install WinFsp 2.1+ once; the Porto desktop bundles its native mount helper. Running/stopped containers, images and local volumes use the identity-checked guest helper. |
-| Standalone managed VM | SSHFS of its guest home | Running, Porto-owned standalone VM; no implicit boot or access to unrelated VM resources |
+| Standalone managed VM | Host-native bridge to its guest home | Running, Porto-owned standalone VM; macOS uses built-in WebDAV, Windows WinFsp, and Linux SSHFS. No implicit boot or access to unrelated VM resources. |
 
 On Windows, the standalone VM row uses the same WinFsp/SFTP integration for
 its guest home. Porto installs a checksum-verified, version-scoped guest helper
@@ -282,6 +284,19 @@ administrator approval. Porto never installs a kernel driver silently. The
 capability report distinguishes **driver missing** from **guest disconnected**.
 Once installed, **Open files** exposes a real private folder usable by Explorer,
 VS Code and other ordinary host editors.
+
+macOS uses its built-in WebDAV filesystem and the same confined, direct SFTP
+backend as Windows. No macFUSE installation or kernel-extension approval is
+required. A private per-attachment password is passed to the OS through an
+unlinked credential descriptor, never a URL, command argument, keychain entry or
+diagnostic log. The server binds only to loopback. The native mount uses a
+private host directory, not a synchronized copy; closing a successful save
+commits it to the workload. macOS presents synthetic Unix ownership/mode bits;
+existing guest permissions remain unchanged. WebDAV cannot represent Unix links
+or chmod/chown, so links are not traversed through that native view and those
+operations require guest tooling or a verified archive. File names retain backend
+case semantics; refresh/reopen for concurrent changes and do not rely on guest
+filesystem notifications.
 
 Windows mounts use direct SFTP random-access I/O rather than a cached sync
 folder: a successful write is persisted in the workload filesystem before the
@@ -332,6 +347,14 @@ the backend again after restart. No recursive source deletion is used.
 A legacy attachment without an ownership-marked mount
 can require explicitly unmounting that exact host path with the OS tools before
 retrying `porto docker files detach`; Porto does not guess ownership.
+
+macOS verifies the exact owned loopback WebDAV mount source, including canonical
+temporary-directory aliases. Shutdown unmounts while its server is still alive.
+After a daemon/connection loss, recovery detaches only that identity-proven dead
+mount; in-flight edits that did not successfully close are not claimed committed.
+Stopped-container helpers recursively detach their own nested mounts inside
+their private namespace. Managed VM file creation retains the guest SSH user's
+ownership rather than attempting a privileged root chown.
 
 ### Acceptance coverage and limits
 

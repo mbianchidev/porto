@@ -8,6 +8,8 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"slices"
 	"strings"
@@ -389,5 +391,49 @@ func TestMigrationDoesNotSkipIncompleteContainerResourceUpdates(t *testing.T) {
 	err = manager.migrateContainer(context.Background(), source, request, selection, selection.Name, document)
 	if !errors.Is(err, datafiles.ErrConflict) || mutations != 0 {
 		t.Fatalf("an interrupted resource update was reported as successful or overwritten: %v, mutations=%d", err, mutations)
+	}
+}
+
+func TestMigrationOCIImageIdentityAllowsInspectorDefaultsButRejectsChangedContent(t *testing.T) {
+	source := json.RawMessage(`{"Id":"sha256:source-manifest","Descriptor":{"digest":"sha256:source-manifest"},"Architecture":"arm64","Os":"linux","Config":{"Env":["SYNTHETIC_MODE=original"]},"RootFS":{"Type":"layers","Layers":["sha256:synthetic-layer"]}}`)
+	for _, changed := range []bool{false, true} {
+		environment := "original"
+		if changed {
+			environment = "changed"
+		}
+
+		destination := `[{"Id":"sha256:destination-manifest","Architecture":"arm64","Os":"linux","Config":{"Env":["SYNTHETIC_MODE=` + environment + `"],"AttachStdin":false,"Image":"sha256:legacy-parent-hint"},"RootFS":{"Type":"layers","Layers":["sha256:synthetic-layer"]}}]`
+		manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+			if slices.Contains(command.Args, "inspect") {
+				return []byte(destination), nil
+			}
+			return nil, nil
+		}})
+		matches, err := manager.migrationImageMatches(context.Background(), "synthetic:latest", source)
+		if err != nil || matches == changed {
+			t.Fatalf("inspector compatibility changed image identity: matches=%v changed=%v err=%v", matches, changed, err)
+		}
+	}
+}
+
+func TestMigrationNeverTreatsAReportedGuestVolumePathAsLocalHostData(t *testing.T) {
+	host := t.TempDir()
+	if err := os.WriteFile(filepath.Join(host, "synthetic-unrelated.txt"), []byte("not source volume data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	volume := map[string]any{"Name": "synthetic-source", "Driver": "local", "CreatedAt": "2026-01-01T00:00:00Z", "Mountpoint": host}
+	manager := migrationFixtureManager(t, map[string]any{
+		"/volumes":                  map[string]any{"Volumes": []map[string]any{volume}},
+		"/volumes/synthetic-source": volume,
+	}, nil)
+	inventory, err := manager.MigrationInventory(context.Background(), "fixture-source")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview, err := manager.PreviewMigration(context.Background(), dataops.Request{
+		Context: "fixture-source", Selections: []dataops.Selection{{Kind: "volume", Name: "synthetic-source", ID: inventory.Objects[0].ID}},
+	})
+	if err != nil || len(preview.Conflicts) == 0 || !slices.Contains(preview.SourceHelpers, "synthetic-source") {
+		t.Fatalf("a socket-forwarded guest path was mistaken for source data on the host: %+v, %v", preview, err)
 	}
 }

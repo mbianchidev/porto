@@ -70,7 +70,7 @@ func prepare(ctx context.Context, descriptor Descriptor, directory string, readO
 		snapshotter = "overlayfs"
 	}
 	cleanup := func() error {
-		unmountErr := mount.UnmountAll(directory, 0)
+		unmountErr := mount.UnmountRecursive(directory, 0)
 		if unmountErr != nil {
 			return errors.Join(unmountErr, client.Close())
 		}
@@ -454,7 +454,7 @@ func detach(ctx context.Context, descriptor Descriptor, token string) error {
 	if attachment.Identity != descriptor.Resource.Fingerprint() || attachment.Path != directory || attachment.Token != token {
 		return datafiles.ErrConflict
 	}
-	if err := mount.UnmountAll(directory, 0); err != nil {
+	if err := mount.UnmountRecursive(directory, 0); err != nil {
 		return fmt.Errorf("detach native filesystem; source data was not removed: %w", err)
 	}
 	if attachment.SnapshotKey != "" {

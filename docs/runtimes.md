@@ -162,6 +162,10 @@ availability. Detach before changing storage. Engine stop, update and daemon
 shutdown release owned attachments; disconnected bridges and failed detach
 operations remain unavailable until cleanup/reconnect, never as empty successful
 mounts. Cleanup does not delete source data.
+macOS uses its built-in WebDAV filesystem over confined SFTP and needs no macFUSE
+driver. Successful closed saves are direct workload edits; Unix links and
+chmod/chown require guest tooling or archives. Windows uses WinFsp and Linux
+uses owned bind mounts or SSHFS, according to the resource/backend capability.
 See [runtime data management](data-management.md) for safety,
 backup consistency, CLI workflows and the host/backend capability matrix.
 

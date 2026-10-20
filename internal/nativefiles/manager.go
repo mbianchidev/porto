@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"log"
 	"os"
 	"path/filepath"
@@ -23,8 +22,6 @@ type Target struct {
 	Resource     datafiles.Resource
 	Identity     string
 	RemotePath   string
-	SSHConfig    string
-	SSHHost      string
 	Local        bool
 	Backend      *runtimefiles.Descriptor
 	Token        string
@@ -61,15 +58,17 @@ type Attachment struct {
 	BridgeStart     uint64                   `json:"bridgeStart,omitempty"`
 	Serial          uint32                   `json:"serial,omitempty"`
 	BackendReleased bool                     `json:"backendReleased,omitempty"`
+	Endpoint        string                   `json:"endpoint,omitempty"`
 }
 
 type liveAttachment struct {
-	record  Attachment
-	target  Target
-	process runtimes.Process
-	cancel  context.CancelFunc
-	done    <-chan error
-	stdinMu sync.Mutex
+	record      Attachment
+	target      Target
+	process     runtimes.Process
+	cancel      context.CancelFunc
+	done        <-chan error
+	closeBridge func(context.Context) error
+	stdinMu     sync.Mutex
 }
 
 type Manager struct {
@@ -94,6 +93,9 @@ func (m *Manager) Capability(ctx context.Context, local bool) Capability {
 	}
 	if runtime.GOOS == "windows" {
 		return m.windowsCapability(ctx)
+	}
+	if runtime.GOOS == "darwin" {
+		return m.webDAVCapability()
 	}
 	binary, err := m.lookPath("sshfs")
 	if err != nil {
@@ -162,6 +164,9 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		Local:        target.Local,
 		NamespacePID: target.NamespacePID,
 	}
+	if runtime.GOOS == "darwin" {
+		result.Driver = "webdav"
+	}
 	live := &liveAttachment{target: target, record: result}
 	if target.Local {
 		if runtime.GOOS != "linux" || !filepath.IsAbs(target.RemotePath) {
@@ -169,8 +174,8 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 		}
 		result.Path = target.RemotePath
 	} else {
-		if !filepath.IsAbs(target.SSHConfig) || target.SSHHost == "" || !strings.HasPrefix(target.RemotePath, "/") || strings.ContainsAny(target.SSHHost+target.RemotePath, "\x00\r\n") {
-			return result, datafiles.ErrInvalid
+		if target.SFTP == nil {
+			return result, fmt.Errorf("%w: native files require an identity-confined SFTP transport", datafiles.ErrUnsupported)
 		}
 		result.Path = filepath.Join(m.root, id)
 		if err := os.Mkdir(result.Path, 0o700); err != nil {
@@ -203,62 +208,13 @@ func (m *Manager) Attach(ctx context.Context, target Target, writable bool) (res
 	if !capability.Supported {
 		return result, fmt.Errorf("%w: %s %s", datafiles.ErrUnsupported, capability.Message, capability.Fallback)
 	}
-	if !target.Local {
-		runner, ok := m.runner.(runtimes.ProcessRunner)
-		if !ok {
-			return result, datafiles.ErrUnsupported
+	if result.Driver == "webdav" {
+		if err := m.mountWebDAVLocked(ctx, live, writable); err != nil {
+			return live.record, err
 		}
-		binary, err := m.lookPath("sshfs")
-		if err != nil {
-			return result, err
-		}
-		ownedContext, cancel := context.WithCancel(context.Background())
-		live.cancel = cancel
-		options := "fsname=porto-" + id + ",contain_symlinks,default_permissions,idmap=user,direct_io,dir_cache=no,nodev,nosuid,noexec,ServerAliveInterval=5,ServerAliveCountMax=2"
-		if !writable {
-			options += ",ro"
-		}
-		args := []string{"-f", "-F", target.SSHConfig, "-o", options}
-		if target.Resource.Kind != "vm" {
-			server := "sudo -n /usr/lib/openssh/sftp-server"
-			if target.NamespacePID > 0 {
-				server = fmt.Sprintf("sudo -n nsenter --target %d --mount --user -- /usr/lib/openssh/sftp-server", target.NamespacePID)
-			}
-			args = append(args, "-o", "sftp_server="+server)
-		}
-		args = append(args, target.SSHHost+":"+target.RemotePath, result.Path)
-		process, err := runner.Start(ownedContext, runtimes.Command{Name: binary, Args: args})
-		if err != nil {
-			cancel()
-			live.cancel = nil
-			return result, err
-		}
-		live.process = process
-		var diagnostics limitedNativeErrors
-		stderrDone, stdoutDone := make(chan error, 1), make(chan error, 1)
-		go func() {
-			_, err := io.Copy(&diagnostics, process.Stderr())
-			stderrDone <- err
-		}()
-		go func() {
-			_, err := io.Copy(io.Discard, process.Stdout())
-			stdoutDone <- err
-		}()
-		done := make(chan error, 1)
-		live.done = done
-		go func() {
-			outputErr, diagnosticErr := <-stdoutDone, <-stderrDone
-			waitErr := process.Wait()
-			if waitErr != nil {
-				waitErr = fmt.Errorf("SSHFS bridge failed: %w: %s", waitErr, diagnostics.String())
-			}
-			done <- errors.Join(outputErr, diagnosticErr, waitErr)
-			close(done)
-		}()
-		if err := process.Stdin().Close(); err != nil {
-			return result, err
-		}
-		if err := m.waitMounted(ctx, result, done); err != nil {
+		result = live.record
+	} else if !target.Local {
+		if err := m.mountSSHFSLocked(ctx, live, writable); err != nil {
 			return result, err
 		}
 	}
@@ -412,6 +368,9 @@ func (m *Manager) detachLocked(ctx context.Context, id string) (err error) {
 			return err
 		}
 		command := runtimes.Command{Name: "umount", Args: []string{live.record.Path}}
+		if live.record.Driver == "webdav" && live.record.State == "disconnected" {
+			command.Args = []string{"-f", live.record.Path}
+		}
 		if runtime.GOOS == "linux" {
 			command = runtimes.Command{Name: "fusermount3", Args: []string{"-u", live.record.Path}}
 		}
@@ -432,6 +391,12 @@ func (m *Manager) detachLocked(ctx context.Context, id string) (err error) {
 			return fmt.Errorf("wait for owned native bridge cleanup: %w", ctx.Err())
 		}
 		live.cancel, live.process, live.done = nil, nil, nil
+	}
+	if live.closeBridge != nil {
+		if err := live.closeBridge(ctx); err != nil {
+			return err
+		}
+		live.closeBridge, live.done = nil, nil
 	}
 	if !live.record.BackendReleased {
 		if err := live.target.Release(ctx); err != nil {

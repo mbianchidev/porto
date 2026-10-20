@@ -8,8 +8,6 @@ import (
 	"fmt"
 	"os"
 	"path"
-	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 
@@ -45,7 +43,7 @@ func (m *Manager) NativeFilesResource(ctx context.Context, name string) (datafil
 }
 
 func (m *Manager) NativeFilesTarget(ctx context.Context, name string, writable bool) (nativefiles.Target, error) {
-	instance, resource, err := m.nativeFilesInstance(ctx, name)
+	_, resource, err := m.nativeFilesInstance(ctx, name)
 	if err != nil {
 		return nativefiles.Target{}, err
 	}
@@ -57,31 +55,28 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, name string, writable b
 	if !path.IsAbs(home) || strings.ContainsAny(home, "\r\n\x00") {
 		return nativefiles.Target{}, errors.New("VM home directory response is invalid")
 	}
-	config := filepath.Join(instance.Directory, "ssh.config")
-	target := nativefiles.Target{Resource: resource, Identity: resource.Fingerprint(), RemotePath: home, SSHConfig: config, SSHHost: "lima-" + name}
-	if runtime.GOOS == "windows" {
-		executable, err := os.Executable()
-		if err != nil {
-			return nativefiles.Target{}, err
-		}
-		install, cancel := context.WithTimeout(ctx, time.Minute)
-		digest, err := runtimes.InstallNativeHelper(install, m.runner,
-			m.limaCommand([]string{"shell", "--workdir=/", name, "--"}, nil), executable, m.lookPath)
-		cancel()
-		if err != nil {
-			return nativefiles.Target{}, err
-		}
-		encoded, err := nativefiles.EncodeNativeRequest(runtimefiles.Descriptor{Resource: resource, RootPath: home}, writable)
-		if err != nil {
-			return nativefiles.Target{}, err
-		}
-		command := m.limaCommand([]string{
-			"shell", "--workdir=/", name, "--", "sh", "-c",
-			`exec "$HOME/.local/share/porto/native-helpers/$1/porto-runtime-helper" files-sftp "$2"`,
-			"porto-native-files", digest, encoded,
-		}, nil)
-		target.SFTP = &nativefiles.SFTPCommand{Name: command.Name, Args: command.Args, Env: command.Env}
+	target := nativefiles.Target{Resource: resource, Identity: resource.Fingerprint()}
+	executable, err := os.Executable()
+	if err != nil {
+		return nativefiles.Target{}, err
 	}
+	install, cancel := context.WithTimeout(ctx, time.Minute)
+	digest, err := runtimes.InstallNativeHelper(install, m.runner,
+		m.limaCommand([]string{"shell", "--workdir=/", name, "--"}, nil), executable, m.lookPath)
+	cancel()
+	if err != nil {
+		return nativefiles.Target{}, err
+	}
+	encoded, err := nativefiles.EncodeNativeRequest(runtimefiles.Descriptor{Resource: resource, RootPath: home}, writable)
+	if err != nil {
+		return nativefiles.Target{}, err
+	}
+	command := m.limaCommand([]string{
+		"shell", "--workdir=/", name, "--", "sh", "-c",
+		`exec "$HOME/.local/share/porto/native-helpers/$1/porto-runtime-helper" files-sftp "$2"`,
+		"porto-native-files", digest, encoded,
+	}, nil)
+	target.SFTP = &nativefiles.SFTPCommand{Name: command.Name, Args: command.Args, Env: command.Env}
 	target.Release = func(context.Context) error { return nil }
 	target.Verify = func(ctx context.Context) error {
 		current, err := m.NativeFilesResource(ctx, name)

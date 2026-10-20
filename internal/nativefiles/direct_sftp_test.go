@@ -166,3 +166,30 @@ func TestNativeDirectConnectionLossReturnsAnErrorForOpenHandles(t *testing.T) {
 		t.Fatal("connection loss reported an uncommitted write as successful")
 	}
 }
+
+func TestNativeDirectOverwriteDoesNotResetExistingPermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix mode bits are exercised on the Linux guest")
+	}
+	directory := t.TempDir()
+	file := filepath.Join(directory, "synthetic.txt")
+	if err := os.WriteFile(file, []byte("original"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	client := nativeFixtureClient(t, directory, false)
+	filesystem := NewDirectSFTP(client, false)
+	handle, err := filesystem.Open("/synthetic.txt", os.O_CREATE|os.O_RDWR|os.O_TRUNC, 0o600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := filesystem.Write(handle, []byte("edited"), 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := filesystem.Release(handle); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Stat(file)
+	if err != nil || info.Mode().Perm() != 0o640 {
+		t.Fatalf("native overwrite changed permissions: %v, %v", info, err)
+	}
+}

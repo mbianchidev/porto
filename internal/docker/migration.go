@@ -14,15 +14,18 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strings"
 	"time"
 
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/distribution/reference"
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
 const (
@@ -303,6 +306,9 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 	for _, port := range slices.Sorted(maps.Keys(host.PortBindings)) {
 		bindings := host.PortBindings[port]
 		for _, binding := range bindings {
+			if binding.HostPort == "" || binding.HostPort == "0" {
+				return request, ContainerUpdate{}, fmt.Errorf("%w: unallocated published ports cannot be preserved; configure an explicit source host port before migration", ErrUnsupported)
+			}
 			hostIP := binding.HostIP
 			if hostIP == "" {
 				hostIP = "0.0.0.0"
@@ -332,6 +338,12 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		request.Networks = []ContainerNetwork{{Name: mode}}
 	}
 	if err := errors.Join(validateHealthcheck(request.Healthcheck), validateRestartPolicy(request.Restart)); err != nil {
+		return request, ContainerUpdate{}, err
+	}
+	if _, err := compatibilityContainerHostname(request); err != nil {
+		return request, ContainerUpdate{}, err
+	}
+	if _, err := appendHealthcheckArgs(nil, request.Healthcheck); err != nil {
 		return request, ContainerUpdate{}, err
 	}
 	return request, ContainerUpdate{Memory: host.Memory, MemorySwap: host.MemorySwap, NanoCPUs: host.NanoCpus}, nil
@@ -412,10 +424,15 @@ func (m *Manager) MigrationInventory(ctx context.Context, contextName string) (M
 	}
 	for _, image := range images {
 		name := image.ID
-		if len(image.RepoTags) > 0 {
-			name = image.RepoTags[0]
+		tags := slices.DeleteFunc(slices.Clone(image.RepoTags), func(tag string) bool { return tag == "" || tag == "<none>:<none>" })
+		if len(tags) > 0 {
+			name = tags[0]
 		}
-		inventory.Objects = append(inventory.Objects, MigrationObject{Kind: "image", Name: name, ID: image.ID, Size: image.Size, Supported: true})
+		item := MigrationObject{Kind: "image", Name: name, ID: image.ID, Size: image.Size, Supported: len(tags) > 0}
+		if !item.Supported {
+			item.Message = "Tag this source image explicitly before migration; an unnamed import must not overwrite another unnamed destination image."
+		}
+		inventory.Objects = append(inventory.Objects, item)
 	}
 	var containers []struct {
 		ID     string `json:"Id"`
@@ -557,20 +574,14 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 					if tag == "<none>:<none>" {
 						continue
 					}
-					document, inspectErr := m.InspectImage(ctx, tag, "")
+					matches, inspectErr := m.migrationImageMatches(ctx, tag, metadata)
 					if inspectErr != nil {
 						if missingDockerObject(inspectErr, "image") {
 							continue
 						}
 						return preview, inspectErr
 					}
-					var current struct {
-						ID string `json:"Id"`
-					}
-					if err := json.Unmarshal(document, &current); err != nil {
-						return preview, err
-					}
-					if current.ID != object.ID {
+					if !matches {
 						preview.Conflicts = append(preview.Conflicts, "image archive tag "+tag+" conflicts with an existing destination digest")
 					}
 				}
@@ -583,12 +594,7 @@ func (m *Manager) PreviewMigration(ctx context.Context, request dataops.Request)
 				if err != nil {
 					return preview, err
 				}
-				hostAccessible := false
-				if container == "" && strings.HasPrefix(source.context.Endpoint, "unix://") && filepath.IsAbs(volume.Mountpoint) {
-					info, err := os.Stat(volume.Mountpoint)
-					hostAccessible = err == nil && info.IsDir()
-				}
-				if container == "" && !hostAccessible {
+				if container == "" {
 					preview.SourceHelpers = append(preview.SourceHelpers, object.Name)
 					if !request.AllowSourceHelper {
 						preview.Conflicts = append(preview.Conflicts, object.Name+": enable explicit read-only temporary source-helper access to migrate this unattached volume")
@@ -778,15 +784,13 @@ func (m *Manager) Migrate(ctx context.Context, request dataops.Request, director
 }
 
 func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, selection dataops.Selection, directory string, progress func(string, int64) error) (err error) {
-	document, inspectErr := m.InspectImage(ctx, selection.Name, "")
+	var sourceDocument json.RawMessage
+	if err := source.get(ctx, "/images/"+url.PathEscape(selection.ID)+"/json", nil, &sourceDocument); err != nil {
+		return err
+	}
+	existing, inspectErr := m.migrationImageMatches(ctx, selection.Name, sourceDocument)
 	if inspectErr == nil {
-		var existing struct {
-			ID string `json:"Id"`
-		}
-		if err := json.Unmarshal(document, &existing); err != nil {
-			return err
-		}
-		if existing.ID == selection.ID {
+		if existing {
 			return nil
 		}
 		return fmt.Errorf("%w: destination image name already has a different digest", ErrConflict)
@@ -799,12 +803,31 @@ func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, sel
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Close(), os.Remove(file.Name())) }()
-	response, err := source.request(ctx, http.MethodGet, "/images/get", url.Values{"names": {selection.ID}}, nil)
+	var metadata struct {
+		ID                        string `json:"Id"`
+		RepoTags                  []string
+		Architecture, Os, Variant string
+	}
+	if err := json.Unmarshal(sourceDocument, &metadata); err != nil {
+		return err
+	}
+	if metadata.ID != selection.ID {
+		return datafiles.ErrConflict
+	}
+	tags := slices.DeleteFunc(slices.Clone(metadata.RepoTags), func(tag string) bool { return tag == "" || tag == "<none>:<none>" })
+	if len(tags) == 0 {
+		return fmt.Errorf("%w: tag the source image explicitly before migration", ErrUnsupported)
+	}
+	response, err := source.request(ctx, http.MethodGet, "/images/get", url.Values{"names": tags}, nil)
 	if err != nil {
 		return err
 	}
 	_, copyErr := io.Copy(&transferWriter{ctx: ctx, output: file, progress: progress, phase: "Copying source image archive"}, response.Body)
 	if err := errors.Join(copyErr, response.Body.Close()); err != nil {
+		return err
+	}
+	expectedConfig, err := imageArchiveConfigDigest(file, selection.ID, ocispec.Platform{OS: metadata.Os, Architecture: metadata.Architecture, Variant: metadata.Variant})
+	if err != nil {
 		return err
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
@@ -813,20 +836,120 @@ func (m *Manager) migrateImage(ctx context.Context, source *migrationClient, sel
 	if err := m.StreamLoadImages(ctx, file, true, func(chunk runtimes.OutputChunk) error { return progress("Loading checksum-validated image content", 0) }); err != nil {
 		return err
 	}
-	document, err = m.InspectImage(ctx, selection.ID, "")
-	if err != nil {
-		return err
-	}
-	var loaded struct {
-		ID string `json:"Id"`
-	}
-	if err := json.Unmarshal(document, &loaded); err != nil {
-		return err
-	}
-	if loaded.ID != selection.ID {
-		return errors.New("destination image config digest does not match the source")
+	for _, tag := range tags {
+		loaded, err := m.migrationImageConfigDigest(ctx, tag)
+		if err != nil {
+			return err
+		}
+		if loaded != expectedConfig {
+			return fmt.Errorf("destination image config digest %s does not match verified source config %s", loaded, expectedConfig)
+		}
 	}
 	return nil
+}
+
+func (m *Manager) migrationImageMatches(ctx context.Context, name string, source json.RawMessage) (bool, error) {
+	var expected struct {
+		ID         string `json:"Id"`
+		Descriptor ocispec.Descriptor
+	}
+	if err := json.Unmarshal(source, &expected); err != nil {
+		return false, err
+	}
+	if expected.Descriptor.Digest == "" {
+		digest, err := m.migrationImageConfigDigest(ctx, name)
+		return digest == expected.ID, err
+	}
+	current, err := m.InspectImage(ctx, name, "")
+	if err != nil {
+		return false, err
+	}
+	type content struct {
+		Architecture, Os, Variant, Author string
+		Created                           time.Time
+		Config                            map[string]any
+		RootFS                            struct {
+			Type   string
+			Layers []string
+		}
+	}
+	var left, right content
+	if err := json.Unmarshal(source, &left); err != nil {
+		return false, err
+	}
+	if err := json.Unmarshal(current, &right); err != nil {
+		return false, err
+	}
+	if left.Architecture == "" || left.Os == "" || left.RootFS.Type != "layers" || left.Config == nil {
+		return false, errors.New("source image content metadata is incomplete")
+	}
+	for _, config := range []map[string]any{left.Config, right.Config} {
+		// Inspector-only parent-image hints are not part of the OCI execution configuration.
+		delete(config, "Image")
+		for key, value := range config {
+			empty := value == nil
+			switch typed := value.(type) {
+			case bool:
+				empty = !typed
+			case string:
+				empty = typed == ""
+			case float64:
+				empty = typed == 0
+			case []any:
+				empty = len(typed) == 0
+			case map[string]any:
+				empty = len(typed) == 0
+			}
+			if empty {
+				delete(config, key)
+			}
+		}
+	}
+	if !left.Created.Equal(right.Created) {
+		return false, nil
+	}
+	left.Created, right.Created = time.Time{}, time.Time{}
+	return reflect.DeepEqual(left, right), nil
+}
+
+func (m *Manager) migrationImageConfigDigest(ctx context.Context, name string) (digest string, err error) {
+	document, err := m.InspectImage(ctx, name, "")
+	if err != nil {
+		return "", err
+	}
+	if m.directCLI {
+		var image struct {
+			ID string `json:"Id"`
+		}
+		if err := json.Unmarshal(document, &image); err != nil {
+			return "", err
+		}
+		return image.ID, nil
+	}
+	client, closeRuntime, err := m.storageRuntime(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer func() { err = errors.Join(err, closeRuntime()) }()
+	backend, ok := client.(*grpcContainerRuntime)
+	if !ok || backend.client == nil {
+		return "", ErrUnsupported
+	}
+	named, err := reference.ParseDockerRef(normalizeNerdctlReference(name))
+	if err != nil {
+		return "", err
+	}
+	ctx = namespaces.WithNamespace(ctx, backend.namespace)
+	image, err := backend.client.GetImage(ctx, named.String())
+	if err != nil {
+		return "", err
+	}
+	// Docker identifies image configuration bytes; containerd's target identifies its manifest.
+	config, err := image.Config(ctx)
+	if err != nil {
+		return "", err
+	}
+	return config.Digest.String(), nil
 }
 
 func (m *Manager) migrateNetwork(ctx context.Context, source *migrationClient, selection dataops.Selection, destination string, document json.RawMessage) error {
@@ -930,17 +1053,15 @@ func (m *Manager) migrateContainer(ctx context.Context, source *migrationClient,
 	if err != nil {
 		return err
 	}
-	image, err := m.InspectImage(ctx, configuration.Image, "")
+	var sourceImage json.RawMessage
+	if err := source.get(ctx, "/images/"+url.PathEscape(inspected.Image)+"/json", nil, &sourceImage); err != nil {
+		return err
+	}
+	currentImage, err := m.migrationImageMatches(ctx, configuration.Image, sourceImage)
 	if err != nil {
 		return err
 	}
-	var currentImage struct {
-		ID string `json:"Id"`
-	}
-	if err := json.Unmarshal(image, &currentImage); err != nil {
-		return err
-	}
-	if currentImage.ID != inspected.Image {
+	if !currentImage {
 		return fmt.Errorf("%w: destination image no longer matches the source container; no container was created", datafiles.ErrConflict)
 	}
 	configuration.Name = destination
@@ -979,15 +1100,11 @@ func (m *Manager) migrateContainer(ctx context.Context, source *migrationClient,
 }
 
 func (m *Manager) migrateVolume(ctx context.Context, source *migrationClient, request dataops.Request, selection dataops.Selection, destination, directory string, progress func(string, int64) error) (err error) {
-	identity := migrationIdentity(source.context.Name, "volume", selection.ID)
 	document, existingErr := m.InspectVolume(ctx, destination)
 	if existingErr == nil {
 		var existing struct{ Labels map[string]string }
 		if err := json.Unmarshal(document, &existing); err != nil {
 			return err
-		}
-		if existing.Labels[migrationSourceLabel] == identity {
-			return nil
 		}
 		if m.migrationVolumeKnown != nil {
 			descriptor, err := m.FileDescriptor(ctx, "volume", destination)
@@ -1007,6 +1124,9 @@ func (m *Manager) migrateVolume(ctx context.Context, source *migrationClient, re
 	if !missingDockerObject(existingErr, "volume") {
 		return existingErr
 	}
+	if m.migrationVolumeRecorded == nil {
+		return errors.New("migration volume ledger is unavailable; no destination volume was created")
+	}
 	var volume struct {
 		Name, Driver, CreatedAt, Mountpoint string
 		Labels                              map[string]string
@@ -1024,51 +1144,27 @@ func (m *Manager) migrateVolume(ctx context.Context, source *migrationClient, re
 		return err
 	}
 	defer func() { err = errors.Join(err, file.Close(), os.Remove(file.Name())) }()
-	containerID, _, err := source.findVolumeContainer(ctx, selection.Name)
+	stream, cleanup, err := source.openVolumeArchive(ctx, request, selection.Name, selection.ID, m.migrationTemporaryReserve, m.migrationTemporaryClear)
 	if err != nil {
 		return err
 	}
-	local := false
-	if containerID == "" && strings.HasPrefix(source.context.Endpoint, "unix://") && filepath.IsAbs(volume.Mountpoint) {
-		if info, statErr := os.Stat(volume.Mountpoint); statErr == nil && info.IsDir() {
-			local = true
-		}
-	}
-	if local {
-		if _, err := datafiles.Export(ctx, file, volume.Mountpoint, resource); err != nil {
-			return err
-		}
-	} else {
-		stream, cleanup, err := source.openVolumeArchive(ctx, request, selection.Name, selection.ID, m.migrationTemporaryReserve, m.migrationTemporaryClear)
-		if err != nil {
-			return err
-		}
-		defer func() {
-			cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-			defer cancel()
-			err = errors.Join(err, cleanup(cleanupContext))
-		}()
-		_, sealErr := datafiles.SealTar(ctx, stream, &transferWriter{ctx: ctx, output: file, progress: progress, phase: "Copying read-only source volume archive"}, resource)
-		if err := errors.Join(sealErr, stream.Close()); err != nil {
-			return err
-		}
+	defer func() {
+		cleanupContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		err = errors.Join(err, cleanup(cleanupContext))
+	}()
+	_, sealErr := datafiles.SealTar(ctx, stream, &transferWriter{ctx: ctx, output: file, progress: progress, phase: "Copying read-only source volume archive"}, resource)
+	if err := errors.Join(sealErr, stream.Close()); err != nil {
+		return err
 	}
 	archive, err := InspectVolumeArchive(ctx, file.Name())
 	if err != nil {
 		return err
 	}
-	_, err = m.ImportVolume(ctx, destination, file.Name(), archive.SHA256, progress)
-	if err != nil {
-		return err
-	}
-	descriptor, err := m.FileDescriptor(ctx, "volume", destination)
-	if err != nil {
-		return err
-	}
-	if m.migrationVolumeRecorded == nil {
-		return errors.New("migration volume ledger is unavailable; verified destination was retained")
-	}
-	return m.migrationVolumeRecorded(ctx, source.context.Name, selection.ID, destination, descriptor.Resource.Fingerprint())
+	_, err = m.importVolume(ctx, destination, file.Name(), archive.SHA256, progress, volume.Labels, func(resource datafiles.Resource) error {
+		return m.migrationVolumeRecorded(ctx, source.context.Name, selection.ID, destination, resource.Fingerprint())
+	})
+	return err
 }
 
 func (m *Manager) SetMigrationVolumeLedger(

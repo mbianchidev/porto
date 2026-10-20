@@ -14,23 +14,6 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
-func TestNativeFixtureServerProcess(t *testing.T) {
-	directory := os.Getenv("PORTO_NATIVE_SYNTHETIC_SFTP")
-	if directory == "" {
-		t.Skip("only runs as an isolated synthetic SFTP helper")
-	}
-	if err := datafiles.ServeSFTP(context.Background(), &nativeFixtureStdio{}, directory, datafiles.SFTPOptions{}); err != nil {
-		os.Exit(2)
-	}
-	os.Exit(0)
-}
-
-type nativeFixtureStdio struct{}
-
-func (*nativeFixtureStdio) Read(buffer []byte) (int, error)  { return os.Stdin.Read(buffer) }
-func (*nativeFixtureStdio) Write(buffer []byte) (int, error) { return os.Stdout.Write(buffer) }
-func (*nativeFixtureStdio) Close() error                     { return os.Stdin.Close() }
-
 func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.T) {
 	if os.Getenv("PORTO_TEST_WINFSP_NATIVE") != "1" {
 		t.Skip("requires the explicitly provisioned WinFsp CI driver")

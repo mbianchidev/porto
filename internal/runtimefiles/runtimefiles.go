@@ -162,11 +162,15 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		if request.Writable && descriptor.Resource.ReadOnly {
 			return os.ErrPermission
 		}
-		return datafiles.ServeSFTP(ctx, &sftpStdio{Reader: input, Writer: output}, descriptor.RootPath, datafiles.SFTPOptions{
+		options := datafiles.SFTPOptions{
 			ReadOnly:   !request.Writable || descriptor.Resource.ReadOnly,
 			ReadOnlyAt: func(value string) bool { return readOnlyPath(descriptor, value) },
 			MapOwner:   descriptor.hostOwner, Owner: descriptor.namespaceOwner,
-		})
+		}
+		if descriptor.Resource.Kind == "vm" {
+			options.MapOwner, options.Owner = nil, nil
+		}
+		return datafiles.ServeSFTP(ctx, &sftpStdio{Reader: input, Writer: output}, descriptor.RootPath, options)
 	case "list":
 		var listing datafiles.Listing
 		listing, err = datafiles.List(ctx, descriptor.RootPath, request.Path, descriptor.Resource)

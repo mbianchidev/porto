@@ -370,28 +370,6 @@ func (m *Manager) discoverLimaContainerd(ctx context.Context, instance string) (
 	return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), nil
 }
 
-func (m *Manager) discoverLimaSSHConfig(ctx context.Context, instance string) (string, error) {
-	output, err := m.runCommand(
-		ctx,
-		10*time.Second,
-		"discover Lima SSH configuration",
-		nil,
-		"limactl",
-		"list",
-		"--format",
-		"{{.SSHConfigFile}}",
-		instance,
-	)
-	if err != nil {
-		return "", err
-	}
-	configPath := strings.TrimSpace(string(output))
-	if configPath == "" {
-		return "", errors.New("Lima SSH configuration path is unavailable")
-	}
-	return configPath, nil
-}
-
 func dialLimaContainerd(ctx context.Context, instance, socket string) (net.Conn, error) {
 	return dialCommandConn(
 		ctx,

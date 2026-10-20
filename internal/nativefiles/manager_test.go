@@ -152,7 +152,7 @@ func TestNativeStartupReservationAndFailedCleanupRemainRecoverable(t *testing.T)
 				start: func(_ context.Context, command runtimes.Command) (runtimes.Process, error) {
 					document, err := os.ReadFile(filepath.Join(root, id+".json"))
 					reserved = err == nil && strings.Contains(string(document), `"state":"connecting"`)
-					if !strings.Contains(strings.Join(command.Args, ","), "fsname=porto-"+id) {
+					if runtime.GOOS != "darwin" && len(command.Args) > 0 && command.Args[0] != "synthetic-sftp" && !strings.Contains(strings.Join(command.Args, ","), "fsname=porto-"+id) {
 						t.Error("the bridge has no exact owned mount identity")
 					}
 					return nil, startupError
@@ -163,10 +163,10 @@ func TestNativeStartupReservationAndFailedCleanupRemainRecoverable(t *testing.T)
 			releases := 0
 			target := Target{
 				Resource: resource, Identity: resource.Fingerprint(), RemotePath: "/synthetic",
-				Backend:   &runtimefiles.Descriptor{Resource: resource, Owner: "synthetic-owner"},
-				Token:     id,
-				SSHConfig: filepath.Join(root, "synthetic.config"), SSHHost: "synthetic-host",
-				Verify: func(context.Context) error { return nil },
+				Backend: &runtimefiles.Descriptor{Resource: resource, Owner: "synthetic-owner"},
+				Token:   id,
+				SFTP:    &SFTPCommand{Name: "synthetic-sshfs", Args: []string{"synthetic-sftp"}},
+				Verify:  func(context.Context) error { return nil },
 				Release: func(ctx context.Context) error {
 					releases++
 					if ctx.Err() != nil {
