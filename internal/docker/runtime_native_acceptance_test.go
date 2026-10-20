@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -396,5 +397,14 @@ func (fixture *runtimeDataFixture) runtimeLowSpaceRoot(t *testing.T) string {
 		fixture.backendPathCommand(t, "sudo", "-n", "umount", "--", root)
 		fixture.backendPathCommand(t, "sudo", "-n", "rmdir", "--", root)
 	})
+	capacity := strings.Fields(string(fixture.backendPathCommand(t, "stat", "-f", "-c", "%b %S %T", "--", root)))
+	if len(capacity) != 3 || capacity[2] != "tmpfs" {
+		t.Fatalf("low-space fixture is not an actual tmpfs: %v", capacity)
+	}
+	blocks, blocksErr := strconv.ParseUint(capacity[0], 10, 64)
+	blockSize, sizeErr := strconv.ParseUint(capacity[1], 10, 64)
+	if blocksErr != nil || sizeErr != nil || blockSize == 0 || 8*1024*1024%blockSize != 0 || blocks != 8*1024*1024/blockSize {
+		t.Fatalf("low-space fixture is not exactly 8 MiB: %v, %v, %v", capacity, blocksErr, sizeErr)
+	}
 	return root
 }

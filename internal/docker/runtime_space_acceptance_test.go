@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -17,7 +18,7 @@ type limitedVolumeRunner struct {
 }
 
 func (runner limitedVolumeRunner) command(command runtimes.Command) runtimes.Command {
-	if command.Name == "nerdctl" {
+	if filepath.Base(command.Name) == "nerdctl" {
 		command.Args = append([]string{"--data-root", runner.root}, command.Args...)
 		return command
 	}
@@ -27,6 +28,21 @@ func (runner limitedVolumeRunner) command(command runtimes.Command) runtimes.Com
 		command.Args = append(arguments, command.Args[index+1:]...)
 	}
 	return command
+}
+
+func TestLimitedVolumeRunnerScopesResolvedAndRemoteNerdctlCommands(t *testing.T) {
+	runner := limitedVolumeRunner{root: "/synthetic/limited"}
+	for _, command := range []runtimes.Command{
+		{Name: "nerdctl", Args: []string{"volume", "create", "synthetic"}},
+		{Name: "/synthetic/bin/nerdctl", Args: []string{"volume", "create", "synthetic"}},
+		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "nerdctl", "volume", "create", "synthetic"}},
+	} {
+		scoped := runner.command(command)
+		index := slices.Index(scoped.Args, "--data-root")
+		if index < 0 || index+1 >= len(scoped.Args) || scoped.Args[index+1] != runner.root {
+			t.Fatalf("limited filesystem was not selected for %s: %v", command.Name, scoped.Args)
+		}
+	}
 }
 
 func (runner limitedVolumeRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {

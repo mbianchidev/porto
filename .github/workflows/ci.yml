@@ -238,7 +238,18 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq acl fuse3 sshfs qemu-system qemu-utils
+          sudo apt-get install -y -qq acl fuse3 libfuse3-dev libglib2.0-dev meson ninja-build pkg-config qemu-system qemu-utils
+          sshfs_build="$(mktemp -d "$RUNNER_TEMP/porto-sshfs.XXXXXX")"
+          trap 'rm -r -- "$sshfs_build"' EXIT
+          bash scripts/download-file.sh \
+            https://github.com/libfuse/sshfs/releases/download/sshfs-3.7.6/sshfs-3.7.6.tar.xz "$sshfs_build/source.tar.xz"
+          node scripts/verify-runtime-checksum.cjs --verify \
+            6a1bcb31450a077e9cb1b7ff158c71de34db697c3c0da6cb362502131e495893 "$sshfs_build/source.tar.xz"
+          tar -xJf "$sshfs_build/source.tar.xz" -C "$sshfs_build"
+          meson setup "$sshfs_build/build" "$sshfs_build/sshfs-3.7.6" --prefix=/usr/local --buildtype=release
+          meson compile -C "$sshfs_build/build"
+          sudo meson install -C "$sshfs_build/build"
+          sshfs --help 2>&1 | grep -q contain_symlinks
           if [ ! -c /dev/fuse ]; then sudo modprobe fuse; fi
           test -c /dev/fuse
           if [ -c /dev/kvm ]; then

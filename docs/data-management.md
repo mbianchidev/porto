@@ -295,9 +295,9 @@ itself evidence that a mount succeeded: the real host mount must become ready.
 
 | Host / backend | Native integration | Requirements / limitations |
 | --- | --- | --- |
-| Linux / local containerd | Owned Linux bind mount; confined SSHFS for live container roots | Linux mount permission and kernel 5.12+ recursive safe attributes for binds; FUSE3/SSHFS for running containers. No workload is started implicitly. |
+| Linux / local containerd | Owned Linux bind mount; confined SSHFS for live container roots | Linux mount permission and kernel 5.12+ recursive safe attributes for binds; FUSE3 and SSHFS 3.7.6+ or equivalent containment fixes for running containers. No workload is started implicitly. |
 | macOS / Porto Lima | Built-in macOS WebDAV filesystem over confined SFTP | No third-party filesystem driver. Private loopback authentication; images are read-only. Unix link creation and host chmod/chown are unavailable. |
-| Linux / Porto Lima | Foreground SSHFS over confined SFTP/stdio | FUSE3 and containment-capable SSHFS; the scoped guest helper enforces the same root, identity and read-only boundaries as other native drivers. |
+| Linux / Porto Lima | Foreground SSHFS over confined SFTP/stdio | FUSE3 and SSHFS 3.7.6+ or equivalent `contain_symlinks` fixes; the scoped guest helper enforces the same root, identity and read-only boundaries as other native drivers. |
 | Windows x64/ARM64 / Porto Lima | WinFsp host folder with direct confined SFTP | Install WinFsp 2.1+ once; the Porto desktop bundles its native mount helper. Running/stopped containers, images and local volumes use the identity-checked guest helper. |
 | Standalone managed VM | Host-native bridge to its guest home | Running, Porto-owned standalone VM; macOS uses built-in WebDAV, Windows WinFsp, and Linux SSHFS. No implicit boot or access to unrelated VM resources. |
 
@@ -343,7 +343,9 @@ bind; Linux native access uses SSHFS for that resource. Writes enter the actual
 runtime user/mount namespaces so rootless ownership and overlay copy-up remain
 correct. Local stopped/image bind mounts reject symlink traversal at the kernel
 boundary. Confined SFTP permits contained relative links but rejects escapes;
-macOS WebDAV cannot represent Unix links and does not traverse them.
+SSHFS additionally rejects any link target containing `..`, including otherwise
+contained parent-directory links. macOS WebDAV cannot represent Unix links and
+does not traverse them.
 Stopped/image snapshot mounts enter the actual
 containerd user/mount namespaces with maintained `nsenter`, never guess host
 snapshotter paths.

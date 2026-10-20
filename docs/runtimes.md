@@ -166,7 +166,10 @@ macOS uses its built-in WebDAV filesystem over confined SFTP and needs no macFUS
 driver. Successful closed saves are direct workload edits; Unix links and
 chmod/chown require guest tooling or archives. Windows uses WinFsp and Linux
 uses owned bind mounts or SSHFS over the shared confined SFTP transport,
-according to the resource/backend capability. Live container writes enter the
+according to the resource/backend capability. SSHFS requires version 3.7.6 or a
+maintained build with the equivalent `contain_symlinks` security fixes; older
+distribution packages are capability-rejected, not mounted without containment.
+Live container writes enter the
 runtime's actual user/mount namespaces; stopped workloads stay stopped.
 See [runtime data management](data-management.md) for safety,
 backup consistency, CLI workflows and the host/backend capability matrix.
