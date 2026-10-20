@@ -49,8 +49,11 @@ native resource mounts on Linux x64/ARM64 with both local containerd and Lima,
 macOS Intel/Apple Silicon, and Windows x64/ARM64. They reuse the disposable
 runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
 normal development-client jobs retain their existing scope. Linux installs
-FUSE3/SSHFS and QEMU; Windows checksum-verifies the explicitly selected WinFsp
-driver; macOS uses its built-in WebDAV driver without macFUSE.
+FUSE3/SSHFS and QEMU and grants only the runner UID access to an available KVM
+device. Rootful jobs explicitly forward the CI identity, temporary directory,
+architecture and toolchain environment across elevation, including Ubuntu 26's
+sudo-rs. Windows checksum-verifies the explicitly selected WinFsp driver; macOS
+uses its built-in WebDAV driver without macFUSE.
 
 The production migration/native APIs operate on uniquely labelled fixture
 images, volumes, networks and stopped/running containers. A separate
@@ -139,14 +142,19 @@ Hosted macOS and Windows runners use small host-architecture Ubuntu 26.04 QEMU
 guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
 requires software emulation because nested Virtualization.framework support is
 unavailable; matching the host architecture keeps its guest agent/runtime helper
-aligned without cross-architecture x86 emulation. Windows also avoids unused
-SSHFS home-folder mounts and their startup probes. The test harness records
+aligned without cross-architecture x86 emulation. Windows ARM64 hosted runners
+also use TCG through Lima's QEMU command override because nested WHPX cannot
+provide the required physical address width. This affects only disposable CI
+guests, not packaged runtime defaults or native WinFsp mounting. Windows also
+avoids unused SSHFS home-folder mounts and their startup probes. Short temporary
+directory names keep both guest SSH socket paths within macOS's Unix-socket
+length limit. The test harness records
 ownership only inside the isolated runner temporary directory, including native
 Windows paths. Windows disables CGO for the daemon/test build, as the client
 suite does not require WinFsp. The compiled client-test executable sits beside
 the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
-On software-emulated macOS, the host prepares Lima's pinned default containerd
+On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
 runtime version, rootless services, architecture, and 20-minute boot deadline,

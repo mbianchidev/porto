@@ -18,7 +18,7 @@ fi
 backend="$1"
 root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd -P)"
 cd "$root"
-temporary="$(mktemp -d "${RUNNER_TEMP:?}/porto-docker-clients.XXXXXX")"
+temporary="$(mktemp -d "${RUNNER_TEMP:?}/porto-ci.XXXXXX")"
 runtime="$temporary/runtime"
 containerd_pid=""
 buildkit_pid=""
@@ -98,6 +98,12 @@ export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
 export PORTO_DOCKER_CLIENT_BACKEND="$backend"
 export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
+
+if [ "$goos/$goarch" = windows/arm64 ]; then
+  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu max"
+  export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
+  echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."
+fi
 
 if [ "$backend" = local ]; then
   if [ "$goos" != linux ]; then
