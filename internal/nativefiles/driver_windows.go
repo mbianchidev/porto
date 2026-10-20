@@ -153,7 +153,8 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if err := verifyWindowsMount(record); err == nil {
+		verificationErr := verifyWindowsMount(record)
+		if verificationErr == nil {
 			break
 		}
 		select {
@@ -161,7 +162,10 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 		case processErr := <-done:
 			return record, errors.Join(errors.New("native mount exited before becoming accessible"), processErr)
 		case <-startup.Done():
-			return record, fmt.Errorf("WinFsp did not expose the owned host folder: %w", startup.Err())
+			return record, errors.Join(
+				fmt.Errorf("WinFsp did not expose the owned host folder: %w", startup.Err()),
+				verificationErr,
+			)
 		}
 	}
 	record.BridgePID = process.PID()
@@ -190,7 +194,8 @@ func verifyWindowsMount(record Attachment) error {
 		return fmt.Errorf("native host folder is disconnected: %w", err)
 	}
 	if serial != record.Serial || windows.UTF16ToString(label) != "Porto-"+record.Identity[:12] || windows.UTF16ToString(filesystem) != "PortoFS" {
-		return fmt.Errorf("%w: host folder is not the exact Porto-owned WinFsp volume", datafiles.ErrConflict)
+		return fmt.Errorf("%w: host folder is not the exact Porto-owned WinFsp volume: serial=%08x, label=%q, filesystem=%q; expected serial=%08x, label=%q, filesystem=PortoFS",
+			datafiles.ErrConflict, serial, windows.UTF16ToString(label), windows.UTF16ToString(filesystem), record.Serial, "Porto-"+record.Identity[:12])
 	}
 	return nil
 }
