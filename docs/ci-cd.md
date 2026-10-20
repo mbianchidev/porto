@@ -63,6 +63,9 @@ Porto-managed, no-host-mount standalone VM supplies a real Docker Engine source
 and managed-VM native-file acceptance. Real Unix/named-pipe forwarding and
 Docker context discovery are exercised without changing the active context
 or credentials. Original source configuration and data are retained.
+The Docker source proxy reuses HTTP connections over its owned SSH transport,
+rather than starting a new SSH process for every API request. Two sequential
+real Docker pings must share one tunnel, and cleanup closes both HTTP pools.
 An actual 8 MiB tmpfs checks staged low-space failure; a killed migration worker
 checks durable per-object outcomes and never-started helper recovery. Native
 tests check actual workload-visible host edits, permissions, links, case,

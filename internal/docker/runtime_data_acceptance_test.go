@@ -315,16 +315,21 @@ sudo -n docker version --format '{{.Server.Version}}'
 	target, _ := url.Parse("http://docker")
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.ModifyResponse = fixture.sourceResponse
-	proxy.Transport = &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+	var sourceConnections atomic.Int32
+	proxyTransport := &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		sourceConnections.Add(1)
 		spec := runner.command(runtimes.Command{Name: "limactl", Args: []string{"shell", "--workdir=/", instance.Name, "--", "sudo", "-n", guestHelper, "dial-stdio", "/var/run/docker.sock"}})
 		command := newTunnelCommand(ctx, spec.Name, spec.Args...)
 		command.Env = process.WithEnvironment(os.Environ(), spec.Env...)
 		return dialCommandConn(ctx, "isolated Docker source", command, buildKitAddr("source-fixture"), buildKitAddr("docker"))
 	}}
+	proxy.Transport = proxyTransport
 	server := &http.Server{Handler: proxy, ReadHeaderTimeout: 10 * time.Second}
 	done := make(chan error, 1)
 	go func() { done <- server.Serve(listener) }()
 	t.Cleanup(func() {
+		fixture.source.client.CloseIdleConnections()
+		proxyTransport.CloseIdleConnections()
 		if err := server.Close(); err != nil {
 			t.Error(err)
 		}
@@ -334,12 +339,26 @@ sudo -n docker version --format '{{.Server.Version}}'
 		if err := lease.Release(endpoint); err != nil {
 			t.Error(err)
 		}
+		t.Logf("real Docker source SSH connections opened: %d", sourceConnections.Load())
 	})
 	fixture.source = &migrationClient{
 		context: MigrationContext{Name: "desktop-" + fixture.prefix, Endpoint: sourceURL, Supported: true, Desktop: true},
-		client: &http.Client{Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+		client: &http.Client{Transport: &http.Transport{Proxy: nil, DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
 			return dialMigrationSource(ctx, sourceURL)
 		}}},
+	}
+	for range 2 {
+		response, err := fixture.source.request(fixture.ctx, http.MethodGet, "/_ping", nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, copyErr := io.Copy(io.Discard, response.Body)
+		if err := errors.Join(copyErr, response.Body.Close()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if connections := sourceConnections.Load(); connections != 1 {
+		t.Fatalf("sequential Docker source requests opened %d SSH connections; the HTTP bridge must reuse its established transport", connections)
 	}
 	config := filepath.Join(fixture.root, "docker-config")
 	if err := os.Mkdir(config, 0o700); err != nil {
