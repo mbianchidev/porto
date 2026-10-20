@@ -24,6 +24,10 @@ func detach(context.Context, Descriptor, string) error {
 	return datafiles.ErrUnsupported
 }
 
+func attachmentStatus(context.Context, Descriptor, string) error {
+	return datafiles.ErrUnsupported
+}
+
 func ensureVolumeIdle(context.Context, Descriptor) error {
 	return datafiles.ErrUnsupported
 }

@@ -1,8 +1,13 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-if [ "$#" -ne 1 ] || { [ "$1" != local ] && [ "$1" != lima ]; }; then
-  echo "usage: test-docker-clients.sh <local|lima>" >&2
+if [ "$#" -lt 1 ] || [ "$#" -gt 2 ] || { [ "$1" != local ] && [ "$1" != lima ]; }; then
+  echo "usage: test-docker-clients.sh <local|lima> [clients|data]" >&2
+  exit 2
+fi
+suite="${2:-clients}"
+if [ "$suite" != clients ] && [ "$suite" != data ]; then
+  echo "Unknown runtime suite: $suite" >&2
   exit 2
 fi
 if [ "${GITHUB_ACTIONS:-}" != true ]; then
@@ -77,9 +82,9 @@ case "$(uname -s)" in
   MINGW*|MSYS*) goos=windows; porto="$temporary/porto.exe"; client_tests="$temporary/porto-client-tests.exe" ;;
   *) echo "Unsupported CI host." >&2; exit 2 ;;
 esac
-case "$(uname -m)" in
-  x86_64) goarch=amd64 ;;
-  arm64|aarch64) goarch=arm64 ;;
+case "${RUNNER_ARCH:-$(go env GOARCH)}" in
+  X64|amd64|x86_64) goarch=amd64 ;;
+  ARM64|arm64|aarch64) goarch=arm64 ;;
   *) echo "Unsupported CI architecture." >&2; exit 2 ;;
 esac
 if [ "$backend" = local ] && [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
@@ -95,15 +100,20 @@ export PORTO_DOCKER_CLIENT_BACKEND="$backend"
 export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
 
 if [ "$backend" = local ]; then
-  if [ "$goos/$goarch" != linux/amd64 ]; then
-    echo "The disposable local CI runtime requires Linux amd64." >&2
+  if [ "$goos" != linux ]; then
+    echo "The disposable local CI runtime requires Linux." >&2
     exit 2
   fi
+  case "$goarch" in
+    amd64) full_checksum=ff018f11ac2f1354bf7b3aaaca6e0b52d81139c746a89134744d0b7be3a0e62f ;;
+    arm64) full_checksum=2deffe14625f93866f90a8f265d0f59d6fa476c7dc54b98adb327b1b4613efd4 ;;
+    *) echo "Unsupported local runtime architecture." >&2; exit 2 ;;
+  esac
   full="$temporary/nerdctl-full.tar.gz"
   bash scripts/download-file.sh \
-    https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-full-2.4.1-linux-amd64.tar.gz "$full"
+    "https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-full-2.4.1-linux-$goarch.tar.gz" "$full"
   node scripts/verify-runtime-checksum.cjs --verify \
-    ff018f11ac2f1354bf7b3aaaca6e0b52d81139c746a89134744d0b7be3a0e62f "$full"
+    "$full_checksum" "$full"
   mkdir -p "$temporary/tools" "$temporary/network"
   tar -xzf "$full" -C "$temporary/tools"
   export PATH="$temporary/tools/bin:$PATH"
@@ -157,8 +167,10 @@ else
       *) echo "Cannot determine macOS hardware virtualization support." >&2; exit 1 ;;
     esac
   fi
+  memory=3
+  if [ "$suite" = data ]; then memory=2; fi
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
-    --cpus=2 --memory=3 --disk=20 --mount-none --containerd=user)
+    --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user)
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
     archive_override="$(node scripts/lima-containerd-archive.cjs "$goarch" "$temporary/containerd-bootstrap")"
     lima_options+=("--set=$archive_override")
@@ -171,5 +183,14 @@ fi
 go test -c -o "$client_tests" ./internal/docker
 (
   cd "$root/internal/docker"
-  "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v
+  if [ "$suite" = data ]; then
+    export PORTO_RUNTIME_DATA_ACCEPTANCE=1
+    export PORTO_RUNTIME_DATA_VM_TYPE=qemu
+    "$client_tests" -test.run '^TestRuntimeDataAcceptance$' -test.count=1 -test.timeout=55m -test.v
+  else
+    "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v
+  fi
 )
+if [ "$suite/$goos" = data/darwin ]; then
+  PORTO_TEST_WEBDAV_NATIVE=1 go test ./internal/nativefiles -run '^TestMacOSNativeWebDAV' -count=1 -timeout=5m -v
+fi

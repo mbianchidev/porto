@@ -120,7 +120,8 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writ
 		if current.Resource.Fingerprint() != target.Identity || current.PID != descriptor.PID {
 			return datafiles.ErrConflict
 		}
-		return nil
+		var status bytes.Buffer
+		return m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "attachment-status", Identity: target.Identity, Token: attachment.Token}, nil, &status)
 	}
 	return target, nil
 }

@@ -50,7 +50,7 @@ func withDirectory(ctx context.Context, descriptor Descriptor, readOnly bool, ru
 	if err := unix.Mount("", "/", "", unix.MS_REC|unix.MS_PRIVATE, ""); err != nil {
 		return err
 	}
-	prepared, cleanup, err := prepare(ctx, descriptor, directory, readOnly)
+	prepared, cleanup, err := prepare(ctx, descriptor, directory, readOnly, false)
 	if err != nil {
 		return err
 	}
@@ -58,7 +58,7 @@ func withDirectory(ctx context.Context, descriptor Descriptor, readOnly bool, ru
 	return run(prepared)
 }
 
-func prepare(ctx context.Context, descriptor Descriptor, directory string, readOnly bool) (Descriptor, func() error, error) {
+func prepare(ctx context.Context, descriptor Descriptor, directory string, readOnly, noFollow bool) (Descriptor, func() error, error) {
 	client, err := runtimeClient(descriptor)
 	if err != nil {
 		return descriptor, nil, err
@@ -190,7 +190,11 @@ func prepare(ctx context.Context, descriptor Descriptor, directory string, readO
 	default:
 		return fail(datafiles.ErrUnsupported)
 	}
-	attributes := uint64(unix.MOUNT_ATTR_NOSUID | unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOEXEC | unix.MOUNT_ATTR_NOSYMFOLLOW)
+	attributes := uint64(unix.MOUNT_ATTR_NOSUID | unix.MOUNT_ATTR_NODEV | unix.MOUNT_ATTR_NOEXEC)
+	// Rooted transfers confine links with os.Root; host bind mounts also need the kernel boundary.
+	if noFollow {
+		attributes |= unix.MOUNT_ATTR_NOSYMFOLLOW
+	}
 	if readOnly || descriptor.Resource.ReadOnly {
 		attributes |= unix.MOUNT_ATTR_RDONLY
 	}
@@ -412,7 +416,7 @@ func attach(ctx context.Context, descriptor Descriptor, writable bool) (attachme
 	if err := os.Mkdir(directory, 0o755); err != nil {
 		return attachment, fmt.Errorf("%w: attachment already exists; detach it before retrying: %w", datafiles.ErrConflict, err)
 	}
-	prepared, cleanup, err := prepare(ctx, descriptor, directory, !writable)
+	prepared, cleanup, err := prepare(ctx, descriptor, directory, !writable, true)
 	if err != nil {
 		return attachment, errors.Join(err, os.Remove(directory))
 	}
@@ -420,6 +424,10 @@ func attach(ctx context.Context, descriptor Descriptor, writable bool) (attachme
 		Token: token, Path: directory, Resource: descriptor.Resource, Identity: descriptor.Resource.Fingerprint(),
 		ReadOnly: !writable, Snapshotter: prepared.Snapshotter,
 		NamespacePID: descriptor.NamespacePID,
+	}
+	attachment.MountID, err = nativeMountID(directory)
+	if err != nil {
+		return attachment, errors.Join(err, cleanup(), os.Remove(directory))
 	}
 	if descriptor.Resource.Kind == "image" {
 		attachment.SnapshotKey = prepared.SnapshotKey
@@ -454,9 +462,23 @@ func detach(ctx context.Context, descriptor Descriptor, token string) error {
 	if attachment.Identity != descriptor.Resource.Fingerprint() || attachment.Path != directory || attachment.Token != token {
 		return datafiles.ErrConflict
 	}
-	if err := mount.UnmountRecursive(directory, 0); err != nil {
-		return fmt.Errorf("detach native filesystem; source data was not removed: %w", err)
+	current, err := nativeMountID(directory)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
+	parent, parentErr := nativeMountID(base)
+	if parentErr != nil {
+		return parentErr
+	}
+	if err == nil && current != parent {
+		if attachment.MountID == 0 || current != attachment.MountID {
+			return fmt.Errorf("%w: native bind mount was replaced; an unrelated mount was not detached", datafiles.ErrConflict)
+		}
+		if err := mount.UnmountRecursive(directory, 0); err != nil {
+			return fmt.Errorf("detach native filesystem; source data was not removed: %w", err)
+		}
+	}
+
 	if attachment.SnapshotKey != "" {
 		client, err := runtimeClient(descriptor)
 		if err != nil {
@@ -468,4 +490,45 @@ func detach(ctx context.Context, descriptor Descriptor, token string) error {
 		}
 	}
 	return errors.Join(os.Remove(directory), os.Remove(directory+".json"))
+}
+
+func nativeMountID(directory string) (uint64, error) {
+	var info unix.Statx_t
+	if err := unix.Statx(unix.AT_FDCWD, directory, unix.AT_SYMLINK_NOFOLLOW|unix.AT_NO_AUTOMOUNT, unix.STATX_MNT_ID, &info); err != nil {
+		return 0, err
+	}
+	if info.Mask&unix.STATX_MNT_ID == 0 || info.Mnt_id == 0 {
+		return 0, fmt.Errorf("%w: kernel mount identity is unavailable", datafiles.ErrUnsupported)
+	}
+	return info.Mnt_id, nil
+}
+
+func attachmentStatus(_ context.Context, descriptor Descriptor, token string) error {
+	if token != descriptor.Resource.Fingerprint()+"-ro" && token != descriptor.Resource.Fingerprint()+"-rw" {
+		return datafiles.ErrConflict
+	}
+	base, err := nativeDirectory(descriptor)
+	if err != nil {
+		return err
+	}
+	directory := filepath.Join(base, token)
+	document, err := os.ReadFile(directory + ".json")
+	if err != nil {
+		return err
+	}
+	var attachment Attachment
+	if err := json.Unmarshal(document, &attachment); err != nil {
+		return err
+	}
+	if attachment.Token != token || attachment.Path != directory || attachment.Identity != descriptor.Resource.Fingerprint() || attachment.MountID == 0 {
+		return datafiles.ErrConflict
+	}
+	current, err := nativeMountID(directory)
+	if err != nil {
+		return err
+	}
+	if current != attachment.MountID {
+		return fmt.Errorf("%w: native bind mount is absent or replaced", datafiles.ErrConflict)
+	}
+	return nil
 }

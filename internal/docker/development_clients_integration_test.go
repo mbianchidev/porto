@@ -37,32 +37,9 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatal("software-emulated CPU validation is restricted to the isolated macOS CI fixture")
 	}
 	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
-		limaHome := filepath.Clean(os.Getenv("LIMA_HOME"))
-		runnerTemporary := filepath.Clean(os.Getenv("RUNNER_TEMP"))
-		relativeLimaHome, err := filepath.Rel(runnerTemporary, limaHome)
-		if os.Getenv("GITHUB_ACTIONS") != "true" || !filepath.IsAbs(limaHome) ||
-			!filepath.IsAbs(runnerTemporary) || err != nil || relativeLimaHome == "." ||
-			relativeLimaHome == ".." || strings.HasPrefix(relativeLimaHome, ".."+string(os.PathSeparator)) {
-			t.Fatal("fresh Lima fixture ownership is restricted to an isolated CI runtime")
-		}
-		if _, err := os.Stat(manager.engineStatePath()); !os.IsNotExist(err) {
-			t.Fatal("refusing to replace an existing engine ownership record")
-		}
-		helperPath, err := manager.runtimeHelperPath()
-		if err != nil || helperPath == "" {
-			t.Fatalf("fresh Lima fixture requires the bundled Linux runtime helper: path=%q, error=%v", helperPath, err)
-		}
-		owner := newInventoryInstanceID()
-		if err := manager.writeLimaOwnership(ctx, owner); err != nil {
-			t.Fatal(err)
-		}
-		if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: owner, CreatedAt: time.Now().UTC()}); err != nil {
-			t.Fatal(err)
-		}
-		if err := manager.installLimaRuntimeHelper(ctx, engineInstanceName); err != nil {
-			t.Fatal(err)
-		}
+		claimFreshClientLima(t, ctx, manager)
 	}
+
 	switch backend {
 	case "local":
 		if runtime.GOOS != "linux" {

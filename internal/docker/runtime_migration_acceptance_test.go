@@ -68,6 +68,7 @@ func (fixture *runtimeDataFixture) migrationRun(t *testing.T, selections []datao
 
 func (fixture *runtimeDataFixture) migrationFailures(t *testing.T) {
 	volume := fixture.selection[slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == "volume" })]
+	t.Run("deterministic preflight boundaries", fixture.migrationPreflight)
 	t.Run("corrupt source archive never creates a destination", func(t *testing.T) {
 		selected := volume
 		selected.Destination = fixture.prefix + "-corrupt-volume"
@@ -95,6 +96,7 @@ func (fixture *runtimeDataFixture) migrationFailures(t *testing.T) {
 		}
 		fixture.requireMissingVolume(t, selected.Destination)
 	})
+	t.Run("actual low-space destination retains no partial volume", fixture.lowSpaceMigration)
 	t.Run("daemon interruption retains successes and recovers never-started helpers", fixture.interruptedMigration)
 }
 

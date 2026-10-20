@@ -42,7 +42,38 @@ outcomes. Native-access fixtures cover resource-bound write consent, unavailable
 or replaced bridges, explicit failed-detach states, escaped host paths, recovery,
 confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
 not count as successful OS-native mounts for every platform/backend row; see
-the [acceptance boundaries](data-management.md#acceptance-coverage-and-limits).
+the [real-runtime matrix](data-management.md#real-runtime-acceptance).
+
+The eight `Runtime data` jobs separately run actual Docker-source migration and
+native resource mounts on Linux x64/ARM64 with both local containerd and Lima,
+macOS Intel/Apple Silicon, and Windows x64/ARM64. They reuse the disposable
+runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
+normal development-client jobs retain their existing scope. Linux installs
+FUSE3/SSHFS and QEMU; Windows checksum-verifies the explicitly selected WinFsp
+driver; macOS uses its built-in WebDAV driver without macFUSE.
+
+The production migration/native APIs operate on uniquely labelled fixture
+images, volumes, networks and stopped/running containers. A separate
+Porto-managed, no-host-mount standalone VM supplies a real Docker Engine source
+and managed-VM native-file acceptance. Real Unix/named-pipe forwarding and
+Docker context discovery are exercised without changing the active context
+or credentials. Original source configuration and data are retained.
+An actual 8 MiB tmpfs checks staged low-space failure; a killed migration worker
+checks durable per-object outcomes and never-started helper recovery. Native
+tests check actual workload-visible host edits, permissions, links, case,
+concurrent changes, deletion/reused identities, connection loss and explicit
+reconnect. Only disposable CI engines are stopped for update/shutdown tests.
+The macOS native-driver suite also kills an actual mount-owner process and
+checks exact owned recovery and retryable detach failure.
+
+For local acceptance against an already-running, ownership-verified Porto
+Lima destination, compile this revision's Linux helper beside a compiled test
+executable as `runtime/bin/porto-runtime-helper`, matching the guest architecture.
+Run that test executable with `PORTO_RUNTIME_DATA_ACCEPTANCE=1`,
+`PORTO_RUNTIME_DATA_USE_CURRENT_HELPER=1` and
+`-test.run '^TestRuntimeDataAcceptance$' -test.timeout=45m -test.v`.
+It creates/removes its own separately owned source VM and fixture resources;
+the destination engine and its installed helper are never replaced or stopped.
 
 For an optional synthetic round trip against an **already running, owned**
 Lima engine, cross-build the current Linux helper and set

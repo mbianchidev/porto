@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"os/user"
+	"path"
 	"path/filepath"
 	"reflect"
 	"runtime"
@@ -86,8 +87,11 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		t.Skip("set PORTO_RUNTIME_DATA_ACCEPTANCE=1 for isolated real Docker migration and OS-native runtime mounts")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 	manager := New(nil)
+	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
+		claimFreshClientLima(t, ctx, manager)
+	}
 	if os.Getenv("PORTO_DOCKER_CLIENT_BACKEND") == "local" {
 		if runtime.GOOS != "linux" {
 			t.Fatal("local runtime acceptance requires Linux")
@@ -149,6 +153,7 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		t: t, ctx: ctx, manager: manager, store: ledger, native: native, root: root,
 		prefix: "porto-data-" + newInventoryInstanceID()[:12], helper: helper,
 	}
+	t.Logf("isolated runtime acceptance fixture: %s", fixture.prefix)
 	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
 		account, err := user.Lookup(os.Getenv("SUDO_USER"))
 		if err != nil {
@@ -180,6 +185,14 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		return
 	}
 	t.Run("real native resource mounts", fixture.nativeResources)
+	if t.Failed() {
+		return
+	}
+	t.Run("native lifecycle boundaries", fixture.nativeLifecycles)
+	if t.Failed() {
+		return
+	}
+	t.Run("owned engine update and shutdown", fixture.engineLifecycle)
 }
 
 func (fixture *runtimeDataFixture) useCurrentDestinationHelper() {
@@ -228,7 +241,7 @@ func (fixture *runtimeDataFixture) prepareSource() {
 	}
 	instance, err := fixture.vms.Create(fixture.ctx, vm.CreateRequest{
 		Name: fixture.prefix, Owner: fixture.prefix, Image: "ubuntu-24.04", VMType: vmType,
-		CPUs: 2, MemoryMiB: 2048, DiskGiB: 12, Start: true,
+		CPUs: 2, MemoryMiB: 1536, DiskGiB: 12, Start: true,
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -373,6 +386,25 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 	if _, err := writer.Write(content); err != nil {
 		t.Fatal(err)
 	}
+	for _, entry := range []struct{ name, body string }{
+		{"Case.txt", "upper case fixture"}, {"case.txt", "lower case fixture"},
+	} {
+		if err := writer.WriteHeader(&tar.Header{Name: entry.name, Typeflag: tar.TypeReg, Mode: 0o640, Size: int64(len(entry.body))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.WriteString(writer, entry.body); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, header := range []*tar.Header{
+		{Name: "inside-link", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "synthetic.txt"},
+		{Name: "escape-link", Typeflag: tar.TypeSymlink, Mode: 0o777, Linkname: "/tmp/" + fixture.prefix + "-outside.txt"},
+		{Name: "hardlink.txt", Typeflag: tar.TypeLink, Mode: 0o640, Linkname: "synthetic.txt"},
+	} {
+		if err := writer.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if err := writer.Close(); err != nil {
 		t.Fatal(err)
 	}
@@ -387,6 +419,7 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 		ID string `json:"Id"`
 	}
 	fixture.sourceJSON(http.MethodPost, "/commit", url.Values{"container": {seed.ID}, "repo": {fixture.prefix}, "tag": {"fixture"}}, nil, &committed)
+	fixture.sourceJSON(http.MethodPost, "/images/"+url.PathEscape(committed.ID)+"/tag", url.Values{"repo": {fixture.prefix}, "tag": {"alias"}}, nil, nil)
 	fixture.sourceJSON(http.MethodDelete, "/containers/"+seed.ID, nil, nil, nil)
 	fixture.sourceJSON(http.MethodDelete, "/images/busybox:1.37.0", nil, nil, nil)
 	volume := fixture.prefix + "-source"
@@ -398,7 +431,7 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 		ID string `json:"Id"`
 	}
 	fixture.sourceJSON(http.MethodPost, "/networks/create", nil, map[string]any{
-		"Name": network, "Driver": "bridge", "Internal": true, "Labels": map[string]string{"porto.test.suite": fixture.prefix},
+		"Name": network, "Driver": "bridge", "Internal": false, "Labels": map[string]string{"porto.test.suite": fixture.prefix},
 	}, &createdNetwork)
 	var container struct {
 		ID string `json:"Id"`
@@ -412,19 +445,47 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 		t.Fatal(err)
 	}
 	fixture.sourceJSON(http.MethodPost, "/containers/create", url.Values{"name": {fixture.prefix + "-app"}}, map[string]any{
-		"Image": fixture.prefix + ":fixture", "Cmd": []string{"sh", "-c", "sleep 600"},
+		"Image": fixture.prefix + ":fixture", "Cmd": []string{"sh", "-c", "printf 'porto-runtime-native-fixture\\n' > /tmp/index.html; exec httpd -f -p 8080 -h /tmp"},
 		"Env": []string{"SYNTHETIC_MODE=acceptance"}, "WorkingDir": "/tmp", "Hostname": "synthetic-host",
 		"Labels":       map[string]string{"porto.test.suite": fixture.prefix, "com.docker.compose.project": fixture.prefix, "com.docker.compose.service": "app"},
 		"Healthcheck":  map[string]any{"Test": []string{"CMD-SHELL", "test -f /synthetic.txt"}, "Interval": int64(30 * time.Second), "Timeout": int64(3 * time.Second), "Retries": 2},
 		"ExposedPorts": map[string]any{"8080/tcp": map[string]any{}},
 		"HostConfig": map[string]any{
-			"Mounts":      []map[string]any{{"Type": "volume", "Source": volume, "Target": "/data", "VolumeOptions": map[string]bool{"NoCopy": true}}},
+			"Mounts": []map[string]any{
+				{"Type": "volume", "Source": volume, "Target": "/data", "VolumeOptions": map[string]bool{"NoCopy": true}},
+				{"Type": "volume", "Source": volume, "Target": "/readonly", "ReadOnly": true, "VolumeOptions": map[string]bool{"NoCopy": true}},
+			},
 			"NetworkMode": network, "RestartPolicy": map[string]any{"Name": "on-failure", "MaximumRetryCount": 2},
+			"Memory": int64(128 * 1024 * 1024), "MemorySwap": int64(256 * 1024 * 1024), "NanoCpus": int64(500_000_000),
 			"PortBindings": map[string]any{"8080/tcp": []map[string]string{{"HostIP": "127.0.0.1", "HostPort": hostPort}}},
 		},
 		"NetworkingConfig": map[string]any{"EndpointsConfig": map[string]any{network: map[string]any{"Aliases": []string{"synthetic-host"}}}},
 	}, &container)
-	response, err = fixture.source.request(fixture.ctx, http.MethodPut, "/containers/"+container.ID+"/archive", url.Values{"path": {"/data"}}, bytes.NewReader(archive.Bytes()))
+	var volumePayload bytes.Buffer
+	volumeWriter := tar.NewWriter(&volumePayload)
+	reader := tar.NewReader(bytes.NewReader(archive.Bytes()))
+	for {
+		header, err := reader.Next()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if header.Name == "escape-link" {
+			continue
+		}
+		if err := volumeWriter.WriteHeader(header); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := io.Copy(volumeWriter, reader); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := volumeWriter.Close(); err != nil {
+		t.Fatal(err)
+	}
+	response, err = fixture.source.request(fixture.ctx, http.MethodPut, "/containers/"+container.ID+"/archive", url.Values{"path": {"/data"}}, bytes.NewReader(volumePayload.Bytes()))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -460,19 +521,14 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 				if selection.Kind != kind {
 					continue
 				}
-				var err error
-				switch kind {
-				case "container":
-					err = fixture.manager.ContainerAction(ctx, selection.Destination, "remove-force")
-				case "volume":
-					err = fixture.manager.RemoveVolume(ctx, selection.Destination, false)
-				case "network":
-					err = fixture.manager.RemoveNetwork(ctx, selection.Destination)
-				case "image":
-					err = fixture.manager.RemoveImage(ctx, selection.Destination, false)
-				}
+				err := fixture.removeDestination(ctx, selection)
 				if err != nil && !errorsIsNotFound(err) && !missingDockerObject(err, kind) {
 					t.Errorf("remove exact acceptance destination %s: %v", selection.Destination, err)
+				}
+			}
+			for _, tag := range []string{fixture.prefix + ":fixture", fixture.prefix + ":alias"} {
+				if err := fixture.removeDestination(ctx, dataops.Selection{Kind: "image", Destination: tag}); err != nil && !missingDockerObject(err, "image") {
+					t.Error(err)
 				}
 			}
 		}
@@ -521,6 +577,23 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 	})
 	if err != nil {
 		_ = fixture.store.FinishDataOperation(fixture.ctx, run.ID, "failed", result, err.Error(), time.Now())
+		if errors.Is(err, datafiles.ErrConflict) && len(result.Steps) == 0 {
+			for _, selection := range fixture.selection {
+				current, inspectErr := fixture.source.inspect(fixture.ctx, selection)
+				if inspectErr != nil {
+					t.Log(inspectErr)
+					continue
+				}
+				var original, now map[string]json.RawMessage
+				_ = json.Unmarshal(before[selection.Kind], &original)
+				_ = json.Unmarshal(current, &now)
+				for key, value := range original {
+					if !bytes.Equal(value, now[key]) {
+						t.Logf("synthetic changed preview metadata: %s.%s", selection.Kind, key)
+					}
+				}
+			}
+		}
 		t.Fatalf("selected real-object migration: %+v, %v", result, err)
 	}
 	if err := fixture.store.FinishDataOperation(fixture.ctx, run.ID, "succeeded", result, "", time.Now()); err != nil {
@@ -531,7 +604,17 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 	}
 	for _, selection := range fixture.selection {
 		after, err := fixture.source.inspect(fixture.ctx, selection)
-		if err != nil || !bytes.Equal(before[selection.Kind], after) {
+		originalDigest, originalErr := migrationPlanDigest(before[selection.Kind])
+		currentDigest, currentErr := migrationPlanDigest(after)
+		if err != nil || originalErr != nil || currentErr != nil || originalDigest != currentDigest {
+			var previous, current map[string]json.RawMessage
+			_ = json.Unmarshal(before[selection.Kind], &previous)
+			_ = json.Unmarshal(after, &current)
+			for key, value := range previous {
+				if !bytes.Equal(value, current[key]) {
+					t.Logf("synthetic changed source metadata: %s.%s", selection.Kind, key)
+				}
+			}
 			t.Fatalf("source %s configuration changed: %v", selection.Kind, err)
 		}
 		if selection.Kind == "volume" {
@@ -556,6 +639,9 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 				t.Fatalf("volume labels were not preserved: %s, %v", document, err)
 			}
 		}
+		if selection.Kind == "container" {
+			fixture.requireContainerFidelity(t, selection, before["container"])
+		}
 	}
 	currentConfig, err := os.ReadFile(configPath)
 	if err != nil || !bytes.Equal(config, currentConfig) {
@@ -565,9 +651,33 @@ func (fixture *runtimeDataFixture) migrateSelected(t *testing.T) {
 	if err != nil || len(retry.Conflicts) != 0 {
 		t.Fatalf("verified repeat was not idempotent: %+v, %v", retry.Conflicts, err)
 	}
+	image := fixture.selection[slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == "image" })]
+	missingAlias := fixture.prefix + ":alias"
+	if image.Name == missingAlias {
+		missingAlias = fixture.prefix + ":fixture"
+	}
+	if err := fixture.manager.RemoveImage(fixture.ctx, missingAlias, false); err != nil {
+		t.Fatal(err)
+	}
+	repeated, err := fixture.migrationRun(t, request.Selections, false, nil)
+	if err != nil || len(repeated.Steps) != len(request.Selections) || slices.ContainsFunc(repeated.Steps, func(step dataops.Step) bool { return step.Status != "succeeded" }) {
+		t.Fatalf("an actual repeated migration did not reuse verified objects: %+v, %v", repeated, err)
+	}
+	if _, err := fixture.manager.InspectImage(fixture.ctx, missingAlias, ""); err != nil {
+		t.Fatalf("idempotent retry did not restore a missing selected-image alias: %v", err)
+	}
 }
 
 func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
+	outside := "/tmp/" + fixture.prefix + "-outside.txt"
+	fixture.backendPathCommand(t, "sh", "-c", `set -eu; printf 'synthetic outside boundary' > "$1"`, "porto-native-fixture", outside)
+	fixture.t.Cleanup(func() { fixture.backendPathCommand(fixture.t, "rm", "--", outside) })
+	volume := fixture.selection[slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == "volume" })]
+	descriptor, err := fixture.manager.FileDescriptor(fixture.ctx, "volume", volume.Destination)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.backendPathCommand(t, "sudo", "-n", "ln", "-s", "--", outside, path.Join(descriptor.RootPath, "escape-link"))
 	for _, kind := range []string{"container", "image", "volume", "vm"} {
 		t.Run(kind, func(t *testing.T) {
 			name := fixture.instance.Name
@@ -575,23 +685,9 @@ func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
 				index := slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == kind })
 				name = fixture.selection[index].Destination
 			}
-			var target nativefiles.Target
-			var err error
-			if kind == "vm" {
-				target, err = fixture.vms.NativeFilesTarget(fixture.ctx, name, true)
-			} else {
-				target, err = fixture.manager.NativeFilesTarget(fixture.ctx, kind, name, kind != "image")
-			}
+			target, err := fixture.nativeTarget(kind, name, kind != "image")
 			if err != nil {
 				t.Fatal(err)
-			}
-			if override := fixture.destinationHelper; override != "" && kind != "vm" && target.SFTP != nil {
-				target.SFTP.Args = slices.Clone(target.SFTP.Args)
-				for index, arg := range target.SFTP.Args {
-					if strings.Contains(arg, `"$HOME/.local/bin/porto-runtime-helper" files-sftp`) {
-						target.SFTP.Args[index] = strings.ReplaceAll(arg, `"$HOME/.local/bin/porto-runtime-helper"`, `"`+override+`"`)
-					}
-				}
 			}
 			attachment, err := fixture.native.Attach(fixture.ctx, target, kind != "image")
 			if err != nil {
@@ -610,6 +706,7 @@ func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
 				if err := os.WriteFile(filepath.Join(attachment.Path, "synthetic.txt"), []byte("forbidden"), 0o600); err == nil {
 					t.Fatal("image accepted a host edit")
 				}
+				fixture.requireNativePaths(t, kind, name, attachment)
 				return
 			}
 			path := filepath.Join(attachment.Path, "native-\u03b4.txt")
@@ -636,6 +733,40 @@ func (fixture *runtimeDataFixture) nativeResources(t *testing.T) {
 					t.Fatalf("workload-visible host edit failed: %s, %v", output.Bytes(), err)
 				}
 			}
+			fixture.requireNativePaths(t, kind, name, attachment)
+			if kind == "container" {
+				if err := os.WriteFile(filepath.Join(attachment.Path, "readonly", "forbidden.txt"), []byte("forbidden"), 0o600); err == nil {
+					t.Fatal("native container access bypassed a read-only volume mount")
+				}
+			}
 		})
 	}
+}
+
+func (fixture *runtimeDataFixture) nativeTarget(kind, name string, writable bool) (nativefiles.Target, error) {
+	var target nativefiles.Target
+	var err error
+	if kind == "vm" {
+		target, err = fixture.vms.NativeFilesTarget(fixture.ctx, name, writable)
+	} else {
+		target, err = fixture.manager.NativeFilesTarget(fixture.ctx, kind, name, writable)
+	}
+	if err != nil {
+		return target, err
+	}
+	if target.SFTP != nil {
+		if override := fixture.destinationHelper; override != "" && kind != "vm" {
+			target.SFTP.Args = slices.Clone(target.SFTP.Args)
+			for index, arg := range target.SFTP.Args {
+				if strings.Contains(arg, `"$HOME/.local/bin/porto-runtime-helper" files-sftp`) {
+					target.SFTP.Args[index] = strings.ReplaceAll(arg, `"$HOME/.local/bin/porto-runtime-helper"`, `"`+override+`"`)
+				}
+			}
+		}
+		if kind == "vm" && fixture.vmRunner.runAs != "" {
+			command := fixture.vmRunner.command(runtimes.Command{Name: target.SFTP.Name, Args: target.SFTP.Args, Env: target.SFTP.Env})
+			target.SFTP = &nativefiles.SFTPCommand{Name: command.Name, Args: command.Args, Env: command.Env}
+		}
+	}
+	return target, nil
 }

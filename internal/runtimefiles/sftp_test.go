@@ -28,7 +28,9 @@ func TestNativeSFTPRequestUsesRootedDirectIO(t *testing.T) {
 	go func() { done <- ExecuteDirectory(ctx, envelope.Descriptor, envelope.Request, server, server) }()
 	client, err := sftp.NewClientPipe(socket, socket)
 	if err != nil {
-		t.Fatal(err)
+		socket.Close()
+		cancel()
+		t.Fatalf("initialize synthetic SFTP client: %v; server: %v", err, <-done)
 	}
 	file, err := client.OpenFile("/fixture.txt", os.O_RDWR)
 	if err != nil {

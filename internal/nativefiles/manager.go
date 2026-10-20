@@ -238,7 +238,7 @@ func (m *Manager) waitMounted(ctx context.Context, record Attachment, done <-cha
 	for {
 		select {
 		case err := <-done:
-			return errors.Join(errors.New("SSHFS exited before its mount was ready"), err)
+			return errors.Join(errors.New("native filesystem bridge exited before its mount was ready"), err)
 		default:
 		}
 		mounted, err := m.mounted(ctx, record)
@@ -257,7 +257,7 @@ func (m *Manager) waitMounted(ctx context.Context, record Attachment, done <-cha
 		}
 		select {
 		case err := <-done:
-			return errors.Join(errors.New("SSHFS exited before its mount was ready"), err)
+			return errors.Join(errors.New("native filesystem bridge exited before its mount was ready"), err)
 		case <-ctx.Done():
 			return fmt.Errorf("native filesystem mount did not become accessible: %w", ctx.Err())
 		case <-ticker.C:

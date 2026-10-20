@@ -56,6 +56,7 @@ type Attachment struct {
 	Snapshotter  string             `json:"snapshotter,omitempty"`
 	SnapshotKey  string             `json:"snapshotKey,omitempty"`
 	NamespacePID int32              `json:"namespacePid,omitempty"`
+	MountID      uint64             `json:"mountId,omitempty"`
 }
 
 func Run(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -108,7 +109,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 			}
 			return json.NewEncoder(output).Encode(resource)
 		}
-		if descriptor.VolumeIdentity != "" {
+		if descriptor.VolumeIdentity != "" && envelope.Request.Action != "detach" {
 			current, err := nativeVolumeResource(descriptor)
 			if err != nil || current.ID != descriptor.VolumeIdentity || current.Fingerprint() != descriptor.Resource.Fingerprint() {
 				return errors.Join(datafiles.ErrConflict, err)
@@ -127,6 +128,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(output).Encode(map[string]bool{"detached": true})
+	case "attachment-status":
+		if err := attachmentStatus(ctx, descriptor, envelope.Request.Token); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(map[string]bool{"connected": true})
 	default:
 		readOnly := envelope.Request.Action != "write" && envelope.Request.Action != "delete"
 		if envelope.Request.Action == "sftp" {

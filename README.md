@@ -35,6 +35,7 @@ It provides a portable, open-source alternative to proprietary desktop container
   Per-object migration checkpoints survive daemon interruptions; retries require a fresh dry run and never retarget recreated source names.
   Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
   macOS native folders use the built-in WebDAV filesystem over confined SFTP, without a third-party driver.
+  CLI `--resume` retains exact migration identities and destinations; real-runtime CI exercises both release architectures on Linux, macOS, and Windows.
 
 See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
 for supported, partial, capability-gated, and explicitly unsupported operations.
