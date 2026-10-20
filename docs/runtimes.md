@@ -171,10 +171,11 @@ maintained build with the equivalent `contain_symlinks` security fixes; older
 distribution packages are capability-rejected, not mounted without containment.
 Live container writes enter the
 runtime's actual user/mount namespaces; stopped workloads stay stopped.
-Explicit VM starts and reconnect starts use the same bounded 20-minute startup
+Explicit standalone VM starts and reconnect starts use the same bounded 20-minute startup
 budget as initial creation, allowing a software-emulated QEMU guest to finish
 booting instead of being interrupted after five minutes. Caller cancellation
 still stops the wait.
+Kubernetes node restarts retain their existing five-minute budget.
 See [runtime data management](data-management.md) for safety,
 backup consistency, CLI workflows and the host/backend capability matrix.
 

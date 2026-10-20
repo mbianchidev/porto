@@ -54,7 +54,7 @@ func TestCreateNodeDisablesUnneededHostIntegration(t *testing.T) {
 	}
 }
 
-func TestNodeBootAndRestartShareTheBoundedStartupBudget(t *testing.T) {
+func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
 	var startBudgets []time.Duration
 	created := false
 	runner := vmRunnerFunc(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
@@ -91,10 +91,44 @@ func TestNodeBootAndRestartShareTheBoundedStartupBudget(t *testing.T) {
 	if len(startBudgets) != 2 {
 		t.Fatalf("start budgets = %v, want first boot and restart", startBudgets)
 	}
-	for index, want := range []time.Duration{20 * time.Minute, 20 * time.Minute} {
+	for index, want := range []time.Duration{20 * time.Minute, 5 * time.Minute} {
 		if got := startBudgets[index]; got < want-time.Second || got > want {
-			t.Errorf("start %d budget = %s, want %s (image preparation and emulated restart must retain the same bounded deadline)", index, got, want)
+			t.Errorf("start %d budget = %s, want %s (initial image preparation must not consume the boot deadline)", index, got, want)
 		}
+	}
+}
+
+func TestStandaloneRestartRetainsBoundedBootBudget(t *testing.T) {
+	for _, callerBudget := range []time.Duration{time.Hour, 30 * time.Second} {
+		t.Run(callerBudget.String(), func(t *testing.T) {
+			var startBudget time.Duration
+			runner := vmRunnerFunc(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				switch command.Args[0] {
+				case "start":
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						t.Fatal("standalone VM start has no deadline")
+					}
+					startBudget = time.Until(deadline)
+				case "list":
+					return json.Marshal(map[string]any{"name": "synthetic-vm", "status": "Running", "vmType": "qemu"})
+				}
+				return nil, nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			if err := manager.writeMetadata(Metadata{Name: "synthetic-vm", Kind: "standalone"}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
+			defer cancel()
+			if err := manager.Start(ctx, "synthetic-vm"); err != nil {
+				t.Fatal(err)
+			}
+			want := min(20*time.Minute, callerBudget)
+			if startBudget < want-time.Second || startBudget > want {
+				t.Fatalf("standalone start budget = %s, want %s", startBudget, want)
+			}
+		})
 	}
 }
 
