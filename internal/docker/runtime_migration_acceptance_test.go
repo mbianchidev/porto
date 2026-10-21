@@ -120,29 +120,69 @@ type runtimeMigrationWorker struct {
 	Run                                         dataops.Operation
 }
 
+type runtimeMigrationWorkerSignal struct {
+	Phase string `json:"phase,omitempty"`
+	Error string `json:"error,omitempty"`
+}
+
+func TestRuntimeMigrationWorkerReportsSetupFailureAsJSON(t *testing.T) {
+	worker := runtimeMigrationWorker{Prefix: "synthetic-worker", Ledger: t.TempDir()}
+	document, err := json.Marshal(worker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "worker.json")
+	if err := os.WriteFile(path, document, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	output, workerErr := (runtimes.ExecRunner{}).Run(ctx, runtimes.Command{
+		Name: os.Args[0], Args: []string{"-test.run=^TestRuntimeMigrationWorkerProcess$"},
+		Env: []string{"PORTO_RUNTIME_MIGRATION_WORKER=" + path},
+	})
+	var signal runtimeMigrationWorkerSignal
+	if err := json.NewDecoder(bytes.NewReader(output)).Decode(&signal); err != nil {
+		t.Fatalf("failed worker did not report a structured error before test output: %v: %s", err, output)
+	}
+	if workerErr == nil || signal.Error == "" || signal.Phase != "" {
+		t.Fatalf("failed worker advertised transfer readiness: signal=%+v error=%v", signal, workerErr)
+	}
+}
+
 func TestRuntimeMigrationWorkerProcess(t *testing.T) {
 	path := os.Getenv("PORTO_RUNTIME_MIGRATION_WORKER")
 	if path == "" {
 		t.Skip("isolated migration worker subprocess")
 	}
+	if err := runRuntimeMigrationWorker(path); err != nil {
+		reportErr := json.NewEncoder(os.Stdout).Encode(runtimeMigrationWorkerSignal{Error: err.Error()})
+		if reportErr != nil {
+			fmt.Fprintf(os.Stderr, "report migration worker failure: %v\n", reportErr)
+		}
+		t.Fatal(errors.Join(err, reportErr))
+	}
+}
+
+func runRuntimeMigrationWorker(path string) (err error) {
 	document, err := os.ReadFile(path)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
 	var worker runtimeMigrationWorker
 	if err := json.Unmarshal(document, &worker); err != nil {
-		t.Fatal(err)
+		return err
 	}
 	for _, selection := range worker.Run.Request.Selections {
 		if !strings.HasPrefix(selection.Destination, worker.Prefix) {
-			t.Fatal("refusing a migration worker outside its fixture destinations")
+			return errors.New("refusing a migration worker outside its fixture destinations")
 		}
 	}
 	ledger, err := store.Open(worker.Ledger)
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	defer ledger.Close()
+	defer func() { err = errors.Join(err, ledger.Close()) }()
 	manager := NewWithStateDir(nil, worker.StateDir)
 	if worker.Helper != "" {
 		manager.runner = storageIntegrationRunner{helper: worker.Helper}
@@ -150,9 +190,28 @@ func TestRuntimeMigrationWorkerProcess(t *testing.T) {
 	manager.SetMigrationVolumeLedger(ledger.RecordMigratedVolume, ledger.KnownMigratedVolume)
 	manager.SetMigrationTemporaryLedger(ledger.ReserveMigrationTemporary, ledger.ClearMigrationTemporary, ledger.MigrationTemporaries)
 	manager.SetVolumeTransferLedger(ledger.ReserveVolumeTemporary, ledger.ClearVolumeTemporary, ledger.VolumeTemporaries)
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		if err := manager.StartContainerInventory(context.Background()); err != nil {
+			return err
+		}
+		defer func() {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			err = errors.Join(err, manager.StopContainerInventory(ctx))
+		}()
+		deadline := time.NewTimer(time.Minute)
+		defer deadline.Stop()
+		for !manager.ContainerSnapshot().Available {
+			select {
+			case <-deadline.C:
+				return fmt.Errorf("migration worker inventory unavailable: %s", manager.ContainerSnapshot().Message)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
 	_, err = manager.Migrate(context.Background(), worker.Run.Request, worker.Directory, func(phase string, _ int64) error {
 		if strings.HasPrefix(phase, "Copying read-only source volume") {
-			if err := json.NewEncoder(os.Stdout).Encode(map[string]string{"phase": phase}); err != nil {
+			if err := json.NewEncoder(os.Stdout).Encode(runtimeMigrationWorkerSignal{Phase: phase}); err != nil {
 				return err
 			}
 			var control [1]byte
@@ -164,9 +223,9 @@ func TestRuntimeMigrationWorkerProcess(t *testing.T) {
 		return ledger.CheckpointDataOperation(context.Background(), worker.Run.ID, result)
 	})
 	if err != nil {
-		t.Fatal(err)
+		return err
 	}
-	t.Fatal("the fixture migration worker was not interrupted at its transfer checkpoint")
+	return errors.New("the fixture migration worker was not interrupted at its transfer checkpoint")
 }
 
 func (fixture *runtimeDataFixture) interruptedMigration(t *testing.T) {
@@ -220,10 +279,16 @@ func (fixture *runtimeDataFixture) interruptedMigration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer child.Kill()
-	var phase map[string]string
-	if err := json.NewDecoder(child.Stdout()).Decode(&phase); err != nil {
-		diagnostics, _ := io.ReadAll(child.Stderr())
-		t.Fatalf("migration worker did not reach actual helper-backed transfer: %v: %s", err, diagnostics)
+	var signal runtimeMigrationWorkerSignal
+	decoder := json.NewDecoder(child.Stdout())
+	if err := decoder.Decode(&signal); err != nil {
+		killErr := child.Kill()
+		buffered, outputErr := io.ReadAll(io.LimitReader(decoder.Buffered(), 64*1024))
+		diagnostics, diagnosticErr := io.ReadAll(io.LimitReader(child.Stderr(), 64*1024))
+		t.Fatalf("migration worker did not reach actual helper-backed transfer: %v: stdout=%q stderr=%q", errors.Join(err, killErr, outputErr, diagnosticErr), buffered, diagnostics)
+	}
+	if signal.Error != "" || !strings.HasPrefix(signal.Phase, "Copying read-only source volume") {
+		t.Fatalf("migration worker failed before actual helper-backed transfer: %+v", signal)
 	}
 	if err := child.Kill(); err != nil {
 		t.Fatal(err)

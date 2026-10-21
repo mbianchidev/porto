@@ -82,8 +82,11 @@ The Docker source proxy reuses HTTP connections over its owned SSH transport,
 rather than starting a new SSH process for every API request. Two sequential
 real Docker pings must share one tunnel, and cleanup closes both HTTP pools.
 An actual 8 MiB tmpfs checks staged low-space failure; a killed migration worker
-checks durable per-object outcomes and never-started helper recovery. Native
-tests check actual workload-visible host edits, permissions, links, case,
+checks durable per-object outcomes and never-started helper recovery.
+The worker initializes the same inventory-owned runtime as the daemon before
+transfer and reports explicit readiness or failure JSON; test-runner failure
+text must never be mistaken for an actual helper-backed transfer checkpoint.
+Native tests check actual workload-visible host edits, permissions, links, case,
 concurrent changes, deletion/reused identities, connection loss and explicit
 reconnect. Only disposable CI engines are stopped for update/shutdown tests.
 The macOS native-driver suite also kills an actual mount-owner process and

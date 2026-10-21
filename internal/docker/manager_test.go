@@ -1391,6 +1391,7 @@ func TestOwnedEngineStartupUsesItsBootBudgetAndCallerDeadline(t *testing.T) {
 				return nil, nil
 			})
 			manager := NewWithStateDir(runner, t.TempDir())
+			manager.dialBuildKit = workingBuildKitDialer(t)
 			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
 				t.Fatal(err)
 			}
