@@ -12,6 +12,9 @@ func (fixture *runtimeDataFixture) engineLifecycle(t *testing.T) {
 	if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") != "1" {
 		t.Skip("engine restart is restricted to the independently owned disposable CI VM; existing engines are never stopped")
 	}
+	if err := fixture.vms.Stop(fixture.ctx, fixture.instance.Name); err != nil {
+		t.Fatalf("stop the completed, independently owned source fixture before destination restart: %v", err)
+	}
 	name := fixture.prefix + "-engine-lifecycle"
 	fixture.extraSelections = append(fixture.extraSelections, dataops.Selection{Kind: "volume", Name: name, Destination: name})
 	if _, err := fixture.manager.CreateVolume(fixture.ctx, name, "local", map[string]string{"porto.test.suite": fixture.prefix}); err != nil {

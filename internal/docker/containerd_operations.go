@@ -75,6 +75,10 @@ type containerCreation interface {
 
 type containerCreationConnector func(context.Context) (containerCreation, error)
 
+type borrowedContainerCreation struct{ containerCreation }
+
+func (borrowedContainerCreation) Close() error { return nil }
+
 type execOperations interface {
 	StartExec(context.Context, ExecRequest) (runtimes.Process, error)
 	StartAttached(context.Context, string, bool) (runtimes.Process, error)
@@ -82,6 +86,10 @@ type execOperations interface {
 }
 
 type execOperationsConnector func(context.Context) (execOperations, error)
+
+type borrowedExecOperations struct{ execOperations }
+
+func (borrowedExecOperations) Close() error { return nil }
 
 type networkOperations interface {
 	Connect(context.Context, string, string, []string) error
@@ -91,7 +99,16 @@ type networkOperations interface {
 
 type networkOperationsConnector func(context.Context) (networkOperations, error)
 
+type borrowedNetworkOperations struct{ networkOperations }
+
+func (borrowedNetworkOperations) Close() error { return nil }
+
 func (m *Manager) connectContainerCreation(ctx context.Context) (containerCreation, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if creation, ok := inventory.activeRuntime().(containerCreation); ok {
+			return borrowedContainerCreation{creation}, nil
+		}
+	}
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
@@ -156,6 +173,11 @@ func (m *Manager) connectContainerOperations(ctx context.Context) (containerOper
 }
 
 func (m *Manager) connectNetworkOperations(ctx context.Context) (networkOperations, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if operations, ok := inventory.activeRuntime().(networkOperations); ok {
+			return borrowedNetworkOperations{operations}, nil
+		}
+	}
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
@@ -173,6 +195,11 @@ func (m *Manager) connectNetworkOperations(ctx context.Context) (networkOperatio
 }
 
 func (m *Manager) connectExecOperations(ctx context.Context) (execOperations, error) {
+	if inventory := m.activeContainerInventory(); inventory != nil {
+		if operations, ok := inventory.activeRuntime().(execOperations); ok {
+			return borrowedExecOperations{operations}, nil
+		}
+	}
 	runtimeClient, err := m.connectContainerRuntime(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||

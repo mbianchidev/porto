@@ -113,7 +113,9 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	if os.Getenv("PORTO_RUNTIME_DATA_ACCEPTANCE") != "1" {
 		t.Skip("set PORTO_RUNTIME_DATA_ACCEPTANCE=1 for isolated real Docker migration and OS-native runtime mounts")
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
+	lifetime, stop := context.WithCancel(context.Background())
+	t.Cleanup(stop)
+	ctx, cancel := context.WithTimeout(lifetime, 20*time.Minute)
 	t.Cleanup(cancel)
 	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
 		previous := slog.Default()
@@ -214,7 +216,7 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	}
 	fixture.useCurrentDestinationHelper()
 	if os.Getenv("GITHUB_ACTIONS") == "true" {
-		if err := manager.StartContainerInventory(ctx); err != nil {
+		if err := manager.StartContainerInventory(lifetime); err != nil {
 			t.Fatal(err)
 		}
 		deadline := time.NewTimer(time.Minute)
@@ -231,6 +233,10 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	}
 	fixture.prepareSource()
 	fixture.prepareObjects()
+	cancel()
+	acceptance, finish := context.WithTimeout(lifetime, 40*time.Minute)
+	t.Cleanup(finish)
+	fixture.ctx = acceptance
 	t.Run("selected migration and source preservation", fixture.migrateSelected)
 	if t.Failed() {
 		return

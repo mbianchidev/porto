@@ -59,6 +59,8 @@ uses its built-in WebDAV driver without macFUSE.
 Disposable CI destinations start the normal container inventory and borrow its
 healthy runtime connection, matching daemon behavior instead of opening a new
 containerd SSH channel for each file or migration operation.
+Container creation, exec and network SDK adapters borrow that same connection
+without closing the inventory-owned client when an individual operation finishes.
 Compatibility CLI calls can reuse that connection's exact engine origin, with
 ownership checked inside the actual guest command before executing nerdctl.
 They do not spawn separate Lima status and ownership processes for each
@@ -83,6 +85,12 @@ concurrent changes, deletion/reused identities, connection loss and explicit
 reconnect. Only disposable CI engines are stopped for update/shutdown tests.
 The macOS native-driver suite also kills an actual mount-owner process and
 checks exact owned recovery and retryable detach failure.
+Source provisioning has a separate 20-minute setup budget; the unchanged
+40-minute acceptance budget starts only after its real Docker fixtures are ready.
+The executable's overall 55-minute deadline still bounds both phases.
+After the source preservation and standalone-VM reconnect cases finish, the
+disposable source VM is stopped before destination engine update/restart, rather
+than consuming emulated host resources while no source operations remain.
 
 For local acceptance against an already-running, ownership-verified Porto
 Lima destination, compile this revision's Linux helper beside a compiled test
@@ -191,12 +199,18 @@ macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, to leave scheduling priority for the hosted runner's heartbeat.
 Intel macOS data jobs allocate one vCPU per fixture VM, reserving host CPU for
 the runner and native filesystem processes.
+They explicitly select TCG, a supported emulated CPU and a 128 MiB translation
+cache per VM. A reported `kern.hv_support=1` does not establish supported nested
+HVF: GitHub does not support nested virtualization on macOS runner images
+([actions/runner-images#13277](https://github.com/actions/runner-images/issues/13277)).
+Both source and destination inherit this CI-only QEMU override; packaged runtime
+defaults are unchanged.
 They remove the Go build cache after compiling the fixture, leaving disk space
 for both guest disks, and emit periodic free-disk, RAM/swap and QEMU RSS/CPU
 samples as job notices to aid lost-runner diagnosis when normal logs are
 unavailable. Software-emulated data fixtures also log runtime
 command durations so slow guest work can be distinguished from host process
-startup and repeated discovery. Guest boot and full-suite deadlines are unchanged.
+startup and repeated discovery. Guest boot and acceptance thresholds are unchanged.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

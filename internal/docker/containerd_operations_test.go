@@ -942,6 +942,40 @@ func TestContainerOperationsReuseInventoryConnectionWithoutClosingIt(t *testing.
 	}
 }
 
+func TestCreationExecAndNetworkBorrowTheInventoryRuntime(t *testing.T) {
+	service := &snapshotterTestServer{snapshotter: "overlayfs"}
+	runtimeClient := newSnapshotterTestRuntime(t, "synthetic-engine", "", service)
+	manager := NewWithStateDir(&fakeRunner{handler: func(runtimes.Command) ([]byte, error) {
+		t.Fatal("an SDK operation rediscovered or reconnected the healthy engine")
+		return nil, nil
+	}}, t.TempDir())
+	manager.inventoryCancel = func() {}
+	manager.inventory = &containerInventory{
+		snapshot: ContainerSnapshot{Available: true}, runtimeClient: runtimeClient,
+	}
+	for _, connector := range []struct {
+		name    string
+		connect func(context.Context) (io.Closer, error)
+	}{
+		{name: "creation", connect: func(ctx context.Context) (io.Closer, error) { return manager.connectContainerCreation(ctx) }},
+		{name: "exec", connect: func(ctx context.Context) (io.Closer, error) { return manager.connectExecOperations(ctx) }},
+		{name: "network", connect: func(ctx context.Context) (io.Closer, error) { return manager.connectNetworkOperations(ctx) }},
+	} {
+		t.Run(connector.name, func(t *testing.T) {
+			borrowed, err := connector.connect(context.Background())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := borrowed.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := runtimeClient.Snapshot(context.Background()); err != nil {
+				t.Fatalf("borrowed SDK operation closed the inventory's runtime: %v", err)
+			}
+		})
+	}
+}
+
 func TestManagerMetadataActionsFallbackOnlyForUnavailableOrUnsupported(t *testing.T) {
 	tests := []struct {
 		name         string
