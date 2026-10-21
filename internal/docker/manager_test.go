@@ -95,7 +95,7 @@ func (r *ownershipRecoveryRunner) Run(_ context.Context, command runtimes.Comman
 			return []byte("ssh: connect to host 127.0.0.1: connection timed out"), context.DeadlineExceeded
 		}
 		return []byte("test-owner\n"), nil
-	case "stop porto-engine", "start porto-engine":
+	case "stop porto-engine", "start --timeout=20m0s porto-engine":
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
@@ -173,7 +173,7 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 			return nil, nil
 		case joined == "list porto-engine --json" && r.created:
 			return []byte(`{"name":"porto-engine","status":"Running"}` + "\n"), nil
-		case strings.HasPrefix(joined, "start --tty=false"):
+		case strings.HasPrefix(joined, "start --timeout=20m0s --tty=false"):
 			r.created = true
 			return nil, nil
 		case joined == `shell --workdir=/ porto-engine -- sh -c umask 077; cat > "$HOME/.porto-engine-owner"`:
@@ -517,7 +517,7 @@ func TestEngineOwnershipTimeoutRecoversOwnedGuest(t *testing.T) {
 	}
 	commands := strings.Join(runner.commands, "\n")
 	if !strings.Contains(commands, "stop porto-engine") ||
-		!strings.Contains(commands, "start porto-engine") {
+		!strings.Contains(commands, "start --timeout=20m0s porto-engine") {
 		t.Fatalf("recovery commands missing:\n%s", commands)
 	}
 }
@@ -550,7 +550,7 @@ func TestEngineOwnershipStatusReportsMarkerCollisionWithoutRecovery(t *testing.T
 	}
 	for _, command := range runner.commands {
 		joined := strings.Join(command.Args, " ")
-		if joined == "stop porto-engine" || joined == "start porto-engine" {
+		if joined == "stop porto-engine" || joined == "start --timeout=20m0s porto-engine" {
 			t.Fatalf("ownership diagnosis changed guest lifecycle: %s", joined)
 		}
 	}
@@ -1365,6 +1365,48 @@ func TestStartEngineReportsBinfmtFailure(t *testing.T) {
 		if command.Args[0] == "stop" || command.Args[0] == "delete" {
 			t.Fatalf("failed provisioning destroyed existing engine state: %+v", command)
 		}
+	}
+}
+
+func TestOwnedEngineStartupUsesItsBootBudgetAndCallerDeadline(t *testing.T) {
+	for _, callerBudget := range []time.Duration{time.Hour, 30 * time.Second} {
+		t.Run(callerBudget.String(), func(t *testing.T) {
+			var budget time.Duration
+			var arguments []string
+			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				joined := strings.Join(command.Args, " ")
+				switch {
+				case joined == "list porto-engine --json":
+					return []byte(`{"name":"porto-engine","status":"Stopped"}`), nil
+				case len(command.Args) > 0 && command.Args[0] == "start":
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						return nil, errors.New("owned engine startup has no deadline")
+					}
+					budget = time.Until(deadline)
+					arguments = append([]string(nil), command.Args...)
+				case strings.Contains(joined, `cat "$HOME/.porto-engine-owner"`):
+					return []byte("synthetic-owner\n"), nil
+				}
+				return nil, nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
+			defer cancel()
+			if err := manager.StartEngine(ctx); err != nil {
+				t.Fatal(err)
+			}
+			want := min(20*time.Minute, callerBudget)
+			if budget <= want-time.Second || budget > want {
+				t.Fatalf("owned engine boot budget = %s, want %s", budget, want)
+			}
+			if !reflect.DeepEqual(arguments, []string{"start", "--timeout=20m0s", engineInstanceName}) {
+				t.Fatalf("owned engine did not forward its boot budget to Lima: %v", arguments)
+			}
+		})
 	}
 }
 

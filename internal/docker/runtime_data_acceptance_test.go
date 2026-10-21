@@ -82,12 +82,16 @@ func runtimeDataVMDiagnostics(command runtimes.Command, output []byte, err error
 	if home == "" || filepath.Base(name) != name || !strings.HasPrefix(name, "porto-data-") {
 		return output, err
 	}
-	diagnostics, diagnosticErr := os.ReadFile(filepath.Join(home, name, "ha.stderr.log"))
-	if diagnosticErr != nil {
-		return append(output, []byte(fmt.Sprintf("\nisolated source VM diagnostics unavailable: %v\n", diagnosticErr))...), err
+	for _, logName := range []string{"ha.stderr.log", "serial.log"} {
+		diagnostics, diagnosticErr := os.ReadFile(filepath.Join(home, name, logName))
+		if diagnosticErr != nil {
+			output = append(output, []byte(fmt.Sprintf("\nisolated source VM %s unavailable: %v\n", logName, diagnosticErr))...)
+			continue
+		}
+		output = append(output, []byte("\nisolated source VM "+logName+":\n")...)
+		output = append(output, diagnostics[max(0, len(diagnostics)-16384):]...)
 	}
-	output = append(output, []byte("\nisolated source VM diagnostics:\n")...)
-	return append(output, diagnostics[max(0, len(diagnostics)-16384):]...), err
+	return output, err
 }
 
 type runtimeDataFixture struct {
@@ -300,13 +304,13 @@ func (fixture *runtimeDataFixture) prepareSource() {
 	if vmType == "" && runtime.GOOS != "darwin" {
 		vmType = "qemu"
 	}
-	sourceCPUs := 2
+	sourceMemory := 1536
 	if os.Getenv("GITHUB_ACTIONS") == "true" && runtime.GOOS == "darwin" && runtime.GOARCH == "amd64" {
-		sourceCPUs = 1
+		sourceMemory = 1024
 	}
 	instance, err := fixture.vms.Create(fixture.ctx, vm.CreateRequest{
 		Name: fixture.prefix, Owner: fixture.prefix, Image: "ubuntu-24.04", VMType: vmType,
-		CPUs: sourceCPUs, MemoryMiB: 1536, DiskGiB: 12, Start: true,
+		CPUs: 2, MemoryMiB: sourceMemory, DiskGiB: 12, Start: true,
 	})
 	if err != nil {
 		t.Fatal(err)

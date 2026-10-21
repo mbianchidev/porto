@@ -452,6 +452,12 @@ func (r *grpcContainerRuntime) compatibilityMetadata(
 ) (map[string]Container, error) {
 	r.enrichMu.Lock()
 	defer r.enrichMu.Unlock()
+	if len(records) == 0 {
+		r.enrichmentReady = true
+		r.enrichmentVersion, r.enrichment = nil, nil
+		r.enrichmentError = nil
+		return nil, nil
+	}
 	currentVersions := make(map[string]string, len(records))
 	needsRefresh := !r.enrichmentReady
 	for _, record := range records {

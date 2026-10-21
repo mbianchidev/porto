@@ -495,7 +495,8 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 	if len(existing) == 0 {
 		return fmt.Errorf("VM %q not found; refusing to create a replacement during start", name)
 	}
-	_, startErr := m.run(ctx, timeout, "start Lima instance", "start", name)
+	startArgs := []string{"start", "--timeout=" + timeout.String(), name}
+	_, startErr := m.run(ctx, timeout, "start Lima instance", startArgs...)
 	if startErr != nil {
 		if errors.Is(startErr, context.DeadlineExceeded) || errors.Is(startErr, context.Canceled) {
 			return startErr
@@ -510,7 +511,7 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 		if _, err := m.run(ctx, 2*time.Minute, "recover broken Lima instance", "stop", "--force", name); err != nil {
 			return errors.Join(startErr, err)
 		}
-		if _, err := m.run(ctx, timeout, "start recovered Lima instance", "start", name); err != nil {
+		if _, err := m.run(ctx, timeout, "start recovered Lima instance", startArgs...); err != nil {
 			return errors.Join(startErr, err)
 		}
 	}

@@ -56,6 +56,7 @@ func TestCreateNodeDisablesUnneededHostIntegration(t *testing.T) {
 
 func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
 	var startBudgets []time.Duration
+	var limaBudgets []string
 	created := false
 	runner := vmRunnerFunc(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
 		switch command.Args[0] {
@@ -67,6 +68,7 @@ func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
 				t.Fatal("Lima start has no deadline")
 			}
 			startBudgets = append(startBudgets, time.Until(deadline))
+			limaBudgets = append(limaBudgets, command.Args[1])
 		case "list":
 			if created {
 				return json.Marshal(map[string]any{"name": "synthetic-node", "status": "Running", "vmType": "qemu"})
@@ -95,6 +97,9 @@ func TestCreateNodeBudgetIncludesImagePreparation(t *testing.T) {
 		if got := startBudgets[index]; got < want-time.Second || got > want {
 			t.Errorf("start %d budget = %s, want %s (initial image preparation must not consume the boot deadline)", index, got, want)
 		}
+		if limaBudgets[index] != "--timeout="+want.String() {
+			t.Errorf("Lima start %d uses %q, want the same %s boot budget as its parent", index, limaBudgets[index], want)
+		}
 	}
 }
 
@@ -102,6 +107,7 @@ func TestStandaloneRestartRetainsBoundedBootBudget(t *testing.T) {
 	for _, callerBudget := range []time.Duration{time.Hour, 30 * time.Second} {
 		t.Run(callerBudget.String(), func(t *testing.T) {
 			var startBudget time.Duration
+			var arguments []string
 			runner := vmRunnerFunc(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
 				switch command.Args[0] {
 				case "start":
@@ -110,6 +116,7 @@ func TestStandaloneRestartRetainsBoundedBootBudget(t *testing.T) {
 						t.Fatal("standalone VM start has no deadline")
 					}
 					startBudget = time.Until(deadline)
+					arguments = slices.Clone(command.Args)
 				case "list":
 					return json.Marshal(map[string]any{"name": "synthetic-vm", "status": "Running", "vmType": "qemu"})
 				}
@@ -127,6 +134,9 @@ func TestStandaloneRestartRetainsBoundedBootBudget(t *testing.T) {
 			want := min(20*time.Minute, callerBudget)
 			if startBudget < want-time.Second || startBudget > want {
 				t.Fatalf("standalone start budget = %s, want %s", startBudget, want)
+			}
+			if !slices.Equal(arguments, []string{"start", "--timeout=20m0s", "synthetic-vm"}) {
+				t.Fatalf("standalone boot budget was not forwarded to Lima: %v", arguments)
 			}
 		})
 	}

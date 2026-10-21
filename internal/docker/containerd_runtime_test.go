@@ -388,6 +388,36 @@ func TestCompatibilityMetadataRefreshesOnlyAfterMetadataChanges(t *testing.T) {
 	}
 }
 
+func TestEmptyInventoryDoesNotLaunchCompatibilityCLIOrReuseDeletedMetadata(t *testing.T) {
+	calls := 0
+	records := []*containersapi.Container{{ID: "synthetic-container", UpdatedAt: timestamppb.Now()}}
+	runtimeClient := &grpcContainerRuntime{
+		enrich: func(context.Context) ([]Container, error) {
+			calls++
+			return nil, context.DeadlineExceeded
+		},
+		enrichmentReady:   true,
+		enrichmentVersion: map[string]string{"synthetic-container": containerMetadataVersion(records[0])},
+		enrichment:        map[string]Container{"synthetic-container": {ID: "synthetic-container", Ports: "old ports"}},
+		enrichmentError:   context.DeadlineExceeded,
+	}
+	for range 2 {
+		runtimeClient.invalidateCompatibilityMetadata()
+		empty, err := runtimeClient.compatibilityMetadata(context.Background(), nil)
+		if err != nil || len(empty) != 0 || calls != 0 {
+			t.Fatalf("an authoritative empty inventory launched an unnecessary CLI process: metadata=%v calls=%d error=%v", empty, calls, err)
+		}
+	}
+	runtimeClient.enrich = func(context.Context) ([]Container, error) {
+		calls++
+		return []Container{{ID: "synthetic-container", Ports: "new ports"}}, nil
+	}
+	current, err := runtimeClient.compatibilityMetadata(context.Background(), records)
+	if err != nil || calls != 1 || current["synthetic-container"].Ports != "new ports" {
+		t.Fatalf("a recreated container reused deleted compatibility metadata: metadata=%v calls=%d error=%v", current, calls, err)
+	}
+}
+
 func TestMergeCompatibilityMetadataRestoresStoppedTaskAndPorts(t *testing.T) {
 	container := Container{ID: "abc", State: "created"}
 	mergeContainerCompatibilityMetadata(&container, Container{

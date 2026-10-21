@@ -222,11 +222,10 @@ else
     fi
   fi
   memory=3
-  cpus=2
   if [ "$suite" = data ]; then memory=2; fi
-  if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then cpus=1; fi
+  if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then memory=1.5; fi
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
-    "--cpus=$cpus" "--memory=$memory" --disk=20 --mount-none --containerd=user
+    --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user
     "--set=$PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES")
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
     if [ "$goarch" = arm64 ]; then

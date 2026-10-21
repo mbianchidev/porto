@@ -61,6 +61,9 @@ healthy runtime connection, matching daemon behavior instead of opening a new
 containerd SSH channel for each file or migration operation.
 Container creation, exec and network SDK adapters borrow that same connection
 without closing the inventory-owned client when an individual operation finishes.
+An authoritative empty native inventory never invokes the compatibility CLI:
+there are no container fields to enrich. Deleting the final container also
+clears old compatibility metadata before any later container recreation.
 Compatibility CLI calls can reuse that connection's exact engine origin, with
 ownership checked inside the actual guest command before executing nerdctl.
 They do not spawn separate Lima status and ownership processes for each
@@ -197,8 +200,8 @@ from spending its boot budget on unrelated desktop/package-search metadata or
 restart suggestions for a disposable guest.
 macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, to leave scheduling priority for the hosted runner's heartbeat.
-Intel macOS data jobs allocate one vCPU per fixture VM, reserving host CPU for
-the runner and native filesystem processes.
+Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
+and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
 They explicitly select TCG, a supported emulated CPU and a 128 MiB translation
 cache per VM. A reported `kern.hv_support=1` does not establish supported nested
 HVF: GitHub does not support nested virtualization on macOS runner images
@@ -211,6 +214,13 @@ samples as job notices to aid lost-runner diagnosis when normal logs are
 unavailable. Software-emulated data fixtures also log runtime
 command durations so slow guest work can be distinguished from host process
 startup and repeated discovery. Guest boot and acceptance thresholds are unchanged.
+Porto forwards its selected boot budget to Lima's own `--timeout` as well as
+the parent process context: first boots and recorded standalone restarts retain
+20 minutes, while Kubernetes-node restarts remain five minutes. Lima's internal
+ten-minute default must not silently shorten the recorded budget.
+Porto-owned Docker engine installation, explicit restart and ownership recovery
+likewise use the same 20-minute VM boot budget, without changing shorter caller
+deadlines or the separate Kubernetes-node restart policy.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,
