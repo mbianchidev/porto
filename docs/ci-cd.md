@@ -268,12 +268,16 @@ macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, to leave scheduling priority for the hosted runner's heartbeat.
 Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
 and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
-They explicitly select single-thread TCG with instruction-counted virtual
-timers, a supported emulated CPU and a 128 MiB translation cache per VM. The
-guest still has two vCPUs. This avoids relying on host scheduling for the early
-I/O-APIC/PIT timer handshake, which otherwise intermittently panics the guest
-before SSH starts; it is not a reason to increase the boot deadline. See
-[QEMU's virtual-clock design](https://www.qemu.org/docs/master/devel/tcg-icount.html).
+They explicitly select single-thread TCG with a supported emulated CPU and a
+128 MiB translation cache per VM. The guest still has two vCPUs and uses QEMU's
+normal clock handling, not instruction counting. Instruction-counting overhead
+delays device discovery and can exhaust the guest's required boot-mount deadlines;
+raising Lima's outer timeout does not repair an emergency-mode boot.
+The Intel runtime-data phases verify that both destination and source retain
+the image's `LABEL=BOOT` and `LABEL=UEFI` fstab entries, resolve those labels to
+the actual mounted `/boot` and `/boot/efi` devices, and reach `local-fs.target`.
+The image, required mounts, rootless runtime and all boot/acceptance caps remain
+unchanged. See [QEMU's instruction-counting design](https://www.qemu.org/docs/master/devel/tcg-icount.html).
 A reported `kern.hv_support=1` does not establish supported nested
 HVF: GitHub does not support nested virtualization on macOS runner images
 ([actions/runner-images#13277](https://github.com/actions/runner-images/issues/13277)).

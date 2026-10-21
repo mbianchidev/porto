@@ -177,6 +177,7 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		if !ownership.Owned || !ownership.Verified {
 			t.Fatalf("an already-running, verified Porto destination is required: %s", ownership.Message)
 		}
+		requireRuntimeDataBootMounts(t, ctx, manager.runner, "porto-engine")
 	}
 	if override := os.Getenv("PORTO_STORAGE_TEST_HELPER"); override != "" {
 		manager.runner = storageIntegrationRunner{helper: override}
@@ -328,6 +329,42 @@ func runtimeDataTemporaryRoot() string {
 	return "/tmp"
 }
 
+func requireRuntimeDataBootMounts(t *testing.T, ctx context.Context, runner runtimes.Runner, instance string) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") != "true" || runtime.GOOS != "darwin" || runtime.GOARCH != "amd64" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	const verify = `set -eu
+lsblk -o NAME,TYPE,FSTYPE,LABEL,MOUNTPOINTS
+for entry in BOOT:/boot UEFI:/boot/efi; do
+  label="${entry%%:*}"
+  target="${entry#*:}"
+  configured="$(findmnt --fstab --noheadings --raw --output SOURCE --mountpoint "$target")"
+  if [ "$configured" != "LABEL=$label" ]; then
+    echo "$target no longer requires the image's LABEL=$label filesystem: $configured" >&2
+    exit 1
+  fi
+  device="$(readlink -e "/dev/disk/by-label/$label")"
+  mounted="$(findmnt --noheadings --raw --output SOURCE --mountpoint "$target")"
+  if [ "$mounted" != "$device" ]; then
+    echo "$target is mounted from $mounted instead of LABEL=$label ($device)" >&2
+    exit 1
+  fi
+  printf '%s is mounted from LABEL=%s (%s)\n' "$target" "$label" "$device"
+done
+systemctl is-active local-fs.target
+`
+	output, err := runner.Run(ctx, runtimes.Command{
+		Name: "limactl", Args: []string{"shell", "--workdir=/", instance, "--", "sh", "-c", verify},
+	})
+	if err != nil {
+		t.Fatalf("verify required Intel boot filesystems in %s: %v: %s", instance, err, output)
+	}
+	t.Logf("required Intel boot filesystems in %s:\n%s", instance, output)
+}
+
 func (fixture *runtimeDataFixture) prepareSource() {
 	t := fixture.t
 	runner := fixture.vmRunner
@@ -359,6 +396,7 @@ func (fixture *runtimeDataFixture) prepareSource() {
 			t.Error(err)
 		}
 	})
+	requireRuntimeDataBootMounts(t, fixture.ctx, runner, instance.Name)
 	const provision = `set -eu
 sudo -n apt-get update -qq
 sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends docker.io
