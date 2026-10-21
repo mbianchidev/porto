@@ -141,7 +141,12 @@ Native tests check actual workload-visible host edits, permissions, links, case,
 concurrent changes, deletion/reused identities, connection loss and explicit
 reconnect. Only disposable CI engines are stopped for update/shutdown tests.
 The macOS native-driver suite also kills an actual mount-owner process and
-checks exact owned recovery and retryable detach failure.
+checks exact owned recovery and retryable detach failure. A real delayed mount
+exceeds the former shared 30-second startup watchdog without exceeding either
+phase's limit: SFTP initialization and mounting each have an independent
+30-second budget, followed by 15-second readiness. Successful initialization
+disarms its watchdog; stalled initialization or readiness still cancels the
+owned transport, and caller cancellation remains active throughout setup.
 Source provisioning has a separate 20-minute setup budget; the unchanged
 40-minute acceptance budget starts only after its real Docker fixtures are ready.
 The executable's overall 55-minute deadline still bounds setup and acceptance

@@ -9,11 +9,162 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+func TestMacOSNativeWebDAVInitializationRemainsBounded(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		cancelAfter time.Duration
+		elapsed     time.Duration
+		wantErr     error
+	}{
+		{name: "initialization deadline", elapsed: 30 * time.Second, wantErr: context.DeadlineExceeded},
+		{name: "caller cancellation", cancelAfter: 5 * time.Second, elapsed: 5 * time.Second, wantErr: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				target, _ := syntheticNativeTarget(t, "volume")
+				releases := 0
+				target.Release = func(ctx context.Context) error {
+					releases++
+					return ctx.Err()
+				}
+				manager := New(t.TempDir(), nativeStartupRunner{
+					nativeRunnerFunc: func(context.Context, runtimes.Command) ([]byte, error) { return nil, nil },
+					start: func(ctx context.Context, _ runtimes.Command) (runtimes.Process, error) {
+						<-ctx.Done()
+						return nil, ctx.Err()
+					},
+				})
+				manager.lookPath = func(name string) (string, error) { return name, nil }
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				if test.cancelAfter > 0 {
+					timer := time.AfterFunc(test.cancelAfter, cancel)
+					defer timer.Stop()
+				}
+				started := time.Now()
+				if _, err := manager.Attach(ctx, target, true); !errors.Is(err, test.wantErr) {
+					t.Fatalf("stalled initialization lost its cancellation: %v", err)
+				}
+				if elapsed := time.Since(started); elapsed != test.elapsed {
+					t.Fatalf("initialization took %s, want %s", elapsed, test.elapsed)
+				}
+				if releases != 1 || len(manager.List()) != 0 {
+					t.Fatalf("cancelled initialization was not cleaned up: releases=%d records=%+v", releases, manager.List())
+				}
+			})
+		})
+	}
+}
+
+func TestMacOSNativeWebDAVStartupBudgetsAreIndependent(t *testing.T) {
+	if os.Getenv("PORTO_TEST_WEBDAV_NATIVE") != "1" {
+		t.Skip("requires real macOS mounts")
+	}
+	target, source := syntheticNativeTarget(t, "volume")
+	var connectionStarted time.Time
+	runner := nativeStartupRunner{
+		nativeRunnerFunc: func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+			if command.Name == "/sbin/mount_webdav" {
+				select {
+				case <-time.After(12 * time.Second):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			}
+			return (runtimes.ExecRunner{}).Run(ctx, command)
+		},
+		start: func(ctx context.Context, command runtimes.Command) (runtimes.Process, error) {
+			connectionStarted = time.Now()
+			select {
+			case <-time.After(20 * time.Second):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			return (runtimes.ExecRunner{}).Start(ctx, command)
+		},
+	}
+	manager := New(t.TempDir(), runner)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	record, err := manager.Attach(ctx, target, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if connectionStarted.IsZero() || time.Since(connectionStarted) <= 30*time.Second {
+		t.Fatal("fixture did not exceed the former shared SFTP initialization budget")
+	}
+	if record.State != "connected" {
+		t.Fatalf("native mount never became ready: %+v", record)
+	}
+	cancel()
+	if content, err := os.ReadFile(filepath.Join(record.Path, "synthetic.txt")); err != nil || string(content) != "synthetic-original" {
+		t.Fatalf("initialized transport did not survive mount startup: %q, %v", content, err)
+	}
+	if err := os.WriteFile(filepath.Join(record.Path, "synthetic.txt"), []byte("synthetic-updated"), 0o640); err != nil {
+		t.Fatal(err)
+	}
+	if content, err := os.ReadFile(filepath.Join(source, "synthetic.txt")); err != nil || string(content) != "synthetic-updated" {
+		t.Fatalf("live mount did not write through after startup: %q, %v", content, err)
+	}
+}
+
+func TestMacOSNativeWebDAVReadinessDeadlineCancelsTransport(t *testing.T) {
+	if os.Getenv("PORTO_TEST_WEBDAV_NATIVE") != "1" {
+		t.Skip("requires real macOS mounts")
+	}
+	target, _ := syntheticNativeTarget(t, "volume")
+	var connection context.Context
+	stallReadiness := true
+	runner := nativeStartupRunner{
+		nativeRunnerFunc: func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+			if command.Name == "mount" && stallReadiness {
+				stallReadiness = false
+				<-ctx.Done()
+				select {
+				case <-connection.Done():
+				case <-time.After(time.Second):
+					t.Error("readiness expired without cancelling its owned SFTP transport")
+				}
+				return nil, ctx.Err()
+			}
+			return (runtimes.ExecRunner{}).Run(ctx, command)
+		},
+		start: func(ctx context.Context, command runtimes.Command) (runtimes.Process, error) {
+			connection = ctx
+			return (runtimes.ExecRunner{}).Start(ctx, command)
+		},
+	}
+	manager := New(t.TempDir(), runner)
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := manager.Close(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+	defer cancel()
+	if _, err := manager.Attach(ctx, target, true); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("stalled readiness lost its deadline: %v", err)
+	}
+	if stallReadiness {
+		t.Fatal("fixture never reached mount readiness")
+	}
+}
 
 func TestMacOSNativeWebDAVOwnerProcess(t *testing.T) {
 	if os.Getenv("PORTO_NATIVE_WEBDAV_OWNER") != "1" {

@@ -47,6 +47,13 @@ func (m *Manager) mountWebDAVLocked(ctx context.Context, live *liveAttachment, w
 		return datafiles.ErrUnsupported
 	}
 	client, process, closeConnection, err := connectNativeSFTP(owned, *live.target.SFTP, runner)
+	if !startup.Stop() {
+		cancel()
+		if closeConnection != nil {
+			err = errors.Join(err, closeConnection())
+		}
+		return fmt.Errorf("native SFTP initialization timed out: %w", errors.Join(context.DeadlineExceeded, err))
+	}
 	if err != nil {
 		return err
 	}
@@ -136,5 +143,15 @@ func (m *Manager) mountWebDAVLocked(ctx context.Context, live *liveAttachment, w
 	if err != nil {
 		return fmt.Errorf("macOS native filesystem mount failed: %w: %.1024s", err, output)
 	}
-	return m.waitMounted(ctx, live.record, live.done)
+	ready, cancelReady := context.WithTimeout(ctx, 15*time.Second)
+	defer cancelReady()
+	// Closing the transport also interrupts blocking filesystem metadata reads.
+	stopReadiness := context.AfterFunc(ready, cancel)
+	defer func() {
+		if !stopReadiness() {
+			cancel()
+			err = errors.Join(err, ready.Err())
+		}
+	}()
+	return m.waitMounted(ready, live.record, live.done)
 }
