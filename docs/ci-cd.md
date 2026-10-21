@@ -123,7 +123,12 @@ each macOS job also verifies its matching desktop archive and DMG checksum.
 The Windows AMD64 job retains the complete installed-package, WinFsp,
 logging, blocked-update, in-place-update, and uninstall smoke checks; ARM64
 remains a cross-built package, not a claimed native execution test.
-All four jobs must pass, even if another architecture fails.
+CI and CodeQL matrices use fail-fast: a failed member cancels queued and
+running siblings instead of spending more time on an already-failed matrix.
+Successful runs still execute every platform, architecture, and validation
+step. Go test invocations stop starting tests after a failure, and Playwright
+stops after its first failed test. Existing cleanup, timeouts, and bounded
+download retries remain in place.
 
 Installers are retained for three days as
 `desktop-installers-<darwin|windows>-<amd64|arm64>` CI artifacts. Artifact

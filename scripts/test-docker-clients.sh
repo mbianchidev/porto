@@ -177,5 +177,5 @@ fi
 run_as_runner go test -c -o "$client_tests" ./internal/docker
 (
   cd "$root/internal/docker"
-  "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v
+  "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.failfast -test.timeout=25m -test.v
 )
