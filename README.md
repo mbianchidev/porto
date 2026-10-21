@@ -71,6 +71,21 @@ portable desktop archive. Every desktop package bundles the daemon, dashboard,
 helper for direct container I/O, Windows containerd connections, CNI, and
 checkpoint capability discovery.
 
+If macOS Gatekeeper blocks the downloaded app, copy `Porto.app` from the DMG
+into `/Applications` first. Only for a trusted download from the
+[official releases page](https://github.com/mbianchidev/porto/releases),
+verified against that release's `SHA256SUMS`, run this in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Porto.app"
+```
+
+Reopen `/Applications/Porto.app` afterward. This removes quarantine from Porto
+only; do not disable Gatekeeper globally. The one-line installer uses
+`~/Applications/Porto.app` by default; see
+[macOS launch troubleshooting](docs/installation.md#macos-gatekeeper-quarantine)
+for that location and checksum verification.
+
 New Windows container engines use Ubuntu 24.04 LTS instead of Lima's moving
 default image. Windows packages include Lima's stale-process recovery and
 consoleless force-stop fixes; normal shutdown recovery does not require
