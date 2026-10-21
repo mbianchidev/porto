@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path"
 	"strings"
 	"sync"
 	"syscall"
@@ -51,7 +52,10 @@ if [ "$1" != "1" ]; then
 fi
 printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 if [ -n "$stdin_path" ]; then
-  cat > "$stdin_path" &
+  # Background jobs otherwise inherit /dev/null instead of the SSH input.
+  exec 3<&0
+  (result=0; cat <&3 > "$stdin_path" || result=$?; touch "$stdin_path.done"; exit "$result") &
+  exec 3<&-
 fi
 if [ -n "$log_path" ]; then
   "$HOME/.local/bin/porto-runtime-helper" log-stdio --path "$log_path" --stream stdout < "$stdout_path" &
@@ -76,6 +80,33 @@ type directProcessIO struct {
 	bridge       runtimes.Process
 	cleanup      func() error
 	finishOutput func()
+	finishInput  func() error
+}
+
+type processInputCloser struct {
+	io.WriteCloser
+	finish func() error
+	once   sync.Once
+	err    error
+}
+
+func (p *processInputCloser) Close() error {
+	p.once.Do(func() { p.err = p.finish() })
+	return p.err
+}
+
+type processInputReader struct {
+	io.Reader
+	done chan struct{}
+	once sync.Once
+}
+
+func (r *processInputReader) Read(data []byte) (int, error) {
+	n, err := r.Reader.Read(data)
+	if err != nil {
+		r.once.Do(func() { close(r.done) })
+	}
+	return n, err
 }
 
 type directContainerProcess struct {
@@ -180,6 +211,23 @@ func newDirectContainerProcess(
 	deleteOnWait bool,
 	namespace string,
 ) *directContainerProcess {
+	if processIO.finishInput != nil {
+		finishInput := processIO.finishInput
+		processIO.stdin = &processInputCloser{WriteCloser: processIO.stdin, finish: func() error {
+			inputErr := finishInput()
+			closeContext, cancel := context.WithTimeout(withContainerdNamespace(context.Background(), namespace), 10*time.Second)
+			defer cancel()
+			closeErr := process.CloseIO(closeContext, containerd.WithStdinCloser)
+			if errdefs.IsNotFound(closeErr) {
+				closeErr = nil
+			}
+			err := errors.Join(inputErr, closeErr)
+			if err != nil {
+				log.Printf("close container input for %s: %v", process.ID(), err)
+			}
+			return err
+		}}
+	}
 	exit := make(chan containerd.ExitStatus, 1)
 	go func() {
 		status, ok := <-wait
@@ -463,6 +511,7 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 		return directProcessIO{}, fmt.Errorf("create containerd FIFO directory: %w", err)
 	}
 	stdinReader, stdinWriter := io.Pipe()
+	inputReader := &processInputReader{Reader: stdinReader, done: make(chan struct{})}
 	stdoutReader, stdoutWriter := io.Pipe()
 	stderrReader, stderrWriter := io.Pipe()
 	var finishOnce sync.Once
@@ -488,7 +537,7 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 		stderrTarget = io.MultiWriter(stderrWriter, recorder.Writer("stderr"))
 	}
 	options := []cio.Opt{
-		cio.WithStreams(stdinReader, stdoutTarget, stderrTarget),
+		cio.WithStreams(inputReader, stdoutTarget, stderrTarget),
 		cio.WithFIFODir(r.fifoDir),
 	}
 	if terminal {
@@ -500,6 +549,17 @@ func (r *grpcContainerRuntime) newDirectProcessIO(
 		stdout:       stdoutReader,
 		stderr:       stderrReader,
 		finishOutput: finishOutput,
+		finishInput: func() error {
+			closeErr := stdinWriter.Close()
+			timer := time.NewTimer(10 * time.Second)
+			defer timer.Stop()
+			select {
+			case <-inputReader.done:
+				return closeErr
+			case <-timer.C:
+				return errors.Join(closeErr, errors.New("container input did not finish forwarding before stdin closure"))
+			}
+		},
 		cleanup: func() error {
 			finishOutput()
 			return errors.Join(
@@ -564,14 +624,38 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 		Terminal: terminal,
 	}
 	var finishOnce sync.Once
+	var finishInput func() error
+	if attachStdin {
+		finishInput = func() error {
+			closeErr := bridge.Stdin().Close()
+			if errors.Is(closeErr, os.ErrClosed) || errors.Is(closeErr, io.ErrClosedPipe) {
+				closeErr = nil
+			}
+			waitContext, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			output, waitErr := r.runner.Run(waitContext, runtimes.Command{
+				Name: "limactl",
+				Args: []string{
+					"shell", "--workdir=/", r.lima, "--", "sh", "-c",
+					`while [ -d "$1" ] && [ ! -f "$2" ]; do sleep 0.01; done`,
+					"porto-stdin-drain", path.Dir(config.Stdin), config.Stdin + ".done",
+				},
+			})
+			if waitErr != nil {
+				return errors.Join(closeErr, runtimes.CommandError("wait for guest stdin forwarding", output, waitErr))
+			}
+			return closeErr
+		}
+	}
 	return directProcessIO{
 		creator: func(string) (cio.IO, error) {
 			return &staticContainerIO{config: config}, nil
 		},
-		stdin:  bridge.Stdin(),
-		stdout: &bufferedReadCloser{Reader: reader, closer: stdout},
-		stderr: bridge.Stderr(),
-		bridge: bridge,
+		stdin:       bridge.Stdin(),
+		stdout:      &bufferedReadCloser{Reader: reader, closer: stdout},
+		stderr:      bridge.Stderr(),
+		bridge:      bridge,
+		finishInput: finishInput,
 		finishOutput: func() {
 			finishOnce.Do(func() {
 				_ = bridge.Stdin().Close()

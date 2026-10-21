@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
@@ -108,6 +109,12 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/rename", s.requireRuntime("kubernetes", s.renameKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade", s.requireRuntime("kubernetes", s.upgradeKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade-recover", s.requireRuntime("kubernetes", s.recoverKubernetesUpgrade))
+	mux.HandleFunc("GET /api/kubernetes/clusters/{name}/autoscaling", s.requireRuntime("kubernetes", s.kubernetesAutoscalingStatus))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/autoscaling", s.requireRuntime("kubernetes", s.configureKubernetesAutoscaling))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/autoscaling/workloads", s.requireRuntime("kubernetes", s.applyKubernetesWorkloadScaling))
+	mux.HandleFunc("DELETE /api/kubernetes/clusters/{name}/autoscaling/workloads/{namespace}/{scaler}", s.requireRuntime("kubernetes", s.deleteKubernetesWorkloadScaling))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/node-groups/{group}", s.requireRuntime("kubernetes", s.scaleKubernetesNodeGroup))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/images/import", s.requireRuntime("kubernetes", s.importKubernetesImage))
 	mux.HandleFunc("GET /api/kubernetes/clusters/{name}/terminal", s.requireRuntime("kubernetes", s.kubernetesClusterTerminal))
@@ -905,6 +912,8 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 		log.Printf("synchronize registry credentials for started Kubernetes cluster %s: %v", name, syncErr)
 		response["message"] = appendRuntimeMessage(response["message"], "Registry credentials could not be synchronized yet: "+syncErr.Error())
 	}
+	release()
+	response["message"] = appendRuntimeMessage(response["message"], s.resumeKubernetesAutoscaling(r.Context(), name))
 	writeJSON(w, response)
 }
 
@@ -974,9 +983,19 @@ func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		writeRuntimeError(w, errors.Join(err, renameRollbackError(rollbackErr)))
 		return
 	}
+	if s.autoscaling != nil {
+		if err := s.autoscaling.Rename(r.Context(), oldName, newName); err != nil {
+			routeRollbackErr := s.store.RenameKubernetesRoutesContext(r.Context(), newContext, oldContext)
+			clusterRollbackErr := s.clusters.Rename(r.Context(), newName, oldName)
+			writeRuntimeError(w, errors.Join(err, routeRollbackErr, renameRollbackError(clusterRollbackErr)))
+			return
+		}
+	}
 	s.forgetKubernetesClusterAddons(oldContext)
 	s.rememberKubernetesClusterAddons(newContext)
-	writeJSON(w, map[string]string{"status": "renamed", "name": newName, "context": newContext})
+	release()
+	message := s.resumeKubernetesAutoscaling(r.Context(), newName)
+	writeJSON(w, map[string]string{"status": "renamed", "name": newName, "context": newContext, "message": message})
 }
 
 func (s *Server) scaleKubernetesNodeGroup(w http.ResponseWriter, r *http.Request) {
@@ -1058,6 +1077,12 @@ func (s *Server) deleteKubernetesCluster(w http.ResponseWriter, r *http.Request)
 		writeRuntimeError(w, err)
 		return
 	}
+	if s.autoscaling != nil {
+		if err := s.autoscaling.Forget(operationContext, name); err != nil {
+			writeRuntimeError(w, fmt.Errorf("cluster removed, but autoscaling settings could not be removed: %w", err))
+			return
+		}
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -1067,6 +1092,14 @@ func (s *Server) beginKubernetesClusterOperation(
 	action string,
 	relatedNames ...string,
 ) (func(), error) {
+	if s.autoscaling != nil {
+		switch action {
+		case "start", "stop", "upgrade", "upgrade-recover", "rename", "delete":
+			if err := s.autoscaling.Pause(ctx, clusterName); err != nil {
+				return nil, fmt.Errorf("pause cluster autoscaling before %s: %w", action, err)
+			}
+		}
+	}
 	operationKeys, err := s.kubernetesClusterOperationKeys(append([]string{clusterName}, relatedNames...)...)
 	if err != nil {
 		return nil, err
@@ -1106,13 +1139,16 @@ func (s *Server) beginKubernetesClusterOperation(
 			acquired++
 		}
 	}
+	var once sync.Once
 	return func() {
-		releaseKubernetesOperationGates(gates)
-		s.kubeOperationMu.Lock()
-		for _, operationKey := range operationKeys {
-			delete(s.kubeOperations, operationKey)
-		}
-		s.kubeOperationMu.Unlock()
+		once.Do(func() {
+			releaseKubernetesOperationGates(gates)
+			s.kubeOperationMu.Lock()
+			for _, operationKey := range operationKeys {
+				delete(s.kubeOperations, operationKey)
+			}
+			s.kubeOperationMu.Unlock()
+		})
 	}, nil
 }
 
@@ -1498,6 +1534,17 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 				return s.startDockerAPI(s.runtimeContext)
 			}
 		}
+	}
+	if feature == "kubernetes" {
+		if !enabled && s.hasRuntimeOperations() {
+			http.Error(w, "wait for active runtime operations before disabling Kubernetes", http.StatusConflict)
+			return
+		}
+		if err := s.setKubernetesAutoscalingPaused(r.Context(), !enabled); err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		rollback = func() error { return s.setKubernetesAutoscalingPaused(r.Context(), enabled) }
 	}
 	if err := s.store.SetSettings(r.Context(), settings); err != nil {
 		if rollback != nil {

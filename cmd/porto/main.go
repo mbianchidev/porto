@@ -726,7 +726,7 @@ Commands:
   porto kubernetes logs <namespace> <pod> [--container name] [--previous]
   porto kubernetes exec <namespace> <pod> [--container name] -- <command...>
   porto kubernetes terminal <cluster> [--namespace name] [--command resource] [--readonly]
-  porto kubernetes cluster create|start|stop|delete
+  porto kubernetes cluster create|start|stop|scale|upgrade|upgrade-recover|autoscaling|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
   porto runtime providers|install <lima|qemu|kind|k9s|k0s>
   porto diagnose [--json]

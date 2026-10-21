@@ -20,6 +20,8 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
 - **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
+- **Kubernetes upgrades.** Upgrade k3s/k0s nodes in place, or replace kind while preserving supported persistent volumes, application images, and manifests. Recovery keeps the original kind nodes available. See [cluster upgrades](docs/kubernetes-upgrades.md).
+- **Local autoscaling.** Karpenter provisions bounded k3s/k0s worker VMs for pending pods; KEDA scales workload replicas from event triggers on all three distributions. See [Kubernetes autoscaling](docs/kubernetes-autoscaling.md).
 - **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster-name>`.
 - **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.

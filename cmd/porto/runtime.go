@@ -548,9 +548,15 @@ func kubernetesFilesCmd(args []string) error {
 
 func kubernetesClusterCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto kubernetes cluster create|start|stop|delete")
+		return errors.New("usage: porto kubernetes cluster create|start|stop|scale|upgrade|upgrade-recover|autoscaling|delete")
 	}
 	switch args[0] {
+	case "autoscaling":
+		return kubernetesAutoscalingCmd(args[1:])
+	case "workload-scale":
+		return kubernetesWorkloadScalingCmd(args[1:])
+	case "workload-unscale":
+		return kubernetesWorkloadUnscaleCmd(args[1:])
 	case "create":
 		fs := flag.NewFlagSet("kubernetes cluster create", flag.ContinueOnError)
 		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, or k3s")
@@ -585,6 +591,23 @@ func kubernetesClusterCmd(args []string) error {
 			return fmt.Errorf("usage: porto kubernetes cluster %s <name>", args[0])
 		}
 		return runtimePOST("/api/kubernetes/clusters/"+url.PathEscape(args[1])+"/"+args[0], nil)
+	case "upgrade", "upgrade-recover":
+		fs := flag.NewFlagSet("kubernetes cluster "+args[0], flag.ContinueOnError)
+		version := fs.String("version", "", "explicit distribution version")
+		confirm := fs.Bool("confirm", false, "confirm downtime and persistent-volume/application restoration for kind")
+		if err := parseInterspersed(fs, args[1:], map[string]bool{"confirm": true}); err != nil {
+			return err
+		}
+		if fs.NArg() != 1 || !*confirm || (args[0] == "upgrade" && *version == "") {
+			if args[0] == "upgrade" {
+				return errors.New("usage: porto kubernetes cluster upgrade <name> --version <version> --confirm")
+			}
+			return errors.New("usage: porto kubernetes cluster upgrade-recover <name> --confirm")
+		}
+		if args[0] == "upgrade-recover" {
+			return runtimePOST("/api/kubernetes/clusters/"+url.PathEscape(fs.Arg(0))+"/upgrade-recover", map[string]bool{"confirm": true})
+		}
+		return runtimePOST("/api/kubernetes/clusters/"+url.PathEscape(fs.Arg(0))+"/"+args[0], kubernetes.UpgradeRequest{Version: *version, Confirm: *confirm})
 	case "scale":
 		fs := flag.NewFlagSet("kubernetes cluster scale", flag.ContinueOnError)
 		count := fs.Int("nodes", -1, "desired node count")
