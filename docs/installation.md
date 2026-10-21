@@ -192,17 +192,43 @@ launches, and Windows installers may show SmartScreen until releases are
 signed. Porto provides its own Docker-compatible API, containerd backend,
 BuildKit bridge, and Compose backend.
 
-If macOS quarantine blocks an unsigned release, clear the attribute without
-following bundled symbolic links:
+### macOS Gatekeeper quarantine
+
+If macOS Gatekeeper blocks Porto's first launch, only remove quarantine for a
+download you trust from the
+[official releases page](https://github.com/mbianchidev/porto/releases).
+First verify the DMG or desktop archive against that release's `SHA256SUMS`;
+see [checksum verification](#manual-archive-installation). If verification
+fails, do not unblock or open the app.
+
+For a manual installation, copy `Porto.app` from the DMG or extracted desktop
+archive into `/Applications` first, rather than launching it from the mounted
+DMG or Downloads. Then run this in Terminal:
+
+```sh
+xattr -dr com.apple.quarantine "/Applications/Porto.app"
+```
+
+Reopen `/Applications/Porto.app` afterward.
+
+The one-line installer instead uses `~/Applications/Porto.app` by default.
+For that installation, use the matching path, without following bundled
+symbolic links:
 
 ```sh
 xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
 ```
 
+Reopen `~/Applications/Porto.app` afterward. If you set `PORTO_INSTALL_DIR`,
+substitute the actual installed app path. Both commands apply only to the
+selected Porto bundle; do not disable Gatekeeper globally.
+
 ### Manual DMG installation
 
 Open the DMG, drag `Porto.app` to `/Applications`, and launch it from there.
-Then enable the CLI with:
+If macOS blocks launch, follow
+[macOS Gatekeeper quarantine](#macos-gatekeeper-quarantine), then enable the
+CLI with:
 
 #### Enable the CLI
 
