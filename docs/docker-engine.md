@@ -129,6 +129,10 @@ rather than sending Porto-owned OCI metadata to nerdctl after a redundant
 connection probe times out.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
+The Lima bridge preserves SSH stdin for its background FIFO writer, waits for
+input forwarding to finish, then explicitly closes containerd stdin. This keeps
+`docker exec -i`, kind bootstrap configuration, and volume-archive transfers
+from dropping input or waiting forever for EOF.
 After an attached auto-remove container exits, Porto removes it and its
 anonymous volumes before completing Docker's removal wait. The container's exit
 code is retained, and cleanup failures are logged and returned to the waiting
