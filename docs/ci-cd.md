@@ -262,7 +262,12 @@ archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
 runtime version, rootless services, architecture, and 20-minute boot deadline,
 without repeatedly decompressing the large payload under QEMU. Failed boots
-print bounded host and guest cloud-init logs before the owned fixture is removed.
+print bounded kernel/device-discovery records, read-only QMP disk/CPU state,
+and host logs before the owned fixture is removed. When SSH is reachable, the
+same diagnostic attempt records the guest fstab, block labels, mounted devices,
+udev properties and unit timings, plus bounded udev and cloud-init logs.
+Unavailable diagnostics are reported without replacing the original failure;
+diagnostics never repair mounts, change guest state or create engine ownership.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 Linux runners without `/dev/kvm` use the same host-side archive preparation.
 Software-emulated ARM64 guests select `neoverse-n1` for both the destination and

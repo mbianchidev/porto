@@ -37,6 +37,9 @@ created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
 dump_lima_boot_logs() {
+  if ! node scripts/lima-boot-diagnostics.cjs "$LIMA_HOME/porto-engine"; then
+    echo "Some read-only boot diagnostics were unavailable; preserving the original failure." >&2
+  fi
   for name in serial.log ha.stderr.log ha.stdout.log; do
     file="$LIMA_HOME/porto-engine/$name"
     if [ -f "$file" ]; then
@@ -48,9 +51,31 @@ dump_lima_boot_logs() {
   done
   if ! node -e '
     const { spawnSync } = require("node:child_process")
+    const script = String.raw`
+status=0
+report() {
+  printf "\nCI guest diagnostic: %s\n" "$*"
+  "$@" || { code=$?; printf "Diagnostic command failed (%s): %s\n" "$code" "$*" >&2; status=1; }
+}
+report uname -a
+report cat /proc/meminfo
+report cat /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory
+report ps -eo pid,stat,comm,wchan:32
+report cat /etc/fstab
+report lsblk -o NAME,TYPE,FSTYPE,LABEL,PARTLABEL,UUID,PARTUUID,MOUNTPOINTS
+report ls -l /dev/disk/by-label
+report sudo -n blkid -p /dev/vda13 /dev/vda15
+report findmnt --mountpoint /boot
+report findmnt --mountpoint /boot/efi
+report udevadm info --query=property --name=/dev/vda13
+report udevadm info --query=property --name=/dev/vda15
+report systemctl show boot.mount boot-efi.mount local-fs.target systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service systemd-sysusers.service systemd-modules-load.service systemd-tmpfiles-setup-dev-early.service -p Id -p ActiveState -p Result -p ActiveEnterTimestampMonotonic -p InactiveExitTimestampMonotonic
+report sudo -n journalctl -b -u systemd-udevd.service -u systemd-udev-trigger.service -u systemd-hwdb-update.service -u systemd-sysusers.service -u systemd-modules-load.service -u boot.mount -u boot-efi.mount --no-pager -n 160
+report sudo -n tail -n 200 /var/log/cloud-init-output.log
+exit "$status"
+`
     const result = spawnSync("limactl", [
-      "shell", "--workdir=/", "porto-engine", "--", "sudo", "-n",
-      "tail", "-n", "200", "/var/log/cloud-init-output.log",
+      "shell", "--workdir=/", "porto-engine", "--", "sh", "-c", script,
     ], { stdio: ["ignore", 2, 2], timeout: 60000, killSignal: "SIGKILL" })
     if (result.error) console.error("Unable to read CI guest boot logs: " + result.error.message)
     process.exitCode = result.error ? 1 : (result.status ?? 1)
