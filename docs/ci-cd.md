@@ -13,7 +13,7 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 
 ## CI details
 
-The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.9` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
+The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.26.10` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
 The `cross-build` job compiles `./cmd/porto` with `CGO_ENABLED=0` for every release target (`linux`, `darwin`, and `windows` on `amd64` and `arm64`), so a broken platform build fails the pull request instead of the release.
 
@@ -233,8 +233,9 @@ containing the fix when updating this dependency; keep the vulnerability
 scan enabled.
 
 The module graph keeps `golang.org/x/net` at `v0.60.0` or newer for the HTTP/2
-security fixes. Related standard-library fixes require Go `1.26.9` or
-`1.27.2`; use a security-patched toolchain for local builds and vulnerability
+security fixes. Standard-library fixes, including compromised intermediate
+certificate distrust ([GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809)),
+require Go `1.26.10` or `1.27.3`; use a security-patched toolchain for local builds and vulnerability
 scans, not an older patch release on a newer Go minor line.
 
 ## Cutting a release
