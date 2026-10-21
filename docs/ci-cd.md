@@ -183,9 +183,7 @@ restart suggestions for a disposable guest.
 macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, so software emulation does not starve the hosted runner's heartbeat.
 Intel macOS data jobs allocate one vCPU per fixture VM, reserving host CPU for
-the runner and native filesystem processes. Windows ARM64 explicitly selects
-and verifies the native Windows OpenSSH client rather than Git's emulated x64
-client; both the guest handshake and the runtime tunnel use that executable.
+the runner and native filesystem processes.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

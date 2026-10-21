@@ -102,24 +102,6 @@ PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cj
 export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
-  native_ssh_directory="$(cygpath -u "${SYSTEMROOT:-${SystemRoot:-C:/Windows}}")/System32/OpenSSH"
-  for tool in ssh scp ssh-keygen; do
-    if [ ! -x "$native_ssh_directory/$tool.exe" ]; then
-      echo "Native Windows OpenSSH executable is missing: $native_ssh_directory/$tool.exe" >&2
-      exit 1
-    fi
-  done
-  node - "$native_ssh_directory/ssh.exe" <<'NODE'
-const fs = require('node:fs')
-const image = fs.readFileSync(process.argv[2])
-const header = image.readUInt32LE(0x3c)
-if (image.toString('ascii', header, header + 4) !== 'PE\0\0' ||
-    ![0xaa64, 0xa641, 0xa64e].includes(image.readUInt16LE(header + 4))) {
-  throw new Error('The selected Windows SSH client must be native ARM64, not an emulated x64 executable.')
-}
-NODE
-  export SSH="'$(cygpath -m "$native_ssh_directory/ssh.exe")'"
-  "$native_ssh_directory/ssh.exe" -V
   export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu neoverse-n1"
   export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
   echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."
