@@ -413,6 +413,23 @@ nodes remain available for recovery. Unsupported storage blocks replacement
 before shutdown. See [cluster upgrades and recovery](kubernetes-upgrades.md)
 for consistency boundaries, version rules, and recovery commands.
 
+### Autoscaling
+
+The managed-cluster inspector's **Autoscaling** tab configures two independent
+controllers. Karpenter provisions real Lima workers for pending pods on k3s/k0s;
+KEDA scales workload replicas from event triggers on k3s, k0s, and kind.
+kind does not support dynamic node topology. Worker ceilings and machine budgets
+are explicit, fixed workers/control planes remain independent, and Porto pauses
+host node controllers during cluster lifecycle operations.
+
+```sh
+porto kubernetes cluster autoscaling dev --nodes --max-nodes 3 --keda
+porto kubernetes cluster autoscaling dev
+```
+
+See [Kubernetes autoscaling](kubernetes-autoscaling.md) for KEDA trigger
+configuration, credential references, storage protection, and shutdown behavior.
+
 ### Open a cluster terminal
 
 Desktop releases bundle k9s. Select a managed cluster in the dashboard and

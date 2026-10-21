@@ -51,7 +51,7 @@ export function ClusterUpgrade({
   }
 
   return (
-    <section className="drawerPanel">
+    <section className="drawerPanel clusterMaintenance">
       <h3>Upgrade Kubernetes</h3>
       <p className="hintLine">Configured version: {cluster.version || 'Unpinned; Porto checks the installed version before upgrading.'}</p>
       <p>{kind

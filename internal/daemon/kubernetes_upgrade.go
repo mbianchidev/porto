@@ -39,6 +39,12 @@ func (s *Server) upgradeKubernetesCluster(w http.ResponseWriter, r *http.Request
 		return
 	}
 	result, err := s.clusters.UpgradeCluster(ctx, name, request)
+	release()
+	if err == nil {
+		result.Message = appendRuntimeMessage(result.Message, s.resumeKubernetesAutoscaling(ctx, name))
+	} else if _, configurationErr := s.clusters.Configuration(name); configurationErr == nil {
+		s.resumeKubernetesAutoscaling(ctx, name)
+	}
 	writeRuntimeResult(w, result, err)
 }
 
@@ -75,5 +81,6 @@ func (s *Server) recoverKubernetesUpgrade(w http.ResponseWriter, r *http.Request
 		writeRuntimeError(w, err)
 		return
 	}
-	writeJSON(w, map[string]string{"status": "recovered"})
+	release()
+	writeJSON(w, map[string]string{"status": "recovered", "message": s.resumeKubernetesAutoscaling(ctx, name)})
 }

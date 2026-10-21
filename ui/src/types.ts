@@ -745,6 +745,27 @@ export type KubernetesCluster = {
   }
 }
 
+export type KubernetesAutoscalingConfig = {
+  nodes: {
+    enabled: boolean
+    maxNodes: number
+    machine: KubernetesMachineSpec
+  }
+  keda: boolean
+}
+
+export type KubernetesAutoscalingStatus = KubernetesAutoscalingConfig & {
+  cluster: string
+  nodeSupported: boolean
+  running: boolean
+  paused: boolean
+  managedNodes: number
+  kedaReady: boolean
+  karpenterVersion: string
+  kedaVersion: string
+  message?: string
+}
+
 // --- Virtual machines -----------------------------------------------------------
 
 export type VMStatus = {

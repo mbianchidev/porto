@@ -548,6 +548,12 @@ func kubernetesClusterCmd(args []string) error {
 		return errors.New("usage: porto kubernetes cluster create|start|stop|scale|upgrade|upgrade-recover|autoscaling|delete")
 	}
 	switch args[0] {
+	case "autoscaling":
+		return kubernetesAutoscalingCmd(args[1:])
+	case "workload-scale":
+		return kubernetesWorkloadScalingCmd(args[1:])
+	case "workload-unscale":
+		return kubernetesWorkloadUnscaleCmd(args[1:])
 	case "create":
 		fs := flag.NewFlagSet("kubernetes cluster create", flag.ContinueOnError)
 		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, or k3s")

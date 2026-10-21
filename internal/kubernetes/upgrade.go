@@ -6,11 +6,15 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"os"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/config"
 )
 
 const ClusterUpgradeTimeout = 2 * time.Hour
@@ -49,6 +53,35 @@ func (p *ClusterProvisioner) Configuration(name string) (ClusterRequest, error) 
 		return ClusterRequest{}, err
 	}
 	return spec, nil
+}
+
+func (p *ClusterProvisioner) ManagedNames() ([]string, error) {
+	entries, err := os.ReadDir(p.kubeconfigRoot)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var names []string
+	for _, entry := range entries {
+		if entry.IsDir() || filepath.Ext(entry.Name()) != ".json" {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(p.kubeconfigRoot, entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var spec ClusterRequest
+		if err := json.Unmarshal(data, &spec); err != nil {
+			return nil, err
+		}
+		if !clusterNamePattern.MatchString(spec.Name) || entry.Name() != config.KubernetesClusterFileToken(spec.Name)+".json" {
+			return nil, errors.New("invalid managed cluster metadata identity")
+		}
+		names = append(names, spec.Name)
+	}
+	return names, nil
 }
 
 func validateUpgradeOwnership(name string, spec ClusterRequest) error {

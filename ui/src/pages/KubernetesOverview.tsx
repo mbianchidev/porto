@@ -20,6 +20,7 @@ import type {
 
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
 const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
+const ClusterAutoscaling = lazy(() => import('./ClusterAutoscaling'))
 
 type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
 
@@ -344,12 +345,12 @@ export function KubernetesOverview({
     if (!beginClusterMutation(previousName, 'rename')) return
     try {
       const previousContext = selectedCluster.context
-      const result = await apiSend<{ name: string; context: string }>(
+      const result = await apiSend<{ name: string; context: string; message?: string }>(
         `/api/kubernetes/clusters/${encodeURIComponent(previousName)}/rename`,
         'POST',
         { name: renameDraft.trim() },
       )
-      notifyNotice('kubernetes', `Renamed cluster ${previousName} to ${result.name}.`)
+      notifyNotice('kubernetes', result.message || `Renamed cluster ${previousName} to ${result.name}.`)
       clusters.update((current) => current?.map((cluster) => (
         cluster.name === previousName
           ? { ...cluster, name: result.name, context: result.context }
@@ -487,6 +488,7 @@ export function KubernetesOverview({
                         { id: 'nodeGroup', label: 'Node group' },
                         { id: 'importImage', label: 'Import image' },
                         { id: 'upgrade', label: 'Upgrade' },
+                        { id: 'autoscaling', label: 'Autoscaling' },
                       ]}
                   activeID={clusterTab}
                   onSelect={setClusterTab}
@@ -601,6 +603,19 @@ export function KubernetesOverview({
                     end={() => endClusterMutation(selectedCluster.name)}
                     onChanged={() => { clusters.reload(); status.reload() }}
                   />
+                )}
+                {clusterTab === 'autoscaling' && (
+                  <Suspense fallback={<section className="drawerPanel" role="status">Loading autoscaling controls...</section>}>
+                    <ClusterAutoscaling
+                      key={selectedCluster.name}
+                      cluster={selectedCluster}
+                      mutation={{
+                        disabled: pendingMutations[selectedCluster.name] !== undefined,
+                        begin: () => beginClusterMutation(selectedCluster.name, 'autoscaling'),
+                        end: () => endClusterMutation(selectedCluster.name),
+                      }}
+                    />
+                  </Suspense>
                 )}
               </Inspector>
             )}
