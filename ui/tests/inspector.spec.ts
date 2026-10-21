@@ -499,6 +499,7 @@ test('file uploads create new files and reject implicit overwrites', async ({ pa
   await mockRuntime(page)
   const requests = await mockFiles(page)
   await openInspector(page, 'Files')
+  await expect(page.getByLabel('Upload new file')).toBeEnabled()
   await page.getByLabel('Upload new file').setInputFiles({
     name: 'upload.fixture', mimeType: 'application/octet-stream', buffer: Buffer.from('synthetic upload'),
   })
@@ -506,6 +507,7 @@ test('file uploads create new files and reject implicit overwrites', async ({ pa
   expect(requests.find((request) => request.method === 'PUT')).toMatchObject({
     path: 'upload.fixture', identity: 'synthetic-fingerprint', sha256: '', body: 'synthetic upload',
   })
+  await expect(page.getByLabel('Upload new file')).toBeEnabled()
   await page.getByLabel('Upload new file').setInputFiles({
     name: 'fixture.txt', mimeType: 'text/plain', buffer: Buffer.from('synthetic overwrite attempt'),
   })
