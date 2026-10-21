@@ -456,7 +456,10 @@ func (m *Manager) Forget(ctx context.Context, name string) error {
 // Rename moves paused host settings after a successful cluster rename. Existing
 // claim identities keep the runtime name; Resume loads the new kubeconfig.
 func (m *Manager) Rename(ctx context.Context, oldName, newName string) error {
-	if err := errors.Join(validateName(oldName), validateName(newName)); err != nil {
+	if err := validateName(oldName); err != nil {
+		return err
+	}
+	if err := validateName(newName); err != nil {
 		return err
 	}
 	m.lifecycle.Lock()
@@ -467,12 +470,20 @@ func (m *Manager) Rename(ctx context.Context, oldName, newName string) error {
 	if oldName == newName {
 		return nil
 	}
-	if _, err := os.Stat(m.directory(newName)); err == nil {
+	root, err := os.OpenRoot(filepath.Join(m.root, "autoscaling"))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	if _, err := root.Stat(newName); err == nil {
 		return errors.New("destination already has autoscaling settings")
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	if err := os.Rename(m.directory(oldName), m.directory(newName)); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := root.Rename(oldName, newName); err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	return nil
