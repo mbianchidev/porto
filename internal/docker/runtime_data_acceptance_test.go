@@ -130,6 +130,50 @@ type runtimeDataFixture struct {
 	selection         []dataops.Selection
 }
 
+type runtimeDataPhaseSelection struct {
+	migrationFailures bool
+	nativeFiles       bool
+	engineLifecycle   bool
+}
+
+func selectRuntimeDataPhase(phase string) (runtimeDataPhaseSelection, error) {
+	switch phase {
+	case "", "all":
+		return runtimeDataPhaseSelection{true, true, true}, nil
+	case "migration":
+		return runtimeDataPhaseSelection{migrationFailures: true}, nil
+	case "native":
+		return runtimeDataPhaseSelection{nativeFiles: true}, nil
+	case "engine":
+		return runtimeDataPhaseSelection{engineLifecycle: true}, nil
+	default:
+		return runtimeDataPhaseSelection{}, fmt.Errorf("unknown runtime data acceptance phase %q", phase)
+	}
+}
+
+func TestRuntimeDataPhaseSelection(t *testing.T) {
+	for _, scenario := range []struct {
+		phase string
+		want  runtimeDataPhaseSelection
+	}{
+		{"", runtimeDataPhaseSelection{true, true, true}},
+		{"all", runtimeDataPhaseSelection{true, true, true}},
+		{"migration", runtimeDataPhaseSelection{migrationFailures: true}},
+		{"native", runtimeDataPhaseSelection{nativeFiles: true}},
+		{"engine", runtimeDataPhaseSelection{engineLifecycle: true}},
+	} {
+		t.Run(scenario.phase, func(t *testing.T) {
+			got, err := selectRuntimeDataPhase(scenario.phase)
+			if err != nil || got != scenario.want {
+				t.Fatalf("phase %q selected %+v, %v; want %+v", scenario.phase, got, err, scenario.want)
+			}
+		})
+	}
+	if _, err := selectRuntimeDataPhase("unknown"); err == nil {
+		t.Fatal("unknown phase silently omitted acceptance coverage")
+	}
+}
+
 func TestRuntimeDataAcceptance(t *testing.T) {
 	if os.Getenv("PORTO_RUNTIME_DATA_ACCEPTANCE") != "1" {
 		t.Skip("set PORTO_RUNTIME_DATA_ACCEPTANCE=1 for isolated real Docker migration and OS-native runtime mounts")
@@ -138,8 +182,12 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	if phase == "" {
 		phase = "all"
 	}
-	if phase != "all" && phase != "migration" && phase != "native" {
-		t.Fatalf("unknown runtime data acceptance phase %q", phase)
+	selected, err := selectRuntimeDataPhase(phase)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if phase == "engine" && (os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") != "1") {
+		t.Fatal("the engine phase requires an independently owned disposable CI Lima VM")
 	}
 	lifetime, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
@@ -273,24 +321,25 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	if phase != "native" {
+	if selected.migrationFailures {
 		t.Run("transfer failure and interruption recovery", fixture.migrationFailures)
 		if t.Failed() {
 			return
 		}
 	}
-	if phase == "migration" {
-		return
+	if selected.nativeFiles {
+		t.Run("real native resource mounts", fixture.nativeResources)
+		if t.Failed() {
+			return
+		}
+		t.Run("native lifecycle boundaries", fixture.nativeLifecycles)
+		if t.Failed() {
+			return
+		}
 	}
-	t.Run("real native resource mounts", fixture.nativeResources)
-	if t.Failed() {
-		return
+	if selected.engineLifecycle {
+		t.Run("owned engine update and shutdown", fixture.engineLifecycle)
 	}
-	t.Run("native lifecycle boundaries", fixture.nativeLifecycles)
-	if t.Failed() {
-		return
-	}
-	t.Run("owned engine update and shutdown", fixture.engineLifecycle)
 }
 
 func (fixture *runtimeDataFixture) useCurrentDestinationHelper() {

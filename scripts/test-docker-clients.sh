@@ -11,8 +11,12 @@ if [ "$suite" != clients ] && [ "$suite" != data ]; then
   exit 2
 fi
 phase="${PORTO_RUNTIME_DATA_PHASE:-all}"
-if [ "$suite" = data ] && [ "$phase" != all ] && [ "$phase" != migration ] && [ "$phase" != native ]; then
+if [ "$suite" = data ] && [ "$phase" != all ] && [ "$phase" != migration ] && [ "$phase" != native ] && [ "$phase" != engine ]; then
   echo "Unknown runtime data phase: $phase" >&2
+  exit 2
+fi
+if [ "$suite" = data ] && [ "$phase" = engine ] && [ "$1" != lima ]; then
+  echo "The engine acceptance phase requires an independently owned Lima runtime." >&2
   exit 2
 fi
 export PORTO_RUNTIME_DATA_PHASE="$phase"
@@ -265,6 +269,6 @@ fi
     "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.failfast -test.timeout=25m -test.v
   fi
 )
-if [ "$suite/$goos" = data/darwin ] && [ "$phase" != migration ]; then
+if [ "$suite/$goos" = data/darwin ] && { [ "$phase" = all ] || [ "$phase" = native ]; }; then
   PORTO_TEST_WEBDAV_NATIVE=1 go test ./internal/nativefiles -run '^TestMacOSNativeWebDAV' -count=1 -failfast -timeout=5m -v
 fi

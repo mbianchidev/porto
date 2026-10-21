@@ -214,7 +214,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        phase: [migration, native]
+        phase: [migration, native, engine]
         runtime:
           - os: ubuntu-26.04
             backend: local
@@ -232,6 +232,15 @@ jobs:
             backend: lima
           - os: windows-11-arm
             backend: lima
+        exclude:
+          - phase: engine
+            runtime:
+              os: ubuntu-26.04
+              backend: local
+          - phase: engine
+            runtime:
+              os: ubuntu-26.04-arm
+              backend: local
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:

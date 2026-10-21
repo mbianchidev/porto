@@ -77,21 +77,28 @@ confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
 not count as successful OS-native mounts for every platform/backend row; see
 the [real-runtime matrix](data-management.md#real-runtime-acceptance).
 
-Sixteen independent `Runtime data` jobs cover migration and native phases for
+Twenty-two independent `Runtime data` jobs cover migration and native phases for
 all eight platform/backend cells: Linux x64/ARM64 with local containerd and Lima,
-macOS Intel/Apple Silicon, and Windows x64/ARM64. The two phases run in parallel
-on separately owned runtimes rather than sharing mutable fixture state.
+macOS Intel/Apple Silicon, and Windows x64/ARM64, plus an owned-engine phase for
+the six Lima cells. The phases run in parallel on separately owned runtimes
+rather than sharing mutable fixture state.
 These jobs use the same workload-scoped Go caches, verified-download caches
 and fail-fast policy as the other matrices; no cache contains fixture runtime state.
 They reuse the disposable
 runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
-`PORTO_RUNTIME_DATA_PHASE=migration|native` selects a phase, while an unset value
+`PORTO_RUNTIME_DATA_PHASE=migration|native|engine` selects a phase, while an unset value
 or `all` retains the combined opt-in local suite. The migration phase runs every
 round-trip, failure and interruption assertion. The native phase creates its
 real resources through the same verified migration round trip, then runs every
-mount, workload, VM and owned-engine lifecycle assertion. No job waits for the
-other phase's artifacts. The 85-minute job, 55-minute executable, 40-minute
-acceptance and 20-minute setup/boot caps are unchanged.
+mount, workload and standalone-VM lifecycle assertion. The engine phase also
+performs the verified migration round trip, then runs all owned-engine
+update, restart, identity-preserving reattachment and shutdown assertions.
+Separating the two VM-restart scenarios keeps emulated Windows ARM64 from
+reaching the 55-minute executable deadline while the second guest is still
+rebooting. Local-containerd cells have no Lima engine to restart; selecting the
+dedicated engine phase without an independently owned CI Lima runtime is an error.
+No job waits for another phase's artifacts. The 85-minute job, 55-minute
+executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.
 Normal development-client jobs retain their existing scope. Linux installs
 FUSE3/QEMU and builds checksum-pinned SSHFS 3.7.6 with the required symlink
 containment fixes instead of the older distribution binary. It grants the runner
@@ -139,9 +146,10 @@ Source provisioning has a separate 20-minute setup budget; the unchanged
 40-minute acceptance budget starts only after its real Docker fixtures are ready.
 The executable's overall 55-minute deadline still bounds setup and acceptance
 within each phase job.
-After the source preservation and standalone-VM reconnect cases finish, the
-disposable source VM is stopped before destination engine update/restart, rather
-than consuming emulated host resources while no source operations remain.
+Before destination engine update/restart, the now-unused disposable source VM
+is stopped rather than consuming emulated host resources. In the engine phase
+this follows the verified migration; combined `all` runs first complete the
+standalone-VM reconnect cases as well.
 
 For local acceptance against an already-running, ownership-verified Porto
 Lima destination, compile this revision's Linux helper beside a compiled test
