@@ -710,9 +710,33 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
+	if err := request.Limits.validate(); err != nil {
+		return "", err
+	}
+	if request.Limits.PidsLimit != nil && *request.Limits.PidsLimit <= 0 {
+		request.Limits.PidsLimit = nil
+	}
+	if request.Limits.OomKillDisable != nil && !*request.Limits.OomKillDisable {
+		request.Limits.OomKillDisable = nil
+	}
+	if request.Limits.MemorySwappiness != nil && *request.Limits.MemorySwappiness == -1 {
+		request.Limits.MemorySwappiness = nil
+	}
+	for _, limit := range request.Ulimits {
+		if limit.Name == "" || strings.ContainsAny(limit.Name, "=:\r\n\x00") ||
+			limit.Soft < -1 || limit.Hard < -1 ||
+			(limit.Hard != -1 && (limit.Soft == -1 || limit.Soft > limit.Hard)) {
+			return "", errors.New("invalid container ulimit")
+		}
+	}
 	for _, port := range request.Expose {
 		if _, err := network.ParsePort(port); err != nil {
 			return "", fmt.Errorf("invalid exposed container port %q: %w", port, err)
+		}
+	}
+	if request.PublishAll {
+		if err := m.publishAllContainerPorts(ctx, &request); err != nil {
+			return "", err
 		}
 	}
 	if id, handled, err := m.createContainerDirect(ctx, request); handled {
@@ -726,6 +750,34 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", err
 	}
 	args := []string{"create"}
+	args = request.Limits.arguments(args)
+	if request.ReadOnly {
+		args = append(args, "--read-only")
+	}
+	for _, options := range []struct {
+		flag   string
+		values []string
+	}{
+		{"--cap-add", request.CapAdd}, {"--cap-drop", request.CapDrop},
+		{"--dns", request.DNS}, {"--dns-search", request.DNSSearch},
+		{"--dns-option", request.DNSOptions}, {"--add-host", request.ExtraHosts},
+		{"--group-add", request.GroupAdd}, {"--gpus", request.GPUs},
+		{"--mount", request.Mounts},
+	} {
+		for _, value := range options.values {
+			if value == "" || strings.ContainsAny(value, "\r\n\x00") {
+				return "", fmt.Errorf("invalid container %s value", options.flag)
+			}
+			args = append(args, options.flag, value)
+		}
+	}
+	for _, limit := range request.Ulimits {
+		args = append(args, "--ulimit", fmt.Sprintf("%s=%d:%d", limit.Name, limit.Soft, limit.Hard))
+	}
+	args = appendStringFlag(args, "--ipc", request.IPC)
+	args = appendStringFlag(args, "--pid", request.PIDMode)
+	args = appendStringFlag(args, "--uts", request.UTS)
+	args = appendStringFlag(args, "--cgroup-parent", request.CgroupParent)
 	if request.Name != "" {
 		if err := validateObjectID(request.Name); err != nil {
 			return "", fmt.Errorf("container name: %w", err)
@@ -819,22 +871,34 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	}
 	if request.TTY {
 		args = append(args, "--tty")
+		args = append(args, "--label", portoTTYLabel+"=true")
 	}
 	if request.Interactive {
 		args = append(args, "--interactive")
+		args = append(args, "--label", portoOpenStdinLabel+"=true")
+	}
+	if request.StdinOnce {
+		args = append(args, "--label", "io.porto.container.stdin-once=true")
 	}
 	if request.Remove {
 		args = append(args, "--rm")
 	}
+	optionEnd := len(args)
 	args = append(args, normalizeNerdctlReference(request.Image))
 	args = append(args, command...)
-	output, err := m.runWithTimeout(ctx, 10*time.Minute, "create Porto container", nil, args...)
+	output, err := m.createContainerCommand(ctx, args, optionEnd)
 	if err != nil {
 		return "", err
 	}
 	id, err := createdContainerID(output)
 	if err != nil {
 		return "", err
+	}
+	if request.TTY && request.ConsoleSize != [2]uint{} {
+		if err := m.configureContainerConsole(ctx, id, request.ConsoleSize); err != nil {
+			_, cleanupErr := m.run(ctx, "remove container after console configuration failure", "rm", "--force", id)
+			return "", errors.Join(err, cleanupErr)
+		}
 	}
 	m.invalidateContainerInventory()
 	return id, nil
@@ -1591,13 +1655,14 @@ func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {
 	}
 	var inspected struct {
 		Config struct {
-			TTY bool `json:"Tty"`
+			TTY    bool              `json:"Tty"`
+			Labels map[string]string `json:"Labels"`
 		} `json:"Config"`
 	}
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return false, fmt.Errorf("decode container terminal settings: %w", err)
 	}
-	return inspected.Config.TTY, nil
+	return inspected.Config.TTY || inspected.Config.Labels[portoTTYLabel] == "true", nil
 }
 
 func (m *Manager) ExecContainer(ctx context.Context, id string, command []string, stdin []byte) ([]byte, error) {

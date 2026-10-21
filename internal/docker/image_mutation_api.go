@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"strings"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -74,14 +76,57 @@ func (a *API) loadImages(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
-	if r.URL.Query().Get("fromSrc") != "-" {
-		writeDockerUnsupported(w, "image import sources other than request body")
+	if len(r.URL.Query()["changes"]) > 0 {
+		writeDockerUnsupported(w, "image import configuration changes")
 		return
 	}
-	reference, err := taggedImageReference(r.URL.Query().Get("repo"), r.URL.Query().Get("tag"))
-	if err != nil {
-		writeDockerError(w, err)
+	reference := ""
+	if r.URL.Query().Get("repo") != "" {
+		var err error
+		reference, err = taggedImageReference(r.URL.Query().Get("repo"), r.URL.Query().Get("tag"))
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
+	} else if r.URL.Query().Get("tag") != "" {
+		writeDockerError(w, errors.New("image import repository is required when specifying a tag"))
 		return
+	}
+	source := r.URL.Query().Get("fromSrc")
+	input := r.Body
+	if source != "-" {
+		parsed, err := url.Parse(source)
+		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
+			writeDockerError(w, errors.New("invalid remote import URL: HTTP or HTTPS is required without embedded credentials"))
+			return
+		}
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, source, nil)
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
+		client := &http.Client{Timeout: 30 * time.Minute, CheckRedirect: func(next *http.Request, via []*http.Request) error {
+			if len(via) >= 5 || next.URL.User != nil || (next.URL.Scheme != "http" && next.URL.Scheme != "https") ||
+				(parsed.Scheme == "https" && next.URL.Scheme != "https") {
+				return errors.New("invalid remote import redirect")
+			}
+			return nil
+		}}
+		response, err := client.Do(request)
+		if err != nil {
+			writeDockerError(w, fmt.Errorf("download root filesystem archive: %w", err))
+			return
+		}
+		defer response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			writeDockerError(w, fmt.Errorf("root filesystem download returned HTTP %d", response.StatusCode))
+			return
+		}
+		if response.ContentLength > 2<<30 {
+			writeDockerError(w, errors.New("invalid remote import: archive exceeds 2 GiB"))
+			return
+		}
+		input = http.MaxBytesReader(w, response.Body, 2<<30)
 	}
 	wrote := false
 	encoder := json.NewEncoder(w)
@@ -93,9 +138,9 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 		}
 		return encodeDockerProgress(w, encoder, map[string]string{"status": strings.TrimSpace(string(chunk.Data))})
 	}
-	err = a.manager.StreamImportImage(
+	err := a.manager.StreamImportImage(
 		r.Context(),
-		r.Body,
+		input,
 		reference,
 		r.URL.Query().Get("platform"),
 		r.URL.Query().Get("message"),

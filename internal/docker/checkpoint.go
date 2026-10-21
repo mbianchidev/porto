@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -20,7 +21,8 @@ func (r *grpcContainerRuntime) checkpointContainer(
 	ctx context.Context,
 	id,
 	name string,
-) ([]string, error) {
+	options ...containerd.CheckpointOpts,
+) (descriptors []string, err error) {
 	namespacedContext := withContainerdNamespace(ctx, r.namespace)
 	container, err := r.client.LoadContainer(namespacedContext, id)
 	if err != nil {
@@ -29,17 +31,23 @@ func (r *grpcContainerRuntime) checkpointContainer(
 	if strings.TrimSpace(name) == "" {
 		name = fmt.Sprintf("porto.local/checkpoints/%s:%d", id, time.Now().UTC().UnixNano())
 	}
-	checkpoint, err := container.Checkpoint(
-		namespacedContext,
-		name,
+	options = append(options,
 		containerd.WithCheckpointTask,
 		containerd.WithCheckpointImage,
 		containerd.WithCheckpointRuntime,
 		containerd.WithCheckpointRW,
 	)
+	checkpoint, err := container.Checkpoint(namespacedContext, name, options...)
 	if err != nil {
 		return nil, containerdOperationError("checkpoint", id, err)
 	}
+	defer func() {
+		if err != nil {
+			cleanup, cancel := context.WithTimeout(withContainerdNamespace(context.WithoutCancel(ctx), r.namespace), 20*time.Second)
+			defer cancel()
+			err = errors.Join(err, r.client.ImageService().Delete(cleanup, name))
+		}
+	}()
 	labels, err := container.Labels(namespacedContext)
 	if err != nil {
 		return nil, fmt.Errorf("read source labels for checkpoint %q: %w", name, err)

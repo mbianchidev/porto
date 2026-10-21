@@ -85,11 +85,21 @@ func runtimeCmd(st *store.Store, args []string) error {
 
 func dockerCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto docker run [options] <image> [command...]|cli <args...>|dive <image> [args...]|status|engine-install|engine-start|engine-stop|engine-remove|containers|images|builds|networks|volumes|context-install|activate|deactivate")
+		return runDockerCLI(nil)
 	}
 	switch args[0] {
-	case "storage", "volume", "backups", "operations":
+	case "data":
+		return dockerDataCmd(args[1:])
+	case "storage", "backups", "operations":
 		return dockerDataCmd(args)
+	case "volume":
+		if len(args) > 1 {
+			switch args[1] {
+			case "export", "clone", "import", "restore", "empty":
+				return dockerDataCmd(args)
+			}
+		}
+		return runDockerCLI(args)
 	case "migrate":
 		return dockerMigrationCmd(args[1:])
 	case "files":
@@ -101,25 +111,10 @@ func dockerCmd(args []string) error {
 			}
 			return errors.New("usage: porto docker cli <args...>")
 		}
-		dockerArgs := args[1:]
-		environment := os.Environ()
 		if args[0] == "run" {
-			endpoint, err := config.DockerEndpoint()
-			if err != nil {
-				return err
-			}
-			dockerArgs = append([]string{"--host", endpoint}, args...)
-			environment = process.WithEnvironment(environment, "DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=")
+			return runDockerCLI(args)
 		}
-		command := exec.Command("docker", dockerArgs...)
-		command.Env = environment
-		command.Stdin = os.Stdin
-		command.Stdout = os.Stdout
-		command.Stderr = os.Stderr
-		if err := command.Run(); err != nil {
-			return fmt.Errorf("run bundled Docker CLI: %w", err)
-		}
-		return nil
+		return executeDockerCLI(args[1:], os.Environ())
 	case "dive":
 		if len(args) == 1 {
 			return errors.New("usage: porto docker dive [--container name] <image> [dive args...]")
@@ -226,7 +221,7 @@ func dockerCmd(args []string) error {
 			return err
 		}
 		return writeOutput(map[string]string{"status": "removed"})
-	case "containers", "images", "builds", "networks", "volumes":
+	case "containers", "builds", "networks", "volumes":
 		return runtimeGET("/api/docker/" + args[0])
 	case "context-install":
 		if len(args) != 1 {
@@ -284,20 +279,51 @@ func dockerCmd(args []string) error {
 		}
 		return writeOutput(map[string]string{"status": "deactivated"})
 	case "container":
-		if len(args) != 3 {
-			return errors.New("usage: porto docker container <start|stop|restart|pause|unpause|remove|remove-force> <id>")
+		if len(args) == 3 && args[1] == "remove-force" {
+			return runtimePOST("/api/docker/containers/"+url.PathEscape(args[2])+"/"+url.PathEscape(args[1]), nil)
 		}
-		return runtimePOST("/api/docker/containers/"+url.PathEscape(args[2])+"/"+url.PathEscape(args[1]), nil)
-	case "pull":
-		if len(args) != 2 {
-			return errors.New("usage: porto docker pull <image>")
-		}
-		return runtimePOST("/api/docker/images/pull", map[string]string{"reference": args[1]})
-	case "build":
-		return dockerBuildCmd(args[1:])
+		return runDockerCLI(args)
 	default:
-		return fmt.Errorf("unsupported Docker command %q", args[0])
+		return runDockerCLI(args)
 	}
+}
+
+func dockerShortcut(command string) bool {
+	switch command {
+	case "ps", "run", "create", "exec", "rm", "rmi", "pull", "push", "tag",
+		"inspect", "top", "diff", "history", "search", "login", "logout",
+		"attach", "wait", "pause", "unpause", "rename", "update", "stats",
+		"events", "cp", "export", "import", "save", "load", "commit",
+		"compose", "buildx", "build", "container", "image", "images", "network",
+		"volume", "checkpoint", "info", "context", "system", "builder":
+		return true
+	default:
+		return false
+	}
+}
+
+func runDockerCLI(args []string) error {
+	endpoint, err := config.DockerEndpoint()
+	if err != nil {
+		return err
+	}
+	if len(args) > 0 && args[0] == "run" {
+		args = append([]string{"--host", endpoint}, args...)
+	}
+	return executeDockerCLI(args, process.WithEnvironment(os.Environ(),
+		"DOCKER_HOST="+endpoint, "DOCKER_CONTEXT=", "DOCKER_TLS_VERIFY=", "DOCKER_CERT_PATH="))
+}
+
+func executeDockerCLI(args []string, environment []string) error {
+	command := exec.Command("docker", args...)
+	command.Env = environment
+	command.Stdin = os.Stdin
+	command.Stdout = os.Stdout
+	command.Stderr = os.Stderr
+	if err := command.Run(); err != nil {
+		return fmt.Errorf("run Docker CLI against Porto: %w", err)
+	}
+	return nil
 }
 
 func dockerContextEndpoint(socketPath string) string {
@@ -305,29 +331,6 @@ func dockerContextEndpoint(socketPath string) string {
 		return "npipe:////./pipe/" + strings.TrimPrefix(socketPath, `\\.\pipe\`)
 	}
 	return "unix://" + socketPath
-}
-
-func dockerBuildCmd(args []string) error {
-	fs := flag.NewFlagSet("docker build", flag.ContinueOnError)
-	tag := fs.String("tag", "", "image tag")
-	dockerfile := fs.String("file", "", "Dockerfile path")
-	target := fs.String("target", "", "build target")
-	platform := fs.String("platform", "", "target platform")
-	noCache := fs.Bool("no-cache", false, "disable build cache")
-	if err := parseInterspersed(fs, args, map[string]bool{"no-cache": true}); err != nil {
-		return err
-	}
-	if fs.NArg() != 1 {
-		return errors.New("usage: porto docker build <context> [--tag name] [--file Dockerfile] [--target stage] [--platform platform] [--no-cache]")
-	}
-	return runtimePOST("/api/docker/builds", portodocker.BuildRequest{
-		Context:    fs.Arg(0),
-		Dockerfile: *dockerfile,
-		Tag:        *tag,
-		Target:     *target,
-		Platform:   *platform,
-		NoCache:    *noCache,
-	})
 }
 
 func kubernetesCmd(args []string) error {

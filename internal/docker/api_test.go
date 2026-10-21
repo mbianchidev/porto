@@ -167,11 +167,14 @@ func TestDockerAPICreateAcceptsConsoleSizeWithoutTTY(t *testing.T) {
 	}{
 		{"omitted", "", http.StatusCreated},
 		{"disabled", `"Tty":false,`, http.StatusCreated},
-		{"enabled", `"Tty":true,`, http.StatusNotImplemented},
+		{"enabled", `"Tty":true,`, http.StatusCreated},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
 				want := []string{"create", "--rm", "alpine:latest", "echo", "hello"}
+				if test.name == "enabled" {
+					want = []string{"create", "--tty", "--label", portoTTYLabel + "=true", "--rm", "alpine:latest", "echo", "hello"}
+				}
 				if !reflect.DeepEqual(command.Args, want) {
 					t.Fatalf("non-TTY create arguments = %v, want %v", command.Args, want)
 				}
@@ -181,10 +184,18 @@ func TestDockerAPICreateAcceptsConsoleSizeWithoutTTY(t *testing.T) {
 			body := `{` + test.tty + `"Image":"alpine:latest","Cmd":["echo","hello"],
 				"AttachStdout":true,"AttachStderr":true,
 				"HostConfig":{"AutoRemove":true,"ConsoleSize":[24,80]}}`
-			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+			manager := New(runner)
+			operations := &parityOperations{fakeContainerOperations: &fakeContainerOperations{}}
+			if test.name == "enabled" {
+				manager.operationsConnector = func(context.Context) (containerOperations, error) { return operations, nil }
+			}
+			NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response,
 				httptest.NewRequest(http.MethodPost, "/v1.47/containers/create", strings.NewReader(body)))
 			if response.Code != test.status {
 				t.Fatalf("create with console size = %d: %s", response.Code, response.Body.String())
+			}
+			if test.name == "enabled" && operations.console != [2]uint{24, 80} {
+				t.Fatalf("initial TTY dimensions were not retained: %v", operations.console)
 			}
 			if test.status == http.StatusCreated {
 				if len(runner.commands) != 1 || !strings.Contains(response.Body.String(), `"Id":"synthetic-container"`) {
@@ -1734,7 +1745,7 @@ func TestDockerAPIRejectsUnsupportedMountSemanticsAndFollowsLogs(t *testing.T) {
 	handler.ServeHTTP(create, httptest.NewRequest(
 		http.MethodPost,
 		"/v1.47/containers/create",
-		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data","BindOptions":{"NonRecursive":true}}]}}`),
+		bytes.NewBufferString(`{"Image":"alpine","HostConfig":{"Mounts":[{"Type":"bind","Source":"/tmp","Target":"/data","BindOptions":{"CreateMountpoint":true}}]}}`),
 	))
 	if create.Code != http.StatusNotImplemented || !strings.Contains(create.Body.String(), "recursive bind") {
 		t.Fatalf("mount response = %d: %s", create.Code, create.Body.String())

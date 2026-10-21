@@ -42,6 +42,11 @@ type IDMap struct {
 	Size      int64 `json:"size"`
 }
 
+type FilesystemChange struct {
+	Path string
+	Kind int
+}
+
 type Envelope struct {
 	Descriptor Descriptor        `json:"descriptor"`
 	Request    datafiles.Request `json:"request"`
@@ -116,6 +121,8 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 		}
 	}
 	switch envelope.Request.Action {
+	case "changes":
+		return containerChanges(ctx, descriptor, output)
 	case "attach":
 		attachment, err := attach(ctx, descriptor, envelope.Request.Writable)
 		if err != nil {

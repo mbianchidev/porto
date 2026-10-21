@@ -55,7 +55,7 @@ func TestDockerAPIRejectsUnsupportedStructuredMountBeforeRuntimeMutation(t *test
 		"Image":"alpine:latest",
 		"HostConfig":{
 			"Mounts":[
-				{"Type":"bind","Source":"/host/source","Target":"/workspace","BindOptions":{"NonRecursive":true}}
+				{"Type":"bind","Source":"/host/source","Target":"/workspace","BindOptions":{"CreateMountpoint":true}}
 			]
 		}
 	}`)
@@ -75,7 +75,7 @@ func TestDockerAPIRejectsUnsupportedStructuredMountBeforeRuntimeMutation(t *test
 }
 
 func TestStructuredMountValidationRejectsDuplicateTargets(t *testing.T) {
-	_, _, err := structuredMountArguments(
+	_, _, _, err := structuredMountArguments(
 		[]dockerStructuredMount{
 			{Type: "volume", Source: "one", Target: "/data"},
 			{Type: "volume", Source: "two", Target: "/data"},

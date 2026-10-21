@@ -12,10 +12,11 @@ import (
 )
 
 type containerAttachDetails struct {
-	ID         string
-	TTY        bool
-	AutoRemove bool
-	State      containerWaitState
+	ID          string
+	TTY         bool
+	AutoRemove  bool
+	State       containerWaitState
+	ConsoleSize [2]uint
 }
 
 type containerStartBaseline struct {
@@ -58,7 +59,7 @@ func (m *Manager) StartExec(ctx context.Context, request ExecRequest) (runtimes.
 	return m.startProcess(ctx, "start Porto container exec", args...)
 }
 
-func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool) (runtimes.Process, error) {
+func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool, console ...[2]uint) (runtimes.Process, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
@@ -67,10 +68,13 @@ func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool) (runti
 		args = append(args, "--no-stdin")
 	}
 	args = append(args, id)
+	if len(console) > 0 {
+		return m.startTerminalProcess(ctx, "attach Porto container terminal", console[0], args...)
+	}
 	return m.startProcess(ctx, "attach Porto container", args...)
 }
 
-func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin bool) (runtimes.Process, error) {
+func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin bool, console ...[2]uint) (runtimes.Process, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
@@ -85,7 +89,13 @@ func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin b
 		args = append(args, "--interactive")
 	}
 	args = append(args, id)
-	process, err := m.startProcess(ctx, "start attached Porto container", args...)
+	var process runtimes.Process
+	var err error
+	if len(console) > 0 {
+		process, err = m.startTerminalProcess(ctx, "start attached Porto container terminal", console[0], args...)
+	} else {
+		process, err = m.startProcess(ctx, "start attached Porto container", args...)
+	}
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -98,8 +108,11 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		return containerAttachDetails{}, err
 	}
 	var inspected struct {
-		ID         string             `json:"Id"`
-		Config     struct{ TTY bool } `json:"Config"`
+		ID     string `json:"Id"`
+		Config struct {
+			TTY    bool
+			Labels map[string]string
+		} `json:"Config"`
 		State      containerWaitState `json:"State"`
 		HostConfig struct {
 			AutoRemove bool `json:"AutoRemove"`
@@ -111,12 +124,64 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 	if inspected.ID == "" {
 		return containerAttachDetails{}, errors.New("container runtime returned an empty container identifier")
 	}
-	return containerAttachDetails{
+	details := containerAttachDetails{
 		ID:         inspected.ID,
 		TTY:        inspected.Config.TTY,
 		AutoRemove: inspected.HostConfig.AutoRemove,
 		State:      inspected.State.normalized(),
-	}, nil
+	}
+	if inspected.Config.Labels[portoTTYLabel] == "true" {
+		details.TTY = true
+	}
+	if encoded := inspected.Config.Labels["io.porto.container.console-size"]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &details.ConsoleSize); err != nil {
+			return containerAttachDetails{}, fmt.Errorf("decode initial container terminal size: %w", err)
+		}
+	}
+	return details, nil
+}
+
+func (details containerAttachDetails) terminal() [][2]uint {
+	if !details.TTY {
+		return nil
+	}
+	return [][2]uint{details.ConsoleSize}
+}
+
+func (m *Manager) startTerminalProcess(ctx context.Context, action string, size [2]uint, args ...string) (runtimes.Process, error) {
+	backend, err := m.backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	runner, ok := m.runner.(runtimes.ProcessRunner)
+	if !ok {
+		return nil, fmt.Errorf("%w: terminal process streaming", ErrUnsupported)
+	}
+	dimensions := []string{"--height", fmt.Sprint(size[0]), "--width", fmt.Sprint(size[1]), "--"}
+	command := runtimes.Command{}
+	if backend.limaInstance != "" {
+		command.Name = backend.name
+		command.Args = []string{"shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+			`exec "$HOME/.local/bin/porto-runtime-helper" pty-command "$@"`, "porto-terminal"}
+		command.Args = append(command.Args, dimensions...)
+		command.Args = append(command.Args, "nerdctl")
+		command.Args = append(command.Args, args...)
+	} else {
+		helper, err := m.runtimeHelperPath()
+		if err != nil {
+			return nil, err
+		}
+		command.Name = helper
+		command.Args = append([]string{"pty-command"}, dimensions...)
+		command.Args = append(command.Args, backend.name)
+		command.Args = append(command.Args, backend.prefix...)
+		command.Args = append(command.Args, args...)
+	}
+	process, err := runner.Start(ctx, command)
+	if err != nil {
+		return nil, fmt.Errorf("%s: %w", action, err)
+	}
+	return process, nil
 }
 
 func (m *Manager) containerStartBaseline(state containerWaitState) containerStartBaseline {
