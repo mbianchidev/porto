@@ -280,12 +280,12 @@ func newGRPCContainerRuntime(
 		enrichment:        map[string]Container{},
 	}
 	validationContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	health, err := grpc_health_v1.NewHealthClient(connection).Check(
 		validationContext,
 		&grpc_health_v1.HealthCheckRequest{},
 		grpc.WaitForReady(true),
 	)
+	cancel()
 	if err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("check containerd health: %w", err)
@@ -294,8 +294,10 @@ func newGRPCContainerRuntime(
 		_ = connection.Close()
 		return nil, fmt.Errorf("%w; containerd health is %s", ErrUnavailable, health.GetStatus())
 	}
+	namespaceContext, cancelNamespace := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelNamespace()
 	namespaces, err := namespacesapi.NewNamespacesClient(connection).List(
-		validationContext,
+		namespaceContext,
 		&namespacesapi.ListNamespacesRequest{},
 	)
 	if err != nil {
