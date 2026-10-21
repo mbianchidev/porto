@@ -21,23 +21,22 @@ jobs:
     env:
       CGO_ENABLED: ${{ matrix.os == 'windows-latest' && '0' || '1' }}
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
         go: [stable]
         include:
           # Guard the exact minimum Go version declared in go.mod.
           - os: ubuntu-latest
-            go: '1.26.10'
+            go: '1.27.3'
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go
         with:
           go-version: ${{ matrix.go }}
-          check-latest: true
 
       - name: Check gofmt
         if: runner.os == 'Linux'
@@ -61,17 +60,17 @@ jobs:
 
       - name: Test
         if: runner.os != 'Linux'
-        run: go test ./... -count=1
+        run: go test ./... -count=1 -failfast
 
       - name: Test with race detector
         if: runner.os == 'Linux'
-        run: go test ./... -race -count=1
+        run: go test ./... -race -count=1 -failfast
 
       - name: Test unattached-volume migration against the runner Docker engine
         if: runner.os == 'Linux' && matrix.go == 'stable'
         env:
           PORTO_TEST_MIGRATION_SOURCE_SOCKET: unix:///var/run/docker.sock
-        run: go test ./internal/docker -run '^TestUnattachedVolumeMigrationRealDockerArchive$' -count=1 -timeout=5m -v
+        run: go test ./internal/docker -run '^TestUnattachedVolumeMigrationRealDockerArchive$' -count=1 -failfast -timeout=5m -v
 
       - name: Validate Windows installer
         if: runner.os == 'Windows'
@@ -93,36 +92,36 @@ jobs:
           }
 
   cross-build:
-    name: Cross build
+    name: Cross build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        goos: [linux, darwin, windows]
+        goarch: [amd64, arm64]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          cache-scope: cross-${{ matrix.goos }}-${{ matrix.goarch }}
 
       - name: Build every release target
         env:
           CGO_ENABLED: '0'
-        run: |
-          set -euo pipefail
-          for target in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do
-            echo "::group::${target}"
-            GOOS="${target%/*}" GOARCH="${target#*/}" go build -o /dev/null ./cmd/porto
-            echo "::endgroup::"
-          done
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: go build -o /dev/null ./cmd/porto
 
   linux-toolchain:
     name: Linux Docker toolchain (${{ matrix.arch }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         arch: [amd64, arm64]
     steps:
@@ -130,14 +129,17 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          cache-scope: runtime-linux-${{ matrix.arch }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
+
+      - uses: ./.github/actions/cache-desktop
+        with:
+          target: linux-${{ matrix.arch }}
 
       - name: Build checksum-pinned runtime
         run: bash scripts/bundle-desktop-runtime.sh linux "${{ matrix.arch }}" "$RUNNER_TEMP/runtime"
@@ -149,14 +151,14 @@ jobs:
         run: |
           mkdir -p "$DOCKER_CONFIG"
           PATH="$RUNNER_TEMP/runtime/bin:$PATH" \
-            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
+            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1 -failfast
 
   development-clients:
     name: Development clients (${{ matrix.backend }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
@@ -169,15 +171,19 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          cache-scope: development-${{ matrix.backend }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: '24'
           cache: npm
-          cache-dependency-path: scripts/docker-clients/package-lock.json
+          cache-dependency-path: |
+            scripts/docker-clients/package-lock.json
+            ui/electron/package-lock.json
+      - uses: ./.github/actions/cache-desktop
+        with:
+          target: development-${{ matrix.backend }}
       - name: Install and audit development clients
         shell: bash
         run: |
@@ -207,7 +213,7 @@ jobs:
       run:
         working-directory: ui
     strategy:
-      fail-fast: false
+      fail-fast: true
       matrix:
         # Minimum supported by Vite/oxlint, active LTS, and current.
         node: ['22.12', '24', '26']
@@ -220,7 +226,13 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-          cache-dependency-path: ui/package-lock.json
+          cache-dependency-path: |
+            ui/package-lock.json
+            ui/electron/package-lock.json
+
+      - uses: ./.github/actions/cache-desktop
+        with:
+          target: ui
 
       - name: Install dependencies
         run: npm ci
@@ -231,13 +243,20 @@ jobs:
       - name: Build
         run: npm run build
 
+      - name: Cache browser downloads
+        if: matrix.node == '24'
+        uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: porto-playwright-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/package-lock.json') }}
+
       - name: Install browser test dependencies
         if: matrix.node == '24'
         run: npx --no-install playwright install --with-deps chromium
 
       - name: Test data dashboards
         if: matrix.node == '24'
-        run: npm test -- --reporter=line
+        run: npm test -- --reporter=line --max-failures=1
 
       - name: Validate desktop shell
         run: |
@@ -279,7 +298,7 @@ jobs:
           sh -n scripts/install-desktop.sh
 
   native-installers:
-    name: Native installers (${{ matrix.goos }})
+    name: Native installers (${{ matrix.goos }}/${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     env:
@@ -290,17 +309,24 @@ jobs:
         include:
           - os: macos-latest
             goos: darwin
+            arch: amd64
+          - os: macos-latest
+            goos: darwin
+            arch: arm64
           - os: windows-latest
             goos: windows
+            arch: amd64
+          - os: windows-latest
+            goos: windows
+            arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
 
-      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
+      - uses: ./.github/actions/setup-go
         with:
-          go-version: stable
-          check-latest: true
+          cache-scope: native-${{ matrix.goos }}-${{ matrix.arch }}
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
@@ -309,6 +335,10 @@ jobs:
           cache-dependency-path: |
             ui/package-lock.json
             ui/electron/package-lock.json
+
+      - uses: ./.github/actions/cache-desktop
+        with:
+          target: ${{ matrix.goos }}-${{ matrix.arch }}
 
       - name: Build desktop inputs
         shell: bash
@@ -329,33 +359,36 @@ jobs:
         shell: bash
         env:
           GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           version="$(node -p "require('./ui/package.json').version.split('+')[0]")+ci.${GITHUB_RUN_NUMBER}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           mkdir -p dist
-          for arch in amd64 arm64; do
-            bash scripts/package-desktop-installer.sh "$GOOS" "$arch" "$version" dist
-          done
+          bash scripts/package-desktop-installer.sh "$GOOS" "$GOARCH" "$version" dist
+          if [ "$GOOS" = windows ]; then
+            test "$(find dist -maxdepth 1 -name '*.exe' | wc -l | tr -d ' ')" = "1"
+            test -f "dist/porto-desktop_${version}_windows_${GOARCH}.exe"
+          fi
 
       - name: Verify DMGs
         if: runner.os == 'macOS'
         shell: bash
         run: |
           set -euo pipefail
-          test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "2"
-          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "2"
+          test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "1"
+          test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "1"
           for image in dist/*.dmg; do
             hdiutil verify "$image"
           done
 
       - name: Install and uninstall Windows package
-        if: runner.os == 'Windows'
+        if: runner.os == 'Windows' && matrix.arch == 'amd64'
         shell: pwsh
         run: |
           $installers = @(Get-ChildItem dist -Filter '*.exe')
-          if ($installers.Count -ne 2) {
-            throw "Expected two Windows installers, found $($installers.Count)."
+          if ($installers.Count -ne 1) {
+            throw "Expected one Windows installer, found $($installers.Count)."
           }
           $installer = Get-Item 'dist/porto-desktop_${{ steps.installers.outputs.version }}_windows_amd64.exe'
           $installRoot = Join-Path $env:RUNNER_TEMP 'Porto installer smoke'
@@ -394,7 +427,7 @@ jobs:
             $dive = Join-Path $installRoot 'resources/runtime/bin/dive.exe'
             & $dive --version | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Installed Dive image inspector failed.' }
-            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1
+            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1 -failfast
             if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose failed the Porto API smoke test.' }
           }
           finally {
@@ -421,7 +454,7 @@ jobs:
           $env:PORTO_TEST_NATIVE_MOUNT_HELPER = Join-Path $installRoot 'resources/runtime/bin/porto-files-mount.exe'
           $env:PORTO_TEST_WINFSP_NATIVE = '1'
           try {
-            & go test ./internal/nativefiles -run '^TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach$' -count=1 -timeout=10m -v
+            & go test ./internal/nativefiles -run '^TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach$' -count=1 -failfast -timeout=10m -v
             if ($LASTEXITCODE -ne 0) {
               throw 'Installed Porto native WinFsp folder bridge failed direct-edit/read-only/detach checks.'
             }
@@ -555,10 +588,11 @@ jobs:
       - name: Upload native installers
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
-          name: desktop-installers-${{ matrix.goos }}
+          name: desktop-installers-${{ matrix.goos }}-${{ matrix.arch }}
           path: |
             dist/*.dmg
             dist/*.exe
             dist/*.tar.gz
           if-no-files-found: error
+          compression-level: 0
           retention-days: 3
