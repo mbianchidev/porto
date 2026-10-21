@@ -124,18 +124,17 @@ For an always-available setup, follow the [daily-use guide](docs/daily-use.md) t
 
 ## Use Docker and optional runtimes
 
-Once the execution backend is ready:
+Once the execution backend is ready, select Porto's Docker context and use Docker normally:
 
 ```sh
-porto docker status
-porto docker run --rm alpine:latest echo hello
-porto docker ps --all
-porto docker dive alpine:latest
+docker context use porto
+docker run --rm alpine:latest echo hello
+docker ps --all
 ```
 
-The container example should print `hello` and remove itself. From a Compose project directory, use `porto docker compose up --detach`. CLI/web installations can provision the backend with `porto docker engine-install`; desktop packages do this automatically.
+The container example should print `hello` and remove itself. From a Compose project directory, use `docker compose up --detach`. If `DOCKER_HOST` or `DOCKER_CONTEXT` is set, unset it so it does not override the selected context. CLI/web installations can provision the backend with `porto docker engine-install`; desktop packages do this automatically.
 
-`porto docker <command>` uses Docker's flags and defaults to Porto's endpoint. Non-conflicting shortcuts include `porto ps`, `porto exec`, and `porto compose`. **`porto start`, `porto stop`, and `porto logs` operate on projects**; use `porto docker stop` and `porto docker logs` for containers. `porto docker cli` is unrestricted passthrough and honors explicit or inherited Docker connection settings.
+`porto docker <command>` is also available: it uses Docker's flags and defaults to Porto's endpoint. Non-conflicting shortcuts include `porto ps`, `porto exec`, and `porto compose`. **`porto start`, `porto stop`, and `porto logs` operate on projects**; use `docker stop` and `docker logs` for containers. `porto docker cli` is unrestricted passthrough and honors explicit or inherited Docker connection settings.
 
 Inspect optional providers with `porto runtime providers` and enable features independently:
 
