@@ -9,7 +9,10 @@ import (
 	"net/url"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/dataops"
 )
@@ -31,6 +34,145 @@ func (fixture *runtimeDataFixture) cleanupSelections() []dataops.Selection {
 		}
 	}
 	return ordered
+}
+
+func cleanupRuntimeDataDestinations(ctx context.Context, selections []dataops.Selection, remove func(context.Context, dataops.Selection) error) error {
+	failures := make([]error, len(selections))
+	removeOne := func(index int, selection dataops.Selection) {
+		err := remove(ctx, selection)
+		if err != nil && !errorsIsNotFound(err) && !missingDockerObject(err, selection.Kind) {
+			failures[index] = fmt.Errorf("remove exact acceptance destination %s: %w", selection.Destination, err)
+		}
+	}
+	var pending sync.WaitGroup
+	slots := make(chan struct{}, 2)
+	for index, selection := range selections {
+		if selection.Kind != "volume" && selection.Kind != "network" {
+			pending.Wait()
+			removeOne(index, selection)
+			continue
+		}
+		slots <- struct{}{}
+		pending.Add(1)
+		go func() {
+			defer pending.Done()
+			defer func() { <-slots }()
+			removeOne(index, selection)
+		}()
+	}
+	pending.Wait()
+	return errors.Join(failures...)
+}
+
+func TestRuntimeDataCleanupBoundsIndependentRemovals(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		fixture := runtimeDataFixture{
+			prefix: "synthetic",
+			selection: []dataops.Selection{
+				{Kind: "container", Destination: "app"},
+				{Kind: "volume", Destination: "volume-a"},
+				{Kind: "network", Destination: "network"},
+			},
+			extraSelections: []dataops.Selection{
+				{Kind: "volume", Destination: "volume-b"},
+				{Kind: "volume", Destination: "volume-c"},
+			},
+		}
+		selections := fixture.cleanupSelections()
+		var mu sync.Mutex
+		active, peak, completedIndependent := 0, 0, 0
+		containerDone := false
+		calls := make(map[string]int)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		started := time.Now()
+		err := cleanupRuntimeDataDestinations(ctx, selections, func(ctx context.Context, selection dataops.Selection) error {
+			mu.Lock()
+			independent := selection.Kind == "volume" || selection.Kind == "network"
+			switch {
+			case selection.Kind == "container" && active != 0:
+				t.Error("container cleanup overlapped another resource")
+			case independent && !containerDone:
+				t.Error("dependent resources were removed before the container")
+			case selection.Kind == "image" && (active != 0 || completedIndependent != 4):
+				t.Error("image aliases were removed concurrently or before their dependents")
+			}
+			active++
+			peak = max(peak, active)
+			calls[selection.Kind+"/"+selection.Destination]++
+			mu.Unlock()
+			duration := 16 * time.Second
+			switch selection.Kind {
+			case "container":
+				duration = 32 * time.Second
+			case "volume":
+				duration = 24 * time.Second
+			}
+			var err error
+			select {
+			case <-time.After(duration):
+			case <-ctx.Done():
+				err = ctx.Err()
+			}
+			mu.Lock()
+			active--
+			if selection.Kind == "container" {
+				containerDone = err == nil
+			}
+			if independent && err == nil {
+				completedIndependent++
+			}
+			mu.Unlock()
+			return err
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if elapsed := time.Since(started); elapsed != 112*time.Second || peak != 2 {
+			t.Fatalf("cleanup took %s with %d concurrent removals, want 112s with at most two", elapsed, peak)
+		}
+		for _, selection := range selections {
+			if count := calls[selection.Kind+"/"+selection.Destination]; count != 1 {
+				t.Fatalf("destination %s removed %d times", selection.Destination, count)
+			}
+		}
+	})
+}
+
+func TestRuntimeDataCleanupPreservesEveryFailure(t *testing.T) {
+	foreign := errors.New("synthetic foreign ownership")
+	failed := errors.New("synthetic removal failure")
+	selections := []dataops.Selection{
+		{Kind: "container", Destination: "foreign"},
+		{Kind: "volume", Destination: "missing"},
+		{Kind: "network", Destination: "failed"},
+		{Kind: "image", Destination: "remaining"},
+	}
+	var mu sync.Mutex
+	calls := make(map[string]int)
+	err := cleanupRuntimeDataDestinations(context.Background(), selections, func(_ context.Context, selection dataops.Selection) error {
+		mu.Lock()
+		calls[selection.Destination]++
+		mu.Unlock()
+		switch selection.Destination {
+		case "foreign":
+			return foreign
+		case "missing":
+			return ErrNotFound
+		case "failed":
+			return failed
+		default:
+			return nil
+		}
+	})
+	if !errors.Is(err, foreign) || !errors.Is(err, failed) || errors.Is(err, ErrNotFound) {
+		t.Fatalf("cleanup lost a real failure or rejected an already absent object: %v", err)
+	}
+	for _, selection := range selections {
+		if calls[selection.Destination] != 1 {
+			t.Fatalf("cleanup skipped or repeated %s after an earlier failure", selection.Destination)
+		}
+	}
 }
 
 func TestRuntimeDataCleanupDestinationsOnceInDependencyOrder(t *testing.T) {

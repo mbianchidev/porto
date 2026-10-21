@@ -732,11 +732,8 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 			t.Errorf("detach real host folders before deleting fixture resources: %v", err)
 			return
 		}
-		for _, selection := range fixture.cleanupSelections() {
-			err := fixture.removeDestination(ctx, selection)
-			if err != nil && !errorsIsNotFound(err) && !missingDockerObject(err, selection.Kind) {
-				t.Errorf("remove exact acceptance destination %s: %v", selection.Destination, err)
-			}
+		if err := cleanupRuntimeDataDestinations(ctx, fixture.cleanupSelections(), fixture.removeDestination); err != nil {
+			t.Error(err)
 		}
 	})
 }

@@ -158,6 +158,11 @@ standalone-VM reconnect cases as well.
 Fixture cleanup visits each exact destination once, removing containers before
 volumes/networks and image aliases last. Repeated alias lookups must not consume
 the unchanged two-minute cleanup budget on software-emulated runners.
+Independent volume and network removals overlap with at most two in flight,
+while containers and image aliases remain serial. Each removal still performs
+fresh ownership checks through the production APIs, and all failures are retained.
+This keeps slow Windows SSH startup from serializing unrelated cleanup work past
+the same deadline.
 
 For local acceptance against an already-running, ownership-verified Porto
 Lima destination, compile this revision's Linux helper beside a compiled test
