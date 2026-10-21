@@ -89,7 +89,7 @@ async function collect(instance) {
     failed = true
   }
   if (process.platform !== 'win32') {
-    console.error('\nCI Lima diagnostics: read-only QMP state, disk attachments and CPU threads')
+    console.error('\nCI Lima diagnostics: read-only QMP state, disk attachments and CPU metadata')
     try {
       console.error(JSON.stringify(await queryQMP(path.join(instance, 'qmp.sock')), null, 2))
     } catch (error) {

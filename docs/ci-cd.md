@@ -284,11 +284,14 @@ macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, to leave scheduling priority for the hosted runner's heartbeat.
 Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
 and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
-They explicitly select single-thread TCG with a supported emulated CPU and a
-128 MiB translation cache per VM. The guest still has two vCPUs and uses QEMU's
-normal clock handling, not instruction counting. Instruction-counting overhead
-delays device discovery and can exhaust the guest's required boot-mount deadlines;
-raising Lima's outer timeout does not repair an emergency-mode boot.
+They select Lima's complete TCG fallback configuration: multi-threaded execution,
+a 512 MiB translation cache per VM, disabled unsupported S3/S4 power states and
+a supported emulated CPU. Forcing just the accelerator while Lima selects its
+HVF configuration bypasses these TCG defaults. Serializing both guest vCPUs and
+reducing the translation cache slows the CPU-bound device discovery and rootless
+provisioning. The guest retains its two vCPUs and normal clock handling, without
+instruction counting. Raising Lima's outer timeout does not repair an
+emergency-mode boot.
 The Intel runtime-data phases verify that both destination and source retain
 the image's `LABEL=BOOT` and `LABEL=UEFI` fstab entries, resolve those labels to
 the actual mounted `/boot` and `/boot/efi` devices, and reach `local-fs.target`.
