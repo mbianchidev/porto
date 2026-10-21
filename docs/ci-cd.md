@@ -15,7 +15,36 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
-The `cross-build` job compiles `./cmd/porto` with `CGO_ENABLED=0` for every release target (`linux`, `darwin`, and `windows` on `amd64` and `arm64`), so a broken platform build fails the pull request instead of the release.
+The `cross-build` matrix compiles `./cmd/porto` with `CGO_ENABLED=0` in six
+independent jobs, one for each release target (`linux`, `darwin`, and `windows`
+on `amd64` and `arm64`). All targets remain mandatory; a broken platform build
+fails the pull request instead of the release.
+
+CI shares Go module downloads separately from compiler objects. Build caches
+are scoped by runner OS/architecture, resolved Go version, workload, target,
+and dependency/runtime inputs, so a host-only cache cannot displace a
+cross-build or native-packaging cache. Go still validates compiler cache
+entries against current source and flags; test executions retain `-count=1`.
+On privileged Linux client fixtures, downloading and compilation run as the
+runner user so restored caches remain usable and readable by cache upload.
+Only the integration executable and its isolated runtime run as root.
+
+Desktop jobs cache Electron/builder downloads and checksum-addressed runtime
+inputs, not built applications, container layers, VM disks, or runtime state.
+Every runtime cache read recomputes SHA-256 against the caller's expected
+digest; corrupt bytes fail the job. A miss retains the existing bounded
+download retries, then verifies and atomically publishes the complete cache
+entry. Manifests and licenses without expected checksums are always fetched.
+Source builds of the patched Docker CLI and Windows Lima still run against
+verified sources and patches, reusing Go's compiler cache rather than skipping
+builds or executable smoke checks. Docker integration image builds retain
+their no-cache setting and use fresh disposable engines.
+
+The same optional download cache is available locally by setting
+`PORTO_DOWNLOAD_CACHE` to a dedicated directory when running packaging scripts.
+Leaving it unset preserves uncached downloads. `scripts/download-file.sh`
+accepts an optional third SHA-256 argument; only downloads with an expected
+checksum can enter the cache.
 
 The `ui` job installs with `npm ci` and runs `npm run lint`, `npm run build`,
 and the desktop shell tests on Node 22.12, 24, and 26. Node 22.12 is the lowest
@@ -27,6 +56,10 @@ The desktop test command initializes Electron before parallel test workers
 start, preventing concurrent first-run extraction of its runtime.
 
 The Node 24 job also runs the Playwright data-dashboard suite with Chromium.
+Its browser downloads are cached by dashboard lockfile; the browser/system
+dependency installation step still runs on every build. npm caches include
+both dashboard and Electron lockfiles where both are installed. Neither
+`npm ci`, dependency audits, nor desktop/browser tests are skipped on cache hits.
 Synthetic container fixtures cover bounded stdout/stderr streams, cancellation,
 copy/filter controls, running/stopped/read-only files, confirmed mutations and
 downloads, recent resource counters, and sensitive metadata. These browser
@@ -84,11 +117,24 @@ covering silent in-place replacement and NSIS installation paths containing
 spaces without launching the updated desktop.
 These checks do not boot a guest or prove guest-kernel compatibility.
 
-Native installers are retained for three days as the
-`desktop-installers-darwin` and `desktop-installers-windows` CI artifacts.
+Native installers build in four independent OS/architecture jobs rather than
+two sequential architecture loops. Each job verifies exactly one installer;
+each macOS job also verifies its matching desktop archive and DMG checksum.
+The Windows AMD64 job retains the complete installed-package, WinFsp,
+logging, blocked-update, in-place-update, and uninstall smoke checks; ARM64
+remains a cross-built package, not a claimed native execution test.
+All four jobs must pass, even if another architecture fails.
+
+Installers are retained for three days as
+`desktop-installers-<darwin|windows>-<amd64|arm64>` CI artifacts. Artifact
+compression is disabled because DMGs, EXEs, and desktop tarballs are already
+compressed; file-integrity validation and retention remain unchanged.
 They use the application version with `+ci.<run-number>` build metadata, so a
 test build is not immediately considered older than the same stable version.
 These are unsigned PR/test builds, not published releases.
+
+Superseded pull-request CI and CodeQL runs are canceled independently.
+Push, scheduled, and manually triggered runs retain their existing behavior.
 
 The development-client matrix runs real Docker SDK/CLI, Dev Containers 0.89.0,
 and Testcontainers 12.2.0 workflows against disposable local Linux containerd

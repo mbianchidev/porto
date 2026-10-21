@@ -82,12 +82,17 @@ case "$(uname -m)" in
   arm64|aarch64) goarch=arm64 ;;
   *) echo "Unsupported CI architecture." >&2; exit 2 ;;
 esac
+run_as_runner() {
+  if [ "$backend" = local ] && [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
+    sudo -u "$SUDO_USER" env "PATH=$PATH" "PORTO_DOWNLOAD_CACHE=${PORTO_DOWNLOAD_CACHE:-}" "$@"
+  else
+    "$@"
+  fi
+}
 if [ "$backend" = local ] && [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
   chown "$SUDO_UID:$SUDO_GID" "$temporary"
-  sudo -u "$SUDO_USER" env "PATH=$PATH" bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
-else
-  bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
 fi
+run_as_runner bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
 export PATH="$runtime/bin:$runtime/lima/bin:$runtime/qemu:$PATH"
 export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
@@ -100,8 +105,9 @@ if [ "$backend" = local ]; then
     exit 2
   fi
   full="$temporary/nerdctl-full.tar.gz"
-  bash scripts/download-file.sh \
-    https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-full-2.4.1-linux-amd64.tar.gz "$full"
+  run_as_runner bash scripts/download-file.sh \
+    https://github.com/containerd/nerdctl/releases/download/v2.4.1/nerdctl-full-2.4.1-linux-amd64.tar.gz "$full" \
+    ff018f11ac2f1354bf7b3aaaca6e0b52d81139c746a89134744d0b7be3a0e62f
   node scripts/verify-runtime-checksum.cjs --verify \
     ff018f11ac2f1354bf7b3aaaca6e0b52d81139c746a89134744d0b7be3a0e62f "$full"
   mkdir -p "$temporary/tools" "$temporary/network"
@@ -168,7 +174,7 @@ else
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 
-go test -c -o "$client_tests" ./internal/docker
+run_as_runner go test -c -o "$client_tests" ./internal/docker
 (
   cd "$root/internal/docker"
   "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v

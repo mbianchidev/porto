@@ -88,6 +88,8 @@ Source builds require Go 1.27.3 or newer, using a security-patched release.
 
 macOS desktop packaging and startup regression tests require full Xcode 26 or
 newer, not just Command Line Tools. See [packaging setup](docs/ci-cd.md#ci-details).
+The same guide documents CI's parallel target builds and optional
+checksum-verified download cache for local packaging.
 
 CLI/web archives remain available for headless machines and servers.
 

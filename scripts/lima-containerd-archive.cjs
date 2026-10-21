@@ -61,7 +61,7 @@ async function prepareContainerdArchive(goarch, directory) {
   const compressed = path.join(destination, 'nerdctl-full.tar.gz')
   const uncompressed = path.join(destination, 'nerdctl-full.tar')
   console.error('Preparing checksum-verified containerd files on the host for software-emulated Lima.')
-  run('bash', [path.join(__dirname, 'download-file.sh'), archive.location, compressed])
+  run('bash', [path.join(__dirname, 'download-file.sh'), archive.location, compressed, archive.digest.slice('sha256:'.length)])
   const digest = await decompressArchive(compressed, uncompressed, archive.digest.slice('sha256:'.length))
   fs.unlinkSync(compressed)
   return `.containerd.archives = ${JSON.stringify([{ location: uncompressed, arch: archive.arch, digest }])}`
