@@ -14,6 +14,60 @@ import (
 	"github.com/mbianchidev/porto/internal/dataops"
 )
 
+func (fixture *runtimeDataFixture) cleanupSelections() []dataops.Selection {
+	pending := append(slices.Clone(fixture.selection), fixture.extraSelections...)
+	for _, tag := range []string{fixture.prefix + ":fixture", fixture.prefix + ":alias"} {
+		pending = append(pending, dataops.Selection{Kind: "image", Destination: tag})
+	}
+	var ordered []dataops.Selection
+	for _, kind := range []string{"container", "volume", "network", "image"} {
+		seen := make(map[string]bool)
+		for _, selection := range pending {
+			if selection.Kind != kind || seen[selection.Destination] {
+				continue
+			}
+			seen[selection.Destination] = true
+			ordered = append(ordered, selection)
+		}
+	}
+	return ordered
+}
+
+func TestRuntimeDataCleanupDestinationsOnceInDependencyOrder(t *testing.T) {
+	fixture := runtimeDataFixture{
+		prefix: "synthetic",
+		selection: []dataops.Selection{
+			{Kind: "image", Destination: "synthetic:alias"},
+			{Kind: "volume", Destination: "shared-name", ID: "original-volume"},
+			{Kind: "network", Destination: "shared-name"},
+			{Kind: "container", Destination: "shared-name"},
+		},
+		extraSelections: []dataops.Selection{
+			{Kind: "volume", Destination: "shared-name", ID: "repeated-volume"},
+			{Kind: "volume", Destination: "extra-volume"},
+			{Kind: "image", Destination: "synthetic:alias"},
+			{Kind: "image", Destination: "synthetic:fixture"},
+		},
+	}
+	original := slices.Clone(fixture.selection)
+	extra := slices.Clone(fixture.extraSelections)
+	got := fixture.cleanupSelections()
+	var destinations []string
+	for _, selection := range got {
+		destinations = append(destinations, selection.Kind+"/"+selection.Destination)
+	}
+	want := []string{
+		"container/shared-name", "volume/shared-name", "volume/extra-volume",
+		"network/shared-name", "image/synthetic:alias", "image/synthetic:fixture",
+	}
+	if !slices.Equal(destinations, want) {
+		t.Fatalf("cleanup destinations = %q, want %q", destinations, want)
+	}
+	if got[1].ID != "original-volume" || !slices.Equal(fixture.selection, original) || !slices.Equal(fixture.extraSelections, extra) {
+		t.Fatal("cleanup changed the fixture's recorded selections")
+	}
+}
+
 func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, selection dataops.Selection) error {
 	document, err := fixture.manager.inspect(ctx, selection.Kind, selection.Destination)
 	if missingDockerObject(err, selection.Kind) {

@@ -150,6 +150,9 @@ Before destination engine update/restart, the now-unused disposable source VM
 is stopped rather than consuming emulated host resources. In the engine phase
 this follows the verified migration; combined `all` runs first complete the
 standalone-VM reconnect cases as well.
+Fixture cleanup visits each exact destination once, removing containers before
+volumes/networks and image aliases last. Repeated alias lookups must not consume
+the unchanged two-minute cleanup budget on software-emulated runners.
 
 For local acceptance against an already-running, ownership-verified Porto
 Lima destination, compile this revision's Linux helper beside a compiled test
