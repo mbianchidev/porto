@@ -28,20 +28,22 @@ const (
 )
 
 type API struct {
-	manager    *Manager
-	socketPath string
-	mux        *http.ServeMux
-	attachMu   sync.Mutex
-	attaches   map[string]*containerAttachSession
-	execMu     sync.Mutex
-	execs      map[string]*execInstance
+	manager        *Manager
+	socketPath     string
+	mux            *http.ServeMux
+	attachMu       sync.Mutex
+	attaches       map[string]*containerAttachSession
+	execMu         sync.Mutex
+	execs          map[string]*execInstance
+	registryClient *http.Client
 }
 
 func NewAPI(manager *Manager, socketPath string) *API {
 	api := &API{
 		manager: manager, socketPath: socketPath, mux: http.NewServeMux(),
-		attaches: make(map[string]*containerAttachSession),
-		execs:    make(map[string]*execInstance),
+		attaches:       make(map[string]*containerAttachSession),
+		execs:          make(map[string]*execInstance),
+		registryClient: registryHTTPClient(),
 	}
 	api.routes()
 	return api
@@ -49,7 +51,7 @@ func NewAPI(manager *Manager, socketPath string) *API {
 
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Api-Version", dockerAPIVersion)
-	w.Header().Set("Docker-Experimental", "false")
+	w.Header().Set("Docker-Experimental", "true")
 	w.Header().Set("Ostype", "linux")
 	w.Header().Set("Server", "Porto/"+config.Version)
 	path, version, err := dockerVersionedPath(r.URL.Path)
@@ -76,6 +78,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("GET /info", a.info)
 	a.mux.HandleFunc("GET /system/df", a.systemDiskUsage)
 	a.mux.HandleFunc("GET /events", a.events)
+	a.mux.HandleFunc("POST /auth", a.registryLogin)
 	a.mux.HandleFunc("POST /grpc", a.buildKitControl)
 	a.mux.HandleFunc("POST /session", a.buildKitSession)
 
@@ -96,6 +99,12 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /containers/{id}/restore", a.restoreContainer)
 	a.mux.HandleFunc("GET /containers/{id}/logs", a.containerLogs)
 	a.mux.HandleFunc("GET /containers/{id}/stats", a.containerStats)
+	a.mux.HandleFunc("GET /containers/{id}/top", a.containerTop)
+	a.mux.HandleFunc("GET /containers/{id}/changes", a.containerChanges)
+	a.mux.HandleFunc("POST /containers/{id}/resize", a.resizeContainer)
+	a.mux.HandleFunc("POST /containers/{id}/checkpoints", a.dockerCreateCheckpoint)
+	a.mux.HandleFunc("GET /containers/{id}/checkpoints", a.dockerListCheckpoints)
+	a.mux.HandleFunc("DELETE /containers/{id}/checkpoints/{checkpoint}", a.dockerDeleteCheckpoint)
 	a.mux.HandleFunc("POST /containers/{id}/attach", a.attachContainer)
 	a.mux.HandleFunc("POST /containers/{id}/exec", a.createExec)
 	a.mux.HandleFunc("GET /containers/{id}/archive", a.containerArchive)
@@ -108,6 +117,7 @@ func (a *API) routes() {
 	a.mux.HandleFunc("POST /exec/{id}/resize", a.resizeExec)
 
 	a.mux.HandleFunc("GET /images/json", a.images)
+	a.mux.HandleFunc("GET /images/search", a.registrySearch)
 	a.mux.HandleFunc("POST /images/prune", a.pruneResources("image"))
 	a.mux.HandleFunc("GET /images/get", a.getImages)
 	a.mux.HandleFunc("POST /images/load", a.loadImages)
@@ -166,7 +176,7 @@ func (a *API) version(w http.ResponseWriter, _ *http.Request) {
 		"Arch":          runtime.GOARCH,
 		"KernelVersion": "",
 		"BuildTime":     time.Now().UTC().Format(time.RFC3339),
-		"Experimental":  false,
+		"Experimental":  true,
 	})
 }
 
@@ -275,28 +285,32 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 			"Mirrors":                                 nil,
 		},
 		"LiveRestoreEnabled": false,
-		"ExperimentalBuild":  false,
+		"ExperimentalBuild":  true,
 		"Warnings":           warnings,
 	})
 }
 
 func (a *API) containers(w http.ResponseWriter, r *http.Request) {
-	for _, parameter := range []string{"limit", "since", "before"} {
-		if r.URL.Query().Get(parameter) != "" {
-			writeDockerUnsupported(w, "container list query parameter "+parameter)
-			return
-		}
-	}
-	if dockerBool(r, "size") {
-		writeDockerUnsupported(w, "container list size calculation")
-		return
-	}
 	filters, err := parseDockerFilters(r.URL.Query().Get("filters"))
 	if err != nil {
 		writeDockerError(w, err)
 		return
 	}
-	containers, err := a.manager.DockerContainers(r.Context(), dockerBool(r, "all"))
+	limit := -1
+	if raw := r.URL.Query().Get("limit"); raw != "" {
+		limit, err = strconv.Atoi(raw)
+		if err != nil || limit < -1 {
+			writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid container list limit"})
+			return
+		}
+	}
+	all := dockerBool(r, "all") || limit > 0 || r.URL.Query().Get("since") != "" || r.URL.Query().Get("before") != ""
+	containers, err := a.manager.DockerContainers(r.Context(), all || len(filters["since"]) > 0 || len(filters["before"]) > 0)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	containers, err = selectDockerContainers(containers, filters, r.URL.Query().Get("since"), r.URL.Query().Get("before"))
 	if err != nil {
 		writeDockerError(w, err)
 		return
@@ -309,11 +323,14 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			!filters.matchesLabels(container.Labels) {
 			continue
 		}
+		if limit > 0 && len(response) >= limit {
+			break
+		}
 		name := container.Name
 		if name != "" && !strings.HasPrefix(name, "/") {
 			name = "/" + name
 		}
-		response = append(response, map[string]any{
+		item := map[string]any{
 			"Id":      container.ID,
 			"Names":   []string{name},
 			"Image":   container.Image,
@@ -329,7 +346,16 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			},
 			"NetworkSettings": map[string]any{"Networks": dockerContainerNetworkSettings(container)},
 			"Mounts":          dockerContainerMounts(container),
-		})
+		}
+		if dockerBool(r, "size") {
+			rw, root, err := a.manager.containerDiskUsage(r.Context(), container.ID)
+			if err != nil {
+				writeDockerError(w, err)
+				return
+			}
+			item["SizeRw"], item["SizeRootFs"] = rw, root
+		}
+		response = append(response, item)
 	}
 	writeDockerJSON(w, http.StatusOK, response)
 }
@@ -359,6 +385,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		} `json:"Healthcheck"`
 		Tty             bool `json:"Tty"`
 		OpenStdin       bool `json:"OpenStdin"`
+		StdinOnce       bool `json:"StdinOnce"`
 		NetworkDisabled bool `json:"NetworkDisabled"`
 		AttachStdin     bool `json:"AttachStdin"`
 		AttachStdout    bool `json:"AttachStdout"`
@@ -389,54 +416,54 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 				PathInContainer   string `json:"PathInContainer"`
 				CgroupPermissions string `json:"CgroupPermissions"`
 			} `json:"Devices"`
-			DeviceRequests     []any             `json:"DeviceRequests"`
-			DeviceCgroupRules  []string          `json:"DeviceCgroupRules"`
-			CapAdd             []string          `json:"CapAdd"`
-			CapDrop            []string          `json:"CapDrop"`
-			SecurityOpt        []string          `json:"SecurityOpt"`
-			ExtraHosts         []string          `json:"ExtraHosts"`
-			DNS                []string          `json:"Dns"`
-			DNSOptions         []string          `json:"DnsOptions"`
-			DNSSearch          []string          `json:"DnsSearch"`
-			GroupAdd           []string          `json:"GroupAdd"`
-			Ulimits            []any             `json:"Ulimits"`
-			MaskedPaths        []string          `json:"MaskedPaths"`
-			ReadonlyPaths      []string          `json:"ReadonlyPaths"`
-			Sysctls            map[string]string `json:"Sysctls"`
-			Tmpfs              map[string]string `json:"Tmpfs"`
-			StorageOpt         map[string]string `json:"StorageOpt"`
-			ShmSize            int64             `json:"ShmSize"`
-			Runtime            string            `json:"Runtime"`
-			Isolation          string            `json:"Isolation"`
-			CgroupParent       string            `json:"CgroupParent"`
-			Cgroup             string            `json:"Cgroup"`
-			CgroupnsMode       string            `json:"CgroupnsMode"`
-			UsernsMode         string            `json:"UsernsMode"`
-			IpcMode            string            `json:"IpcMode"`
-			PidMode            string            `json:"PidMode"`
-			UTSMode            string            `json:"UTSMode"`
-			PublishAll         bool              `json:"PublishAllPorts"`
-			Memory             int64             `json:"Memory"`
-			NanoCPUs           int64             `json:"NanoCpus"`
-			CPUPeriod          int64             `json:"CpuPeriod"`
-			CPUQuota           int64             `json:"CpuQuota"`
-			CPUCount           int64             `json:"CpuCount"`
-			CPUPercent         int64             `json:"CpuPercent"`
-			CPUShares          int64             `json:"CpuShares"`
-			CPUSetCPUs         string            `json:"CpusetCpus"`
-			CPUSetMems         string            `json:"CpusetMems"`
-			BlkioWeight        uint16            `json:"BlkioWeight"`
-			MemoryReservation  int64             `json:"MemoryReservation"`
-			MemorySwap         int64             `json:"MemorySwap"`
-			MemorySwappiness   *int64            `json:"MemorySwappiness"`
-			OomScoreAdj        int               `json:"OomScoreAdj"`
-			CPURealtimePeriod  int64             `json:"CpuRealtimePeriod"`
-			CPURealtimeRuntime int64             `json:"CpuRealtimeRuntime"`
-			IOMaximumIOps      uint64            `json:"IOMaximumIOps"`
-			IOMaximumBandwidth uint64            `json:"IOMaximumBandwidth"`
-			Init               *bool             `json:"Init"`
-			PidsLimit          *int64            `json:"PidsLimit"`
-			OomKillDisable     *bool             `json:"OomKillDisable"`
+			DeviceRequests     []dockerDeviceRequest `json:"DeviceRequests"`
+			DeviceCgroupRules  []string              `json:"DeviceCgroupRules"`
+			CapAdd             []string              `json:"CapAdd"`
+			CapDrop            []string              `json:"CapDrop"`
+			SecurityOpt        []string              `json:"SecurityOpt"`
+			ExtraHosts         []string              `json:"ExtraHosts"`
+			DNS                []string              `json:"Dns"`
+			DNSOptions         []string              `json:"DnsOptions"`
+			DNSSearch          []string              `json:"DnsSearch"`
+			GroupAdd           []string              `json:"GroupAdd"`
+			Ulimits            []ContainerUlimit     `json:"Ulimits"`
+			MaskedPaths        []string              `json:"MaskedPaths"`
+			ReadonlyPaths      []string              `json:"ReadonlyPaths"`
+			Sysctls            map[string]string     `json:"Sysctls"`
+			Tmpfs              map[string]string     `json:"Tmpfs"`
+			StorageOpt         map[string]string     `json:"StorageOpt"`
+			ShmSize            int64                 `json:"ShmSize"`
+			Runtime            string                `json:"Runtime"`
+			Isolation          string                `json:"Isolation"`
+			CgroupParent       string                `json:"CgroupParent"`
+			Cgroup             string                `json:"Cgroup"`
+			CgroupnsMode       string                `json:"CgroupnsMode"`
+			UsernsMode         string                `json:"UsernsMode"`
+			IpcMode            string                `json:"IpcMode"`
+			PidMode            string                `json:"PidMode"`
+			UTSMode            string                `json:"UTSMode"`
+			PublishAll         bool                  `json:"PublishAllPorts"`
+			Memory             int64                 `json:"Memory"`
+			NanoCPUs           int64                 `json:"NanoCpus"`
+			CPUPeriod          int64                 `json:"CpuPeriod"`
+			CPUQuota           int64                 `json:"CpuQuota"`
+			CPUCount           int64                 `json:"CpuCount"`
+			CPUPercent         int64                 `json:"CpuPercent"`
+			CPUShares          int64                 `json:"CpuShares"`
+			CPUSetCPUs         string                `json:"CpusetCpus"`
+			CPUSetMems         string                `json:"CpusetMems"`
+			BlkioWeight        uint16                `json:"BlkioWeight"`
+			MemoryReservation  int64                 `json:"MemoryReservation"`
+			MemorySwap         int64                 `json:"MemorySwap"`
+			MemorySwappiness   *int64                `json:"MemorySwappiness"`
+			OomScoreAdj        int                   `json:"OomScoreAdj"`
+			CPURealtimePeriod  int64                 `json:"CpuRealtimePeriod"`
+			CPURealtimeRuntime int64                 `json:"CpuRealtimeRuntime"`
+			IOMaximumIOps      uint64                `json:"IOMaximumIOps"`
+			IOMaximumBandwidth uint64                `json:"IOMaximumBandwidth"`
+			Init               *bool                 `json:"Init"`
+			PidsLimit          *int64                `json:"PidsLimit"`
+			OomKillDisable     *bool                 `json:"OomKillDisable"`
 		} `json:"HostConfig"`
 		NetworkingConfig struct {
 			EndpointsConfig map[string]struct {
@@ -454,48 +481,19 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	unsupported := make([]string, 0)
+	if request.Tty && (request.HostConfig.ConsoleSize[0] > 65535 || request.HostConfig.ConsoleSize[1] > 65535) {
+		writeDockerError(w, errors.New("invalid initial terminal dimensions"))
+		return
+	}
 	if request.HostConfig.VolumeDriver != "" && request.HostConfig.VolumeDriver != "local" {
 		unsupported = append(unsupported, "VolumeDriver")
-	}
-	if request.HostConfig.ConsoleSize != [2]uint{} {
-		unsupported = append(unsupported, "ConsoleSize")
 	}
 	if (request.HostConfig.LogConfig.Type != "" && request.HostConfig.LogConfig.Type != "json-file") ||
 		len(request.HostConfig.LogConfig.Config) > 0 {
 		unsupported = append(unsupported, "LogConfig")
 	}
-	if request.NetworkDisabled {
-		unsupported = append(unsupported, "NetworkDisabled")
-	}
-	if request.HostConfig.ReadonlyRoot {
-		unsupported = append(unsupported, "ReadonlyRootfs")
-	}
-	if len(request.HostConfig.DeviceRequests) > 0 {
-		unsupported = append(unsupported, "DeviceRequests")
-	}
 	if len(request.HostConfig.DeviceCgroupRules) > 0 {
 		unsupported = append(unsupported, "DeviceCgroupRules")
-	}
-	if len(request.HostConfig.CapAdd) > 0 {
-		unsupported = append(unsupported, "CapAdd")
-	}
-	if len(request.HostConfig.CapDrop) > 0 {
-		unsupported = append(unsupported, "CapDrop")
-	}
-	if len(request.HostConfig.ExtraHosts) > 0 {
-		unsupported = append(unsupported, "ExtraHosts")
-	}
-	if len(request.HostConfig.DNS) > 0 {
-		unsupported = append(unsupported, "Dns")
-	}
-	if len(request.HostConfig.DNSOptions) > 0 || len(request.HostConfig.DNSSearch) > 0 {
-		unsupported = append(unsupported, "DNS options")
-	}
-	if len(request.HostConfig.GroupAdd) > 0 {
-		unsupported = append(unsupported, "GroupAdd")
-	}
-	if len(request.HostConfig.Ulimits) > 0 {
-		unsupported = append(unsupported, "Ulimits")
 	}
 	if len(request.HostConfig.MaskedPaths) > 0 {
 		unsupported = append(unsupported, "MaskedPaths")
@@ -506,79 +504,38 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if len(request.HostConfig.StorageOpt) > 0 {
 		unsupported = append(unsupported, "StorageOpt")
 	}
-	if request.HostConfig.PublishAll {
-		unsupported = append(unsupported, "PublishAllPorts")
-	}
-	if request.HostConfig.Memory != 0 {
-		unsupported = append(unsupported, "Memory")
-	}
-	if request.HostConfig.NanoCPUs != 0 {
-		unsupported = append(unsupported, "NanoCpus")
-	}
-	if request.HostConfig.CPUPeriod != 0 || request.HostConfig.CPUQuota != 0 || request.HostConfig.CPUCount != 0 ||
-		request.HostConfig.CPUPercent != 0 || request.HostConfig.CPUShares != 0 ||
-		request.HostConfig.CPUSetCPUs != "" || request.HostConfig.CPUSetMems != "" {
-		unsupported = append(unsupported, "CPU constraints")
-	}
-	if request.HostConfig.BlkioWeight != 0 {
-		unsupported = append(unsupported, "BlkioWeight")
-	}
-	if request.HostConfig.MemoryReservation != 0 || request.HostConfig.MemorySwap != 0 ||
-		(request.HostConfig.MemorySwappiness != nil &&
-			*request.HostConfig.MemorySwappiness != -1) {
-		unsupported = append(unsupported, "memory constraints")
+	if request.HostConfig.CPUCount != 0 || request.HostConfig.CPUPercent != 0 {
+		unsupported = append(unsupported, "Windows CPU constraints")
 	}
 	if request.HostConfig.OomScoreAdj != 0 {
 		unsupported = append(unsupported, "OomScoreAdj")
 	}
-	if request.HostConfig.CPURealtimePeriod != 0 || request.HostConfig.CPURealtimeRuntime != 0 {
-		unsupported = append(unsupported, "CPU realtime constraints")
-	}
 	if request.HostConfig.IOMaximumIOps != 0 || request.HostConfig.IOMaximumBandwidth != 0 {
 		unsupported = append(unsupported, "I/O constraints")
-	}
-	if request.HostConfig.PidsLimit != nil && *request.HostConfig.PidsLimit != 0 && *request.HostConfig.PidsLimit != -1 {
-		unsupported = append(unsupported, "PidsLimit")
-	}
-	if request.HostConfig.OomKillDisable != nil && *request.HostConfig.OomKillDisable {
-		unsupported = append(unsupported, "OomKillDisable")
 	}
 	if request.HostConfig.Runtime != "" && request.HostConfig.Runtime != "runc" && request.HostConfig.Runtime != "io.containerd.runc.v2" {
 		unsupported = append(unsupported, "Runtime")
 	}
-	if request.HostConfig.CgroupnsMode != "" && request.HostConfig.CgroupnsMode != "private" {
-		unsupported = append(unsupported, "CgroupnsMode")
-	}
 	if request.HostConfig.UsernsMode != "" && request.HostConfig.UsernsMode != "host" {
 		unsupported = append(unsupported, "UsernsMode")
-	}
-	if request.HostConfig.IpcMode != "" && request.HostConfig.IpcMode != "private" {
-		unsupported = append(unsupported, "IpcMode")
-	}
-	if request.HostConfig.PidMode != "" {
-		unsupported = append(unsupported, "PidMode")
-	}
-	if request.HostConfig.UTSMode != "" {
-		unsupported = append(unsupported, "UTSMode")
 	}
 	if request.HostConfig.Isolation != "" && request.HostConfig.Isolation != "default" {
 		unsupported = append(unsupported, "Isolation")
 	}
-	if request.HostConfig.CgroupParent != "" || request.HostConfig.Cgroup != "" {
+	if request.HostConfig.Cgroup != "" {
 		unsupported = append(unsupported, "custom cgroup placement")
 	}
 	if len(unsupported) > 0 {
 		writeDockerUnsupported(w, "container options: "+strings.Join(unsupported, ", "))
 		return
 	}
-	for _, option := range request.HostConfig.SecurityOpt {
-		switch option {
-		case "seccomp=unconfined", "apparmor=unconfined", "label=disable",
-			"no-new-privileges", "no-new-privileges=true", "no-new-privileges=false":
-		default:
-			writeDockerUnsupported(w, "container security option "+option)
-			return
-		}
+	gpus, err := dockerGPUArguments(request.HostConfig.DeviceRequests)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	if request.NetworkDisabled {
+		request.HostConfig.NetworkMode = "none"
 	}
 	if request.HostConfig.ShmSize < 0 {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "container shared memory size cannot be negative"})
@@ -635,7 +592,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if len(networks) == 0 && request.HostConfig.NetworkMode != "" {
 		networks = append(networks, ContainerNetwork{Name: request.HostConfig.NetworkMode})
 	}
-	structuredVolumes, tmpfs, err := structuredMountArguments(
+	structuredVolumes, structuredMounts, tmpfs, err := structuredMountArguments(
 		request.HostConfig.Mounts,
 		request.HostConfig.Tmpfs,
 	)
@@ -720,7 +677,27 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		Restart:     restartPolicy,
 		TTY:         request.Tty,
 		Interactive: request.OpenStdin || request.AttachStdin,
+		StdinOnce:   request.StdinOnce,
 		Remove:      request.HostConfig.AutoRemove,
+		Mounts:      structuredMounts,
+		ReadOnly:    request.HostConfig.ReadonlyRoot,
+		CapAdd:      request.HostConfig.CapAdd, CapDrop: request.HostConfig.CapDrop,
+		DNS: request.HostConfig.DNS, DNSSearch: request.HostConfig.DNSSearch,
+		DNSOptions: request.HostConfig.DNSOptions, ExtraHosts: request.HostConfig.ExtraHosts,
+		GroupAdd: request.HostConfig.GroupAdd, Ulimits: request.HostConfig.Ulimits,
+		GPUs: gpus, PublishAll: request.HostConfig.PublishAll, ConsoleSize: request.HostConfig.ConsoleSize,
+		IPC: request.HostConfig.IpcMode, PIDMode: request.HostConfig.PidMode,
+		UTS: request.HostConfig.UTSMode, CgroupParent: request.HostConfig.CgroupParent,
+		Limits: ContainerUpdate{
+			Memory: request.HostConfig.Memory, MemorySwap: request.HostConfig.MemorySwap,
+			NanoCPUs: request.HostConfig.NanoCPUs, CPUShares: request.HostConfig.CPUShares,
+			CPUPeriod: request.HostConfig.CPUPeriod, CPUQuota: request.HostConfig.CPUQuota,
+			CPUSetCPUs: request.HostConfig.CPUSetCPUs, CPUSetMems: request.HostConfig.CPUSetMems,
+			MemoryReservation: request.HostConfig.MemoryReservation, PidsLimit: request.HostConfig.PidsLimit,
+			MemorySwappiness: request.HostConfig.MemorySwappiness, OomKillDisable: request.HostConfig.OomKillDisable,
+			BlkioWeight:       request.HostConfig.BlkioWeight,
+			CPURealtimePeriod: request.HostConfig.CPURealtimePeriod, CPURealtimeRuntime: request.HostConfig.CPURealtimeRuntime,
+		},
 	})
 	if err != nil {
 		writeDockerError(w, err)
@@ -826,7 +803,11 @@ func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 			case <-attachDone:
 				exitCode, authoritative, attachErr := attach.result()
 				attachDone = nil
-				if attachErr == nil && authoritative {
+				if authoritative {
+					if attachErr != nil {
+						code, err = exitCode, attachErr
+						goto waitComplete
+					}
 					attachedExitCode = &exitCode
 				}
 			case result := <-removed:
@@ -840,9 +821,11 @@ func (a *API) waitContainer(w http.ResponseWriter, r *http.Request) {
 					select {
 					case <-attach.done:
 						exitCode, authoritative, attachErr := attach.result()
-						if attachErr == nil && authoritative {
+						if authoritative {
 							code = exitCode
-							if err != nil && containerRemovalComplete(err) {
+							if attachErr != nil {
+								err = attachErr
+							} else if err != nil && containerRemovalComplete(err) {
 								err = nil
 							}
 						}
@@ -997,10 +980,6 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	if dockerBool(r, "all") {
-		writeDockerUnsupported(w, "listing intermediate images")
-		return
-	}
 	images, err := a.manager.Images(r.Context())
 	if err != nil {
 		writeDockerError(w, err)
@@ -1057,6 +1036,11 @@ func (a *API) inspectImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) inspectImagePath(w http.ResponseWriter, r *http.Request) {
+	if path := r.PathValue("id"); strings.HasSuffix(path, "/history") {
+		r.SetPathValue("id", strings.TrimSuffix(path, "/history"))
+		a.imageHistory(w, r)
+		return
+	}
 	id := strings.TrimSuffix(r.PathValue("id"), "/json")
 	if id == r.PathValue("id") || id == "" {
 		a.unsupported(w, r)
@@ -1093,10 +1077,6 @@ func (a *API) pullImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) deleteImage(w http.ResponseWriter, r *http.Request) {
-	if dockerBool(r, "noprune") {
-		writeDockerUnsupported(w, "image removal without parent pruning")
-		return
-	}
 	id := r.PathValue("id")
 	if err := a.manager.RemoveImage(r.Context(), id, dockerBool(r, "force")); err != nil {
 		writeDockerError(w, err)
@@ -1179,12 +1159,20 @@ func dockerBool(r *http.Request, name string) bool {
 }
 
 func parseDockerTime(value string) int64 {
-	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05 -0700 MST"} {
-		if parsed, err := time.Parse(layout, value); err == nil {
-			return parsed.Unix()
-		}
+	parsed := parseDockerTimestamp(value)
+	if !parsed.IsZero() {
+		return parsed.Unix()
 	}
 	return 0
+}
+
+func parseDockerTimestamp(value string) time.Time {
+	for _, layout := range []string{time.RFC3339Nano, time.RFC3339, "2006-01-02 15:04:05 -0700 MST"} {
+		if parsed, err := time.Parse(layout, value); err == nil {
+			return parsed
+		}
+	}
+	return time.Time{}
 }
 
 func dockerContainerNetworkSettings(container Container) map[string]any {

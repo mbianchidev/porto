@@ -20,6 +20,8 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
 - **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
 - **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
+- **Kubernetes upgrades.** Upgrade k3s/k0s nodes in place, or replace kind while preserving supported persistent volumes, application images, and manifests. Recovery keeps the original kind nodes available. See [cluster upgrades](docs/kubernetes-upgrades.md).
+- **Local autoscaling.** Karpenter provisions bounded k3s/k0s worker VMs for pending pods; KEDA scales workload replicas from event triggers on all three distributions. See [Kubernetes autoscaling](docs/kubernetes-autoscaling.md).
 - **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster-name>`.
 - **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
 - **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
@@ -27,6 +29,8 @@ It provides a portable, open-source alternative to proprietary desktop container
 - **Friendly local URLs.** Open projects and managed Kubernetes Services through stable zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
 - **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
 - **Docker, Compose, and Buildx included.** Desktop packages ship a pinned Docker CLI plus Compose and Buildx for the `porto` context. Porto's managed engine sets up CPU emulation automatically, without proxying another Docker engine.
+- **Docker shortcuts without a second command syntax.** Use `porto docker ps`, `porto docker logs`, `porto docker exec`, or `porto docker compose` with Docker's flags. Non-conflicting commands also work as `porto ps`, `porto exec`, and `porto compose`; project commands such as `porto start`, `porto stop`, and `porto logs` keep their existing meaning.
+- **Run containers directly.** Use `porto docker run --rm alpine:latest echo hello`, or pass Docker arguments through with `porto docker cli --context porto run --rm alpine:latest echo hello`. See [local runtimes](docs/runtimes.md).
 - **Image layers in the terminal.** Run `porto docker dive IMAGE` with the bundled Dive client to inspect layer contents, file changes, and wasted space.
 - **Local diagnostics and repair.** Run `porto diagnose` or use the Diagnostics page to inspect runtime health, preview a redacted local bundle, and apply confirmed Porto-owned repairs.
 - **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.

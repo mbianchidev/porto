@@ -2252,6 +2252,38 @@ button:disabled {
   text-transform: none;
 }
 
+.clusterMaintenance {
+  overflow-wrap: anywhere;
+}
+
+.clusterMaintenance .inspectorForm {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.clusterMaintenance .checkboxRow {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.clusterMaintenance .checkboxRow input {
+  flex: 0 0 auto;
+}
+
+.clusterMaintenance textarea {
+  width: 100%;
+  min-width: 0;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  background: var(--field);
+  color: var(--ink);
+  font: 12px/1.4 var(--mono);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
 .inspectorForm.inline form {
   display: flex;
   align-items: end;

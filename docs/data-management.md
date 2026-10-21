@@ -144,7 +144,7 @@ porto docker volume clone fixture fixture-copy --confirm
 porto docker volume import ./fixture.tar restored-fixture --confirm
 porto docker volume restore restored-fixture ./fixture.tar --confirm
 porto docker volume empty restored-fixture --confirm
-porto docker volume remove restored-fixture --confirm
+porto docker data volume remove restored-fixture --confirm
 porto docker backups schedule fixture --hours 24 --retain 7 --enabled
 porto docker backups update 1 --hours 12 --retain 3
 porto docker backups pause 1

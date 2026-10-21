@@ -159,13 +159,20 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatalf("Docker SDK build: %v", err)
 	}
 	readClientProgress(t, build.Body)
+	runContext, runCancel := context.WithTimeout(ctx, time.Minute)
+	runOutput, runErr := dockerCommand(runContext, "run", "--rm", "--network", "none", "--label", "porto.test.suite="+suite,
+		image, "echo", "hello docker")
+	runCancel()
+	if runErr != nil || string(runOutput) != "hello docker\n" {
+		t.Fatalf("Docker run output = %q, error = %v", runOutput, runErr)
+	}
 	busy, err := client.ContainerCreate(ctx, dockerclient.ContainerCreateOptions{
 		Name: suite + "-cpu",
 		Config: &container.Config{
 			Image: image, Cmd: []string{"sh", "-c", "while :; do :; done"},
 			Labels: map[string]string{"porto.test.suite": suite},
 		},
-		HostConfig: &container.HostConfig{NetworkMode: "none"},
+		HostConfig: &container.HostConfig{NetworkMode: "none", ConsoleSize: [2]uint{24, 80}},
 	})
 	if err != nil {
 		t.Fatalf("Docker SDK create: %v", err)

@@ -260,9 +260,12 @@ func migrationContainerRequest(document []byte, includeSensitive bool) (CreateCo
 		host.Runtime != "" && host.Runtime != "runc" || host.AutoRemove {
 		return CreateContainerRequest{}, ContainerUpdate{}, fmt.Errorf("%w: source has unsupported host paths, namespace, device, DNS, capability, runtime or rootfs options; no destination container was created", ErrUnsupported)
 	}
-	_, tmpfs, err := structuredMountArguments(host.Mounts, host.Tmpfs)
+	_, structured, tmpfs, err := structuredMountArguments(host.Mounts, host.Tmpfs)
 	if err != nil {
 		return CreateContainerRequest{}, ContainerUpdate{}, err
+	}
+	if len(structured) != 0 {
+		return CreateContainerRequest{}, ContainerUpdate{}, fmt.Errorf("%w: recursive bind mount semantics cannot be preserved during migration", ErrUnsupported)
 	}
 	host.Tmpfs = tmpfs
 	for _, binding := range host.Binds {

@@ -173,7 +173,7 @@ func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName strin
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request))
+	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request), request.Provider)
 }
 
 func clusterContextName(request ClusterRequest) string {
@@ -214,18 +214,21 @@ type ClusterRequest struct {
 	APIPort      int             `json:"apiPort,omitempty"`
 	ControlPlane MachineSpec     `json:"controlPlane"`
 	NodeGroups   []NodeGroupSpec `json:"nodeGroups"`
+	Upgrade      *UpgradeState   `json:"upgrade,omitempty"`
 }
 
 type Cluster struct {
-	Name           string   `json:"name"`
-	Provider       string   `json:"provider"`
-	State          string   `json:"state"`
-	Context        string   `json:"context"`
-	KubeconfigPath string   `json:"kubeconfigPath"`
-	Server         string   `json:"server"`
-	Nodes          []string `json:"nodes"`
-	Message        string   `json:"message,omitempty"`
-	StateSince     string   `json:"stateSince,omitempty"`
+	Name           string        `json:"name"`
+	Provider       string        `json:"provider"`
+	State          string        `json:"state"`
+	Context        string        `json:"context"`
+	KubeconfigPath string        `json:"kubeconfigPath"`
+	Server         string        `json:"server"`
+	Nodes          []string      `json:"nodes"`
+	Message        string        `json:"message,omitempty"`
+	StateSince     string        `json:"stateSince,omitempty"`
+	Version        string        `json:"version,omitempty"`
+	Upgrade        *UpgradeState `json:"upgrade,omitempty"`
 }
 
 func NewClusterProvisioner(
@@ -439,7 +442,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
 		return Cluster{}, err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return Cluster{}, err
 	}
 	request.Phase = ""
@@ -719,7 +722,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return Cluster{}, err
 	}
 	request.Phase = ""
@@ -1209,6 +1212,13 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 				return nil, err
 			}
 		}
+		if request.Phase == "upgrading" && !p.runtimeNameReserved(clusterRuntimeName(request), request.Name) {
+			request.Phase = "upgrade-failed"
+			request.Error = "Cluster upgrade was interrupted. Retry the same version for k3s/k0s, or recover the original kind cluster before retrying."
+			if err := p.writeClusterMetadata(request); err != nil {
+				return nil, err
+			}
+		}
 		cluster := Cluster{
 			Name:           name,
 			Provider:       normalizeProvider(request.Provider),
@@ -1216,8 +1226,10 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Context:        clusterContextName(request),
 			KubeconfigPath: p.clusterKubeconfigPath(name),
 			Message:        request.Error,
+			Version:        request.Version,
+			Upgrade:        request.Upgrade,
 		}
-		if request.Phase == "creating" || request.Phase == "error" {
+		if request.Phase != "" {
 			cluster.State = request.Phase
 		}
 		managedKubeconfigs[cluster.KubeconfigPath] = struct{}{}
@@ -1633,11 +1645,16 @@ func (p *ClusterProvisioner) Rename(ctx context.Context, clusterName, newName st
 	return nil
 }
 
-func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName string) error {
+func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName, provider string) error {
 	if err := p.waitForClusterAPI(ctx, kubeconfigPath, contextName); err != nil {
 		return err
 	}
 	run := p.addonCommandRunner(ctx, kubeconfigPath, contextName)
+	if normalizeProvider(provider) == "k3s" {
+		if _, err := run("wait for bundled k3s persistent storage", nil, "wait", "--for=create", "storageclass/local-path", "--timeout=2m"); err != nil {
+			return err
+		}
+	}
 	if err := ensurePersistentStorage(run); err != nil {
 		return err
 	}
@@ -1930,7 +1947,7 @@ func (p *ClusterProvisioner) setRunning(
 		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
 			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
 		}
-		if err := p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
+		if err := p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName, request.Provider); err != nil {
 			return err
 		}
 		return nil
@@ -1965,7 +1982,7 @@ func (p *ClusterProvisioner) setRunning(
 	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
 		return err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return err
 	}
 	return nil
@@ -2110,7 +2127,7 @@ func (p *ClusterProvisioner) readMutableClusterMetadata(clusterName string) (Clu
 	if err != nil {
 		return ClusterRequest{}, err
 	}
-	if request.Phase == "creating" || request.Phase == "error" {
+	if request.Phase != "" {
 		return ClusterRequest{}, fmt.Errorf(
 			"Kubernetes cluster %s is %s; only deletion is allowed",
 			clusterName,

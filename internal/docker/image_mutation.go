@@ -62,8 +62,10 @@ func (m *Manager) StreamImportImage(
 	if archive == nil {
 		return errors.New("root filesystem archive is required")
 	}
-	if err := validateObjectID(reference); err != nil {
-		return err
+	if reference != "" {
+		if err := validateObjectID(reference); err != nil {
+			return err
+		}
 	}
 	if strings.ContainsAny(message, "\r\n\x00") {
 		return errors.New("invalid image import message")
@@ -71,7 +73,10 @@ func (m *Manager) StreamImportImage(
 	args := []string{"image", "import"}
 	args = appendStringFlag(args, "--platform", platform)
 	args = appendStringFlag(args, "--message", message)
-	args = append(args, "-", normalizeNerdctlReference(reference))
+	args = append(args, "-")
+	if reference != "" {
+		args = append(args, normalizeNerdctlReference(reference))
+	}
 	return m.runStreamingReader(ctx, imageTransferTimeout, "import Porto image", archive, emit, args...)
 }
 

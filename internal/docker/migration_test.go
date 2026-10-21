@@ -254,6 +254,9 @@ func TestMigrationRejectsUnsupportedContainerSettingsInsteadOfDroppingThem(t *te
 		{"GroupAdd": []string{"1234"}},
 		{"LogConfig": map[string]any{"Type": "syslog"}},
 		{"MemorySwap": -1},
+		{"Mounts": []map[string]any{{"Type": "bind", "Source": "/synthetic-source", "Target": "/data", "BindOptions": map[string]any{"NonRecursive": true}}}},
+		{"Mounts": []map[string]any{{"Type": "bind", "Source": "/synthetic-source", "Target": "/data", "ReadOnly": true, "BindOptions": map[string]any{"ReadOnlyNonRecursive": true}}}},
+		{"Mounts": []map[string]any{{"Type": "bind", "Source": "/synthetic-source", "Target": "/data", "ReadOnly": true, "BindOptions": map[string]any{"ReadOnlyForceRecursive": true}}}},
 	} {
 		document, err := json.Marshal(map[string]any{
 			"Id": "synthetic-container", "Name": "/synthetic-app",

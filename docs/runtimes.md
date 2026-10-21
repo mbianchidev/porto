@@ -50,15 +50,43 @@ For an installed desktop package, use either the non-conflicting `docker`
 command created by the install script or the explicit bundled entry point:
 
 ```sh
-porto docker cli --context porto info
-porto docker cli --context porto compose up --detach
-porto docker cli --context porto buildx build --load --tag demo .
+porto docker run --rm alpine:latest echo hello
+porto docker info
+porto docker compose up --detach
+porto docker buildx build --load --tag demo .
+porto ps --all
+porto exec -it demo sh
+porto docker cli --context porto run --rm alpine:latest echo hello
 porto docker dive demo
 ```
+
+`porto docker run` forwards Docker's run options, image, and container command
+unchanged to the bundled CLI, targeting Porto's endpoint even when `DOCKER_HOST`
+or `DOCKER_CONTEXT` selects another engine. Standard input/output/error and the
+container's exit code are preserved. `porto docker cli` remains an unrestricted
+passthrough and honors explicit Docker context/host options and environment.
 
 The bundled CLI loads Porto's pinned plugins before user and system plugins,
 while preserving the user's Docker contexts, credentials, plugin files, and
 Buildx state.
+
+`porto docker <command> [args...]` forwards the original argument array and
+standard streams to Docker, defaults to Porto's endpoint, and preserves the
+client's exit code. An inherited Docker host, context, or TLS setting cannot
+silently redirect the default connection. Explicit Docker connection flags keep
+their normal meaning. `porto docker cli ...` remains an unrestricted raw entry
+point that also retains inherited Docker connection settings.
+The same supported operations work through `docker --context porto ...`.
+Source builds need a Docker CLI in `PATH`; desktop packages include it.
+
+Top-level `porto ps`, `run`, `create`, `exec`, `rm`, `images`, `image`, `build`,
+`network`, `volume`, `compose`, and `buildx` use Docker's command syntax.
+Existing project commands `start`, `stop`, `restart`, `kill`, and `logs` remain
+project operations; use `porto docker stop`, `porto docker logs`, and their
+equivalents for containers. Porto-specific inventory and data commands remain
+available. Use `porto docker data volume remove ... --confirm` for Porto's
+identity-checked volume-removal workflow; `porto docker volume remove` is now
+Docker's standard removal alias.
 
 Inspect or install provider tools:
 
@@ -199,7 +227,8 @@ porto docker container restart <container>
 porto docker pull alpine:latest
 ```
 
-Top-level inventory aliases are also available:
+Top-level inventories are also available; `images` uses Docker's normal output
+and flags, while the other plural inventories retain Porto's JSON output:
 
 ```sh
 porto containers
@@ -421,6 +450,34 @@ porto kubernetes cluster create k0s-dev --provider k0s --workers 2
 
 kind node topology is fixed at creation time. Recreate a kind cluster to
 change its node count; k3s and k0s node groups can be scaled in place.
+
+### Upgrade a cluster
+
+Open the managed cluster's **Upgrade** tab or run
+`porto kubernetes cluster upgrade <name> --version <release> --confirm`.
+k3s and k0s upgrade in place, controller first. kind upgrades create a
+replacement, preserving supported local-path PVs, application images and
+manifests, then reattach claims and restart applications. The original stopped
+nodes remain available for recovery. Unsupported storage blocks replacement
+before shutdown. See [cluster upgrades and recovery](kubernetes-upgrades.md)
+for consistency boundaries, version rules, and recovery commands.
+
+### Autoscaling
+
+The managed-cluster inspector's **Autoscaling** tab configures two independent
+controllers. Karpenter provisions real Lima workers for pending pods on k3s/k0s;
+KEDA scales workload replicas from event triggers on k3s, k0s, and kind.
+kind does not support dynamic node topology. Worker ceilings and machine budgets
+are explicit, fixed workers/control planes remain independent, and Porto pauses
+host node controllers during cluster lifecycle operations.
+
+```sh
+porto kubernetes cluster autoscaling dev --nodes --max-nodes 3 --keda
+porto kubernetes cluster autoscaling dev
+```
+
+See [Kubernetes autoscaling](kubernetes-autoscaling.md) for KEDA trigger
+configuration, credential references, storage protection, and shutdown behavior.
 
 ### Open a cluster terminal
 

@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/autoscaling"
 	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
@@ -105,6 +106,7 @@ type Server struct {
 	runtimeActive      int
 	kubernetes         *kubernetes.Manager
 	clusters           *kubernetes.ClusterProvisioner
+	autoscaling        kubernetesAutoscalingService
 	kubeconfigErr      error
 	vms                *vm.Manager
 	providers          *providers.Manager
@@ -220,6 +222,14 @@ func New(st *store.Store, ui fs.FS) *Server {
 	dockerManager.SetMigrationTemporaryLedger(st.ReserveMigrationTemporary, st.ClearMigrationTemporary, st.MigrationTemporaries)
 	dockerManager.SetVolumeTransferLedger(st.ReserveVolumeTemporary, st.ClearVolumeTemporary, st.VolumeTemporaries)
 	clusterProvisioner.SetRegistryConfigProvider(server.registryDockerConfig)
+	if kubeconfigErr == nil {
+		manager, err := autoscaling.New(clusterProvisioner, kubeconfigDir, server.autoscalingOperation)
+		if err != nil {
+			server.kubeconfigErr = fmt.Errorf("initialize Kubernetes autoscaling: %w", err)
+		} else {
+			server.autoscaling = manager
+		}
+	}
 	return server
 }
 
@@ -253,6 +263,25 @@ func (s *Server) Run(ctx context.Context) error {
 	)
 	if err := s.clusters.ReconcileKubeconfigs(ctx); err != nil {
 		log.Printf("reconcile global Kubernetes contexts: %v", err)
+	}
+	if s.autoscaling != nil {
+		if !settings.KubernetesEnabled {
+			if err := s.setKubernetesAutoscalingPaused(ctx, true); err != nil {
+				return fmt.Errorf("pause disabled Kubernetes autoscaling: %w", err)
+			}
+		}
+		autoscalingContext, cancelAutoscaling := context.WithCancel(ctx)
+		autoscalingDone := make(chan struct{})
+		go func() {
+			defer close(autoscalingDone)
+			if err := s.autoscaling.Run(autoscalingContext); err != nil {
+				log.Printf("Kubernetes autoscaling manager stopped: %v", err)
+			}
+		}()
+		defer func() {
+			cancelAutoscaling()
+			<-autoscalingDone
+		}()
 	}
 	if settings.DockerEnabled {
 		if err := s.startDockerAPI(ctx); err != nil {

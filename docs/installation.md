@@ -335,7 +335,7 @@ on Windows.
 
 Requirements:
 
-- Go 1.26.9 or newer, using a security-patched release (Go 1.27 requires 1.27.2 or newer)
+- Go 1.26.10 or newer, using a security-patched release (Go 1.27 requires 1.27.3 or newer)
 - Node.js 22.12 or newer (Node.js 20.19 is also supported) and npm
 
 The minimum Go version follows the `go` directive in `go.mod`.

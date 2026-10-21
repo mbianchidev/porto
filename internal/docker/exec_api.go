@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"strconv"
@@ -311,12 +312,12 @@ func (a *API) inspectExec(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
-	if !dockerBool(r, "stream") {
-		writeDockerUnsupported(w, "non-streaming container attach")
+	if dockerBool(r, "logs") {
+		a.attachContainerLogs(w, r)
 		return
 	}
-	if dockerBool(r, "logs") {
-		writeDockerUnsupported(w, "container attach with historical logs")
+	if !dockerBool(r, "stream") {
+		writeDockerUnsupported(w, "non-streaming container attach")
 		return
 	}
 	details, session, err := a.prepareContainerAttach(r.Context(), r.PathValue("id"))
@@ -332,7 +333,7 @@ func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			return
 		}
-		process, err := a.manager.StartAttach(processContext, details.ID, stdin)
+		process, err := a.manager.StartAttach(processContext, details.ID, stdin, details.terminal()...)
 		if err != nil {
 			writeDockerStreamError(connection, details.TTY, err)
 			_ = connection.Close()
@@ -379,7 +380,7 @@ func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	baseline := a.manager.containerStartBaseline(current.State)
-	process, err := a.manager.StartContainerAttached(processContext, details.ID, stdin)
+	process, err := a.manager.StartContainerAttached(processContext, details.ID, stdin, details.terminal()...)
 	if err != nil {
 		session.abort(err)
 		start.result <- err
@@ -424,12 +425,29 @@ func (a *API) attachContainer(w http.ResponseWriter, r *http.Request) {
 		streamResult = <-streamDone
 	}
 	if startErr == nil {
-		session.complete(streamResult)
+		var cleanupErr error
+		if current.AutoRemove && streamResult.authoritative {
+			cleanupContext, cleanupCancel := context.WithTimeout(context.WithoutCancel(processContext), defaultTimeout)
+			cleanupErr = a.manager.ContainerAction(cleanupContext, details.ID, "remove-volumes")
+			cleanupCancel()
+			if cleanupErr != nil && containerRemovalComplete(cleanupErr) {
+				cleanupErr = nil
+			}
+			if cleanupErr != nil {
+				cleanupErr = fmt.Errorf("auto-remove container %q: %w", details.ID, cleanupErr)
+				slog.Error("Container auto-removal failed", "container", details.ID, "error", cleanupErr)
+			}
+		}
+		session.finish(streamResult.exitCode, streamResult.authoritative, cleanupErr)
 	}
 	_ = connection.Close()
 }
 
 func (a *API) startContainer(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Query().Get("checkpoint") != "" || r.URL.Query().Get("checkpoint-dir") != "" {
+		writeDockerUnsupported(w, "in-place Docker checkpoint restore; Porto restores into a new container ID")
+		return
+	}
 	if r.URL.Query().Get("t") != "" {
 		a.containerAction("start")(w, r)
 		return

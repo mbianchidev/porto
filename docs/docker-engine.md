@@ -129,6 +129,14 @@ rather than sending Porto-owned OCI metadata to nerdctl after a redundant
 connection probe times out.
 Porto-owned containers use persistent log URIs and Porto-created FIFO/TTY
 bridges, including attached start and direct exec over a Lima guest connection.
+The Lima bridge preserves SSH stdin for its background FIFO writer, waits for
+input forwarding to finish, then explicitly closes containerd stdin. This keeps
+`docker exec -i`, kind bootstrap configuration, and volume-archive transfers
+from dropping input or waiting forever for EOF.
+After an attached auto-remove container exits, Porto removes it and its
+anonymous volumes before completing Docker's removal wait. The container's exit
+code is retained, and cleanup failures are logged and returned to the waiting
+client rather than leaving `docker run --rm` waiting indefinitely.
 
 ## Private registry credentials
 
@@ -144,6 +152,21 @@ automatically select the verified profile whose host matches the image
 reference. A client-supplied `X-Registry-Auth` header still takes precedence.
 For every authenticated pull, Porto creates a narrowly scoped temporary Docker
 config in the active backend and removes it after the command finishes.
+
+Docker's daemon-side `POST /auth` login flow verifies HTTPS registry credentials
+using the registry's Basic/Bearer challenge. It does not save credentials in
+Porto or a backend Docker configuration. The Docker client continues to own its
+credential helper/configuration, and supplies credentials on later pulls and
+pushes. Plaintext authentication and plaintext token-realm redirects are
+rejected. Registry search uses Docker Hub's search API, or a named registry's
+legacy search API when that registry implements one; OCI Distribution alone
+does not define a search endpoint.
+
+The Docker API is an owner-trusted control interface: Unix sockets are mode
+`0600`, Windows named pipes grant access only to their owner, and Porto does
+not provide a TCP Docker listener. As in Docker Engine, authorized callers
+deliberately choose registry and import destinations, including private-network
+hosts. Do not expose this interface through an unauthenticated network proxy.
 
 Container creation uses the containerd v2 client for image resolution and
 unpack, writable snapshot allocation, OCI spec generation, metadata creation,
@@ -227,10 +250,11 @@ before any backend operation. Escaped image names remain intact.
 | Resource | Status | Operations and boundaries |
 | --- | --- | --- |
 | System | Supported | `/_ping`, `/version`, `/info`, `/system/df` with explicit shared-store provenance, and container lifecycle `/events` |
-| Containers | Supported | list, create, inspect, start, stop, restart, pause, unpause, rename, wait, followed logs, attach, TTY and detached exec, exec resize, archive copy, filesystem export, one-shot/streaming stats, resource and restart-policy update, remove, category prune, named checkpoint |
-| Container mounts | Partial | structured bind, local volume, and tmpfs mounts with read-only, supported propagation, `nocopy`, size, mode, and basic tmpfs flags; unsupported recursive bind, subpath, driver, label, and security semantics fail before creation |
+| Containers | Supported | list with size/limit/since/before, create, inspect, start, stop, restart, pause, unpause, rename, wait, process lists, filesystem changes, followed logs, historical/live attach, initial TTY dimensions and container resize, TTY and detached exec, exec resize, archive copy, filesystem export, one-shot/streaming stats, combined resource/restart-policy update, remove, category prune |
+| Container mounts | Partial | structured bind, local volume, and tmpfs mounts with read-only, propagation, recursive bind controls, `nocopy`, size, mode, and basic tmpfs flags; bind source auto-creation, volume subpath/driver/label and explicit masked/read-only path overrides remain unsupported |
+| Checkpoints | Capability-gated | standard Docker checkpoint create/list/remove routes, backed by named containerd checkpoint images; creation needs CRIU, custom checkpoint directories are unsupported |
 | Container restore | Capability-gated | restore is advertised only when the owned backend reports CRIU support |
-| Images | Supported | list, inspect, pull, save, archive load, request-body rootfs import, container commit, tag, authenticated push, remove and category prune |
+| Images | Supported | list including `--all`, inspect, history, registry search, login, pull, save, archive load, request-body/HTTP(S) rootfs import, container commit, tag, authenticated push, remove including `--no-prune`, and category prune |
 | Networks | Supported | list, create, inspect, connect, disconnect, remove and category prune |
 | Volumes | Supported | list, create, inspect, reference-protected remove and category prune; Porto API adds local file/transfer/backup tools |
 | Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, registry push and selective cache prune |
@@ -244,21 +268,30 @@ before any backend operation. Escaped image names remain intact.
 | `GET /info`, `GET /containers/json`, `GET /containers/{id}/json` | backend-derived counts, capabilities, ports, mounts, and known network endpoints; unknown host/storage/security information is not guessed |
 | `POST /containers/create`, `POST /containers/{id}/update` | decoded and preflight-validated options; unsupported non-default fields, including unknown nested fields, fail before mutation |
 | `GET /containers/{id}/stats` | streaming, two-sample non-streaming, and immediate one-shot; backend Linux CPU totals/counts and raw cgroup v1/v2 counters |
+| `GET /containers/{id}/top`, `GET /containers/{id}/changes` | backend process arguments and typed added/modified/deleted filesystem paths; snapshot comparison uses the recorded snapshot key and excludes external container mounts |
+| `POST /containers/{id}/resize` | resizes the container task's terminal; independent of exec resize |
+| `POST/GET /containers/{id}/checkpoints`, `DELETE /containers/{id}/checkpoints/{name}` | standard create/list/remove responses; names are scoped to the source container, duplicate names conflict, and deletion verifies source metadata |
+| `POST /auth`, `GET /images/search`, `GET /images/{name}/history` | HTTPS challenge-based login, bounded/filterable registry search, and image configuration history with actual image identity |
 | `GET /events` | bounded container-lifecycle replay with immutable actor names/images/labels; supports both map and array filter encodings |
 | `POST /images/load`, `POST /images/create?fromSrc=-`, `POST /images/{name}/push` | incremental progress/error frames are flushed immediately; interrupted uploads, canceled transports, malformed archives, and partial failures remain errors |
 | `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45 |
 | Container health configuration | `StartInterval` requires API 1.44; older inspect responses omit it |
-| Structured mount options | recursive read-only controls require API 1.44, volume subpaths 1.45, and tmpfs option arrays 1.46; unsupported semantics remain explicit errors even at a version which defines the field |
+| Structured mount options | recursive read-only controls require API 1.44 and a capable Linux kernel/runtime; volume subpaths require 1.45 but remain unsupported; tmpfs option arrays require 1.46 |
 
 ### Create/update option boundaries
 
 | Options | Behavior |
 | --- | --- |
-| Image, command/entrypoint, environment, labels, user, working directory, hostname, exposed/published ports, health checks, TTY/stdin, restart policy, auto-remove | supported; compatibility-owned requests can preflight to `nerdctl` |
+| Image, command/entrypoint, environment, labels, user, working directory, hostname, exposed/published ports, health checks, TTY/stdin/`StdinOnce`, restart policy, auto-remove | supported; compatibility-owned requests preflight to `nerdctl` |
+| CPU/memory/PID limits, CPU shares/period/quota/sets, memory reservation/swap/swappiness, OOM disabling, block-I/O weight | translated at creation; direct updates persist the OCI resources and update a running task. Combined resource/restart updates preflight policy metadata and roll back both metadata changes if the task update fails |
+| Read-only root, capability additions/drops, custom DNS/search/options, extra hosts, supplementary groups, ulimits | supported through the native spec or compatibility runtime |
+| `--gpus` | NVIDIA count/device/capability requests are translated; the Linux backend must actually provide the driver, toolkit, and devices. Unsupported request drivers/options fail explicitly |
+| `-P` / `PublishAllPorts` | merges image and request exposed ports, preserves explicit bindings, and selects explicit TCP/UDP host ports so rootless nerdctl does not need unsupported automatic allocation |
+| Security options and namespaces | custom AppArmor/SELinux profiles, unconfined/no-new-privileges settings, cgroup/IPC/PID/UTS options use backend validation. Docker seccomp profile JSON is staged privately beside the backend and removed after creation; daemon-host filenames are not accepted as profile JSON |
 | Structured bind, local volume, tmpfs | basic supported mount options; local/default volume driver declarations are accepted |
 | `HostConfig.LogConfig` | default/`json-file` without custom options; other drivers or configuration are rejected |
-| CPU/memory/PID/OOM/block-I/O create constraints | unsupported non-default values are rejected, including every per-device block-I/O field; the update endpoint supports its documented CPU/memory limits |
-| Capabilities, custom namespace/security profiles, device requests/rules, masked/read-only path overrides, volume inheritance, annotations, and unknown fields | unsupported settings are rejected before creation; supported device mappings, sysctls, and explicit unconfined/no-new-privileges options retain their compatibility path |
+| `HostConfig.ConsoleSize` | accepted and ignored when `Tty` is false or omitted, including nonzero dimensions sent by Docker for ordinary `run` commands; TTY requests retain initial dimensions and support task resize |
+| Windows-only CPU/I/O settings, per-device block-I/O create fields, device-cgroup rules, masked/read-only path overrides, volume inheritance, annotations, and unknown fields | unsupported settings are rejected before creation; supported device mappings and sysctls retain their compatibility path. Docker cannot dynamically update device/GPU/ulimit settings |
 | Defaults | omitted, null, false, zero, empty strings/collections, and documented default enum/sentinel values remain compatible with normal client payloads; an explicit empty masked/read-only path list is an override, not a default |
 
 Docker events replay only the latest 200 retained container lifecycle events
@@ -319,8 +352,46 @@ Ryuk reaper. Host bind mounts and other development-container features remain
 subject to the mount/capability matrix.
 
 Porto does not claim generic drop-in
-compatibility for remote TCP, Swarm, broad system prune, remote-URL
-imports, extra custom network aliases, or other operations listed as unsupported.
+compatibility for remote TCP, Swarm, broad system prune, extra custom network
+aliases, or other operations listed as unsupported. HTTP(S) rootfs imports
+stream to the backend with a 2 GiB archive limit and bounded redirects; download
+errors do not become successful imports. Import configuration changes remain
+unsupported.
+
+Container size queries measure the recorded snapshot and its ancestors,
+including stopped containers. Containerd does not keep Docker's separate
+hidden intermediate-image/parent-image records: `images --all` lists the same
+stored image records, and `rmi --no-prune` removes only the requested image
+reference, just as the existing containerd removal path does.
+
+Docker's experimental feature advertisement allows the CLI to dispatch standard
+checkpoint commands. It does not imply CRIU or GPU availability. Standard
+in-place `docker start --checkpoint` restore is rejected; Porto's separate
+restore API creates a new target container. Custom checkpoint directories are
+not redirected to host paths.
+
+Filesystem changes and compatibility TTY attachment require the current bundled
+Linux helper. Snapshot comparison runs inside a private mount namespace and
+starts its concurrent walker in a child process so all walker threads inherit
+the same mounts. It neither assumes that a container ID equals its snapshot key
+nor changes the workload's mount namespace. Compatibility TTY starts use a
+backend-local PTY, preserve initial dimensions, and retain the container exit
+code; container resize goes directly to its task.
+
+To exercise these paths against an **already running, owned** Lima engine, build
+the current helper for the guest architecture and run:
+
+```sh
+CGO_ENABLED=0 GOOS=linux GOARCH=arm64 \
+  go build -o /tmp/porto-parity-helper ./cmd/porto-runtime-helper
+PORTO_DOCKER_PARITY_INTEGRATION=1 \
+  PORTO_DOCKER_PARITY_TEST_HELPER=/tmp/porto-parity-helper \
+  go test ./internal/docker -run '^TestDockerCommandParityLiveIntegration$' -count=1
+```
+
+Use `GOARCH=amd64` for an x86-64 guest. The fixture stages a private guest helper,
+does not replace the installed helper or restart the engine, and removes only
+its uniquely named synthetic containers, image, and helper directory.
 
 Run the live suite against an **already running, owned** Lima engine without
 restarting or recreating it:

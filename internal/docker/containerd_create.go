@@ -191,6 +191,13 @@ func (r *grpcContainerRuntime) validateDirectCreateRequest(request CreateContain
 	if err := validateHealthcheck(request.Healthcheck); err != nil {
 		return "", err
 	}
+	if request.Limits.hasResources() || len(request.CapAdd) > 0 || len(request.CapDrop) > 0 ||
+		len(request.DNS) > 0 || len(request.DNSSearch) > 0 || len(request.DNSOptions) > 0 ||
+		len(request.ExtraHosts) > 0 || len(request.GroupAdd) > 0 || len(request.Ulimits) > 0 ||
+		len(request.GPUs) > 0 || len(request.Mounts) > 0 || request.PublishAll ||
+		request.IPC != "" || request.PIDMode != "" || request.UTS != "" || request.CgroupParent != "" {
+		return "", fmt.Errorf("%w: extended container settings require the compatibility runtime", ErrUnsupported)
+	}
 	if len(request.Volumes) > 0 {
 		return "", fmt.Errorf("%w: direct container creation does not yet own volume lifecycle", ErrUnsupported)
 	}
@@ -391,6 +398,9 @@ func directContainerSpecOptions(
 	backendLocalRootFS bool,
 ) []oci.SpecOpts {
 	options := []oci.SpecOpts{oci.WithDefaultSpecForPlatform(platform)}
+	if request.ReadOnly {
+		options = append(options, oci.WithRootFSReadonly())
+	}
 	if backendLocalRootFS {
 		options = append(options, func(
 			_ context.Context,
@@ -477,6 +487,9 @@ func directContainerSpecOptions(
 				spec.Process = &specs.Process{}
 			}
 			spec.Process.Terminal = request.TTY
+			if request.TTY && request.ConsoleSize != [2]uint{} {
+				spec.Process.ConsoleSize = &specs.Box{Height: uint(request.ConsoleSize[0]), Width: uint(request.ConsoleSize[1])}
+			}
 			if len(request.Sysctls) > 0 {
 				if spec.Linux == nil {
 					spec.Linux = &specs.Linux{}
