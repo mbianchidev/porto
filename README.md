@@ -1,4 +1,4 @@
-# Porto - Docker Desktop but better
+# Porto
 
 [![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
 [![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
@@ -8,135 +8,97 @@
 >
 > **Releases are not code-signed**, and macOS builds are not notarized. Your operating system may display security warnings or block installation or launch.
 
-Porto is an open-source desktop (and optionally web) control plane for development workloads running on your machine, NAS, or home system. It discovers mixed-stack repositories and gives you one daemon, CLI, and dashboard to manage native applications, containers, Compose stacks, local Kubernetes clusters, and Linux virtual machines.
+Porto is an open-source local development control plane for native applications, Linux containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
 
-It provides a portable, open-source alternative to proprietary desktop container managers while keeping standard Docker clients and Compose workflows.
+Porto runs its own containerd and BuildKit backend rather than proxying another Docker engine. Supported Docker clients and Compose workflows connect through the named `porto` context.
 
 ![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/ed553cf3-1714-431b-83b7-f9443d8a3dab)
 
-## Why Porto
+## What you can do
 
-- **One place for every project.** Scan your workspace(s) root once, then control processes, ports, readiness, and persistent logs from the CLI or dashboard.
-- **Mixed stacks, one workflow.** Porto recognizes Make, Compose, Node.js, Python, Go, and Rust projects and chooses the appropriate setup and start commands.
-- **Containers without a separate dashboard.** Inspect and operate containers, images, builds, volumes, and networks through Porto or standard Docker clients.
-- **Local Kubernetes.** Create managed k3s, k0s, or kind clusters without inheriting an unrelated global kube context.
-- **Kubernetes upgrades.** Upgrade k3s/k0s nodes in place, or replace kind while preserving supported persistent volumes, application images, and manifests. Recovery keeps the original kind nodes available. See [cluster upgrades](docs/kubernetes-upgrades.md).
-- **Local autoscaling.** Karpenter provisions bounded k3s/k0s worker VMs for pending pods; KEDA scales workload replicas from event triggers on all three distributions. See [Kubernetes autoscaling](docs/kubernetes-autoscaling.md).
-- **Cluster terminal included.** Open a cluster-scoped k9s session from the dashboard or with `porto kubernetes terminal <cluster-name>`.
-- **Disposable Linux machines.** Create standalone Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, and Alpine environments; Kali is catalogued where an official compatible cloud image exists.
-- **No more port bookkeeping.** Stable automatic assignments avoid collisions, while pinned and Compose-published ports remain supported.
-- **Branch-aware workflows.** Switch branches with automatic restarts or run concurrent branches in isolated managed worktrees.
-- **Friendly local URLs.** Open projects and managed Kubernetes Services through stable zero-configuration HTTP hostnames or trusted portless HTTPS on macOS.
-- **Local and portable.** Runtime state stays in a small SQLite database, and the Go daemon runs on Linux, macOS, and Windows.
-- **Docker, Compose, and Buildx included.** Desktop packages ship a pinned Docker CLI plus Compose and Buildx for the `porto` context. Porto's managed engine sets up CPU emulation automatically, without proxying another Docker engine.
-- **Docker shortcuts without a second command syntax.** Use `porto docker ps`, `porto docker logs`, `porto docker exec`, or `porto docker compose` with Docker's flags. Non-conflicting commands also work as `porto ps`, `porto exec`, and `porto compose`; project commands such as `porto start`, `porto stop`, and `porto logs` keep their existing meaning.
-- **Run containers directly.** Use `porto docker run --rm alpine:latest echo hello`, or pass Docker arguments through with `porto docker cli --context porto run --rm alpine:latest echo hello`. See [local runtimes](docs/runtimes.md).
-- **Image layers in the terminal.** Run `porto docker dive IMAGE` with the bundled Dive client to inspect layer contents, file changes, and wasted space.
-- **Local diagnostics and repair.** Run `porto diagnose` or use the Diagnostics page to inspect runtime health, preview a redacted local bundle, and apply confirmed Porto-owned repairs.
-- **Optional runtime cleanup.** Prune unused images and build cache weekly or with **Run now**, with retained results for both manual and scheduled runs.
-- **Inspect and protect runtime data.** Browse shell-independent files with cancellable downloads, stream bounded logs, inspect live/recent counters and redacted metadata, and use **Storage** for per-store usage and exact object/category previews. Clone, empty, restore, or remove volumes with ownership checks; make verified local archives and edit local backup schedules/retention without an account. See [runtime data management](docs/data-management.md).
-- **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
-  Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
+- **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
+- **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup or source-preserving migration.
+- **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
+- **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).
+- **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects and managed Kubernetes Services through local HTTP hostnames, with optional trusted portless HTTPS on macOS.
 
-See the [Docker API compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix)
-for supported, partial, capability-gated, and explicitly unsupported operations.
-Porto enforces Docker API 1.41–1.47, preserves historical event attributes, and
-uses the Linux backend's CPU counters for Docker stats. The same matrix documents
-tested Docker SDK, Dev Containers, and Testcontainers workflows and their
-configuration/capability limits.
-See [image layer inspection](docs/image-inspection.md) for Dive usage and the
-separate local Grype/SBOM roadmap.
+## Platforms and prerequisites
+
+Releases target **macOS, Linux, and Windows** on **x86-64 (`amd64`) and ARM64 (`arm64`)**. Choose the desktop package for a graphical session, or the CLI/web archive for a headless machine.
+
+| Platform | Desktop package | Runtime requirements and boundaries |
+| --- | --- | --- |
+| macOS | DMG | Lima is bundled. Install QEMU with `brew install qemu` for snapshot-capable VMs, then restart Porto. |
+| Linux | Portable archive | The installer attempts to install missing QEMU through `apt`, `dnf`, `pacman`, or `zypper`. KVM access enables hardware acceleration. |
+| Windows | EXE installer | Lima and QEMU are bundled. kind is not bundled on Windows ARM64 because upstream has no native binary. |
+
+Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.
+
+Native applications still need Git and their own language runtimes, package managers, and build tools in the daemon's `PATH`. Missing optional runtime providers do not prevent native project orchestration. Windows Explorer access to runtime files additionally requires an explicitly installed [WinFsp 2.1+ driver](https://winfsp.dev); in-app file browsing and volume archives do not.
+
+See [installation](docs/installation.md) for platform details and [runtime requirements](docs/runtimes.md#requirements) for source and CLI-only installations.
 
 ## Quickstart
 
 ### 1. Install Porto
 
-Install and launch the latest desktop release on macOS or Linux:
+Install and launch the latest desktop release on **macOS or Linux**:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
 ```
 
-On Windows PowerShell:
+On **Windows PowerShell**:
 
 ```powershell
 irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
-The one-liners detect the OS and architecture, verify the published SHA-256
-checksum, install the native macOS DMG or Windows EXE package for the current
-user, expose the `porto` CLI, and launch the desktop app. Linux uses the
-portable desktop archive. Every desktop package bundles the daemon, dashboard,
-`kubectl`, `k9s`, Lima, the supported `kind` binary, and Porto's Linux runtime
-helper for direct container I/O, Windows containerd connections, CNI, and
-checkpoint capability discovery.
-
-If macOS Gatekeeper blocks the downloaded app, copy `Porto.app` from the DMG
-into `/Applications` first. Only for a trusted download from the
-[official releases page](https://github.com/mbianchidev/porto/releases),
-verified against that release's `SHA256SUMS`, run this in Terminal:
+The installers select your OS and architecture, verify the release's `SHA256SUMS`, install for the current user, expose the CLI, and launch Porto. On macOS/Linux, ensure `~/.local/bin` is on your `PATH`:
 
 ```sh
-xattr -dr com.apple.quarantine "/Applications/Porto.app"
+export PATH="$HOME/.local/bin:$PATH"
 ```
 
-Reopen `/Applications/Porto.app` afterward. This removes quarantine from Porto
-only; do not disable Gatekeeper globally. The one-line installer uses
-`~/Applications/Porto.app` by default; see
-[macOS launch troubleshooting](docs/installation.md#macos-gatekeeper-quarantine)
-for that location and checksum verification.
+On Windows, open a new terminal after installation so it picks up the updated user `Path`.
 
-New Windows container engines use Ubuntu 24.04 LTS instead of Lima's moving
-default image. Windows packages include Lima's stale-process recovery and
-consoleless force-stop fixes; normal shutdown recovery does not require
-deleting PID files or recreating the runtime VM. See
-[Windows guest recovery](docs/installation.md#windows-guest-recovery) for an
-existing crashed engine.
-
-For a headless installation, download the CLI/web archive from the
-[releases page](https://github.com/mbianchidev/porto/releases). Keep the
-`porto` binary and `ui/dist` directory together, then add the binary to `PATH`.
-
-See the [installation guide](docs/installation.md) for checksum verification, source builds, and custom dashboard paths.
-
-Source builds require Go 1.27.3 or newer, using a security-patched release.
-
-macOS desktop packaging and startup regression tests require full Xcode 26 or
-newer, not just Command Line Tools. See [packaging setup](docs/ci-cd.md#ci-details).
-The same guide documents CI's parallel target builds and optional
-checksum-verified download cache for local packaging.
-
-CLI/web archives remain available for headless machines and servers.
-
-Open **Settings** to see the running Porto release version, including prerelease
-and build metadata. Installed desktop builds offer **Help > Check for updates**
-and a **Check for updates** action in Settings and the menu bar/system tray.
-
-### 2. Discover projects
+If macOS Gatekeeper blocks launch, only unblock a trusted download from the [official releases page](https://github.com/mbianchidev/porto/releases) after checksum verification. For the one-line installer's default location:
 
 ```sh
-porto scan ~/code ~/work --depth 3
-porto list
+xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
 ```
 
-### 3. Start the daemon
+Reopen that app afterward. For a manual DMG installation, copy `Porto.app` into `/Applications` first and use that path instead. Do not disable Gatekeeper globally. See [macOS launch troubleshooting](docs/installation.md#macos-gatekeeper-quarantine).
+
+For a **headless installation**, download and verify the CLI/web archive from the [releases page](https://github.com/mbianchidev/porto/releases). Keep the `porto` binary (`porto.exe` on Windows) and `ui/dist` directory together, then add the binary's directory to `PATH`. See [manual archive installation](docs/installation.md#manual-archive-installation).
+
+### 2. Check the daemon
+
+**The desktop app starts the daemon automatically** and prepares the container backend on first launch when Docker support is enabled. Do not start a second daemon.
+
+For a CLI/web installation, start it yourself:
 
 ```sh
 porto daemon start
 ```
 
-The daemon runs in the foreground. Leave it open and use a second terminal for project commands.
+This command runs in the foreground. Leave it open and use a second terminal for the commands below. `Ctrl+C` gracefully stops the daemon and its managed projects.
 
-Desktop and daemon diagnostics are saved to `logs/porto.log` under Porto's
-OS-specific data directory, with **debug** logging enabled by default. Porto
-compresses completed days and keeps seven calendar days unless System settings
-selects a different retention period. See
-[application diagnostic logs](docs/daily-use.md#application-diagnostic-logs)
-for exact paths and the `PORTO_LOG_LEVEL` setting.
+```sh
+porto version
+porto daemon status
+```
 
-Electron 44.7.1 fixes the macOS 27 power-notification startup crash without
-Porto's former native workaround. See
-[macOS compatibility](docs/installation.md#macos-27-power-notification-crash).
+`porto daemon status` should print `running`. Open the dashboard at **http://127.0.0.1:37623**. For startup problems, run `porto diagnose` and consult [diagnostics](docs/diagnostics.md) or [Windows guest recovery](docs/installation.md#windows-guest-recovery).
+
+### 3. Discover projects
+
+```sh
+porto scan --depth 3 ~/code ~/work
+porto list
+```
+
+Replace the roots with existing workspace directories. Put scan flags before the roots. Porto detects the first runnable strategy in each subtree; it does not treat every repository or nested package as a separate application. See [discovery rules](docs/project-management.md#discovery).
 
 ### 4. Start a project
 
@@ -146,37 +108,110 @@ porto logs api --stream stdout -n 100
 porto stop api
 ```
 
-Replace `api` with a project name shown by `porto list`. Open the dashboard at:
+Replace `api` with a project name shown by `porto list`. Startup normally runs `git pull --ff-only`; use `porto start --no-pull api` to skip it. Install project dependencies yourself or use the dashboard's **Setup dependencies** action before starting.
 
-```text
-http://127.0.0.1:37623
-```
+Automatic port assignment starts at `41000`; Compose-published ports are also supported. Porto marks an application ready when its HTTP endpoint returns 200. Pin a port with `porto port api 8080`. Running projects are also available at `http://<project>.porto.localhost:37680` without DNS setup.
 
-Running projects are also available without DNS setup at `http://<project>.porto.localhost:37680`. On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
+On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
 
 ```sh
 porto https install
 ```
 
-See [local networking](docs/networking.md) for certificate, DNS, dotted-hostname, and custom-forwarding details.
+This requests administrator authorization for the loopback forwarder and trusts Porto's local certificate authority. See [local networking](docs/networking.md) for certificate, DNS, dotted-hostname, and custom-forwarding details.
 
 For an always-available setup, follow the [daily-use guide](docs/daily-use.md) to install Porto in a stable location and start it at login or boot.
 
+## Use Docker and optional runtimes
+
+Once the execution backend is ready, select Porto's Docker context and use Docker normally:
+
+```sh
+docker context use porto
+docker run --rm alpine:latest echo hello
+docker ps --all
+```
+
+The container example should print `hello` and remove itself. From a Compose project directory, use `docker compose up --detach`. If `DOCKER_HOST` or `DOCKER_CONTEXT` is set, unset it so it does not override the selected context. CLI/web installations can provision the backend with `porto docker engine-install`; desktop packages do this automatically.
+
+`porto docker <command>` is also available: it uses Docker's flags and defaults to Porto's endpoint. Non-conflicting shortcuts include `porto ps`, `porto exec`, and `porto compose`. **`porto start`, `porto stop`, and `porto logs` operate on projects**; use `docker stop` and `docker logs` for containers. `porto docker cli` is unrestricted passthrough and honors explicit or inherited Docker connection settings.
+
+Inspect optional providers with `porto runtime providers` and enable features independently:
+
+```sh
+porto runtime enable kubernetes
+porto runtime enable vms
+porto runtime status
+```
+
+See [local runtimes](docs/runtimes.md) for container, Kubernetes, VM, and provider-install commands, and [runtime data management](docs/data-management.md) for storage, backups, migration, and native file access.
+
+## Configuration and local state
+
+Set environment variables in the environment that launches Porto. Keep the same user and `PORTO_HOME` for the desktop, daemon, and CLI.
+
+| Variable | Purpose |
+| --- | --- |
+| `PORTO_HOME` | Override the directory containing Porto's SQLite database, logs, certificates, and managed runtime metadata. |
+| `PORTO_UI_DIR` | Select compiled dashboard assets when `ui/dist` is not beside the binary or in the working directory. |
+| `PORTO_LOG_LEVEL` | Set application diagnostics to `debug` (default), `info`, `warn`, or `error`. Restart the desktop and daemon after changing it. |
+
+The default state directory is `~/Library/Application Support/porto` on macOS, `${XDG_CONFIG_HOME:-~/.config}/porto` on Linux, and `%APPDATA%\porto` on Windows. Project state and output live in `porto.db`; application diagnostics live separately in `logs/porto.log`. Completed diagnostic days are compressed, with seven calendar days retained by default. See [diagnostic logs](docs/daily-use.md#application-diagnostic-logs).
+
+Use **Settings** for runtime and desktop preferences, log retention, and optional cleanup schedules. Installed desktop builds offer **Help > Check for updates**, plus update actions in Settings and the menu bar/system tray. See [desktop updates](docs/installation.md#desktop-updates).
+
+## Important limitations
+
+- **Local development only.** The dashboard/API bind to loopback, and Docker clients use a private Unix socket or Windows named pipe. Do not expose these control interfaces through an unauthenticated network proxy.
+- **Docker compatibility is bounded.** Porto supports Docker API versions **1.41 through 1.47**, not every Docker Engine feature. Swarm, generic engine plugins, and Windows containers are unsupported; mounts, checkpoints, SDKs, Dev Containers, and Testcontainers have documented capability limits. Check the [compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix) before relying on a workflow.
+- **Discovery and readiness are opinionated.** Detection follows file and entry-point conventions, and readiness expects HTTP 200 on the selected port. See [project management](docs/project-management.md) before using non-HTTP services or unusual monorepo layouts.
+- **Backups are not database-aware.** Local volume copies are crash-consistent, not application-consistent database backups. Native filesystem access and migration support depend on the host/backend. See [data-management safety boundaries](docs/data-management.md).
+- **Layer inspection is not vulnerability scanning.** Dive works today; local SBOM and Grype-based CVE analysis remain a [separate roadmap](docs/image-inspection.md).
+
+## Build from source
+
+Build with a security-patched **Go 1.27.3 or newer** release and **Node.js 22.12 or newer with npm** for the dashboard. Release packages do not need these build tools.
+
+```sh
+git clone https://github.com/mbianchidev/porto.git
+cd porto
+npm --prefix ui ci
+npm --prefix ui run build
+go build ./cmd/porto
+```
+
+Run `./porto daemon start` from the repository root, then follow the quickstart in another terminal using `./porto` instead of `porto`. On Windows PowerShell, use `.\porto.exe`.
+
+For the Electron desktop shell, after building the daemon and dashboard:
+
+```sh
+npm --prefix ui run desktop:install
+npm --prefix ui run desktop
+```
+
+On macOS this prepares a cached **Porto Dev.app** tied to the source checkout, without modifying the npm-installed Electron runtime. Packaging macOS desktop archives/DMGs and running startup regression tests require macOS 26+ and full Xcode 26+, not just Command Line Tools. See [source installation](docs/installation.md#build-from-source) and [packaging setup](docs/ci-cd.md#ci-details).
+
 ## Documentation
 
-- [Installation](docs/installation.md) — release archives, source builds, and dashboard assets
-- [Daily use](docs/daily-use.md) — durable installation, login or boot startup, upgrades, and home systems
-- [Project management](docs/project-management.md) — CLI reference, discovery, setup, ports, readiness, and logs
-- [Local runtimes](docs/runtimes.md) — Docker socket, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
-- [Porto Docker Engine](docs/docker-engine.md) — native containerd backend, Docker context compatibility, supported API, and limitations
-- [Runtime data management](docs/data-management.md) — container inspection, storage accounting, volume archives/backups, migration, and native file-manager capabilities
-- [Branch management](docs/branch-management.md) — switching, concurrent instances, and merged-branch cleanup
-- [Local networking](docs/networking.md) — HTTP, HTTPS, certificates, DNS, and forwarding
-- [Optional integrations](docs/integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox
-- [Product overview](docs/product.md) — users, purpose, positioning, and product principles
-- [Design system](docs/design.md) — visual language, components, and interaction rules
-- [Continuous integration and releases](docs/ci-cd.md) — local checks, automation, and release artifacts
-- [Documentation index](docs/README.md) — all guides
+Start with the [documentation index](docs/README.md), or go directly to a guide:
+
+| Guide | Topics |
+| --- | --- |
+| [Installation](docs/installation.md) and [daily use](docs/daily-use.md) | Releases, source builds, startup at login/boot, and updates |
+| [Project management](docs/project-management.md) and [branches](docs/branch-management.md) | Discovery, setup, CLI commands, ports, readiness, logs, and worktrees |
+| [Local runtimes](docs/runtimes.md) and [Docker Engine](docs/docker-engine.md) | Containers, Compose, Kubernetes, VMs, and Docker API compatibility |
+| [Kubernetes upgrades](docs/kubernetes-upgrades.md) and [autoscaling](docs/kubernetes-autoscaling.md) | Upgrade/recovery boundaries, Karpenter workers, and KEDA |
+| [Runtime data management](docs/data-management.md) and [image inspection](docs/image-inspection.md) | Files, storage, backups, migration, native mounts, and Dive |
+| [Networking](docs/networking.md) and [integrations](docs/integrations.md) | Local HTTP/HTTPS, DNS, sql-not-so-lite, KillSwitch, and Sendbox |
+| [Diagnostics](docs/diagnostics.md) | Health checks, redacted bundles, and confirmed repairs |
+| [Product overview](docs/product.md) and [design system](docs/design.md) | Intended users, product principles, and interface conventions |
+| [CI and releases](docs/ci-cd.md) | Local checks, automated tests, packaging, and release artifacts |
+
+## Contributing
+
+Report bugs or discuss changes in [GitHub issues](https://github.com/mbianchidev/porto/issues), or submit a focused [pull request](https://github.com/mbianchidev/porto/pulls). Include your OS, Porto version, reproduction steps, and redacted diagnostics when reporting a problem.
+
+For code changes, build from source as above, then run `go test ./...` and `npm --prefix ui run lint`. The [local validation guide](docs/ci-cd.md#running-the-checks-locally) covers formatting, vet, desktop tests, and optional integration checks.
 
 ## License
 
