@@ -40,6 +40,23 @@ type runtimeDataVMRunner struct {
 	runAs string
 }
 
+type runtimeDataDiagnosticRunner struct{ runtimes.ExecRunner }
+
+func (runner runtimeDataDiagnosticRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	index := 0
+	if filepath.Base(command.Name) != "nerdctl" {
+		index = slices.Index(command.Args, "nerdctl") + 1
+		if index == 0 {
+			return runner.ExecRunner.Run(ctx, command)
+		}
+	}
+	if index < len(command.Args) && command.Args[index] == "start" {
+		arguments := append(slices.Clone(command.Args[:index]), "--debug")
+		command.Args = append(arguments, command.Args[index:]...)
+	}
+	return runner.ExecRunner.Run(ctx, command)
+}
+
 func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Command {
 	if len(command.Args) > 0 && command.Args[0] == "create" {
 		command.Args = append([]string{"create", "--mount-none", "--containerd=none"}, command.Args[1:]...)
@@ -117,6 +134,13 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	if os.Getenv("PORTO_RUNTIME_DATA_ACCEPTANCE") != "1" {
 		t.Skip("set PORTO_RUNTIME_DATA_ACCEPTANCE=1 for isolated real Docker migration and OS-native runtime mounts")
 	}
+	phase := os.Getenv("PORTO_RUNTIME_DATA_PHASE")
+	if phase == "" {
+		phase = "all"
+	}
+	if phase != "all" && phase != "migration" && phase != "native" {
+		t.Fatalf("unknown runtime data acceptance phase %q", phase)
+	}
 	lifetime, stop := context.WithCancel(context.Background())
 	t.Cleanup(stop)
 	ctx, cancel := context.WithTimeout(lifetime, 20*time.Minute)
@@ -127,6 +151,9 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		t.Cleanup(func() { slog.SetDefault(previous) })
 	}
 	manager := New(nil)
+	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
+		manager.runner = runtimeDataDiagnosticRunner{}
+	}
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), time.Minute)
 		defer cancel()
@@ -198,7 +225,7 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		t: t, ctx: ctx, manager: manager, store: ledger, native: native, root: root,
 		prefix: "porto-data-" + newInventoryInstanceID()[:12], helper: helper,
 	}
-	t.Logf("isolated runtime acceptance fixture: %s", fixture.prefix)
+	t.Logf("isolated runtime acceptance fixture: %s; phase=%s", fixture.prefix, phase)
 	if runtime.GOOS == "linux" && os.Geteuid() == 0 {
 		account, err := user.Lookup(os.Getenv("SUDO_USER"))
 		if err != nil {
@@ -245,8 +272,13 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	if t.Failed() {
 		return
 	}
-	t.Run("transfer failure and interruption recovery", fixture.migrationFailures)
-	if t.Failed() {
+	if phase != "native" {
+		t.Run("transfer failure and interruption recovery", fixture.migrationFailures)
+		if t.Failed() {
+			return
+		}
+	}
+	if phase == "migration" {
 		return
 	}
 	t.Run("real native resource mounts", fixture.nativeResources)

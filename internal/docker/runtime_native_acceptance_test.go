@@ -235,6 +235,11 @@ func (fixture *runtimeDataFixture) nativeLifecycles(t *testing.T) {
 	t.Run("explicit workload start and stop", func(t *testing.T) {
 		selected := fixture.selection[slices.IndexFunc(fixture.selection, func(selection dataops.Selection) bool { return selection.Kind == "container" })]
 		if err := fixture.manager.ContainerAction(fixture.ctx, selected.Destination, "start"); err != nil {
+			for _, container := range fixture.manager.ContainerSnapshot().Containers {
+				if container.Name == selected.Destination {
+					t.Logf("exact synthetic workload state after failed start: %+v", container)
+				}
+			}
 			t.Fatal(err)
 		}
 		document, err := fixture.manager.InspectContainer(fixture.ctx, selected.Destination)

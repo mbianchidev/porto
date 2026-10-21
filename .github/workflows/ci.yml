@@ -200,13 +200,16 @@ jobs:
           fi
 
   runtime-data:
-    name: Runtime data (${{ matrix.backend }}, ${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: Runtime data (${{ matrix.phase }}, ${{ matrix.runtime.backend }}, ${{ matrix.runtime.os }})
+    runs-on: ${{ matrix.runtime.os }}
     timeout-minutes: 85
+    env:
+      PORTO_RUNTIME_DATA_PHASE: ${{ matrix.phase }}
     strategy:
       fail-fast: false
       matrix:
-        include:
+        phase: [migration, native]
+        runtime:
           - os: ubuntu-26.04
             backend: local
           - os: ubuntu-26.04-arm
@@ -270,10 +273,11 @@ jobs:
       - name: Exercise real migration, mounts and recovery
         shell: bash
         run: |
-          if [ "${{ matrix.backend }}" = local ]; then
+          if [ "${{ matrix.runtime.backend }}" = local ]; then
             sudo env "PATH=$PATH" "HOME=$HOME" \
               "GITHUB_ACTIONS=$GITHUB_ACTIONS" "RUNNER_TEMP=$RUNNER_TEMP" \
               "RUNNER_ARCH=$RUNNER_ARCH" "GOTOOLCHAIN=${GOTOOLCHAIN:-auto}" \
+              "PORTO_RUNTIME_DATA_PHASE=$PORTO_RUNTIME_DATA_PHASE" \
               bash scripts/test-docker-clients.sh local data
           elif [ "$RUNNER_OS" = Linux ] && [ -c /dev/kvm ]; then
             sg kvm -c 'bash scripts/test-docker-clients.sh lima data'

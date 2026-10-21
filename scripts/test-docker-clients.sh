@@ -10,6 +10,12 @@ if [ "$suite" != clients ] && [ "$suite" != data ]; then
   echo "Unknown runtime suite: $suite" >&2
   exit 2
 fi
+phase="${PORTO_RUNTIME_DATA_PHASE:-all}"
+if [ "$suite" = data ] && [ "$phase" != all ] && [ "$phase" != migration ] && [ "$phase" != native ]; then
+  echo "Unknown runtime data phase: $phase" >&2
+  exit 2
+fi
+export PORTO_RUNTIME_DATA_PHASE="$phase"
 if [ "${GITHUB_ACTIONS:-}" != true ]; then
   echo "This script provisions disposable CI runtimes only. Use the opt-in Go test for an existing Porto engine." >&2
   exit 2
@@ -216,7 +222,7 @@ else
       *) echo "Cannot determine macOS hardware virtualization support." >&2; exit 1 ;;
     esac
     if [ "$suite/$goarch" = data/amd64 ]; then
-      export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=multi,tb-size=128 -cpu max,-avx512vl,-pdpe1gb"
+      export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=single,tb-size=128 -icount shift=auto,sleep=on -cpu max,-avx512vl,-pdpe1gb"
       export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
       echo "::notice::Intel macOS data fixtures explicitly use bounded QEMU TCG; a hardware capability bit is not support for nested HVF on hosted runners."
     fi
@@ -253,6 +259,6 @@ fi
     "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.timeout=25m -test.v
   fi
 )
-if [ "$suite/$goos" = data/darwin ]; then
+if [ "$suite/$goos" = data/darwin ] && [ "$phase" != migration ]; then
   PORTO_TEST_WEBDAV_NATIVE=1 go test ./internal/nativefiles -run '^TestMacOSNativeWebDAV' -count=1 -timeout=5m -v
 fi

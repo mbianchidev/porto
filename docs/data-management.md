@@ -397,8 +397,12 @@ ownership rather than attempting a privileged root chown.
 
 `Runtime data` CI runs the real resource/backend matrix on Linux x64/ARM64
 (local containerd and Lima), macOS Intel/Apple Silicon (Lima and built-in WebDAV),
-and Windows x64/ARM64 (Lima and installed WinFsp). It creates a separate
-Porto-owned standalone source VM running an actual Docker Engine, exposing its
+and Windows x64/ARM64 (Lima and installed WinFsp). Each cell has independent
+migration and native jobs that run in parallel with separate owned fixtures;
+both phase checks must pass. This preserves the existing time caps and all
+assertions instead of extending the deadline for a combined emulated run.
+Each job creates a separate Porto-owned standalone source VM running an actual
+Docker Engine, exposing its
 API through the host's private Unix socket or named pipe and a real Docker
 context. This exercises the Docker Desktop-style local socket/API contract,
 not a mocked inventory or a claim about Docker Desktop's proprietary UI.

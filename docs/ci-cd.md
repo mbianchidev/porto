@@ -44,11 +44,20 @@ confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
 not count as successful OS-native mounts for every platform/backend row; see
 the [real-runtime matrix](data-management.md#real-runtime-acceptance).
 
-The eight `Runtime data` jobs separately run actual Docker-source migration and
-native resource mounts on Linux x64/ARM64 with both local containerd and Lima,
-macOS Intel/Apple Silicon, and Windows x64/ARM64. They reuse the disposable
+Sixteen independent `Runtime data` jobs cover migration and native phases for
+all eight platform/backend cells: Linux x64/ARM64 with local containerd and Lima,
+macOS Intel/Apple Silicon, and Windows x64/ARM64. The two phases run in parallel
+on separately owned runtimes rather than sharing mutable fixture state.
+They reuse the disposable
 runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
-normal development-client jobs retain their existing scope. Linux installs
+`PORTO_RUNTIME_DATA_PHASE=migration|native` selects a phase, while an unset value
+or `all` retains the combined opt-in local suite. The migration phase runs every
+round-trip, failure and interruption assertion. The native phase creates its
+real resources through the same verified migration round trip, then runs every
+mount, workload, VM and owned-engine lifecycle assertion. No job waits for the
+other phase's artifacts. The 85-minute job, 55-minute executable, 40-minute
+acceptance and 20-minute setup/boot caps are unchanged.
+Normal development-client jobs retain their existing scope. Linux installs
 FUSE3/QEMU and builds checksum-pinned SSHFS 3.7.6 with the required symlink
 containment fixes instead of the older distribution binary. It grants the runner
 access to an available KVM device. A fresh KVM-group process retains access in both destination and source
@@ -93,7 +102,8 @@ The macOS native-driver suite also kills an actual mount-owner process and
 checks exact owned recovery and retryable detach failure.
 Source provisioning has a separate 20-minute setup budget; the unchanged
 40-minute acceptance budget starts only after its real Docker fixtures are ready.
-The executable's overall 55-minute deadline still bounds both phases.
+The executable's overall 55-minute deadline still bounds setup and acceptance
+within each phase job.
 After the source preservation and standalone-VM reconnect cases finish, the
 disposable source VM is stopped before destination engine update/restart, rather
 than consuming emulated host resources while no source operations remain.
@@ -205,8 +215,13 @@ macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, to leave scheduling priority for the hosted runner's heartbeat.
 Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
 and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
-They explicitly select TCG, a supported emulated CPU and a 128 MiB translation
-cache per VM. A reported `kern.hv_support=1` does not establish supported nested
+They explicitly select single-thread TCG with instruction-counted virtual
+timers, a supported emulated CPU and a 128 MiB translation cache per VM. The
+guest still has two vCPUs. This avoids relying on host scheduling for the early
+I/O-APIC/PIT timer handshake, which otherwise intermittently panics the guest
+before SSH starts; it is not a reason to increase the boot deadline. See
+[QEMU's virtual-clock design](https://www.qemu.org/docs/master/devel/tcg-icount.html).
+A reported `kern.hv_support=1` does not establish supported nested
 HVF: GitHub does not support nested virtualization on macOS runner images
 ([actions/runner-images#13277](https://github.com/actions/runner-images/issues/13277)).
 Both source and destination inherit this CI-only QEMU override; packaged runtime
@@ -216,7 +231,9 @@ for both guest disks, and emit periodic free-disk, RAM/swap and QEMU RSS/CPU
 samples as job notices to aid lost-runner diagnosis when normal logs are
 unavailable. Software-emulated data fixtures also log runtime
 command durations so slow guest work can be distinguished from host process
-startup and repeated discovery. Guest boot and acceptance thresholds are unchanged.
+startup and repeated discovery. Failed compatibility starts also retain nerdctl
+debug output and the exact synthetic workload's observed task state. Guest boot
+and acceptance thresholds are unchanged.
 Porto forwards its selected boot budget to Lima's own `--timeout` as well as
 the parent process context: first boots and recorded standalone restarts retain
 20 minutes, while Kubernetes-node restarts remain five minutes. Lima's internal
