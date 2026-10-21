@@ -83,6 +83,7 @@ type grpcContainerRuntime struct {
 	fifoDir         string
 	runner          runtimes.Runner
 	lima            string
+	commandSource   commandBackend
 	helperPath      string
 	address         string
 	networkLocks    *containerMutexes
@@ -193,6 +194,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		)
 		if err == nil {
 			client.address = socket
+			client.commandSource = backend
 		}
 		return client, err
 	}

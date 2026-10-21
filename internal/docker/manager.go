@@ -43,6 +43,17 @@ chmod 0755 "$temporary"
 mv -f "$temporary" "$HOME/.local/bin/porto-runtime-helper"
 `
 
+const limaOwnedRuntimeCommand = `set -eu
+expected="$1"
+shift
+actual="$(cat "$HOME/.porto-engine-owner")"
+if [ "$actual" != "$expected" ]; then
+  echo 'Porto engine ownership changed; refusing the runtime command' >&2
+  exit 1
+fi
+exec "$@"
+`
+
 var (
 	ErrUnavailable            = errors.New("Porto container runtime is unavailable")
 	ErrUnsupported            = errors.New("Docker operation is not supported by Porto")
@@ -1182,7 +1193,11 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
-	_, err = m.run(ctx, action+" Porto container", args...)
+	commandTimeout := m.timeout
+	if action == "start" || action == "restart" {
+		commandTimeout = max(commandTimeout, time.Minute)
+	}
+	_, err = m.runWithTimeout(ctx, commandTimeout, action+" Porto container", nil, args...)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -1956,6 +1971,7 @@ type commandBackend struct {
 	prefix       []string
 	description  string
 	limaInstance string
+	ownerID      string
 }
 
 func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
@@ -2002,6 +2018,7 @@ func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 		prefix:       []string{"shell", state.Instance, "--", "nerdctl"},
 		description:  "containerd in Lima " + state.Instance,
 		limaInstance: state.Instance,
+		ownerID:      state.OwnerID,
 	}, nil
 }
 
@@ -2009,8 +2026,29 @@ func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byt
 	return m.runWithTimeout(ctx, m.timeout, action, nil, args...)
 }
 
+func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error) {
+	if !m.directCLI {
+		if inventory := m.activeContainerInventory(); inventory != nil {
+			if runtime, ok := inventory.activeRuntime().(*grpcContainerRuntime); ok {
+				origin := runtime.commandSource
+				state, err := m.readEngineState()
+				if err == nil && state.Mode == "lima" && origin.name == "limactl" &&
+					origin.ownerID != "" && origin.ownerID == state.OwnerID &&
+					origin.limaInstance == state.Instance {
+					origin.prefix = []string{
+						"shell", state.Instance, "--", "sh", "-c",
+						limaOwnedRuntimeCommand, "porto-runtime-command", state.OwnerID, "nerdctl",
+					}
+					return origin, nil
+				}
+			}
+		}
+	}
+	return m.backend(ctx)
+}
+
 func (m *Manager) runWithTimeout(ctx context.Context, timeout time.Duration, action string, stdin []byte, args ...string) ([]byte, error) {
-	backend, err := m.backend(ctx)
+	backend, err := m.backendForCommand(ctx)
 	if err != nil {
 		return nil, err
 	}

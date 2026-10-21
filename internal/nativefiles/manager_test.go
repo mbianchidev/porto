@@ -122,6 +122,79 @@ func TestNativeReplacedMountIsNeverOpenedOrDetached(t *testing.T) {
 	}
 }
 
+func TestNativeDetachRechecksAnUnmountThatRacesBridgeExit(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows verifies its owned WinFsp bridge separately")
+	}
+	for _, remaining := range []string{"missing", "owned", "foreign", "probe-error"} {
+		t.Run(remaining, func(t *testing.T) {
+			resource := datafiles.Resource{Kind: "volume", Name: "synthetic-volume", ID: "volume-1"}
+			id := attachmentID(resource, false)
+			root := t.TempDir()
+			var record Attachment
+			unmountErr := errors.New("synthetic unmount failure")
+			probeErr := errors.New("synthetic mount verification failure")
+			probes, unmounts := 0, 0
+			manager := New(root, nativeRunnerFunc(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+				if command.Name == "mount" {
+					probes++
+					source := record.Endpoint
+					if probes > 1 {
+						switch remaining {
+						case "missing":
+							return nil, nil
+						case "foreign":
+							source = "foreign-filesystem"
+						case "probe-error":
+							return nil, probeErr
+						}
+					}
+					return []byte(source + " on " + record.Path + " (webdav, nodev, nosuid)\n"), nil
+				}
+				unmounts++
+				return []byte("synthetic driver diagnostic"), unmountErr
+			}))
+			record = Attachment{
+				ID: id, Resource: resource, Identity: resource.Fingerprint(), ReadOnly: true,
+				Path: filepath.Join(manager.root, id), State: "disconnected", Driver: "webdav",
+				Endpoint: "http://127.0.0.1:12345" + webDAVMountPath(id),
+			}
+			if err := os.Mkdir(record.Path, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := manager.save(record); err != nil {
+				t.Fatal(err)
+			}
+			released := false
+			manager.attachments[id] = &liveAttachment{record: record, target: Target{
+				Release: func(context.Context) error { released = true; return nil },
+			}}
+			err := manager.Detach(context.Background(), id)
+			if remaining == "missing" {
+				if err != nil || !released || len(manager.List()) != 0 {
+					t.Fatalf("an already-disappeared owned mount was not released: %v", err)
+				}
+				return
+			}
+			if !errors.Is(err, unmountErr) || released || probes != 2 || unmounts != 1 {
+				t.Fatalf("an unverified unmount was accepted: err=%v released=%v probes=%d unmounts=%d", err, released, probes, unmounts)
+			}
+			if remaining == "foreign" && !errors.Is(err, datafiles.ErrConflict) {
+				t.Fatalf("foreign replacement ownership conflict was hidden: %v", err)
+			}
+			if remaining == "probe-error" && !errors.Is(err, probeErr) {
+				t.Fatalf("failed mount verification was hidden: %v", err)
+			}
+			if !strings.Contains(err.Error(), "synthetic driver diagnostic") {
+				t.Fatalf("unmount diagnostics were discarded: %v", err)
+			}
+			if records := manager.List(); len(records) != 1 || records[0].State != "detach-failed" {
+				t.Fatalf("failed unmount lost its retryable record: %+v", records)
+			}
+		})
+	}
+}
+
 type nativeStartupRunner struct {
 	nativeRunnerFunc
 	start func(context.Context, runtimes.Command) (runtimes.Process, error)

@@ -386,6 +386,9 @@ macOS verifies the exact owned loopback WebDAV mount source, including canonical
 temporary-directory aliases. Shutdown unmounts while its server is still alive.
 After a daemon/connection loss, recovery detaches only that identity-proven dead
 mount; in-flight edits that did not successfully close are not claimed committed.
+If the OS removes a dead bridge while an unmount is in progress, Porto verifies
+the mount table again before completing cleanup. A still-mounted or replaced
+filesystem retains a visible, retryable detach failure.
 Stopped-container helpers recursively detach their own nested mounts inside
 their private namespace. Managed VM file creation retains the guest SSH user's
 ownership rather than attempting a privileged root chown.

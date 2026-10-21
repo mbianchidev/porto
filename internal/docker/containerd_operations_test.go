@@ -626,6 +626,57 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 }
 
+type lifecycleDeadlineRunner func(context.Context, runtimes.Command) ([]byte, error)
+
+func (run lifecycleDeadlineRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
+	return run(ctx, command)
+}
+
+func TestCompatibilityStartupBudgetPreservesMetadataAndCallerDeadlines(t *testing.T) {
+	for _, scenario := range []struct {
+		name, action             string
+		configured, caller, want time.Duration
+	}{
+		{name: "start", action: "start", configured: defaultTimeout, want: time.Minute},
+		{name: "restart", action: "restart", configured: defaultTimeout, want: time.Minute},
+		{name: "pause", action: "pause", configured: defaultTimeout, want: defaultTimeout},
+		{name: "longer configured budget", action: "start", configured: 2 * time.Minute, want: 2 * time.Minute},
+		{name: "caller deadline", action: "start", configured: defaultTimeout, caller: 5 * time.Second, want: 5 * time.Second},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var remaining time.Duration
+			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				if len(command.Args) > 0 && command.Args[0] == "container" {
+					return []byte(`[{"State":{"Paused":false}}]`), nil
+				}
+				if len(command.Args) == 0 || command.Args[0] != scenario.action {
+					return nil, fmt.Errorf("unexpected lifecycle command: %+v", command)
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					return nil, errors.New("compatibility lifecycle command has no deadline")
+				}
+				remaining = time.Until(deadline)
+				return nil, nil
+			})
+			manager := New(runner)
+			manager.timeout = scenario.configured
+			ctx := context.Background()
+			if scenario.caller > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, scenario.caller)
+				defer cancel()
+			}
+			if err := manager.ContainerAction(ctx, "synthetic-container", scenario.action); err != nil {
+				t.Fatal(err)
+			}
+			if remaining <= scenario.want-time.Second || remaining > scenario.want {
+				t.Fatalf("compatibility %s budget = %s, want %s with the caller still authoritative", scenario.action, remaining, scenario.want)
+			}
+		})
+	}
+}
+
 func TestManagerReportsDirectRestartReasonWhenFallbackFails(t *testing.T) {
 	directErr := fmt.Errorf(
 		"%w: %w for container %q",

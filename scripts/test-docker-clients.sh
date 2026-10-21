@@ -22,6 +22,7 @@ temporary="$(mktemp -d "${RUNNER_TEMP:?}/porto-ci.XXXXXX")"
 runtime="$temporary/runtime"
 containerd_pid=""
 buildkit_pid=""
+resource_monitor_pid=""
 created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
@@ -50,6 +51,18 @@ dump_lima_boot_logs() {
 cleanup() {
   result=$?
   trap - EXIT HUP INT TERM
+  if [ -n "$resource_monitor_pid" ]; then
+    if jobs -pr | grep -Fx "$resource_monitor_pid" >/dev/null; then
+      if ! kill "$resource_monitor_pid"; then
+        echo "Unable to stop the owned Intel CI resource monitor." >&2
+        result=1
+      fi
+    fi
+    if ! wait "$resource_monitor_pid"; then
+      echo "Intel CI resource monitoring failed." >&2
+      result=1
+    fi
+  fi
   if [ "$created_lima" = true ]; then
     if [ "$result" -ne 0 ]; then
       dump_lima_boot_logs
@@ -87,6 +100,30 @@ case "${RUNNER_ARCH:-$(go env GOARCH)}" in
   ARM64|arm64|aarch64) goarch=arm64 ;;
   *) echo "Unsupported CI architecture." >&2; exit 2 ;;
 esac
+if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then
+  node - "$temporary" <<'NODE' &
+const fs = require('node:fs')
+const os = require('node:os')
+const { execFileSync } = require('node:child_process')
+function sample() {
+  const disk = fs.statfsSync(process.argv[2])
+  const qemu = execFileSync('ps', ['-axo', 'rss=,pcpu=,comm='], { encoding: 'utf8', timeout: 5000 })
+    .split('\n').filter((line) => line.includes('qemu-system')).map((line) => line.trim())
+  const swap = execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8', timeout: 5000 }).trim()
+  console.log('::notice title=Intel CI resources::' + JSON.stringify({
+    cpus: os.availableParallelism(),
+    freeDiskMiB: Math.floor(disk.bavail * disk.bsize / 1048576),
+    totalMemoryMiB: Math.floor(os.totalmem() / 1048576),
+    freeMemoryMiB: Math.floor(os.freemem() / 1048576),
+    swap, qemuRssKiBAndCpuPct: qemu,
+  }))
+}
+process.once('SIGTERM', () => process.exit(0))
+sample()
+setInterval(sample, 120000)
+NODE
+  resource_monitor_pid=$!
+fi
 if [ "$backend" = local ] && [ "$(id -u)" = 0 ] && [ -n "${SUDO_USER:-}" ]; then
   chown "$SUDO_UID:$SUDO_GID" "$temporary"
   sudo -u "$SUDO_USER" env "PATH=$PATH" bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime"
@@ -199,6 +236,9 @@ else
 fi
 
 go test -c -o "$client_tests" ./internal/docker
+if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then
+  go clean -cache
+fi
 (
   cd "$root/internal/docker"
   if [ "$suite" = data ]; then

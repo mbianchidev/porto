@@ -59,6 +59,13 @@ uses its built-in WebDAV driver without macFUSE.
 Disposable CI destinations start the normal container inventory and borrow its
 healthy runtime connection, matching daemon behavior instead of opening a new
 containerd SSH channel for each file or migration operation.
+Compatibility CLI calls can reuse that connection's exact engine origin, with
+ownership checked inside the actual guest command before executing nerdctl.
+They do not spawn separate Lima status and ownership processes for each
+individual API operation. A changed owner, instance or disconnected inventory
+requires normal discovery again. Cold compatibility starts/restarts have a
+one-minute task/shim/network startup budget instead of the generic 20-second
+metadata budget; stricter caller deadlines still win.
 
 The production migration/native APIs operate on uniquely labelled fixture
 images, volumes, networks and stopped/running containers. A separate
@@ -181,9 +188,15 @@ installation omits optional recommendations. This keeps software-emulated setup
 from spending its boot budget on unrelated desktop/package-search metadata or
 restart suggestions for a disposable guest.
 macOS data jobs lower the fixture process priority, inherited by both QEMU
-guests, so software emulation does not starve the hosted runner's heartbeat.
+guests, to leave scheduling priority for the hosted runner's heartbeat.
 Intel macOS data jobs allocate one vCPU per fixture VM, reserving host CPU for
 the runner and native filesystem processes.
+They remove the Go build cache after compiling the fixture, leaving disk space
+for both guest disks, and emit periodic free-disk, RAM/swap and QEMU RSS/CPU
+samples as job notices to aid lost-runner diagnosis when normal logs are
+unavailable. Software-emulated data fixtures also log runtime
+command durations so slow guest work can be distinguished from host process
+startup and repeated discovery. Guest boot and full-suite deadlines are unchanged.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

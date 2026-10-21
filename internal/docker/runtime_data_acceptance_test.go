@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httputil"
@@ -114,6 +115,11 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	t.Cleanup(cancel)
+	if os.Getenv("GITHUB_ACTIONS") == "true" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
+		previous := slog.Default()
+		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
+		t.Cleanup(func() { slog.SetDefault(previous) })
+	}
 	manager := New(nil)
 	t.Cleanup(func() {
 		stop, cancel := context.WithTimeout(context.Background(), time.Minute)

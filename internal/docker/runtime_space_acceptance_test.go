@@ -36,6 +36,7 @@ func TestLimitedVolumeRunnerScopesResolvedAndRemoteNerdctlCommands(t *testing.T)
 		{Name: "nerdctl", Args: []string{"volume", "create", "synthetic"}},
 		{Name: "/synthetic/bin/nerdctl", Args: []string{"volume", "create", "synthetic"}},
 		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "nerdctl", "volume", "create", "synthetic"}},
+		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "create", "synthetic"}},
 	} {
 		scoped := runner.command(command)
 		index := slices.Index(scoped.Args, "--data-root")

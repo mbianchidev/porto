@@ -375,8 +375,12 @@ func (m *Manager) detachLocked(ctx context.Context, id string) (err error) {
 			command = runtimes.Command{Name: "fusermount3", Args: []string{"-u", live.record.Path}}
 		}
 		if mounted {
-			if _, err := m.runner.Run(ctx, command); err != nil {
-				return fmt.Errorf("native detach failed; source data was not removed: %w", err)
+			if output, unmountErr := m.runner.Run(ctx, command); unmountErr != nil {
+				mounted, verifyErr := m.mounted(ctx, live.record)
+				if mounted || verifyErr != nil {
+					return errors.Join(fmt.Errorf("native detach failed; source data was not removed: %w: %.1024s", unmountErr, output), verifyErr)
+				}
+				log.Printf("native mount %s disappeared during unmount: %v: %.1024s", id, unmountErr, output)
 			}
 		}
 	}
