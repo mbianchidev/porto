@@ -115,6 +115,13 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 40*time.Minute)
 	t.Cleanup(cancel)
 	manager := New(nil)
+	t.Cleanup(func() {
+		stop, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		if err := manager.StopContainerInventory(stop); err != nil {
+			t.Errorf("stop owned acceptance inventory: %v", err)
+		}
+	})
 	if os.Getenv("PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA") == "1" {
 		claimFreshClientLima(t, ctx, manager)
 	}
@@ -200,6 +207,22 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		fixture.vmRunner.runAs = account.Username
 	}
 	fixture.useCurrentDestinationHelper()
+	if os.Getenv("GITHUB_ACTIONS") == "true" {
+		if err := manager.StartContainerInventory(ctx); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.NewTimer(time.Minute)
+		defer deadline.Stop()
+		for !manager.ContainerSnapshot().Available {
+			select {
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
+			case <-deadline.C:
+				t.Fatalf("owned acceptance inventory unavailable: %s", manager.ContainerSnapshot().Message)
+			case <-time.After(50 * time.Millisecond):
+			}
+		}
+	}
 	fixture.prepareSource()
 	fixture.prepareObjects()
 	t.Run("selected migration and source preservation", fixture.migrateSelected)
@@ -265,9 +288,13 @@ func (fixture *runtimeDataFixture) prepareSource() {
 	if vmType == "" && runtime.GOOS != "darwin" {
 		vmType = "qemu"
 	}
+	sourceCPUs := 2
+	if os.Getenv("GITHUB_ACTIONS") == "true" && runtime.GOOS == "darwin" && runtime.GOARCH == "amd64" {
+		sourceCPUs = 1
+	}
 	instance, err := fixture.vms.Create(fixture.ctx, vm.CreateRequest{
 		Name: fixture.prefix, Owner: fixture.prefix, Image: "ubuntu-24.04", VMType: vmType,
-		CPUs: 2, MemoryMiB: 1536, DiskGiB: 12, Start: true,
+		CPUs: sourceCPUs, MemoryMiB: 1536, DiskGiB: 12, Start: true,
 	})
 	if err != nil {
 		t.Fatal(err)

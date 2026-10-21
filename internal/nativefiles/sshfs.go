@@ -88,7 +88,11 @@ func (m *Manager) mountSSHFSLocked(ctx context.Context, live *liveAttachment, wr
 			if sshfsUnmountSignal(hostErr) {
 				hostErr = nil
 			}
-			return errors.Join(completed.streams, completed.remote, hostErr)
+			streamErr := completed.streams
+			if sshfsClosedPipeErrors(streamErr) {
+				streamErr = nil
+			}
+			return errors.Join(streamErr, completed.remote, hostErr)
 		case <-ctx.Done():
 			cancel()
 			return fmt.Errorf("wait for owned native SSHFS/SFTP cleanup: %w", ctx.Err())
@@ -107,4 +111,22 @@ func sshfsUnmountSignal(err error) bool {
 	}
 	status, ok := exited.Sys().(syscall.WaitStatus)
 	return ok && status.Signaled() && status.Signal() == syscall.SIGTERM
+}
+
+func sshfsClosedPipeErrors(err error) bool {
+	if err == nil {
+		return true
+	}
+	if joined, ok := err.(interface{ Unwrap() []error }); ok {
+		for _, child := range joined.Unwrap() {
+			if !sshfsClosedPipeErrors(child) {
+				return false
+			}
+		}
+		return true
+	}
+	if wrapped := errors.Unwrap(err); wrapped != nil {
+		return sshfsClosedPipeErrors(wrapped)
+	}
+	return errors.Is(err, os.ErrClosed) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, syscall.EPIPE)
 }

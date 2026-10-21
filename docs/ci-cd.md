@@ -56,6 +56,9 @@ QEMU children. Rootful jobs explicitly forward the CI identity, temporary direct
 architecture and toolchain environment across elevation, including Ubuntu 26's
 sudo-rs. Windows checksum-verifies the explicitly selected WinFsp driver; macOS
 uses its built-in WebDAV driver without macFUSE.
+Disposable CI destinations start the normal container inventory and borrow its
+healthy runtime connection, matching daemon behavior instead of opening a new
+containerd SSH channel for each file or migration operation.
 
 The production migration/native APIs operate on uniquely labelled fixture
 images, volumes, networks and stopped/running containers. A separate
@@ -179,6 +182,10 @@ from spending its boot budget on unrelated desktop/package-search metadata or
 restart suggestions for a disposable guest.
 macOS data jobs lower the fixture process priority, inherited by both QEMU
 guests, so software emulation does not starve the hosted runner's heartbeat.
+Intel macOS data jobs allocate one vCPU per fixture VM, reserving host CPU for
+the runner and native filesystem processes. Windows ARM64 explicitly selects
+and verifies the native Windows OpenSSH client rather than Git's emulated x64
+client; both the guest handshake and the runtime tunnel use that executable.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,

@@ -4,11 +4,36 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
 	"os/exec"
 	"runtime"
+	"syscall"
 	"testing"
 	"time"
 )
+
+func TestSSHFSUnmountDoesNotHideOtherStreamErrors(t *testing.T) {
+	unexpected := errors.New("synthetic transfer failure")
+	for _, scenario := range []struct {
+		err    error
+		normal bool
+	}{
+		{nil, true},
+		{os.ErrClosed, true},
+		{io.ErrClosedPipe, true},
+		{&os.PathError{Op: "write", Path: "|1", Err: syscall.EPIPE}, true},
+		{errors.Join(os.ErrClosed, syscall.EPIPE), true},
+		{io.ErrUnexpectedEOF, false},
+		{unexpected, false},
+		{errors.Join(os.ErrClosed, unexpected), false},
+		{fmt.Errorf("wrapped: %w", errors.Join(syscall.EPIPE, unexpected)), false},
+	} {
+		if got := sshfsClosedPipeErrors(scenario.err); got != scenario.normal {
+			t.Errorf("unmount stream error classification = %v, want %v: %v", got, scenario.normal, scenario.err)
+		}
+	}
+}
 
 func TestSSHFSUnmountSignalIsNotAGeneralExitFallback(t *testing.T) {
 	if runtime.GOOS == "windows" {
