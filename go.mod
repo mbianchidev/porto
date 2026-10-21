@@ -1,6 +1,6 @@
 module github.com/mbianchidev/porto
 
-go 1.26.10
+go 1.27.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.4

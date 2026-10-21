@@ -1,0 +1,36 @@
+name: Cache desktop build downloads
+description: Cache verified runtime inputs and Electron downloads, never packaged apps or VM state.
+inputs:
+  target:
+    description: Runtime target or desktop test workload.
+    required: true
+runs:
+  using: composite
+  steps:
+    - name: Locate desktop download caches
+      id: paths
+      shell: bash
+      run: |
+        echo "PORTO_DOWNLOAD_CACHE=$RUNNER_TEMP/porto-download-cache" >> "$GITHUB_ENV"
+        node <<'NODE' >> "$GITHUB_OUTPUT"
+        const os = require('node:os')
+        const path = require('node:path')
+        const base = process.platform === 'darwin'
+          ? path.join(os.homedir(), 'Library', 'Caches')
+          : process.platform === 'win32'
+            ? process.env.LOCALAPPDATA
+            : path.join(os.homedir(), '.cache')
+        if (!base) throw new Error('Unable to locate desktop download caches')
+        const suffix = process.platform === 'win32' ? ['Cache'] : []
+        console.log(`electron=${path.join(base, 'electron', ...suffix)}`)
+        console.log(`builder=${path.join(base, 'electron-builder', ...suffix)}`)
+        NODE
+
+    - name: Cache verified runtime and Electron downloads
+      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      with:
+        path: |
+          ${{ runner.temp }}/porto-download-cache
+          ${{ steps.paths.outputs.electron }}
+          ${{ steps.paths.outputs.builder }}
+        key: porto-desktop-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ hashFiles('ui/electron/package-lock.json', 'scripts/bundle-desktop-runtime.sh', 'scripts/download-file.sh', 'scripts/test-docker-clients.sh') }}

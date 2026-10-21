@@ -41,7 +41,7 @@ destination="$(cd "$destination" && pwd -P)"
 download() {
   local url="$1"
   local output="$2"
-  bash "$script_directory/download-file.sh" "$url" "$output"
+  bash "$script_directory/download-file.sh" "$url" "$output" "${3:-}"
 }
 
 verify() {
@@ -64,14 +64,14 @@ fi
 
 kubectl_asset="kubectl${binary_suffix}"
 kubectl_url="https://dl.k8s.io/release/${kubectl_version}/bin/${goos}/${goarch}/${kubectl_asset}"
-download "$kubectl_url" "$destination/bin/$kubectl_asset"
 download "${kubectl_url}.sha256" "$temporary/kubectl.sha256"
+download "$kubectl_url" "$destination/bin/$kubectl_asset" "$(cat "$temporary/kubectl.sha256")"
 verify "$(cat "$temporary/kubectl.sha256")" "$destination/bin/$kubectl_asset"
 
 docker_source_asset="docker-cli-v${docker_version}.tar.gz"
 download \
   "https://github.com/docker/cli/archive/refs/tags/v${docker_version}.tar.gz" \
-  "$temporary/$docker_source_asset"
+  "$temporary/$docker_source_asset" "$docker_source_checksum"
 verify "$docker_source_checksum" "$temporary/$docker_source_asset"
 tar -xzf "$temporary/$docker_source_asset" -C "$temporary"
 docker_source_directory="$temporary/cli-${docker_version}"
@@ -130,10 +130,10 @@ if [ "$docker_bundled" = "true" ]; then
   buildx_asset="buildx-${buildx_version}.${goos}-${goarch}${binary_suffix}"
   download \
     "https://github.com/docker/compose/releases/download/${compose_version}/${compose_asset}" \
-    "$temporary/$compose_asset"
+    "$temporary/$compose_asset" "$compose_checksum"
   download \
     "https://github.com/docker/buildx/releases/download/${buildx_version}/${buildx_asset}" \
-    "$temporary/$buildx_asset"
+    "$temporary/$buildx_asset" "$buildx_checksum"
   verify "$compose_checksum" "$temporary/$compose_asset"
   verify "$buildx_checksum" "$temporary/$buildx_asset"
   mv "$temporary/$compose_asset" "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
@@ -154,7 +154,7 @@ if [ "$goos" = "windows" ]; then
   dive_extension="zip"
 fi
 dive_asset="dive_${dive_version#v}_${goos}_${goarch}.${dive_extension}"
-download "https://github.com/wagoodman/dive/releases/download/${dive_version}/${dive_asset}" "$temporary/$dive_asset"
+download "https://github.com/wagoodman/dive/releases/download/${dive_version}/${dive_asset}" "$temporary/$dive_asset" "$dive_checksum"
 verify "$dive_checksum" "$temporary/$dive_asset"
 mkdir -p "$temporary/dive"
 if [ "$dive_extension" = "zip" ]; then
@@ -169,8 +169,8 @@ kind_bundled=false
 if [ "$goos/$goarch" != "windows/arm64" ]; then
   kind_asset="kind-${goos}-${goarch}"
   kind_url="https://github.com/kubernetes-sigs/kind/releases/download/${kind_version}/${kind_asset}"
-  download "$kind_url" "$temporary/$kind_asset"
   download "${kind_url}.sha256sum" "$temporary/kind.sha256sum"
+  download "$kind_url" "$temporary/$kind_asset" "$(manifest_checksum "$temporary/kind.sha256sum" "$kind_asset")"
   verify "$(manifest_checksum "$temporary/kind.sha256sum" "$kind_asset")" "$temporary/$kind_asset"
   mv "$temporary/$kind_asset" "$destination/bin/kind${binary_suffix}"
   kind_bundled=true
@@ -183,7 +183,8 @@ case "$goos" in
 esac
 k9s_asset="k9s_${k9s_os}_${goarch}.${k9s_extension}"
 download "https://github.com/derailed/k9s/releases/download/${k9s_version}/checksums.sha256" "$temporary/k9s-checksums.txt"
-download "https://github.com/derailed/k9s/releases/download/${k9s_version}/${k9s_asset}" "$temporary/$k9s_asset"
+download "https://github.com/derailed/k9s/releases/download/${k9s_version}/${k9s_asset}" "$temporary/$k9s_asset" \
+  "$(manifest_checksum "$temporary/k9s-checksums.txt" "$k9s_asset")"
 verify "$(manifest_checksum "$temporary/k9s-checksums.txt" "$k9s_asset")" "$temporary/$k9s_asset"
 mkdir -p "$temporary/k9s"
 if [ "$k9s_extension" = "zip" ]; then
@@ -212,7 +213,8 @@ case "$goos" in
 esac
 lima_asset="lima-${lima_version#v}-${lima_os}-${lima_arch}.${lima_extension}"
 download "https://github.com/lima-vm/lima/releases/download/${lima_version}/SHA256SUMS" "$temporary/lima-checksums.txt"
-download "https://github.com/lima-vm/lima/releases/download/${lima_version}/${lima_asset}" "$temporary/$lima_asset"
+download "https://github.com/lima-vm/lima/releases/download/${lima_version}/${lima_asset}" "$temporary/$lima_asset" \
+  "$(manifest_checksum "$temporary/lima-checksums.txt" "$lima_asset")"
 verify "$(manifest_checksum "$temporary/lima-checksums.txt" "$lima_asset")" "$temporary/$lima_asset"
 if [ "$lima_extension" = "zip" ]; then
   unzip -q "$temporary/$lima_asset" -d "$destination/lima"
@@ -223,7 +225,8 @@ fi
 lima_runtime_version="$lima_version"
 if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
   lima_runtime_version="v2.2.0+porto.6"
-  download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz"
+  download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz" \
+    "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
   verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
   # The release archive supplies templates; source-only aliases are not Go
   # build inputs and cannot be extracted reliably by Windows tar.
@@ -279,7 +282,7 @@ if [ "$goos" = "windows" ]; then
       qemu_system="qemu-system-aarch64.exe"
       ;;
   esac
-  download "$qemu_url" "$temporary/$qemu_asset"
+  download "$qemu_url" "$temporary/$qemu_asset" "$qemu_checksum"
   verify "$qemu_checksum" "$temporary/$qemu_asset"
 
   if ! seven_zip="$(
