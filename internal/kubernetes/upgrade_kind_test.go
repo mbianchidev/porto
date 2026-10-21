@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -183,7 +184,10 @@ func TestKindUpgradePreservesVolumesImagesAndApplications(t *testing.T) {
 		t.Fatal("original kind data was deleted")
 	}
 	info, err := os.Stat(filepath.Join(result.BackupPath, "recovery.json"))
-	if err != nil || info.Mode().Perm() != 0o600 {
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && info.Mode().Perm() != 0o600 {
 		t.Fatalf("private backup permissions: %v, %v", info, err)
 	}
 }
