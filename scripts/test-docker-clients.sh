@@ -222,7 +222,7 @@ else
       *) echo "Cannot determine macOS hardware virtualization support." >&2; exit 1 ;;
     esac
     if [ "$suite/$goarch" = data/amd64 ]; then
-      export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=single,tb-size=128 -icount shift=3,sleep=off -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb"
+      export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=single,tb-size=128 -icount shift=auto,sleep=on -cpu max,-avx512vl,-pdpe1gb"
       export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
       echo "::notice::Intel macOS data fixtures explicitly use bounded QEMU TCG; a hardware capability bit is not support for nested HVF on hosted runners."
     fi

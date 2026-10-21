@@ -217,18 +217,10 @@ Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
 and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
 They explicitly select single-thread TCG with instruction-counted virtual
 timers, a supported emulated CPU and a 128 MiB translation cache per VM. The
-guest still has two vCPUs. A fixed 8 ns-per-instruction clock with `sleep=off`
-advances directly to an idle timer instead of waiting on host time; adaptive
-wall-clock synchronization previously exhausted the unchanged boot budget.
-QEMU explicitly disallows combining `sleep=off` with `shift=auto`, so these
-fixtures use `shift=3`. They also retain Lima's normal TCG S3/S4-disabled
-settings, which its host HVF capability detection would otherwise omit when
-the CI override forces TCG.
-This avoids relying on host scheduling for the early
+guest still has two vCPUs. This avoids relying on host scheduling for the early
 I/O-APIC/PIT timer handshake, which otherwise intermittently panics the guest
 before SSH starts; it is not a reason to increase the boot deadline. See
-[QEMU's virtual-clock design](https://www.qemu.org/docs/master/devel/tcg-icount.html)
-and [instruction-counter options](https://www.qemu.org/docs/master/system/invocation.html).
+[QEMU's virtual-clock design](https://www.qemu.org/docs/master/devel/tcg-icount.html).
 A reported `kern.hv_support=1` does not establish supported nested
 HVF: GitHub does not support nested virtualization on macOS runner images
 ([actions/runner-images#13277](https://github.com/actions/runner-images/issues/13277)).

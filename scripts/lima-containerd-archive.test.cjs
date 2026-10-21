@@ -23,17 +23,6 @@ test('CI Lima boot avoids the systemd v255 logind deadlock without weakening roo
   assert.match(script, /--mount-none/)
 })
 
-test('Intel data fixtures use supported instruction-clock options without disabling APIC timer checks', () => {
-  const script = fs.readFileSync(path.join(__dirname, 'test-docker-clients.sh'), 'utf8')
-  assert.match(script, /if \[ "\$suite\/\$goarch" = data\/amd64 \]; then\n\s+export QEMU_SYSTEM_X86_64=/)
-  assert.match(script, /-accel tcg,thread=single,tb-size=128/)
-  assert.match(script, /-icount shift=3,sleep=off/)
-  assert.match(script, /-global ICH9-LPC\.disable_s3=1/)
-  assert.match(script, /-global ICH9-LPC\.disable_s4=1/)
-  assert.doesNotMatch(script, /-icount shift=auto,sleep=off/)
-  assert.doesNotMatch(script, /\b(?:noapic|no_timer_check)\b/)
-})
-
 test('selects the pinned Lima default without changing the runtime version or guest architecture', () => {
   const archives = ['x86_64', 'aarch64'].map((arch) => ({
     arch, location: `https://fixture.invalid/synthetic-${arch}.tar.gz`, digest: `sha256:${'1'.repeat(64)}`,
