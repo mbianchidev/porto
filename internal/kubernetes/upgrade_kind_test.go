@@ -1,6 +1,7 @@
 package kubernetes
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -16,12 +17,16 @@ import (
 
 type kindUpgradeRunner struct {
 	*fakeRunner
-	archive []byte
+	archive     []byte
+	exportError error
 }
 
 func (r *kindUpgradeRunner) RunStreaming(ctx context.Context, command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 	if _, err := r.Run(ctx, command); err != nil {
 		return nil, err
+	}
+	if r.exportError != nil && strings.Contains(strings.Join(command.Args, " "), "images export ") {
+		return nil, r.exportError
 	}
 	return nil, emit(runtimes.OutputChunk{Stream: "stdout", Data: r.archive})
 }
@@ -45,7 +50,17 @@ func kindUpgradeFixture(t *testing.T, failRestore bool) (*ClusterProvisioner, *k
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		args := strings.Join(command.Args, " ")
 		switch {
+		case command.Name == "docker" && len(command.Stdin) > 0:
+			return command.Stdin, nil
+		case command.Name == "docker" && strings.HasPrefix(args, "inspect --format"):
+			node := command.Args[len(command.Args)-1]
+			return []byte(fmt.Sprintf(`{"image":"sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","mounts":[{"type":"volume","name":%q,"destination":"/var"}]}`, node+"-var")), nil
+		case command.Name == "docker" && strings.HasPrefix(args, "create "):
+			return []byte("dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd\n"), nil
 		case command.Name == "kind" && strings.HasPrefix(args, "create cluster"):
+			if _, err := os.Stat(p.clusterKubeconfigPath("dev")); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("replacement creation must not merge the old cluster's credentials: %v", err)
+			}
 			for index, arg := range command.Args {
 				if arg == "--name" {
 					replacement = command.Args[index+1]
@@ -72,8 +87,10 @@ func kindUpgradeFixture(t *testing.T, failRestore bool) (*ClusterProvisioner, *k
 			return []byte(`{"items":[{"apiVersion":"v1","kind":"PersistentVolumeClaim","metadata":{"name":"data","namespace":"fixture","uid":"old-pvc"},"spec":{"accessModes":["ReadWriteOnce"],"storageClassName":"standard","volumeName":"fixture-pv","resources":{"requests":{"storage":"1Gi"}}}}]}`), nil
 		case strings.Contains(args, "get deployments.apps "):
 			return []byte(`{"items":[{"apiVersion":"apps/v1","kind":"Deployment","metadata":{"name":"app","namespace":"fixture","uid":"old-app","resourceVersion":"42"},"spec":{"replicas":1,"selector":{"matchLabels":{"app":"fixture"}},"template":{"metadata":{"labels":{"app":"fixture"}},"spec":{"containers":[{"name":"app","image":"fixture.invalid/app:v1","volumeMounts":[{"name":"data","mountPath":"/data"}]}],"volumes":[{"name":"data","persistentVolumeClaim":{"claimName":"data"}}]}}}}]}`), nil
-		case strings.Contains(args, "images ls -q"):
-			return []byte("fixture.invalid/app:v1\n"), nil
+		case strings.Contains(args, "images ls"):
+			return []byte("REF TYPE DIGEST SIZE PLATFORMS LABELS\nfixture.invalid/app:v1 application/vnd.oci.image.index.v1+json sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 1MB linux/arm64 -\n"), nil
+		case strings.Contains(args, "images export --help"), strings.Contains(args, "images import --help"):
+			return []byte("--local --platform\n"), nil
 		case strings.Contains(args, "uname -m"):
 			return []byte("aarch64\n"), nil
 		case strings.Contains(args, "apply --server-side --field-manager=porto-upgrade"):
@@ -89,6 +106,51 @@ func kindUpgradeFixture(t *testing.T, failRestore bool) (*ClusterProvisioner, *k
 		return nil, nil
 	}
 	return p, runner, &restored
+}
+
+func TestKindUpgradeRepullsDiscardedImagesOnlyAtOriginalDigest(t *testing.T) {
+	p, runner, restored := kindUpgradeFixture(t, false)
+	runner.exportError = errors.New("ctr: failed to get reader: content digest sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: not found")
+	result, err := p.UpgradeCluster(context.Background(), "dev", UpgradeRequest{Version: "v1.36.1", Confirm: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(result.Message, "recorded immutable digests") {
+		t.Fatalf("image restoration strategy was not surfaced: %+v", result)
+	}
+	var manifest map[string]any
+	if err := json.Unmarshal((*restored)[2], &manifest); err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(manifest)
+	if err != nil || !strings.Contains(string(data), "fixture.invalid/app@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") {
+		t.Fatalf("restored application did not retain exact image identity: %s, %v", data, err)
+	}
+}
+
+func TestKindUpgradeNeverPolicyBlocksMissingImageContentBeforeShutdown(t *testing.T) {
+	p, runner, _ := kindUpgradeFixture(t, false)
+	original := runner.handler
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		output, err := original(command)
+		if strings.Contains(strings.Join(command.Args, " "), "get deployments.apps ") {
+			output = bytes.ReplaceAll(output, []byte(`"image":"fixture.invalid/app:v1"`), []byte(`"image":"fixture.invalid/app:v1","imagePullPolicy":"Never"`))
+		}
+		return output, err
+	}
+	runner.exportError = errors.New("ctr: failed to get reader: content digest sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb: not found")
+	if _, err := p.UpgradeCluster(context.Background(), "dev", UpgradeRequest{Version: "v1.36.1", Confirm: true}); err == nil {
+		t.Fatal("Never policy must not silently become an online pull")
+	}
+	for _, command := range runner.commands {
+		if command.Name == "docker" && len(command.Args) > 0 && command.Args[0] == "stop" {
+			t.Fatal("original cluster was stopped despite unavailable Never-policy image content")
+		}
+	}
+	spec, err := p.readClusterMetadata("dev")
+	if err != nil || spec.Phase != "" || spec.Version != "v1.35.2" {
+		t.Fatalf("preflight failure changed the mutable source state: %+v, %v", spec, err)
+	}
 }
 
 func TestKindUpgradePreservesVolumesImagesAndApplications(t *testing.T) {
@@ -112,7 +174,7 @@ func TestKindUpgradePreservesVolumesImagesAndApplications(t *testing.T) {
 	for _, command := range runner.commands {
 		commands += command.Name + " " + strings.Join(command.Args, " ") + "\n"
 	}
-	for _, expected := range []string{"stop porto-dev-worker", "images export --platform linux/arm64", "load image-archive", "cp -a - porto-" + current.RuntimeName + "-worker:/var/local-path-provisioner", "rollout status deployment/app"} {
+	for _, expected := range []string{"stop porto-dev-worker", "images export --local --skip-manifest-json --platform linux/arm64", "images import --local --platform linux/arm64", "source=porto-dev-worker-var,target=/porto-volume,readonly", "source=porto-" + current.RuntimeName + "-worker-var,target=/porto-volume", "rollout status deployment/app"} {
 		if !strings.Contains(commands, expected) {
 			t.Fatalf("missing %q in commands:\n%s", expected, commands)
 		}
@@ -155,6 +217,9 @@ func TestKindUpgradeFailureCanRecoverOriginalCluster(t *testing.T) {
 }
 
 func TestKindUpgradeRejectsUnsupportedVolumeAndCleansIdentities(t *testing.T) {
+	if !skipUpgradeResource("csinodes.storage.k8s.io") || !skipUpgradeResource("resourceslices.resource.k8s.io") {
+		t.Fatal("replacement kubelets and device controllers must regenerate their own node identities")
+	}
 	var volume map[string]any
 	if err := json.Unmarshal([]byte(`{"kind":"PersistentVolume","metadata":{"name":"fixture"},"spec":{"csi":{"driver":"fixture.invalid"}}}`), &volume); err != nil {
 		t.Fatal(err)
@@ -175,6 +240,37 @@ func TestKindUpgradeRejectsUnsupportedVolumeAndCleansIdentities(t *testing.T) {
 	cleanUpgradeObject(app)
 	if app["status"] != nil || app["portoUpgradeOwners"] == nil {
 		t.Fatalf("cleaned object = %+v", app)
+	}
+}
+
+func TestKindUpgradeKeepsAddonWebhookCertificatesWithTheirController(t *testing.T) {
+	var webhook map[string]any
+	if err := json.Unmarshal([]byte(`{"apiVersion":"admissionregistration.k8s.io/v1","kind":"MutatingWebhookConfiguration","metadata":{"name":"fixture-webhook"},"webhooks":[{"name":"fixture.example","clientConfig":{"service":{"namespace":"envoy-gateway-system","name":"envoy-gateway"},"caBundle":"synthetic-old-ca"}}]}`), &webhook); err != nil {
+		t.Fatal(err)
+	}
+	if keepUpgradeObject(webhook) {
+		t.Fatal("replacement addon must own its freshly generated webhook CA")
+	}
+	webhook["webhooks"].([]any)[0].(map[string]any)["clientConfig"].(map[string]any)["service"].(map[string]any)["namespace"] = "fixture"
+	if !keepUpgradeObject(webhook) {
+		t.Fatal("application webhook outside system namespaces was excluded")
+	}
+}
+
+func TestKindUpgradeRefreshesServiceAccountTokenIdentity(t *testing.T) {
+	var secret map[string]any
+	if err := json.Unmarshal([]byte(`{"apiVersion":"v1","kind":"Secret","type":"kubernetes.io/service-account-token","metadata":{"name":"fixture-token","namespace":"fixture","annotations":{"kubernetes.io/service-account.name":"fixture","kubernetes.io/service-account.uid":"old-account"}},"data":{"token":"synthetic-old-token","ca.crt":"synthetic-old-ca","namespace":"Zml4dHVyZQ=="}}`), &secret); err != nil {
+		t.Fatal(err)
+	}
+	if !keepUpgradeObject(secret) {
+		t.Fatal("application token Secret identity must be preserved for existing volume/env references")
+	}
+	cleanUpgradeObject(secret)
+	data := secret["data"].(map[string]any)
+	annotations := secret["metadata"].(map[string]any)["annotations"].(map[string]any)
+	if data["token"] != nil || data["ca.crt"] != nil || annotations["kubernetes.io/service-account.uid"] != nil ||
+		annotations["kubernetes.io/service-account.name"] != "fixture" {
+		t.Fatalf("token was not prepared for the replacement cluster's signer: %+v", secret)
 	}
 }
 

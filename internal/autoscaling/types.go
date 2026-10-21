@@ -20,6 +20,8 @@ const (
 	managedName      = "porto-local"
 )
 
+var kedaDeploymentNames = [...]string{"keda-operator", "keda-metrics-apiserver", "keda-admission"}
+
 // Operation must use the same exclusion gate as upgrade, stop, rename and delete.
 // Pause must be called BEFORE acquiring that gate for those operations.
 type Operation func(context.Context, string, string) (release func(), err error)

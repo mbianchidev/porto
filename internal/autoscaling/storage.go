@@ -3,11 +3,13 @@ package autoscaling
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/util/retry"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
@@ -67,36 +69,40 @@ func (p *localProvider) protectStorage(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 	for _, record := range records {
-		var node corev1.Node
-		if err := p.client.Get(ctx, types.NamespacedName{Name: record.NodeName}, &node); err != nil {
-			if apierrors.IsNotFound(err) {
-				continue
+		err := retry.RetryOnConflict(retry.DefaultBackoff, func() error {
+			var node corev1.Node
+			if err := p.client.Get(ctx, types.NamespacedName{Name: record.NodeName}, &node); err != nil {
+				return client.IgnoreNotFound(err)
 			}
-			return err
-		}
-		if err := verifyNode(&node, record, false); err != nil {
-			return err
-		}
-		if node.Spec.ProviderID != record.ProviderID {
-			continue // The real kubelet has registered; Create is still binding it.
-		}
-		protected, _, err := storageProtected(ctx, p.client, node.Name)
-		if err != nil {
-			return err
-		}
-		stored := node.DeepCopy()
-		value := "false"
-		if protected {
-			value = "true"
-		}
-		if node.Annotations[v1.DoNotDisruptAnnotationKey] == value {
+			if err := verifyNode(&node, record, false); err != nil {
+				return err
+			}
+			if node.Spec.ProviderID != record.ProviderID {
+				return nil
+			}
+			protected, _, err := storageProtected(ctx, p.client, node.Name)
+			if err != nil {
+				return err
+			}
+			stored := node.DeepCopy()
+			value := "false"
+			if protected {
+				value = "true"
+			}
+			if node.Annotations[v1.DoNotDisruptAnnotationKey] == value {
+				return nil
+			}
+			if node.Annotations == nil {
+				node.Annotations = map[string]string{}
+			}
+			node.Annotations[v1.DoNotDisruptAnnotationKey] = value
+			return p.client.Patch(ctx, &node, client.MergeFromWithOptions(stored, client.MergeFromWithOptimisticLock{}))
+		})
+		if apierrors.IsConflict(err) {
+			slog.Warn("Storage protection metadata is changing; retrying on the next pass", "cluster", p.cluster, "node", record.NodeName, "error", err)
 			continue
 		}
-		if node.Annotations == nil {
-			node.Annotations = map[string]string{}
-		}
-		node.Annotations[v1.DoNotDisruptAnnotationKey] = value
-		if err := p.client.Patch(ctx, &node, client.MergeFromWithOptions(stored, client.MergeFromWithOptimisticLock{})); err != nil {
+		if err != nil {
 			return err
 		}
 	}

@@ -144,7 +144,7 @@ func kedaReady(ctx context.Context, c client.Client) error {
 			return fmt.Errorf("KEDA CRD readiness %s: %w", name, err)
 		}
 	}
-	for _, name := range []string{"keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"} {
+	for _, name := range kedaDeploymentNames {
 		if err := wait.PollUntilContextTimeout(ctx, time.Second, 3*time.Minute, true, func(ctx context.Context) (bool, error) {
 			var deployment appsv1.Deployment
 			if err := c.Get(ctx, types.NamespacedName{Namespace: "keda", Name: name}, &deployment); err != nil {

@@ -40,6 +40,8 @@ Karpenter scheduling and lifecycle controllers with a real Porto CloudProvider.
 Its `PortoNodeClass` maps a machine shape to a managed Lima worker. It does not
 expose a privileged host API inside the cluster and does not use KWOK or synthetic
 Node objects. KEDA runs in the cluster's `keda` namespace.
+Fresh k3s clusters wait for their bundled storage class to register before addon
+discovery, avoiding a second local-path provisioner with conflicting shared RBAC.
 
 The daemon must remain running for new node provisioning and consolidation.
 KEDA continues operating in the cluster when the host node controller is paused.

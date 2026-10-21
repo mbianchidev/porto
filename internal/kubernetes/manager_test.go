@@ -2072,7 +2072,7 @@ func TestGatewayProgrammingTimeoutDoesNotFailClusterAddons(t *testing.T) {
 	}
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 
-	if err := provisioner.ensureClusterAddons(context.Background(), "/tmp/kubeconfig", "porto-dev"); err != nil {
+	if err := provisioner.ensureClusterAddons(context.Background(), "/tmp/kubeconfig", "porto-dev", "kind"); err != nil {
 		t.Fatalf("Gateway readiness delay failed cluster creation: %v", err)
 	}
 	runner.mu.Lock()

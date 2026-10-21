@@ -13,10 +13,13 @@ import (
 
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/client/fake"
+	"sigs.k8s.io/controller-runtime/pkg/client/interceptor"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 	"sigs.k8s.io/karpenter/pkg/cloudprovider"
 )
@@ -99,6 +102,9 @@ func testClaim(uid string) *v1.NodeClaim {
 			Labels: map[string]string{v1.NodePoolLabelKey: managedName, ownerLabel: "porto"}},
 		Spec: v1.NodeClaimSpec{
 			NodeClassRef: &v1.NodeClassReference{Group: NodeClassGroupVersion.Group, Kind: "PortoNodeClass", Name: managedName},
+			Requirements: []v1.NodeSelectorRequirementWithMinValues{{
+				Key: v1.NodeClassLabelKey(NodeClassGroupVersion.WithKind("PortoNodeClass").GroupKind()), Operator: corev1.NodeSelectorOpIn, Values: []string{managedName},
+			}},
 		},
 	}
 }
@@ -144,6 +150,37 @@ func testProvider(t *testing.T) (*localProvider, *mockProvisioner, client.Client
 	return provider, p, c, active
 }
 
+func TestStorageProtectionRetriesConcurrentNodeMetadata(t *testing.T) {
+	ctx := context.Background()
+	provider, _, c, _ := testProvider(t)
+	claim := testClaim("storage-conflict")
+	if _, err := provider.Create(ctx, claim); err != nil {
+		t.Fatal(err)
+	}
+	var patches atomic.Int32
+	provider.client = interceptor.NewClient(c.(client.WithWatch), interceptor.Funcs{
+		Patch: func(ctx context.Context, c client.WithWatch, object client.Object, patch client.Patch, options ...client.PatchOption) error {
+			if patches.Add(1) == 1 {
+				return apierrors.NewConflict(schema.GroupResource{Resource: "nodes"}, object.GetName(), errors.New("synthetic concurrent registration"))
+			}
+			return c.Patch(ctx, object, patch, options...)
+		},
+	})
+	if err := provider.protectStorage(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if patches.Load() != 2 {
+		t.Fatalf("metadata conflict was not retried: patches=%d", patches.Load())
+	}
+	var node corev1.Node
+	if err := c.Get(ctx, types.NamespacedName{Name: provider.records[string(claim.UID)].NodeName}, &node); err != nil {
+		t.Fatal(err)
+	}
+	if node.Annotations[v1.DoNotDisruptAnnotationKey] != "false" {
+		t.Fatal("an empty verified worker did not leave conservative launch protection after the conflict")
+	}
+}
+
 func TestProviderRealWorkerRetryRestartAndOwnership(t *testing.T) {
 	ctx := context.Background()
 	provider, p, c, active := testProvider(t)
@@ -152,7 +189,8 @@ func TestProviderRealWorkerRetryRestartAndOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Status.ProviderID != "porto:///stable/uid-one" || p.scaled != 1 || active.Load() != 0 {
+	expectedNode, _ := p.AutoscalingNodeName(ctx, "dev", claimGroup(string(claim.UID)))
+	if first.Status.ProviderID != "k3s://"+expectedNode || p.scaled != 1 || active.Load() != 0 {
 		t.Fatalf("unexpected worker: %#v, calls=%d, gate=%d", first.Status, p.scaled, active.Load())
 	}
 	var actual corev1.Node

@@ -173,7 +173,7 @@ func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName strin
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
-	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request))
+	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request), request.Provider)
 }
 
 func clusterContextName(request ClusterRequest) string {
@@ -442,7 +442,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
 		return Cluster{}, err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return Cluster{}, err
 	}
 	request.Phase = ""
@@ -722,7 +722,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
 		return Cluster{}, err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return Cluster{}, err
 	}
 	request.Phase = ""
@@ -1645,11 +1645,16 @@ func (p *ClusterProvisioner) Rename(ctx context.Context, clusterName, newName st
 	return nil
 }
 
-func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName string) error {
+func (p *ClusterProvisioner) ensureClusterAddons(ctx context.Context, kubeconfigPath, contextName, provider string) error {
 	if err := p.waitForClusterAPI(ctx, kubeconfigPath, contextName); err != nil {
 		return err
 	}
 	run := p.addonCommandRunner(ctx, kubeconfigPath, contextName)
+	if normalizeProvider(provider) == "k3s" {
+		if _, err := run("wait for bundled k3s persistent storage", nil, "wait", "--for=create", "storageclass/local-path", "--timeout=2m"); err != nil {
+			return err
+		}
+	}
 	if err := ensurePersistentStorage(run); err != nil {
 		return err
 	}
@@ -1942,7 +1947,7 @@ func (p *ClusterProvisioner) setRunning(
 		if err := p.ensureKindMetricsServer(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
 			log.Printf("kind cluster %s started without metrics-server: %v", clusterName, err)
 		}
-		if err := p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName); err != nil {
+		if err := p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), contextName, request.Provider); err != nil {
 			return err
 		}
 		return nil
@@ -1977,7 +1982,7 @@ func (p *ClusterProvisioner) setRunning(
 	if err := p.refreshVMKubeconfig(ctx, request, serverName); err != nil {
 		return err
 	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName); err != nil {
+	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
 		return err
 	}
 	return nil

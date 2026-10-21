@@ -55,7 +55,7 @@ func newProvider(p Provisioner, operation Operation, name, dir string, cfg NodeC
 	for uid, record := range provider.records {
 		baseNodeName := "porto-" + record.Runtime + "-" + record.Group + "-1"
 		if uid == "" || strings.ContainsAny(uid, "/\x00\r\n") || record.UID != uid ||
-			record.Group != claimGroup(uid) || record.ProviderID != providerID(record.Runtime, uid) ||
+			record.Group != claimGroup(uid) || (record.ProviderID != providerID(record.Runtime, uid) && record.ProviderID != "k3s://"+record.NodeName) ||
 			validateName(record.Runtime) != nil || groups[record.Group] ||
 			(record.NodeName != baseNodeName && record.NodeName != "lima-"+baseNodeName) ||
 			!record.Machine.Enabled || validateConfig(kubernetes.ClusterRequest{Provider: "k3s"}, Config{Nodes: record.Machine}) != nil {
@@ -175,6 +175,15 @@ func (p *localProvider) Create(ctx context.Context, claim *v1.NodeClaim) (*v1.No
 	}
 	if err := verifyNode(&node, record, false); err != nil {
 		return nil, err
+	}
+	if request.Provider == "k3s" && node.Spec.ProviderID == "k3s://"+record.NodeName && record.ProviderID != node.Spec.ProviderID {
+		previous := record
+		record.ProviderID = node.Spec.ProviderID
+		p.records[uid] = record
+		if err := writeJSON(p.statePath, p.records); err != nil {
+			p.records[uid] = previous
+			return nil, fmt.Errorf("persist verified native kubelet provider identity: %w", err)
+		}
 	}
 	stored := node.DeepCopy()
 	node.Spec.ProviderID = record.ProviderID
@@ -404,6 +413,7 @@ func instanceType(m kubernetes.MachineSpec) *cloudprovider.InstanceType {
 		Name: instanceName(m),
 		Requirements: scheduling.NewRequirements(
 			scheduling.NewRequirement(ownerLabel, corev1.NodeSelectorOpIn, "porto"),
+			scheduling.NewRequirement(v1.NodeClassLabelKey(NodeClassGroupVersion.WithKind("PortoNodeClass").GroupKind()), corev1.NodeSelectorOpIn, managedName),
 			scheduling.NewRequirement(corev1.LabelInstanceTypeStable, corev1.NodeSelectorOpIn, instanceName(m)),
 			scheduling.NewRequirement(corev1.LabelArchStable, corev1.NodeSelectorOpIn, runtime.GOARCH),
 			scheduling.NewRequirement(corev1.LabelOSStable, corev1.NodeSelectorOpIn, "linux"),

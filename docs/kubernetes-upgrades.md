@@ -49,8 +49,13 @@ replacement with a distinct runtime name and the same topology, leaving the
 original nodes stopped rather than deleting them.
 
 Before stopping the original cluster, Porto discovers application resources and
-checks storage support. It saves private application manifests and locally
-available application images. After stopping the original nodes, it streams
+checks storage support and intact Docker stdin forwarding. An older running
+daemon with a broken guest stdin bridge is rejected before replacement starts;
+restart with the updated Porto build first. It saves private application manifests
+and exportable application images. When kind has discarded an image's compressed
+cache layers, Porto records its immutable registry digest and restores that exact
+image using the workload's restored pull credentials instead of following a moving
+tag. After stopping the original nodes, it streams
 local persistent-volume data into checksummed archives. The original containers
 and their data remain available throughout replacement.
 
@@ -66,7 +71,9 @@ Replica counts and suspended CronJob configuration are preserved. Controller-own
 pods and ReplicaSets are recreated by their owners, not replayed as independent
 applications. Completed Jobs are not rerun. Services keep their names and desired
 ports but receive new cluster IPs; applications must use service DNS rather than
-hard-coded old cluster IPs.
+hard-coded old cluster IPs. Service-account token Secret names are preserved,
+but their old token/CA/UID are cleared so the new cluster's controller can issue
+valid replacement credentials.
 
 ### Storage and consistency boundaries
 
@@ -79,13 +86,22 @@ volume sources block the replacement during preflight. Migrate these to supporte
 local-path PVCs or use their storage provider's recovery procedure first.
 `emptyDir` remains ephemeral and is not carried into replacement pods.
 
-Each volume or image archive is limited to 2 GiB by Porto's Docker archive API.
+Each upgrade volume or image archive has a 2 GiB safety limit.
 A failed export leaves the original node data intact. Ensure sufficient free
 disk space for the original nodes, replacement nodes, and recovery archives.
-Images must already be available in the source nodes; missing images block
-preflight rather than leaving a restored application unable to start.
+Images must already be available in the source nodes; missing image identities
+block preflight. Re-pulling discarded layers requires the original registry to
+remain reachable with valid workload credentials. `imagePullPolicy: Never` is
+never changed implicitly: if such an image is not exportable, preload it with
+`porto kubernetes cluster image-import` before retrying. The source cluster is
+not stopped for that preflight failure.
 
 Copies are crash-consistent after node shutdown, not database-aware backups.
+Short-lived, network-disabled copy helpers mount the node's persistent Docker
+volume directly, read-only for backup, so a stopped node does not need to run
+an exec process. Helpers use the already cached node image, preserve ownership,
+permissions and extended metadata, and are removed by exact newly created
+container ID without deleting the attached persistent volume.
 Quiesce applications and take application-specific backups when transactional
 consistency is required. Persistent volumes do not preserve external systems,
 in-flight requests, or process memory.

@@ -11,6 +11,34 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
+func TestK3sBundledStorageDoesNotRaceBootstrap(t *testing.T) {
+	runner := newFakeRunner()
+	waited := false
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := strings.Join(command.Args, " ")
+		if strings.Contains(args, "wait --for=create storageclass/local-path") {
+			waited = true
+		}
+		if strings.Contains(args, "get storageclass") {
+			if !waited {
+				t.Fatal("storage discovery ran before bundled k3s storage could register")
+			}
+			return []byte(`{"items":[{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}]}`), nil
+		}
+		if strings.Contains(args, localPathManifestURL) {
+			t.Fatal("a second provisioner must not overwrite the bundled k3s provisioner's RBAC")
+		}
+		return nil, nil
+	}
+	p := NewClusterProvisioner(nil, runner, t.TempDir())
+	if err := p.ensureClusterAddons(context.Background(), "/synthetic/kubeconfig", "porto-k3s-fixture", "k3s"); err != nil {
+		t.Fatal(err)
+	}
+	if !waited {
+		t.Fatal("bundled storage readiness was not awaited")
+	}
+}
+
 func TestUpgradeVersionValidation(t *testing.T) {
 	for _, test := range []struct {
 		provider, current, target string

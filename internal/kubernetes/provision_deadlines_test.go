@@ -46,7 +46,7 @@ func TestClusterAddonsGiveStorageAndGatewayIndependentBudgets(t *testing.T) {
 		}
 		provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
 		started := time.Now()
-		if err := provisioner.ensureClusterAddons(context.Background(), "/mock/kubeconfig", "porto-test"); err != nil {
+		if err := provisioner.ensureClusterAddons(context.Background(), "/mock/kubeconfig", "porto-test", "kind"); err != nil {
 			t.Fatalf("healthy sequential addon installation was interrupted: %v", err)
 		}
 		if elapsed := time.Since(started); elapsed < 8*time.Minute {
@@ -110,7 +110,7 @@ func TestAddonFailurePreservesParentDeadlineAndProgress(t *testing.T) {
 		cause := fmt.Errorf("synthetic cluster deadline: %w", context.DeadlineExceeded)
 		ctx, cancel := context.WithTimeoutCause(context.Background(), time.Minute, cause)
 		defer cancel()
-		err := provisioner.ensureClusterAddons(ctx, "/mock/kubeconfig", "porto-test")
+		err := provisioner.ensureClusterAddons(ctx, "/mock/kubeconfig", "porto-test", "kind")
 		if !errors.Is(err, cause) || !strings.Contains(err.Error(), "synthetic setup progress") ||
 			!strings.Contains(err.Error(), "install Envoy Gateway") {
 			t.Fatalf("addon failure discarded its deadline or progress: %v", err)
@@ -125,7 +125,7 @@ func TestAddonCommandStillHasItsOwnDeadline(t *testing.T) {
 			delays:     map[string]time.Duration{envoyGatewayManifestURL: 7 * time.Minute},
 		}
 		provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-		err := provisioner.ensureClusterAddons(context.Background(), "/mock/kubeconfig", "porto-test")
+		err := provisioner.ensureClusterAddons(context.Background(), "/mock/kubeconfig", "porto-test", "kind")
 		if !errors.Is(err, context.DeadlineExceeded) ||
 			!strings.Contains(err.Error(), "install Envoy Gateway timed out after 6m0s") ||
 			!strings.Contains(err.Error(), "synthetic setup progress") {
@@ -171,7 +171,7 @@ func TestAddonCancellationAtGatewayReadinessIsNotSuccess(t *testing.T) {
 		return nil, nil
 	}
 	provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
-	if err := provisioner.ensureClusterAddons(ctx, "/mock/kubeconfig", "porto-test"); !errors.Is(err, cause) {
+	if err := provisioner.ensureClusterAddons(ctx, "/mock/kubeconfig", "porto-test", "kind"); !errors.Is(err, cause) {
 		t.Fatalf("canceled cluster setup was reported as successful: %v", err)
 	}
 }

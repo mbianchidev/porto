@@ -49,6 +49,32 @@ func testManager(t *testing.T, provider string) (*Manager, *mockProvisioner) {
 	return m, p
 }
 
+func TestKEDAReleaseDeploymentReadiness(t *testing.T) {
+	scheme, err := newScheme()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var objects []client.Object
+	for _, name := range []string{"scaledobjects.keda.sh", "scaledjobs.keda.sh", "triggerauthentications.keda.sh", "clustertriggerauthentications.keda.sh"} {
+		objects = append(objects, &apiextensionsv1.CustomResourceDefinition{
+			ObjectMeta: metav1.ObjectMeta{Name: name},
+			Status:     apiextensionsv1.CustomResourceDefinitionStatus{Conditions: []apiextensionsv1.CustomResourceDefinitionCondition{{Type: apiextensionsv1.Established, Status: apiextensionsv1.ConditionTrue}}},
+		})
+	}
+	one := int32(1)
+	for _, name := range []string{"keda-operator", "keda-metrics-apiserver", "keda-admission"} {
+		objects = append(objects, &appsv1.Deployment{
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "keda", Generation: 1, Labels: map[string]string{ownerLabel: "porto"}},
+			Spec:       appsv1.DeploymentSpec{Replicas: &one},
+			Status:     appsv1.DeploymentStatus{ObservedGeneration: 1, UpdatedReplicas: 1, AvailableReplicas: 1},
+		})
+	}
+	c := fake.NewClientBuilder().WithScheme(scheme).WithObjects(objects...).Build()
+	if err := kedaReady(context.Background(), c); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestInvalidConfigAndKindCapabilities(t *testing.T) {
 	ctx := context.Background()
 	for _, cfg := range []NodeConfig{

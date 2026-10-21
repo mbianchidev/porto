@@ -331,7 +331,7 @@ func TestLocalAutoscalingLive(t *testing.T) {
 		if claim.Status.ProviderID == "" || claim.Status.NodeName == "" {
 			return false, nil
 		}
-		if claim.Status.ProviderID != providerID(name, string(claim.UID)) || claim.Status.NodeName != expectedWorker {
+		if claim.Status.ProviderID != "k3s://"+expectedWorker || claim.Status.NodeName != expectedWorker {
 			return false, fmt.Errorf("unexpected real worker identity: %s / %s", claim.Status.ProviderID, claim.Status.NodeName)
 		}
 		if err := connection.client.Get(ctx, types.NamespacedName{Name: expectedWorker}, &worker); err != nil {

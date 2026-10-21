@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"path"
 	"path/filepath"
@@ -46,11 +47,16 @@ func (p *ClusterProvisioner) upgradeKind(ctx context.Context, spec *ClusterReque
 	if err != nil {
 		return UpgradeResult{}, fmt.Errorf("create private upgrade backup: %w", err)
 	}
+	started := false
+	defer func() {
+		if !started {
+			if err := os.RemoveAll(directory); err != nil {
+				log.Printf("remove unused kind upgrade staging backup %s: %v", directory, err)
+			}
+			spec.Upgrade.BackupPath = ""
+		}
+	}()
 	if err := writeKindUpgradeBackup(directory, backup); err != nil {
-		return UpgradeResult{}, err
-	}
-	spec.Upgrade.BackupPath = directory
-	if err := p.writeClusterMetadata(*spec); err != nil {
 		return UpgradeResult{}, err
 	}
 	releaseReplacement, err := p.reserveRuntimeName(clusterRuntimeName(backup.Replacement), spec.Name)
@@ -58,21 +64,46 @@ func (p *ClusterProvisioner) upgradeKind(ctx context.Context, spec *ClusterReque
 		return UpgradeResult{}, err
 	}
 	defer releaseReplacement()
+	pulledImages := 0
 	for index := range backup.Images {
 		image := &backup.Images[index]
 		image.File = fmt.Sprintf("images-%d.tar", index)
+		args := []string{"exec", image.Node, "ctr", "--namespace", "k8s.io", "images", "export"}
+		if image.LocalExport {
+			args = append(args, "--local")
+		}
+		args = append(args, "--skip-manifest-json", "--platform", image.Platform, "-")
+		args = append(args, image.References...)
 		image.SHA256, err = p.exportKindArchive(ctx, runtimes.Command{
 			Name: "docker",
-			Args: append([]string{"exec", image.Node, "ctr", "--namespace", "k8s.io", "images", "export", "--platform", image.Platform, "-"}, image.References...),
+			Args: args,
 			Env:  p.portoDockerEnv(),
 		}, filepath.Join(directory, image.File))
 		if err != nil {
-			return UpgradeResult{}, fmt.Errorf("save application images before replacement: %w", err)
+			message := err.Error()
+			missingContent := strings.Contains(message, "failed to get reader") && strings.Contains(message, "content digest sha256:") && strings.Contains(message, "not found")
+			if !missingContent || !image.AllowPull {
+				return UpgradeResult{}, fmt.Errorf("save application image %s before replacement (preload imagePullPolicy Never images with image-import if kind discarded their compressed layers): %w", image.References[0], err)
+			}
+			if err := os.Remove(filepath.Join(directory, image.File)); err != nil {
+				return UpgradeResult{}, err
+			}
+			image.Pull, image.File, image.SHA256 = true, "", ""
+			pulledImages++
+			log.Printf("kind upgrade %s: cached compressed layers for %s were discarded; restore will pull exact digest %s using restored workload credentials", spec.Name, image.References[0], image.PinnedReference)
+			for _, object := range backup.Objects {
+				rewriteUpgradeImageReferences(object["spec"], image.References[0], image.PinnedReference)
+			}
 		}
 		if err := writeKindUpgradeBackup(directory, backup); err != nil {
 			return UpgradeResult{}, err
 		}
 	}
+	spec.Upgrade.BackupPath = directory
+	if err := p.writeClusterMetadata(*spec); err != nil {
+		return UpgradeResult{}, err
+	}
+	started = true
 	if err := p.kindUpgradePower(ctx, backup.Original, false); err != nil {
 		return UpgradeResult{}, fmt.Errorf("stop original kind nodes; recovery backup is %s: %w", directory, err)
 	}
@@ -87,6 +118,9 @@ func (p *ClusterProvisioner) upgradeKind(ctx context.Context, spec *ClusterReque
 			return UpgradeResult{}, err
 		}
 	}
+	if err := os.Remove(p.clusterKubeconfigPath(spec.Name)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return UpgradeResult{}, fmt.Errorf("stage a fresh replacement kubeconfig: %w", err)
+	}
 	if _, err := p.createKind(ctx, backup.Replacement); err != nil {
 		return UpgradeResult{}, fmt.Errorf("create upgraded kind cluster; use upgrade-recover to restart the original cluster: %w", err)
 	}
@@ -97,19 +131,19 @@ func (p *ClusterProvisioner) upgradeKind(ctx context.Context, spec *ClusterReque
 	if err := p.writeClusterMetadata(replacement); err != nil {
 		return UpgradeResult{}, err
 	}
+	newNodes := kindNodeNames(replacement)
 	for _, image := range backup.Images {
+		if image.Pull {
+			continue
+		}
 		filename := filepath.Join(directory, image.File)
 		if err := verifyUpgradeArchive(filename, image.SHA256); err != nil {
 			return UpgradeResult{}, err
 		}
-		output, err := p.runner.Run(ctx, runtimes.Command{Name: "kind", Args: []string{
-			"load", "image-archive", filename, "--name", "porto-" + clusterRuntimeName(replacement),
-		}, Env: p.portoDockerEnv()})
-		if err != nil {
-			return UpgradeResult{}, runtimes.CommandError("restore application images", output, err)
+		if err := p.restoreKindImages(ctx, newNodes, filename, image); err != nil {
+			return UpgradeResult{}, err
 		}
 	}
-	newNodes := kindNodeNames(replacement)
 	oldNodes := kindNodeNames(backup.Original)
 	renames := make(map[string]string, len(oldNodes))
 	for index, node := range oldNodes {
@@ -167,9 +201,13 @@ func (p *ClusterProvisioner) upgradeKind(ctx context.Context, spec *ClusterReque
 		return UpgradeResult{}, err
 	}
 	*spec = replacement
+	message := "kind replacement is Ready. Persistent volumes reattached and applications restored. Original stopped nodes and a private recovery backup are retained."
+	if pulledImages > 0 {
+		message += fmt.Sprintf(" %d image(s) with discarded cache layers were restored at their recorded immutable digests.", pulledImages)
+	}
 	return UpgradeResult{
 		Version: target, BackupPath: directory,
-		Message: "kind replacement is Ready. Persistent volumes reattached and applications restored. Original stopped nodes and a private recovery backup are retained.",
+		Message: message,
 	}, nil
 }
 
@@ -183,6 +221,18 @@ func writeKindUpgradeBackup(directory string, backup kindUpgradeBackup) error {
 
 func (p *ClusterProvisioner) prepareKindUpgrade(ctx context.Context, spec ClusterRequest, target string) (kindUpgradeBackup, error) {
 	backup := kindUpgradeBackup{Original: spec, Replacement: spec}
+	probeContext, cancelProbe := provisioningContext(ctx, "verify kind Docker stdin", 30*time.Second)
+	probe := []byte("porto-upgrade-stdin-probe\n")
+	output, probeErr := p.runner.Run(probeContext, runtimes.Command{
+		Name: "docker", Args: []string{"exec", "-i", kindNodeNames(spec)[0], "cat"},
+		Env: p.portoDockerEnv(), Stdin: probe,
+	})
+	probeCause := context.Cause(probeContext)
+	cancelProbe()
+	if probeErr != nil || probeCause != nil || string(output) != string(probe) {
+		return backup, fmt.Errorf("Porto Docker stdin is unavailable; restart with an updated Porto daemon before kind upgrade: %w",
+			errors.Join(probeErr, probeCause, errors.New("kind configuration input was not returned intact")))
+	}
 	backup.Original.Phase, backup.Original.Error, backup.Original.Upgrade = "", "", nil
 	backup.Replacement.Version = target
 	backup.Replacement.Phase, backup.Replacement.Error = "", ""
@@ -203,7 +253,7 @@ func (p *ClusterProvisioner) prepareKindUpgrade(ctx context.Context, spec Cluste
 		return backup, err
 	}
 	run := p.addonCommandRunner(ctx, p.clusterKubeconfigPath(spec.Name), clusterContextName(spec))
-	output, err := run("discover restorable Kubernetes resources", nil, "api-resources", "--verbs=list,create", "-o", "name")
+	output, err = run("discover restorable Kubernetes resources", nil, "api-resources", "--verbs=list,create", "-o", "name")
 	if err != nil {
 		return backup, err
 	}
@@ -212,7 +262,7 @@ func (p *ClusterProvisioner) prepareKindUpgrade(ctx context.Context, spec Cluste
 		return backup, errors.New("Kubernetes API discovery returned no restorable resources")
 	}
 	sort.Strings(resources)
-	images := make(map[string]struct{})
+	images := make(map[string]bool)
 	for _, resource := range resources {
 		if skipUpgradeResource(resource) {
 			continue
@@ -242,6 +292,9 @@ func (p *ClusterProvisioner) prepareKindUpgrade(ctx context.Context, spec Cluste
 					if err != nil {
 						return backup, err
 					}
+					if _, err := p.kindPersistentVolumeMount(ctx, volume.Node, volume.Path); err != nil {
+						return backup, err
+					}
 					backup.Volumes = append(backup.Volumes, volume)
 				}
 				cleanUpgradeObject(object)
@@ -266,7 +319,7 @@ func skipUpgradeResource(resource string) bool {
 		"controllerrevisions", "componentstatuses", "bindings", "tokenreviews",
 		"subjectaccessreviews", "selfsubjectaccessreviews", "selfsubjectrulesreviews",
 		"localsubjectaccessreviews", "certificatesigningrequests", "csistoragecapacities",
-		"volumeattachments", "flowschemas", "prioritylevelconfigurations",
+		"csinodes", "resourceslices", "volumeattachments", "flowschemas", "prioritylevelconfigurations",
 		"nodeclaims", "nodepools", "portonodeclasses",
 	}, base)
 }
@@ -282,13 +335,23 @@ func keepUpgradeObject(object map[string]any) bool {
 	if upgradeSystemNamespace(namespace) || (object["kind"] == "Namespace" && upgradeSystemNamespace(name)) {
 		return false
 	}
+	if namespace == "" {
+		switch object["kind"] {
+		case "MutatingWebhookConfiguration", "ValidatingWebhookConfiguration", "APIService", "CustomResourceDefinition":
+			if upgradeSystemServiceReference(object) {
+				return false
+			}
+		}
+	}
 	if name == "kube-root-ca.crt" || (object["kind"] == "Service" && namespace == "default" && name == "kubernetes") {
 		return false
 	}
 	if namespace == "" && (object["kind"] == "ClusterRole" || object["kind"] == "ClusterRoleBinding") && strings.HasPrefix(name, "system:") {
 		return false
 	}
-	if object["kind"] == "Secret" && object["type"] == "kubernetes.io/service-account-token" {
+	labels, _ := metadata["labels"].(map[string]any)
+	if labels["kubernetes.io/bootstrapping"] == "rbac-defaults" ||
+		(namespace == "" && (object["kind"] == "ClusterRole" || object["kind"] == "ClusterRoleBinding") && strings.HasPrefix(name, "kubeadm:")) {
 		return false
 	}
 	owners, _ := metadata["ownerReferences"].([]any)
@@ -308,6 +371,31 @@ func keepUpgradeObject(object map[string]any) bool {
 	return true
 }
 
+func upgradeSystemServiceReference(value any) bool {
+	switch value := value.(type) {
+	case map[string]any:
+		for key, child := range value {
+			if key == "service" {
+				service, _ := child.(map[string]any)
+				namespace, _ := service["namespace"].(string)
+				if upgradeSystemNamespace(namespace) {
+					return true
+				}
+			}
+			if upgradeSystemServiceReference(child) {
+				return true
+			}
+		}
+	case []any:
+		for _, child := range value {
+			if upgradeSystemServiceReference(child) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func cleanUpgradeObject(object map[string]any) {
 	delete(object, "status")
 	metadata, _ := object["metadata"].(map[string]any)
@@ -320,6 +408,12 @@ func cleanUpgradeObject(object map[string]any) {
 	annotations, _ := metadata["annotations"].(map[string]any)
 	for _, key := range []string{"kubectl.kubernetes.io/last-applied-configuration", "pv.kubernetes.io/bind-completed", "pv.kubernetes.io/bound-by-controller", "volume.kubernetes.io/selected-node"} {
 		delete(annotations, key)
+	}
+	if object["kind"] == "Secret" && object["type"] == "kubernetes.io/service-account-token" {
+		data, _ := object["data"].(map[string]any)
+		delete(data, "token")
+		delete(data, "ca.crt")
+		delete(annotations, "kubernetes.io/service-account.uid")
 	}
 	spec, _ := object["spec"].(map[string]any)
 	if object["kind"] == "Service" {
@@ -419,7 +513,21 @@ func (p *ClusterProvisioner) kindUpgradePower(ctx context.Context, spec ClusterR
 }
 
 func (p *ClusterProvisioner) exportKindVolume(ctx context.Context, node, source, destination string) (string, error) {
-	return p.exportKindArchive(ctx, runtimes.Command{Name: "docker", Args: []string{"cp", "-a", node + ":" + source, "-"}, Env: p.portoDockerEnv()}, destination)
+	mount, err := p.kindPersistentVolumeMount(ctx, node, source)
+	if err != nil {
+		return "", err
+	}
+	id, err := p.createKindVolumeHelper(ctx, mount, false)
+	if err != nil {
+		return "", err
+	}
+	checksum, exportErr := p.exportKindArchive(ctx, runtimes.Command{
+		Name: "docker", Args: []string{
+			"exec", id, "/bin/tar", "--acls", "--xattrs", "--numeric-owner", "--sparse",
+			"-cpf", "-", "-C", path.Join("/porto-volume", path.Dir(mount.RelativePath)), path.Base(mount.RelativePath),
+		}, Env: p.portoDockerEnv(),
+	}, destination)
+	return checksum, errors.Join(exportErr, p.removeKindVolumeHelper(id))
 }
 
 func (p *ClusterProvisioner) exportKindArchive(ctx context.Context, command runtimes.Command, destination string) (string, error) {
@@ -445,7 +553,7 @@ func (p *ClusterProvisioner) exportKindArchive(ctx context.Context, command runt
 		}
 		size += int64(len(chunk.Data))
 		if size > 2<<30 {
-			return errors.New("volume archive exceeds the Docker API 2 GiB restore limit; original volume remains untouched")
+			return errors.New("upgrade archive exceeds the 2 GiB safety limit; original volume remains untouched")
 		}
 		_, err := io.MultiWriter(file, hash).Write(chunk.Data)
 		return err
@@ -492,12 +600,25 @@ func (p *ClusterProvisioner) restoreKindVolume(ctx context.Context, node, direct
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
-	// docker cp can restore stopped nodes, but the destination parent must exist.
-	output, err := p.runner.Run(ctx, runtimes.Command{Name: "docker", Args: []string{"cp", "-a", "-", node + ":" + path.Dir(volume.Path)}, Env: p.portoDockerEnv(), StdinReader: file})
+	mount, err := p.kindPersistentVolumeMount(ctx, node, volume.Path)
 	if err != nil {
-		return runtimes.CommandError("reattach persistent volume data", output, err)
+		return err
 	}
-	return nil
+	id, err := p.createKindVolumeHelper(ctx, mount, true)
+	if err != nil {
+		return err
+	}
+	output, restoreErr := p.runner.Run(ctx, runtimes.Command{
+		Name: "docker", Args: []string{
+			"exec", "-i", id, "/bin/sh", "-c",
+			`mkdir -p "$1" && exec tar --acls --xattrs --numeric-owner -xpf - -C "$1"`,
+			"porto-volume-restore", path.Join("/porto-volume", path.Dir(mount.RelativePath)),
+		}, Env: p.portoDockerEnv(), StdinReader: file,
+	})
+	if restoreErr != nil {
+		restoreErr = runtimes.CommandError("reattach persistent volume data", output, restoreErr)
+	}
+	return errors.Join(restoreErr, p.removeKindVolumeHelper(id))
 }
 
 func (p *ClusterProvisioner) restoreKindObjects(ctx context.Context, spec ClusterRequest, objects []map[string]any, renames map[string]string) error {
@@ -534,6 +655,10 @@ func (p *ClusterProvisioner) restoreKindObjects(ctx context.Context, spec Cluste
 			apiVersion, _ := owner["apiVersion"].(string)
 			resource := upgradeQualifiedKind(kind, apiVersion)
 			ownerName, _ := owner["name"].(string)
+			if kind == "Node" && renames[ownerName] != "" {
+				ownerName = renames[ownerName]
+				owner["name"] = ownerName
+			}
 			output, err := run("resolve restored application owner", nil, "-n", namespace, "get", resource, ownerName, "-o", "json")
 			if err != nil {
 				return err

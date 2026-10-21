@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
+	"github.com/go-logr/logr"
 	"github.com/mbianchidev/porto/internal/config"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -25,6 +26,7 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	controllog "sigs.k8s.io/controller-runtime/pkg/log"
 	v1 "sigs.k8s.io/karpenter/pkg/apis/v1"
 )
 
@@ -32,6 +34,8 @@ type clusterConnection struct {
 	config *rest.Config
 	client client.Client
 }
+
+var initializeControllerLogging sync.Once
 
 type clusterRun struct {
 	cancel context.CancelFunc
@@ -59,6 +63,9 @@ func New(provisioner Provisioner, kubeconfigRoot string, operation Operation) (*
 	if provisioner == nil || operation == nil || kubeconfigRoot == "" {
 		return nil, errors.New("autoscaling requires a provisioner, private kubeconfig root and shared cluster operation gate")
 	}
+	initializeControllerLogging.Do(func() {
+		controllog.SetLogger(logr.FromSlogHandler(slog.Default().Handler()).WithName("porto-autoscaling"))
+	})
 	m := &Manager{
 		provisioner: provisioner, root: kubeconfigRoot, operation: operation,
 		runs: map[string]*clusterRun{}, paused: map[string]bool{}, failures: map[string]string{},
@@ -396,7 +403,7 @@ func (m *Manager) status(ctx context.Context, name string, live bool) (Status, e
 			s.Message = err.Error()
 		} else {
 			s.KEDAReady = true
-			for _, name := range []string{"keda-operator", "keda-operator-metrics-apiserver", "keda-admission-webhooks"} {
+			for _, name := range kedaDeploymentNames {
 				var deployment appsv1.Deployment
 				if err := connection.client.Get(ctx, types.NamespacedName{Namespace: "keda", Name: name}, &deployment); err != nil {
 					s.KEDAReady, s.Message = false, err.Error()
