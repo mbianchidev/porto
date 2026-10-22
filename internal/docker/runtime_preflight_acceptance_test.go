@@ -380,6 +380,120 @@ func TestRuntimeDataCleanupDestinationsOnceInDependencyOrder(t *testing.T) {
 	}
 }
 
+func TestRuntimeDataCleanupStoppedContainerAvoidsForceFinalization(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		removed := false
+		var commands []string
+		runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+			args := strings.Join(command.Args, " ")
+			commands = append(commands, args)
+			duration := 7 * time.Second
+			switch args {
+			case "container inspect synthetic-destination", "container inspect synthetic-original":
+			case "rm --force synthetic-original":
+				duration = 9 * time.Second
+			case "rm synthetic-original":
+				duration = 11 * time.Second
+			default:
+				return nil, fmt.Errorf("unexpected cleanup command: %s", args)
+			}
+			select {
+			case <-time.After(duration):
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+			if strings.HasPrefix(args, "container inspect ") {
+				return []byte(`[{"Id":"synthetic-original","Name":"/synthetic-destination","State":{"Status":"created","Running":false},"Config":{"Labels":{"porto.test.suite":"synthetic"}}}]`), nil
+			}
+			if removed {
+				return []byte("no such container: synthetic-original"), errors.New("synthetic container already removed")
+			}
+			removed = true
+			return nil, nil
+		})
+		fixture := runtimeDataFixture{manager: New(runner), prefix: "synthetic"}
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+		defer cancel()
+		started := time.Now()
+		if err := fixture.removeDestination(ctx, dataops.Selection{Kind: "container", Destination: "synthetic-destination"}); err != nil {
+			t.Fatal(err)
+		}
+		if !removed || time.Since(started) != 18*time.Second ||
+			!slices.Equal(commands, []string{"container inspect synthetic-destination", "rm synthetic-original"}) {
+			t.Fatalf("stopped cleanup repeated forced teardown: removed=%t elapsed=%s commands=%v", removed, time.Since(started), commands)
+		}
+	})
+}
+
+func TestRuntimeDataCleanupContainerStateStillRequiresOwnershipAndLifecycleGuards(t *testing.T) {
+	for _, test := range []struct {
+		name, status                                               string
+		running, paused, force, foreign, blocked, managed, changed bool
+	}{
+		{name: "created", status: "created"},
+		{name: "exited", status: "exited"},
+		{name: "stopped", status: "stopped"},
+		{name: "running", status: "running", running: true, force: true},
+		{name: "paused", status: "paused", paused: true, force: true},
+		{name: "unknown state", force: true},
+		{name: "inconsistent running", status: "created", running: true, force: true},
+		{name: "inconsistent paused", status: "exited", paused: true, force: true},
+		{name: "foreign ownership", status: "created", foreign: true},
+		{name: "native attachment", status: "created", blocked: true},
+		{name: "managed container", status: "created", managed: true},
+		{name: "state changed after inspection", status: "created", changed: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			label := "synthetic"
+			if test.foreign {
+				label = "foreign"
+			}
+			document, err := json.Marshal([]any{map[string]any{
+				"Id": "synthetic-original", "Name": "/synthetic-destination",
+				"State":  map[string]any{"Status": test.status, "Running": test.running, "Paused": test.paused},
+				"Config": map[string]any{"Labels": map[string]string{"porto.test.suite": label}},
+			}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			operations := &fakeContainerOperations{errs: map[string]error{}}
+			if test.changed {
+				operations.errs["delete synthetic-original false false"] = ErrConflict
+			}
+			manager := managerWithContainerOperations(operations)
+			manager.runner = &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				if command.Name != "nerdctl" || len(command.Args) < 3 || command.Args[0] != "container" || command.Args[1] != "inspect" {
+					t.Fatalf("unexpected fixture mutation: %+v", command)
+				}
+				return document, nil
+			}}
+			guard := errors.New("synthetic active native attachment")
+			if test.blocked {
+				manager.nativeGuard = func(string, string) error { return guard }
+			}
+			if test.managed {
+				manager.managedContainerGuard = func(context.Context, string) error { return guard }
+			}
+			fixture := runtimeDataFixture{manager: manager, prefix: "synthetic"}
+			err = fixture.removeDestination(context.Background(), dataops.Selection{Kind: "container", Destination: "synthetic-destination"})
+			if test.foreign || test.blocked || test.managed {
+				if err == nil || len(operations.calls) != 0 || (test.blocked || test.managed) && !errors.Is(err, guard) {
+					t.Fatalf("cleanup bypassed ownership or native protection: err=%v calls=%v", err, operations.calls)
+				}
+				return
+			}
+			want := []string{fmt.Sprintf("delete synthetic-original %t false", test.force), "close"}
+			validError := err == nil
+			if test.changed {
+				validError = errors.Is(err, ErrConflict)
+			}
+			if !validError || !slices.Equal(operations.calls, want) {
+				t.Fatalf("cleanup selected an unsafe or unnecessary lifecycle action: err=%v calls=%v want=%v", err, operations.calls, want)
+			}
+		})
+	}
+}
+
 func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, selection dataops.Selection) error {
 	ctx, release, err := fixture.manager.dataReadGate(ctx)
 	if err != nil {
@@ -397,6 +511,10 @@ func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, select
 		ID     string `json:"Id"`
 		Labels map[string]string
 		Config struct{ Labels map[string]string }
+		State  struct {
+			Status          string
+			Running, Paused bool
+		}
 	}
 	if err := json.Unmarshal(document, &resource); err != nil {
 		return err
@@ -410,7 +528,14 @@ func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, select
 	}
 	switch selection.Kind {
 	case "container":
-		return fixture.manager.ContainerAction(ctx, resource.ID, "remove-force")
+		action := "remove-force"
+		if !resource.State.Running && !resource.State.Paused {
+			switch strings.ToLower(resource.State.Status) {
+			case "created", "exited", "stopped":
+				action = "remove"
+			}
+		}
+		return fixture.manager.ContainerAction(ctx, resource.ID, action)
 	case "volume":
 		return fixture.manager.removeVolume(ctx, selection.Destination, false, document)
 	case "network":

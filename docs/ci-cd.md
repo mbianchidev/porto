@@ -174,6 +174,10 @@ standalone-VM reconnect cases as well.
 Fixture cleanup visits each exact destination once, removing containers before
 volumes/networks and image aliases last. Repeated alias lookups must not consume
 the unchanged two-minute cleanup budget on software-emulated runners.
+Freshly inspected stopped containers use ordinary removal, avoiding unnecessary
+forced teardown and its extra identity lookup and ten-second finalization loop.
+Running, paused, or ambiguous states still require force removal. Both paths
+keep the production native-attachment and managed-container guards.
 Independent volume and network removals overlap with at most two in flight,
 while containers and image aliases remain serial. Each removal still performs
 fresh ownership checks through the production APIs, and all failures are retained.
