@@ -79,7 +79,13 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writ
 			}
 		}
 		target.Verify = func(ctx context.Context) error {
-			current, err := m.FileDescriptor(ctx, kind, descriptor.Resource.Name)
+			var current runtimefiles.Descriptor
+			var err error
+			if kind == "volume" && descriptor.VolumeIdentity != "" && descriptor.VolumeIdentity == descriptor.Resource.ID {
+				current.Resource, err = m.volumeFileIdentity(ctx, descriptor)
+			} else {
+				current, err = m.FileDescriptor(ctx, kind, descriptor.Resource.Name)
+			}
 			if err != nil {
 				return err
 			}

@@ -126,6 +126,11 @@ budget. A changed owner, instance or disconnected inventory
 requires normal discovery again. Cold compatibility starts/restarts have a
 one-minute task/shim/network startup budget instead of the generic 20-second
 metadata budget; stricter caller deadlines still win.
+Already-bound remote volumes verify their pinned metadata generation through
+the existing guest identity helper instead of repeating nerdctl volume discovery.
+Every concurrent request still makes its own fresh identity query; changed
+generations, invalid helper identities and helper failures remain errors.
+Initial volume path, driver and option validation is unchanged.
 If a software-emulated CI volume listing reaches that metadata deadline, a
 separate read-only diagnostic measures an SSH no-op and the same guest listing
 under one 30-second diagnostic budget. It retains the original ownership

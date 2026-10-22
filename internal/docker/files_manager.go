@@ -144,23 +144,31 @@ func (m *Manager) FileDescriptor(ctx context.Context, kind, name string) (descri
 		}
 		descriptor.RootPath = volume.Mountpoint
 		descriptor.Resource.Name, descriptor.Resource.ID = volume.Name, volume.Name
-		var output bytes.Buffer
-		if err := m.RunFileRequest(ctx, descriptor, datafiles.Request{
-			Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
-		}, nil, &output); err != nil {
+		identified, err := m.volumeFileIdentity(ctx, descriptor)
+		if err != nil {
 			return descriptor, err
-		}
-		var identified datafiles.Resource
-		if err := json.Unmarshal(output.Bytes(), &identified); err != nil {
-			return descriptor, err
-		}
-		if identified.Kind != "volume" || identified.Name != name || identified.Backend != descriptor.Resource.Backend ||
-			identified.ID == "" || identified.CreatedAt == "" || identified.ReadOnly {
-			return descriptor, fmt.Errorf("%w: the runtime helper returned an invalid volume identity", datafiles.ErrConflict)
 		}
 		descriptor.Resource, descriptor.VolumeIdentity = identified, identified.ID
 	}
 	return descriptor, nil
+}
+
+func (m *Manager) volumeFileIdentity(ctx context.Context, descriptor runtimefiles.Descriptor) (datafiles.Resource, error) {
+	var identified datafiles.Resource
+	var output bytes.Buffer
+	if err := m.RunFileRequest(ctx, descriptor, datafiles.Request{
+		Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
+	}, nil, &output); err != nil {
+		return identified, err
+	}
+	if err := json.Unmarshal(output.Bytes(), &identified); err != nil {
+		return identified, err
+	}
+	if identified.Kind != "volume" || identified.Name != descriptor.Resource.Name || identified.Backend != descriptor.Resource.Backend ||
+		identified.ID == "" || identified.CreatedAt == "" || identified.ReadOnly {
+		return identified, fmt.Errorf("%w: the runtime helper returned an invalid volume identity", datafiles.ErrConflict)
+	}
+	return identified, nil
 }
 
 func (m *Manager) FileRequest(ctx context.Context, kind, name string, request datafiles.Request, input io.Reader, output io.Writer) error {
