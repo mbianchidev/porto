@@ -144,7 +144,8 @@ const os = require('node:os')
 const { execFileSync } = require('node:child_process')
 function sample() {
   const disk = fs.statfsSync(process.argv[2])
-  const qemu = execFileSync('ps', ['-axo', 'pid=,rss=,pcpu=,args='], { encoding: 'utf8', timeout: 5000 })
+  // Walking every process's arguments can stall on a heavily loaded runner.
+  const qemu = execFileSync('ps', ['-axo', 'pid=,rss=,pcpu=,comm='], { encoding: 'utf8', timeout: 5000 })
     .split('\n').filter((line) => line.includes('qemu-system')).map((line) => line.trim())
   const swap = execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8', timeout: 5000 }).trim()
   console.log('::notice title=macOS CI resources::' + JSON.stringify({
@@ -154,7 +155,7 @@ function sample() {
     freeDiskMiB: Math.floor(disk.bavail * disk.bsize / 1048576),
     totalMemoryMiB: Math.floor(os.totalmem() / 1048576),
     freeMemoryMiB: Math.floor(os.freemem() / 1048576),
-    swap, qemuPidRssKiBAndCpuPctAndArguments: qemu,
+    swap, qemuPidRssKiBAndCpuPctAndCommand: qemu,
   }))
 }
 process.once('SIGTERM', () => process.exit(0))

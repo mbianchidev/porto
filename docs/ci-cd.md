@@ -292,9 +292,10 @@ same diagnostic attempt records the guest fstab, block labels, mounted devices,
 udev properties and unit timings, plus bounded udev and cloud-init logs.
 Cloud-init module durations and the systemd critical chain distinguish early
 network/SSH setup from later package and rootless provisioning. Both macOS
-architectures report host load, memory, swap, and owned-runner QEMU command lines
-and process usage while acceptance runs; guest CPU pressure alone is not a host
-capacity measurement.
+architectures report host load, memory, swap, and owned-runner QEMU process names
+and usage while acceptance runs; guest CPU pressure alone is not a host capacity
+measurement. Periodic sampling reads fixed process fields, not every process's
+argument memory, so diagnostics do not add that expensive host-wide scan.
 Unavailable diagnostics are reported without replacing the original failure;
 diagnostics never repair mounts, change guest state or create engine ownership.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
