@@ -54,11 +54,16 @@ function run(command, args, capture = false) {
   return capture ? result.stdout.trim() : ''
 }
 
-function dependencyProvisionOverride() {
+function dependencyProvisionOverride(date = new Date()) {
+  const snapshot = `${date.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
   const script = [
     '#!/bin/sh',
     'set -eu',
-    "printf '%s\\n' 'Acquire::Languages \"none\";' 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";' 'Acquire::IndexTargets::deb::CNF::DefaultEnabled \"false\";' > /etc/apt/apt.conf.d/99porto-ci",
+    `printf '%s\\n' 'CI Ubuntu snapshot: ${snapshot}' >&2`,
+    'sources=/etc/apt/sources.list.d/ubuntu.sources',
+    'if ! grep -q "^URIs: " "$sources"; then echo "CI Ubuntu archive sources are unavailable" >&2; exit 1; fi',
+    `sed -i '/^Snapshot:/d; s|^URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/${snapshot}/|' "$sources"`,
+    "printf '%s\\n' 'Acquire::Languages \"none\";' 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";' 'Acquire::IndexTargets::deb::CNF::DefaultEnabled \"false\";' 'APT::Update::Error-Mode \"any\";' > /etc/apt/apt.conf.d/99porto-ci",
     'rm -f /etc/apt/apt.conf.d/99needrestart',
     '',
   ].join('\n')

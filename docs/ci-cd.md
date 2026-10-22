@@ -271,6 +271,16 @@ Windows paths. Windows disables CGO for the daemon/test build, as the client
 suite does not require WinFsp. The compiled client-test executable sits beside
 the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
+Before package installation, each disposable Ubuntu guest uses the
+[official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
+on the date its fixture configuration was generated. The snapshot ID is logged
+and reused for the destination, source VM, and restarts. Only the Ubuntu source
+URIs change; suites, components, archive signing keys, signature verification,
+and package hashes remain intact. Direct immutable URIs avoid mixing indexes
+from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
+indexes. An unavailable snapshot or failed index fetch remains an error, with
+no fallback to mutable mirrors or relaxed checks. The 20-minute boot deadline
+is unchanged, and installed Porto environments are not reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
