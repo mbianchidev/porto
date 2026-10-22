@@ -211,6 +211,11 @@ func TestRuntimeDataCleanupDestinationsOnceInDependencyOrder(t *testing.T) {
 }
 
 func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, selection dataops.Selection) error {
+	ctx, release, err := fixture.manager.dataReadGate(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
 	document, err := fixture.manager.inspect(ctx, selection.Kind, selection.Destination)
 	if missingDockerObject(err, selection.Kind) {
 		return nil
@@ -237,7 +242,7 @@ func (fixture *runtimeDataFixture) removeDestination(ctx context.Context, select
 	case "container":
 		return fixture.manager.ContainerAction(ctx, resource.ID, "remove-force")
 	case "volume":
-		return fixture.manager.RemoveVolume(ctx, selection.Destination, false)
+		return fixture.manager.removeVolume(ctx, selection.Destination, false, document)
 	case "network":
 		return fixture.manager.RemoveNetwork(ctx, selection.Destination)
 	case "image":

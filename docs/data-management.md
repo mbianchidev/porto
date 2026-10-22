@@ -107,6 +107,10 @@ helper before extraction. Temporary destination ownership is reserved in SQLite
 before creation. After interruption, recovery deletes only exact
 label-proven unfinished volumes; foreign or unverifiable objects are retained
 with an explicit failure instead of guessed cleanup.
+Owned cleanup reuses its fresh ownership inspection for guarded removal within
+the same data operation, rather than repeating a remote inspection. Native mounts
+and current container references still block removal. Failed cleanup retains its
+reservation for recovery.
 
 Archives are tar files containing `data/` members and a final
 `porto-manifest.json` (format version 1). The manifest records resource identity,

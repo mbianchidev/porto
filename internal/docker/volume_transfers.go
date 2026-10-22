@@ -400,7 +400,7 @@ func (m *Manager) cleanupVolumeTemporary(ctx context.Context, temporary dataops.
 		if inspectErr != nil || volume.Labels[transferOwnerLabel] != temporary.Owner {
 			return errors.Join(errors.New("temporary volume ownership could not be proven; no volume was deleted"), inspectErr)
 		}
-		if err := m.RemoveVolume(ctx, temporary.Destination, false); err != nil {
+		if err := m.removeVolume(ctx, temporary.Destination, false, document); err != nil {
 			return err
 		}
 	}

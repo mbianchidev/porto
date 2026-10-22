@@ -163,6 +163,10 @@ while containers and image aliases remain serial. Each removal still performs
 fresh ownership checks through the production APIs, and all failures are retained.
 This keeps slow Windows SSH startup from serializing unrelated cleanup work past
 the same deadline.
+Temporary-volume rollback and fixture volume cleanup also reuse their freshly
+verified inspection through the normal removal guards. They do not cache
+ownership or repeat the same SSH inspection within the operation; the production
+rollback still has its 30-second budget.
 
 For local acceptance against an already-running, ownership-verified Porto
 Lima destination, compile this revision's Linux helper beside a compiled test

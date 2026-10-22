@@ -69,5 +69,6 @@ func (fixture *runtimeDataFixture) lowSpaceMigration(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "insufficient free space") || len(result.Steps) != 1 || result.Steps[0].Status != "failed" {
 		t.Fatalf("actual 8 MiB filesystem did not enforce staged restore space requirements: %+v, %v", result, err)
 	}
+	t.Logf("low-space migration rejected: %v", err)
 	fixture.requireMissingVolume(t, volume.Destination)
 }
