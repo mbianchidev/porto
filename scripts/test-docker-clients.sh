@@ -58,6 +58,8 @@ report() {
   "$@" || { code=$?; printf "Diagnostic command failed (%s): %s\n" "$code" "$*" >&2; status=1; }
 }
 report uname -a
+report sudo -n cloud-init analyze blame
+report systemd-analyze critical-chain --no-pager
 report cat /proc/meminfo
 report cat /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory
 report ps -eo pid,stat,comm,wchan:32
@@ -69,7 +71,7 @@ report findmnt --mountpoint /boot
 report findmnt --mountpoint /boot/efi
 report udevadm info --query=property --name=/dev/vda13
 report udevadm info --query=property --name=/dev/vda15
-report systemctl show boot.mount boot-efi.mount local-fs.target systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service systemd-sysusers.service systemd-modules-load.service systemd-tmpfiles-setup-dev-early.service -p Id -p ActiveState -p Result -p ActiveEnterTimestampMonotonic -p InactiveExitTimestampMonotonic
+report systemctl show boot.mount boot-efi.mount local-fs.target systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service systemd-sysusers.service systemd-modules-load.service systemd-tmpfiles-setup-dev-early.service cloud-init-local.service cloud-init-network.service cloud-config.service cloud-final.service ssh.service systemd-networkd-wait-online.service -p Id -p ActiveState -p Result -p ActiveEnterTimestampMonotonic -p InactiveExitTimestampMonotonic -p ExecMainStartTimestampMonotonic -p ExecMainExitTimestampMonotonic -p CPUUsageNSec
 report sudo -n journalctl -b -u systemd-udevd.service -u systemd-udev-trigger.service -u systemd-hwdb-update.service -u systemd-sysusers.service -u systemd-modules-load.service -u boot.mount -u boot-efi.mount --no-pager -n 160
 report sudo -n tail -n 200 /var/log/cloud-init-output.log
 exit "$status"
@@ -89,12 +91,12 @@ cleanup() {
   if [ -n "$resource_monitor_pid" ]; then
     if jobs -pr | grep -Fx "$resource_monitor_pid" >/dev/null; then
       if ! kill "$resource_monitor_pid"; then
-        echo "Unable to stop the owned Intel CI resource monitor." >&2
+        echo "Unable to stop the owned macOS CI resource monitor." >&2
         result=1
       fi
     fi
     if ! wait "$resource_monitor_pid"; then
-      echo "Intel CI resource monitoring failed." >&2
+      echo "macOS CI resource monitoring failed." >&2
       result=1
     fi
   fi
@@ -135,22 +137,24 @@ case "${RUNNER_ARCH:-$(go env GOARCH)}" in
   ARM64|arm64|aarch64) goarch=arm64 ;;
   *) echo "Unsupported CI architecture." >&2; exit 2 ;;
 esac
-if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then
+if [ "$suite/$goos" = data/darwin ]; then
   node - "$temporary" <<'NODE' &
 const fs = require('node:fs')
 const os = require('node:os')
 const { execFileSync } = require('node:child_process')
 function sample() {
   const disk = fs.statfsSync(process.argv[2])
-  const qemu = execFileSync('ps', ['-axo', 'rss=,pcpu=,comm='], { encoding: 'utf8', timeout: 5000 })
+  const qemu = execFileSync('ps', ['-axo', 'pid=,rss=,pcpu=,args='], { encoding: 'utf8', timeout: 5000 })
     .split('\n').filter((line) => line.includes('qemu-system')).map((line) => line.trim())
   const swap = execFileSync('sysctl', ['-n', 'vm.swapusage'], { encoding: 'utf8', timeout: 5000 }).trim()
-  console.log('::notice title=Intel CI resources::' + JSON.stringify({
+  console.log('::notice title=macOS CI resources::' + JSON.stringify({
+    architecture: os.arch(),
     cpus: os.availableParallelism(),
+    loadAverage: os.loadavg(),
     freeDiskMiB: Math.floor(disk.bavail * disk.bsize / 1048576),
     totalMemoryMiB: Math.floor(os.totalmem() / 1048576),
     freeMemoryMiB: Math.floor(os.freemem() / 1048576),
-    swap, qemuRssKiBAndCpuPct: qemu,
+    swap, qemuPidRssKiBAndCpuPctAndArguments: qemu,
   }))
 }
 process.once('SIGTERM', () => process.exit(0))
