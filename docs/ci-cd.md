@@ -77,15 +77,51 @@ confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
 not count as successful OS-native mounts for every platform/backend row; see
 the [real-runtime matrix](data-management.md#real-runtime-acceptance).
 
-Twenty-two independent `Runtime data` jobs cover migration and native phases for
-all eight platform/backend cells: Linux x64/ARM64 with local containerd and Lima,
-macOS Intel/Apple Silicon, and Windows x64/ARM64, plus an owned-engine phase for
-the six Lima cells. The phases run in parallel on separately owned runtimes
-rather than sharing mutable fixture state.
-These jobs use the same workload-scoped Go caches, verified-download caches
-and fail-fast policy as the other matrices; no cache contains fixture runtime state.
-They reuse the disposable
-runtime bootstrap through `scripts/test-docker-clients.sh <local|lima> data`;
+### Required acceptance and optional platform integration
+
+PR CI separates backend correctness, native filesystem behavior, and full
+desktop-VM integration instead of making every signal depend on two emulated
+VMs booting and remaining responsive.
+
+| Coverage | Default PR gate | Execution |
+| --- | --- | --- |
+| Real runtime data | Yes, 10 jobs | Linux x64/ARM64, local containerd and Lima; migration/native phases plus Lima engine lifecycle |
+| Native filesystem drivers | Yes, 4 jobs | Actual macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp mounts, with confined synthetic SFTP sources and no guest VM |
+| Full desktop Lima integration | No, 12 opt-in cells | macOS Intel/Apple Silicon and Windows x64/ARM64; migration, native, and engine phases |
+
+The `Native filesystem` jobs exercise real host-mounted files, not an in-memory
+filesystem mock. Windows builds the current native helper and installs the
+checksum-pinned WinFsp driver. macOS uses its built-in WebDAV driver. These
+checks retain direct edits, read-only behavior, confinement, and owned cleanup;
+the macOS suite also exercises delayed readiness, owner-process death, and detach
+recovery. They run independently of guest provisioning. Existing packaged
+Windows-helper checks in `Native installers` remain required as well.
+
+The expensive macOS/Windows Lima cells live in the manually dispatched
+`Emulated runtime acceptance` workflow. Hosted-runner TCG timing, guest kernel
+timer panics, and repeated SSH startup made that matrix an unreliable PR gate.
+Deferring it is an explicit coverage tradeoff, not a fix for those upstream or
+timing problems. Passing the default gate does **not** establish full
+macOS/Windows Lima migration, native-resource integration, or engine-restart
+acceptance. Those results require a separate successful run on the selected
+revision and platform. Nothing uses `continue-on-error` to disguise failures.
+
+Once the manual workflow is available on the repository's default branch, run
+one platform/phase against an explicit branch or tag:
+
+```sh
+gh workflow run emulated-runtime.yml --ref <branch-or-tag> \
+  -f platform=windows-11-arm -f phase=migration
+```
+
+Use `platform=all` and `phase=all` for all 12 cells. Manual failures remain
+failures, and canceled or unrun cells never count as accepted.
+
+Both runtime workflows share `.github/actions/runtime-data/action.yml`, retain
+workload-scoped Go and verified-download caches, and use fail-fast within their
+own matrices. No cache contains fixture runtime state. Runtime phases run in
+parallel on separately owned runtimes through
+`scripts/test-docker-clients.sh <local|lima> data`;
 `PORTO_RUNTIME_DATA_PHASE=migration|native|engine` selects a phase, while an unset value
 or `all` retains the combined opt-in local suite. The migration phase runs every
 round-trip, failure and interruption assertion. The native phase creates its
@@ -93,9 +129,8 @@ real resources through the same verified migration round trip, then runs every
 mount, workload and standalone-VM lifecycle assertion. The engine phase also
 performs the verified migration round trip, then runs all owned-engine
 update, restart, identity-preserving reattachment and shutdown assertions.
-Separating the two VM-restart scenarios keeps emulated Windows ARM64 from
-reaching the 55-minute executable deadline while the second guest is still
-rebooting. Local-containerd cells have no Lima engine to restart; selecting the
+Separate restart phases avoid combining both restart scenarios in one
+executable. Local-containerd cells have no Lima engine to restart; selecting the
 dedicated engine phase without an independently owned CI Lima runtime is an error.
 No job waits for another phase's artifacts. The 85-minute job, 55-minute
 executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.

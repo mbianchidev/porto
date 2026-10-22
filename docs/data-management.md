@@ -399,14 +399,26 @@ ownership rather than attempting a privileged root chown.
 
 ### Real-runtime acceptance
 
-`Runtime data` CI runs the real resource/backend matrix on Linux x64/ARM64
-(local containerd and Lima), macOS Intel/Apple Silicon (Lima and built-in WebDAV),
-and Windows x64/ARM64 (Lima and installed WinFsp). Each cell has independent
-migration and native jobs that run in parallel with separate owned fixtures;
-both phase checks must pass. This preserves the existing time caps and all
-assertions instead of extending the deadline for a combined emulated run.
-Each job creates a separate Porto-owned standalone source VM running an actual
-Docker Engine, exposing its
+Required PR acceptance has two independent layers:
+
+| Layer | Required coverage |
+| --- | --- |
+| Runtime data | Linux x64/ARM64 with local containerd and Lima; real migration, native-resource integration, recovery, and Lima engine lifecycle |
+| Host filesystem drivers | macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp; real OS mounts over confined synthetic SFTP sources, without a VM dependency |
+
+Full macOS/Windows **Lima-backed** migration, native-resource integration, and
+engine restart remain available in the opt-in `Emulated runtime acceptance`
+workflow. They no longer gate every PR: hosted-runner software emulation and
+guest timer/SSH delays repeatedly failed independently of the migration
+assertions. This deliberately defers meaningful end-to-end coverage. Driver
+tests and Linux results do not count as passing those platform/backend cells.
+Use the [manual acceptance workflow](ci-cd.md#required-acceptance-and-optional-platform-integration)
+to qualify a specific revision on those platforms.
+
+Runtime cells retain independent migration, native, and applicable engine
+phases with separate owned fixtures, unchanged time caps, and unchanged
+assertions. Each phase creates a separate Porto-owned standalone source VM
+running an actual Docker Engine, exposing its
 API through the host's private Unix socket or named pipe and a real Docker
 context. This exercises the Docker Desktop-style local socket/API contract,
 not a mocked inventory or a claim about Docker Desktop's proprietary UI.
@@ -419,14 +431,16 @@ settings, sensitive consent, corrupt archives, cancellation, an actual 8 MiB
 staging filesystem, killed-worker checkpoint recovery and ownership-proven
 cleanup of never-started source helpers.
 
-Native acceptance opens actual container/image/volume/VM host mounts, not
+Full native-resource acceptance opens actual container/image/volume/VM host mounts, not
 copies. It covers immutable images, read-only submounts, long/non-ASCII and
 case-sensitive names, links, concurrent backend changes, guest permission
 failures, live/stopped containers, protected deletion, recreated identities,
 VM stop/reconnect and cleanup. Engine update/stop/restart is restricted to the
 independently owned disposable CI engine; local runs never stop an existing
-engine. Separate native-driver fixtures exercise an actually killed macOS
-owner and a failed detach followed by owned recovery.
+engine. The separately required native-driver fixtures use synthetic directories
+behind the real confined SFTP implementation and real OS filesystem drivers.
+They also exercise an actually killed macOS owner and a failed detach followed
+by owned recovery, but do not simulate a complete Lima-backed workload lifecycle.
 
 Unsupported semantics in the capability matrix remain explicit limitations,
 not successful mounts. Driver installation on a user's machine is never

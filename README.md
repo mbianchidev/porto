@@ -26,7 +26,8 @@ Porto runs its own containerd and BuildKit backend rather than proxying another 
   Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
   macOS native folders use the built-in WebDAV filesystem over confined SFTP, without a third-party driver.
   Linux bridges require FUSE3 and SSHFS 3.7.6+ or an equivalent maintained build with symlink containment.
-  CLI `--resume` retains exact migration identities and destinations; real-runtime CI exercises both release architectures on Linux, macOS, and Windows.
+  CLI `--resume` retains exact migration identities and destinations.
+  Required CI covers Linux runtime integration and real desktop filesystem drivers on both release architectures; full macOS/Windows Lima integration is [explicit opt-in acceptance](docs/data-management.md#real-runtime-acceptance).
 
 ## Platforms and prerequisites
 
