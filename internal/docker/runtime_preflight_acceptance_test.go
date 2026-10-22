@@ -15,7 +15,85 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+func TestRuntimeDataReadTimeoutDiagnosticsPreserveFailureAndOwnership(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	command := runtimes.Command{
+		Name: "limactl", Dir: "synthetic directory", Env: []string{"SYNTHETIC_MODE=diagnostic"},
+		Args: []string{"shell", "synthetic-engine", "--", "sh", "-c", limaOwnedRuntimeCommand,
+			"porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls", "--format", "{{json .}}"},
+	}
+	original := slices.Clone(command.Args)
+	failure := errors.New("synthetic original timeout")
+	calls := 0
+	output, err := runtimeDataReadTimeoutDiagnostics(ctx, command, []byte("original output"), failure, lifecycleDeadlineRunner(func(ctx context.Context, probe runtimes.Command) ([]byte, error) {
+		calls++
+		if ctx.Err() != nil {
+			t.Fatal("diagnostic inherited the expired command context")
+		}
+		deadline, ok := ctx.Deadline()
+		if !ok || time.Until(deadline) > 30*time.Second {
+			t.Fatal("diagnostic lost its bounded shared deadline")
+		}
+		if probe.Dir != command.Dir || !slices.Equal(probe.Env, command.Env) {
+			t.Fatal("diagnostic changed the fixture's command environment")
+		}
+		prefix := []string{"--debug", "shell", "--workdir=/", "synthetic-engine", "--"}
+		if !slices.Equal(probe.Args[:len(prefix)], prefix) {
+			t.Fatalf("diagnostic changed the selected instance: %v", probe.Args)
+		}
+		if calls == 1 && !slices.Equal(probe.Args[len(prefix):], []string{"true"}) {
+			t.Fatal("SSH startup probe performed a guest operation")
+		}
+		if calls == 2 && !slices.Equal(probe.Args[len(probe.Args)-(len(original)-3):], original[3:]) {
+			t.Fatal("read timing probe discarded the exact original ownership check or arguments")
+		}
+		return []byte("synthetic diagnostic output"), errors.New("synthetic diagnostic failure")
+	}))
+	if err != failure || calls != 2 || !slices.Equal(command.Args, original) {
+		t.Fatalf("diagnostics altered the original failure or request: err=%v calls=%d", err, calls)
+	}
+	if !strings.HasPrefix(string(output), "original output") ||
+		!strings.Contains(string(output), "synthetic diagnostic failure") {
+		t.Fatalf("original or diagnostic failures were hidden: %s", output)
+	}
+}
+
+func TestRuntimeDataReadTimeoutDiagnosticsNeverReplayMutationsOrArbitraryShells(t *testing.T) {
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	failure := errors.New("synthetic failure")
+	for _, command := range []runtimes.Command{
+		{Name: "nerdctl", Args: []string{"volume", "ls"}},
+		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "nerdctl", "volume", "rm", "synthetic"}},
+		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "sh", "-c", "synthetic mutation", "nerdctl", "volume", "ls"}},
+		{Name: "limactl", Args: []string{"shell", "synthetic"}},
+	} {
+		output, err := runtimeDataReadTimeoutDiagnostics(ctx, command, []byte("original"), failure, lifecycleDeadlineRunner(func(context.Context, runtimes.Command) ([]byte, error) {
+			t.Fatal("diagnostic replayed a non-allowlisted operation")
+			return nil, nil
+		}))
+		if err != failure || string(output) != "original" {
+			t.Fatal("non-allowlisted failure changed")
+		}
+	}
+	command := runtimes.Command{Name: "limactl", Args: []string{"shell", "synthetic", "--", "nerdctl", "volume", "ls"}}
+	for _, original := range []struct {
+		ctx context.Context
+		err error
+	}{{context.Background(), failure}, {ctx, nil}} {
+		_, err := runtimeDataReadTimeoutDiagnostics(original.ctx, command, nil, original.err, lifecycleDeadlineRunner(func(context.Context, runtimes.Command) ([]byte, error) {
+			t.Fatal("diagnostic replayed a successful or non-timeout request")
+			return nil, nil
+		}))
+		if err != original.err {
+			t.Fatal("original outcome changed")
+		}
+	}
+}
 
 func (fixture *runtimeDataFixture) cleanupSelections() []dataops.Selection {
 	pending := append(slices.Clone(fixture.selection), fixture.extraSelections...)

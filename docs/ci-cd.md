@@ -122,6 +122,12 @@ individual API operation. A changed owner, instance or disconnected inventory
 requires normal discovery again. Cold compatibility starts/restarts have a
 one-minute task/shim/network startup budget instead of the generic 20-second
 metadata budget; stricter caller deadlines still win.
+If a software-emulated CI volume listing reaches that metadata deadline, a
+separate read-only diagnostic measures an SSH no-op and the same guest listing
+under one 30-second diagnostic budget. It retains the original ownership
+wrapper, reports guest execution time, and still returns the original failure.
+Successful requests, mutations, arbitrary shell commands, and caller
+cancellation are never replayed.
 
 The production migration/native APIs operate on uniquely labelled fixture
 images, volumes, networks and stopped/running containers. A separate

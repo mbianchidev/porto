@@ -54,7 +54,52 @@ func (runner runtimeDataDiagnosticRunner) Run(ctx context.Context, command runti
 		arguments := append(slices.Clone(command.Args[:index]), "--debug")
 		command.Args = append(arguments, command.Args[index:]...)
 	}
-	return runner.ExecRunner.Run(ctx, command)
+	output, err := runner.ExecRunner.Run(ctx, command)
+	return runtimeDataReadTimeoutDiagnostics(ctx, command, output, err, runner.ExecRunner)
+}
+
+func runtimeDataReadTimeoutDiagnostics(ctx context.Context, command runtimes.Command, output []byte, err error, runner runtimes.Runner) ([]byte, error) {
+	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) ||
+		strings.TrimSuffix(filepath.Base(command.Name), ".exe") != "limactl" {
+		return output, err
+	}
+	separator := slices.Index(command.Args, "--")
+	nerdctl := slices.Index(command.Args, "nerdctl")
+	if len(command.Args) == 0 || command.Args[0] != "shell" || separator < 2 ||
+		nerdctl <= separator || nerdctl+2 >= len(command.Args) ||
+		command.Args[nerdctl+1] != "volume" || command.Args[nerdctl+2] != "ls" {
+		return output, err
+	}
+	guest := command.Args[separator+1:]
+	if nerdctl != separator+1 && (nerdctl != separator+6 ||
+		!slices.Equal(guest[:4], []string{"sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command"})) {
+		return output, err
+	}
+	diagnostic, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	prefix := []string{"--debug", "shell", "--workdir=/", command.Args[separator-1], "--"}
+	const timedRead = `started="$(date +%s)" || exit
+"$@"
+result=$?
+finished="$(date +%s)" || exit
+printf '\nGuest metadata execution: %ss, status=%s\n' "$((finished-started))" "$result" >&2
+exit "$result"`
+	probes := []struct {
+		name string
+		args []string
+	}{
+		{"SSH startup", []string{"true"}},
+		{"original volume listing", append([]string{"sh", "-c", timedRead, "porto-read-diagnostic"}, guest...)},
+	}
+	for _, probe := range probes {
+		started := time.Now()
+		details, diagnosticErr := runner.Run(diagnostic, runtimes.Command{
+			Name: command.Name, Args: append(slices.Clone(prefix), probe.args...),
+			Dir: command.Dir, Env: slices.Clone(command.Env),
+		})
+		output = append(output, []byte(fmt.Sprintf("\nRead-only %s diagnostic: host elapsed=%s, error=%v\n%.16384s", probe.name, time.Since(started), diagnosticErr, details))...)
+	}
+	return output, err
 }
 
 func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Command {
