@@ -200,7 +200,7 @@ func (m *Manager) RunFileRequest(ctx context.Context, descriptor runtimefiles.De
 	if !ok {
 		return fmt.Errorf("%w: the runtime cannot stream file transfers", datafiles.ErrUnsupported)
 	}
-	backend, err := m.backend(ctx)
+	backend, err := m.backendForCommand(ctx)
 	if err != nil {
 		return err
 	}
@@ -209,6 +209,7 @@ func (m *Manager) RunFileRequest(ctx context.Context, descriptor runtimefiles.De
 		command.Name = backend.name
 		command.Args = []string{
 			"shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+			limaOwnedRuntimeCommand, "porto-runtime-command", backend.ownerID, "sh", "-c",
 			`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files`,
 		}
 	} else {

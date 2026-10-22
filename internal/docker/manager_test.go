@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -1501,35 +1504,50 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 		{name: "changed owner", owner: "new-synthetic-owner", instance: engineInstanceName, available: true},
 		{name: "changed instance", owner: "synthetic-owner", instance: "another-synthetic-engine", available: true},
 	} {
-		t.Run(scenario.name, func(t *testing.T) {
-			runner := &fakeRunner{}
-			manager := NewWithStateDir(runner, t.TempDir())
-			manager.lookPath = func(string) (string, error) { return "", errors.New("no fallback CLI in this fixture") }
-			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: scenario.instance, OwnerID: scenario.owner}); err != nil {
-				t.Fatal(err)
-			}
-			manager.inventoryCancel = func() {}
-			manager.inventory = &containerInventory{
-				snapshot: ContainerSnapshot{Available: scenario.available},
-				runtimeClient: &grpcContainerRuntime{commandSource: commandBackend{
-					name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner",
-				}},
-			}
-			_, err := manager.run(context.Background(), "list synthetic volumes", "volume", "ls")
-			if !scenario.borrowed {
-				if !errors.Is(err, ErrUnavailable) || len(runner.commands) != 0 {
-					t.Fatalf("an unrelated or disconnected engine origin was reused: err=%v commands=%+v", err, runner.commands)
+		for _, operation := range []string{"nerdctl", "files"} {
+			t.Run(scenario.name+"/"+operation, func(t *testing.T) {
+				runner := &fakeRunner{}
+				manager := NewWithStateDir(runner, t.TempDir())
+				manager.lookPath = func(string) (string, error) { return "", errors.New("no fallback CLI in this fixture") }
+				if err := manager.writeEngineState(engineState{Mode: "lima", Instance: scenario.instance, OwnerID: scenario.owner}); err != nil {
+					t.Fatal(err)
 				}
-				return
-			}
-			if err != nil || len(runner.commands) != 1 {
-				t.Fatalf("the healthy origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
-			}
-			want := []string{"shell", engineInstanceName, "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls"}
-			if runner.commands[0].Name != "limactl" || !reflect.DeepEqual(runner.commands[0].Args, want) {
-				t.Fatalf("the borrowed command omitted in-guest ownership verification: %+v", runner.commands[0])
-			}
-		})
+				manager.inventoryCancel = func() {}
+				manager.inventory = &containerInventory{
+					snapshot: ContainerSnapshot{Available: scenario.available},
+					runtimeClient: &grpcContainerRuntime{commandSource: commandBackend{
+						name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner",
+					}},
+				}
+				var err error
+				want := []string{"shell", engineInstanceName, "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls"}
+				if operation == "files" {
+					descriptor := runtimefiles.Descriptor{Resource: datafiles.Resource{Kind: "volume", Name: "synthetic-volume", ID: "synthetic-identity"}}
+					err = manager.RunFileRequest(context.Background(), descriptor, datafiles.Request{
+						Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
+					}, nil, io.Discard)
+					want = []string{
+						"shell", "--workdir=/", engineInstanceName, "--", "sh", "-c",
+						limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "sh", "-c",
+						`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files`,
+					}
+				} else {
+					_, err = manager.run(context.Background(), "list synthetic volumes", "volume", "ls")
+				}
+				if !scenario.borrowed {
+					if !errors.Is(err, ErrUnavailable) || len(runner.commands) != 0 {
+						t.Fatalf("an unrelated or disconnected engine origin was reused: err=%v commands=%+v", err, runner.commands)
+					}
+					return
+				}
+				if err != nil || len(runner.commands) != 1 {
+					t.Fatalf("the healthy origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
+				}
+				if runner.commands[0].Name != "limactl" || !reflect.DeepEqual(runner.commands[0].Args, want) {
+					t.Fatalf("the borrowed command omitted in-guest ownership verification: %+v", runner.commands[0])
+				}
+			})
+		}
 	}
 }
 

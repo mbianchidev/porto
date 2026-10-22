@@ -118,7 +118,11 @@ clears old compatibility metadata before any later container recreation.
 Compatibility CLI calls can reuse that connection's exact engine origin, with
 ownership checked inside the actual guest command before executing nerdctl.
 They do not spawn separate Lima status and ownership processes for each
-individual API operation. A changed owner, instance or disconnected inventory
+individual API operation. Streamed filesystem helper requests use the same
+owned origin and check ownership inside the guest before consuming transfer
+input. This avoids repeating discovery for each WebDAV request while retaining
+fresh resource-identity checks for every request and the 15-second mount-readiness
+budget. A changed owner, instance or disconnected inventory
 requires normal discovery again. Cold compatibility starts/restarts have a
 one-minute task/shim/network startup budget instead of the generic 20-second
 metadata budget; stricter caller deadlines still win.
