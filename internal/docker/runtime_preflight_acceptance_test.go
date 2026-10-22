@@ -7,6 +7,10 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -17,6 +21,91 @@ import (
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+func TestRuntimeDataReadTraceLocatesTimeoutWithoutExtendingItsDeadline(t *testing.T) {
+	for _, guestStarted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("guest-started-%t", guestStarted), func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+				defer cancel()
+				command := runtimes.Command{
+					Name: "limactl", Dir: "synthetic directory", Env: []string{"SYNTHETIC_MODE=trace"},
+					Args: []string{"shell", "synthetic-engine", "--", "sh", "-c", limaOwnedRuntimeCommand,
+						"porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls", "--format", "{{json .}}"},
+				}
+				original := slices.Clone(command.Args)
+				started := time.Now()
+				runner := contextImageRunner{stream: func(actual context.Context, traced runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+					if actual != ctx || traced.Dir != command.Dir || !slices.Equal(traced.Env, command.Env) {
+						t.Fatal("read trace changed the original context or environment")
+					}
+					if !slices.Equal(traced.Args[:3], original[:3]) ||
+						!slices.Equal(traced.Args[len(traced.Args)-len(original)+3:], original[3:]) {
+						t.Fatal("read trace changed the instance, ownership guard or guest arguments")
+					}
+					if guestStarted {
+						time.Sleep(4 * time.Second)
+						for _, part := range []string{"PORTO_CI_META", "DATA_STARTED\n"} {
+							if err := emit(runtimes.OutputChunk{Stream: "stderr", Data: []byte(part)}); err != nil {
+								return nil, err
+							}
+						}
+					}
+					<-actual.Done()
+					return nil, actual.Err()
+				}}
+				output, err := runtimeDataTraceRead(ctx, command, runtimeDataReadGuestOffset(command), runner)
+				if !errors.Is(err, context.DeadlineExceeded) || time.Since(started) != 20*time.Second {
+					t.Fatalf("read trace changed the original deadline: elapsed=%s err=%v", time.Since(started), err)
+				}
+				at := time.Duration(0)
+				if guestStarted {
+					at = 4 * time.Second
+				}
+				want := fmt.Sprintf("guest start observed=%t at %s, guest finish observed=false", guestStarted, at)
+				if !strings.Contains(string(output), want) || strings.Contains(string(output), "PORTO_CI_METADATA_") ||
+					!slices.Equal(command.Args, original) {
+					t.Fatalf("read timing was inaccurate or changed the original command: %s", output)
+				}
+			})
+		})
+	}
+}
+
+func TestRuntimeDataReadTracePreservesGuestExitStatusAndJSON(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the timing wrapper executes in the Linux guest")
+	}
+	for _, status := range []string{"0", "7"} {
+		t.Run("status-"+status, func(t *testing.T) {
+			bin := t.TempDir()
+			script := "#!/bin/sh\nprintf '{\"Name\":\"synthetic-volume\"}\\n'\nif [ \"$SYNTHETIC_STATUS\" != 0 ]; then printf 'synthetic guest error\\n' >&2; fi\nexit \"$SYNTHETIC_STATUS\"\n"
+			if err := os.WriteFile(filepath.Join(bin, "nerdctl"), []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			command := runtimes.Command{
+				Name: "limactl", Args: []string{"shell", "synthetic-engine", "--", "nerdctl", "volume", "ls"},
+				Env: []string{"SYNTHETIC_STATUS=" + status, "PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},
+			}
+			runner := contextImageRunner{stream: func(ctx context.Context, traced runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+				traced.Name, traced.Args = traced.Args[3], traced.Args[4:]
+				return (runtimes.ExecRunner{}).RunStreaming(ctx, traced, emit)
+			}}
+			output, err := runtimeDataTraceRead(context.Background(), command, runtimeDataReadGuestOffset(command), runner)
+			if status == "0" {
+				if err != nil || string(output) != "{\"Name\":\"synthetic-volume\"}\n" {
+					t.Fatalf("timing markers polluted successful metadata: %q, %v", output, err)
+				}
+				return
+			}
+			var exit *exec.ExitError
+			if !errors.As(err, &exit) || exit.ExitCode() != 7 || !strings.Contains(string(output), "synthetic guest error") ||
+				!strings.Contains(string(output), "guest start observed=true") || !strings.Contains(string(output), "guest finish observed=true") {
+				t.Fatalf("read trace hid the guest error or exit status: %s, %v", output, err)
+			}
+		})
+	}
+}
 
 func TestRuntimeDataReadTimeoutDiagnosticsPreserveFailureAndOwnership(t *testing.T) {
 	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
@@ -72,6 +161,9 @@ func TestRuntimeDataReadTimeoutDiagnosticsNeverReplayMutationsOrArbitraryShells(
 		{Name: "limactl", Args: []string{"shell", "synthetic", "--", "sh", "-c", "synthetic mutation", "nerdctl", "volume", "ls"}},
 		{Name: "limactl", Args: []string{"shell", "synthetic"}},
 	} {
+		if runtimeDataReadGuestOffset(command) >= 0 {
+			t.Fatal("read tracing accepted a non-allowlisted operation")
+		}
 		output, err := runtimeDataReadTimeoutDiagnostics(ctx, command, []byte("original"), failure, lifecycleDeadlineRunner(func(context.Context, runtimes.Command) ([]byte, error) {
 			t.Fatal("diagnostic replayed a non-allowlisted operation")
 			return nil, nil

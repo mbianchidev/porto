@@ -130,8 +130,14 @@ If a software-emulated CI volume listing reaches that metadata deadline, a
 separate read-only diagnostic measures an SSH no-op and the same guest listing
 under one 30-second diagnostic budget. It retains the original ownership
 wrapper, reports guest execution time, and still returns the original failure.
+The original read also records when guest start and finish markers reach the
+host, rather than relying only on timings from a later successful diagnostic.
+Timing markers are removed from metadata output, and the original deadline and
+exit status are preserved. Fixture cleanup logs each resource's elapsed time
+and remaining aggregate budget; exhausting that two-minute budget is reported
+separately from an individual metadata timeout.
 Successful requests, mutations, arbitrary shell commands, and caller
-cancellation are never replayed.
+cancellation are never replayed by the post-failure probes.
 
 The production migration/native APIs operate on uniquely labelled fixture
 images, volumes, networks and stopped/running containers. A separate

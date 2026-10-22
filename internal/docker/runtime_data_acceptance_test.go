@@ -54,30 +54,83 @@ func (runner runtimeDataDiagnosticRunner) Run(ctx context.Context, command runti
 		arguments := append(slices.Clone(command.Args[:index]), "--debug")
 		command.Args = append(arguments, command.Args[index:]...)
 	}
-	output, err := runner.ExecRunner.Run(ctx, command)
+	var output []byte
+	var err error
+	if offset := runtimeDataReadGuestOffset(command); offset >= 0 {
+		output, err = runtimeDataTraceRead(ctx, command, offset, runner.ExecRunner)
+	} else {
+		output, err = runner.ExecRunner.Run(ctx, command)
+	}
 	return runtimeDataReadTimeoutDiagnostics(ctx, command, output, err, runner.ExecRunner)
 }
 
-func runtimeDataReadTimeoutDiagnostics(ctx context.Context, command runtimes.Command, output []byte, err error, runner runtimes.Runner) ([]byte, error) {
-	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) ||
-		strings.TrimSuffix(filepath.Base(command.Name), ".exe") != "limactl" {
-		return output, err
+func runtimeDataReadGuestOffset(command runtimes.Command) int {
+	if strings.TrimSuffix(filepath.Base(command.Name), ".exe") != "limactl" {
+		return -1
 	}
 	separator := slices.Index(command.Args, "--")
 	nerdctl := slices.Index(command.Args, "nerdctl")
 	if len(command.Args) == 0 || command.Args[0] != "shell" || separator < 2 ||
 		nerdctl <= separator || nerdctl+2 >= len(command.Args) ||
 		command.Args[nerdctl+1] != "volume" || command.Args[nerdctl+2] != "ls" {
-		return output, err
+		return -1
 	}
 	guest := command.Args[separator+1:]
 	if nerdctl != separator+1 && (nerdctl != separator+6 ||
 		!slices.Equal(guest[:4], []string{"sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command"})) {
+		return -1
+	}
+	return separator + 1
+}
+
+func runtimeDataTraceRead(ctx context.Context, command runtimes.Command, offset int, runner streamingRunner) ([]byte, error) {
+	const startMarker = "PORTO_CI_METADATA_STARTED\n"
+	const endMarker = "PORTO_CI_METADATA_FINISHED\n"
+	const traceRead = `printf 'PORTO_CI_METADATA_STARTED\n' >&2
+"$@"
+result=$?
+printf 'PORTO_CI_METADATA_FINISHED\n' >&2
+exit "$result"`
+	arguments := append(slices.Clone(command.Args[:offset]), "sh", "-c", traceRead, "porto-read-timing")
+	command.Args = append(arguments, command.Args[offset:]...)
+	var stdout, stderr bytes.Buffer
+	started := time.Now()
+	var guestStart, guestEnd time.Duration
+	var sawStart, sawEnd bool
+	_, err := runner.RunStreaming(ctx, command, func(chunk runtimes.OutputChunk) error {
+		if chunk.Stream == "stdout" {
+			_, err := stdout.Write(chunk.Data)
+			return err
+		}
+		stderr.Write(chunk.Data)
+		if !sawStart && bytes.Contains(stderr.Bytes(), []byte(startMarker)) {
+			sawStart, guestStart = true, time.Since(started)
+		}
+		if !sawEnd && bytes.Contains(stderr.Bytes(), []byte(endMarker)) {
+			sawEnd, guestEnd = true, time.Since(started)
+		}
+		return nil
+	})
+	diagnostics := strings.ReplaceAll(strings.ReplaceAll(stderr.String(), startMarker, ""), endMarker, "")
+	output := append(stdout.Bytes(), diagnostics...)
+	if err != nil {
+		output = append(output, []byte(fmt.Sprintf(
+			"\nOriginal read timing: host elapsed=%s, guest start observed=%t at %s, guest finish observed=%t at %s\n",
+			time.Since(started), sawStart, guestStart, sawEnd, guestEnd,
+		))...)
+	}
+	return output, err
+}
+
+func runtimeDataReadTimeoutDiagnostics(ctx context.Context, command runtimes.Command, output []byte, err error, runner runtimes.Runner) ([]byte, error) {
+	offset := runtimeDataReadGuestOffset(command)
+	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) || offset < 0 {
 		return output, err
 	}
+	guest := command.Args[offset:]
 	diagnostic, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
 	defer cancel()
-	prefix := []string{"--debug", "shell", "--workdir=/", command.Args[separator-1], "--"}
+	prefix := []string{"--debug", "shell", "--workdir=/", command.Args[offset-2], "--"}
 	const timedRead = `started="$(date +%s)" || exit
 "$@"
 result=$?
@@ -777,8 +830,17 @@ func (fixture *runtimeDataFixture) prepareObjects() {
 			t.Errorf("detach real host folders before deleting fixture resources: %v", err)
 			return
 		}
-		if err := cleanupRuntimeDataDestinations(ctx, fixture.cleanupSelections(), fixture.removeDestination); err != nil {
+		if err := cleanupRuntimeDataDestinations(ctx, fixture.cleanupSelections(), func(ctx context.Context, selection dataops.Selection) error {
+			started := time.Now()
+			err := fixture.removeDestination(ctx, selection)
+			deadline, _ := ctx.Deadline()
+			t.Logf("fixture cleanup %s %s: elapsed=%s remaining=%s error=%v", selection.Kind, selection.Destination, time.Since(started), time.Until(deadline), err)
+			return err
+		}); err != nil {
 			t.Error(err)
+		}
+		if err := ctx.Err(); err != nil {
+			t.Errorf("fixture cleanup exhausted its two-minute budget: %v", err)
 		}
 	})
 }
