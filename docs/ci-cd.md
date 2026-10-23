@@ -68,6 +68,184 @@ Storage fixtures also cover exact category/object confirmation, referenced
 volume protection, visible mount ownership, backup-policy edits, cancellation
 and importing before a volume exists. Linux unit tests verify authoritative
 metadata allocation and stable native volume identity across data replacement.
+Migration fixtures additionally verify source-bound retry selections, reset
+sensitive/helper consent, exact image dependencies, IPv6/exposed-port fidelity,
+stale metadata, conflicting destinations and durable per-object interruption
+outcomes. Native-access fixtures cover resource-bound write consent, unavailable
+or replaced bridges, explicit failed-detach states, escaped host paths, recovery,
+confined long/non-ASCII paths and connection loss. Unit/SFTP/browser fixtures do
+not count as successful OS-native mounts for every platform/backend row; see
+the [real-runtime matrix](data-management.md#real-runtime-acceptance).
+
+### Required acceptance and optional platform integration
+
+PR CI separates backend correctness, native filesystem behavior, and full
+desktop-VM integration instead of making every signal depend on two emulated
+VMs booting and remaining responsive.
+
+| Coverage | Default PR gate | Execution |
+| --- | --- | --- |
+| Real runtime data | Yes, 7 jobs | Native Linux x64/ARM64 containerd; KVM-backed x64 Lima; migration/native phases plus the accelerated Lima engine lifecycle |
+| Native filesystem drivers | Yes, 4 jobs | Actual macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp mounts, with confined synthetic SFTP sources and no guest VM |
+| Software-emulated Lima integration | No, 15 opt-in cells | Linux ARM64, macOS Intel/Apple Silicon and Windows x64/ARM64; migration, native, and engine phases |
+
+The `Native filesystem` jobs exercise real host-mounted files, not an in-memory
+filesystem mock. Windows builds the current native helper and installs the
+checksum-pinned WinFsp driver. macOS uses its built-in WebDAV driver. These
+checks retain direct edits, read-only behavior, confinement, and owned cleanup;
+the macOS suite also exercises delayed readiness, owner-process death, and detach
+recovery. They run independently of guest provisioning. Existing packaged
+Windows-helper checks in `Native installers` remain required as well.
+
+Required VM-backed acceptance checks for `/dev/kvm` before provisioning; it
+must not silently fall back to a software-emulated destination. Linux ARM64's
+native containerd migration and native-resource tests remain required. Those
+local-backend fixtures may use an isolated emulated Docker source VM, but do
+not qualify the host's Lima destination/restart behavior.
+
+The Linux ARM64 and macOS/Windows Lima cells live in the manually dispatched
+`Emulated runtime acceptance` workflow. This is a virtualization boundary,
+not just an OS-name distinction: the hosted Linux ARM64 runner also lacks KVM,
+and its restart case exhausted the 85-minute job budget. Hosted-runner TCG
+timing, guest kernel timer panics, and repeated SSH startup made those
+VM-backed cells an unreliable PR gate.
+Deferring this matrix is an explicit coverage tradeoff, not a fix for those upstream or
+timing problems. Passing the default gate does **not** establish full
+software-emulated Lima migration, native-resource integration, or engine-restart
+acceptance. Those results require a separate successful run on the selected
+revision and platform. Nothing uses `continue-on-error` to disguise failures.
+
+Once the manual workflow is available on the repository's default branch, run
+one platform/phase against an explicit branch or tag:
+
+```sh
+gh workflow run emulated-runtime.yml --ref <branch-or-tag> \
+  -f platform=windows-11-arm -f phase=migration
+```
+
+Use `platform=all` and `phase=all` for all 15 cells, or select
+`platform=ubuntu-26.04-arm` for the unaccelerated Linux Lima row. Manual failures remain
+failures, and canceled or unrun cells never count as accepted.
+
+Both runtime workflows share `.github/actions/runtime-data/action.yml`, retain
+workload-scoped Go and verified-download caches, and use fail-fast within their
+own matrices. No cache contains fixture runtime state. Runtime phases run in
+parallel on separately owned runtimes through
+`scripts/test-docker-clients.sh <local|lima> data`;
+`PORTO_RUNTIME_DATA_PHASE=migration|native|engine` selects a phase, while an unset value
+or `all` retains the combined opt-in local suite. The migration phase runs every
+round-trip, failure and interruption assertion. The native phase creates its
+real resources through the same verified migration round trip, then runs every
+mount, workload and standalone-VM lifecycle assertion. The engine phase also
+performs the verified migration round trip, then runs all owned-engine
+update, restart, identity-preserving reattachment and shutdown assertions.
+Separate restart phases avoid combining both restart scenarios in one
+executable. Local-containerd cells have no Lima engine to restart; selecting the
+dedicated engine phase without an independently owned CI Lima runtime is an error.
+No job waits for another phase's artifacts. The 85-minute job, 55-minute
+executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.
+Normal development-client jobs retain their existing scope. Linux installs
+FUSE3/QEMU and builds checksum-pinned SSHFS 3.7.6 with the required symlink
+containment fixes instead of the older distribution binary. It grants the runner
+access to an available KVM device. A fresh KVM-group process retains access in both destination and source
+QEMU children. Rootful jobs explicitly forward the CI identity, temporary directory,
+architecture, toolchain, phase and download-cache environment across elevation, including Ubuntu 26's
+sudo-rs. Windows checksum-verifies the explicitly selected WinFsp driver; macOS
+uses its built-in WebDAV driver without macFUSE.
+Disposable CI destinations start the normal container inventory and borrow its
+healthy runtime connection, matching daemon behavior instead of opening a new
+containerd SSH channel for each file or migration operation.
+Container creation, exec and network SDK adapters borrow that same connection
+without closing the inventory-owned client when an individual operation finishes.
+An authoritative empty native inventory never invokes the compatibility CLI:
+there are no container fields to enrich. Deleting the final container also
+clears old compatibility metadata before any later container recreation.
+Compatibility CLI calls can reuse that connection's exact engine origin, with
+ownership checked inside the actual guest command before executing nerdctl.
+They do not spawn separate Lima status and ownership processes for each
+individual API operation. Streamed filesystem helper requests use the same
+owned origin and check ownership inside the guest before consuming transfer
+input. This avoids repeating discovery for each WebDAV request while retaining
+fresh resource-identity checks for every request and the 15-second mount-readiness
+budget. A changed owner, instance or disconnected inventory
+requires normal discovery again. Cold compatibility starts/restarts have a
+one-minute task/shim/network startup budget instead of the generic 20-second
+metadata budget; stricter caller deadlines still win.
+Already-bound remote volumes verify their pinned metadata generation through
+the existing guest identity helper instead of repeating nerdctl volume discovery.
+Every concurrent request still makes its own fresh identity query; changed
+generations, invalid helper identities and helper failures remain errors.
+Initial volume path, driver and option validation is unchanged.
+If a software-emulated CI volume listing reaches that metadata deadline, a
+separate read-only diagnostic measures an SSH no-op and the same guest listing
+under one 30-second diagnostic budget. It retains the original ownership
+wrapper, reports guest execution time, and still returns the original failure.
+The original read also records when guest start and finish markers reach the
+host, rather than relying only on timings from a later successful diagnostic.
+Timing markers are removed from metadata output, and the original deadline and
+exit status are preserved. Fixture cleanup logs each resource's elapsed time
+and remaining aggregate budget; exhausting that two-minute budget is reported
+separately from an individual metadata timeout.
+Successful requests, mutations, arbitrary shell commands, and caller
+cancellation are never replayed by the post-failure probes.
+
+The production migration/native APIs operate on uniquely labelled fixture
+images, volumes, networks and stopped/running containers. A separate
+Porto-managed, no-host-mount standalone VM supplies a real Docker Engine source
+and managed-VM native-file acceptance. Real Unix/named-pipe forwarding and
+Docker context discovery are exercised without changing the active context
+or credentials. Original source configuration and data are retained.
+The Docker source proxy reuses HTTP connections over its owned SSH transport,
+rather than starting a new SSH process for every API request. Two sequential
+real Docker pings must share one tunnel, and cleanup closes both HTTP pools.
+An actual 8 MiB tmpfs checks staged low-space failure; a killed migration worker
+checks durable per-object outcomes and never-started helper recovery.
+The worker initializes the same inventory-owned runtime as the daemon before
+transfer and reports explicit readiness or failure JSON; test-runner failure
+text must never be mistaken for an actual helper-backed transfer checkpoint.
+Native tests check actual workload-visible host edits, permissions, links, case,
+concurrent changes, deletion/reused identities, connection loss and explicit
+reconnect. Only disposable CI engines are stopped for update/shutdown tests.
+The macOS native-driver suite also kills an actual mount-owner process and
+checks exact owned recovery and retryable detach failure. A real delayed mount
+exceeds the former shared 30-second startup watchdog without exceeding either
+phase's limit: SFTP initialization and mounting each have an independent
+30-second budget, followed by 15-second readiness. Successful initialization
+disarms its watchdog; stalled initialization or readiness still cancels the
+owned transport, and caller cancellation remains active throughout setup.
+Source provisioning has a separate 20-minute setup budget; the unchanged
+40-minute acceptance budget starts only after its real Docker fixtures are ready.
+The executable's overall 55-minute deadline still bounds setup and acceptance
+within each phase job.
+Before destination engine update/restart, the now-unused disposable source VM
+is stopped rather than consuming emulated host resources. In the engine phase
+this follows the verified migration; combined `all` runs first complete the
+standalone-VM reconnect cases as well.
+Fixture cleanup visits each exact destination once, removing containers before
+volumes/networks and image aliases last. Repeated alias lookups must not consume
+the unchanged two-minute cleanup budget on software-emulated runners.
+Freshly inspected stopped containers use ordinary removal, avoiding unnecessary
+forced teardown and its extra identity lookup and ten-second finalization loop.
+Running, paused, or ambiguous states still require force removal. Both paths
+keep the production native-attachment and managed-container guards.
+Independent volume and network removals overlap with at most two in flight,
+while containers and image aliases remain serial. Each removal still performs
+fresh ownership checks through the production APIs, and all failures are retained.
+This keeps slow Windows SSH startup from serializing unrelated cleanup work past
+the same deadline.
+Temporary-volume rollback and fixture volume cleanup also reuse their freshly
+verified inspection through the normal removal guards. They do not cache
+ownership or repeat the same SSH inspection within the operation; the production
+rollback still has its 30-second budget.
+
+For local acceptance against an already-running, ownership-verified Porto
+Lima destination, compile this revision's Linux helper beside a compiled test
+executable as `runtime/bin/porto-runtime-helper`, matching the guest architecture.
+Run that test executable with `PORTO_RUNTIME_DATA_ACCEPTANCE=1`,
+`PORTO_RUNTIME_DATA_USE_CURRENT_HELPER=1` and
+`-test.run '^TestRuntimeDataAcceptance$' -test.timeout=45m -test.v`.
+It creates/removes its own separately owned source VM and fixture resources;
+the destination engine and its installed helper are never replaced or stopped.
 
 For an optional synthetic round trip against an **already running, owned**
 Lima engine, cross-build the current Linux helper and set
@@ -151,20 +329,94 @@ Hosted macOS and Windows runners use small host-architecture Ubuntu 26.04 QEMU
 guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
 requires software emulation because nested Virtualization.framework support is
 unavailable; matching the host architecture keeps its guest agent/runtime helper
-aligned without cross-architecture x86 emulation. Windows also avoids unused
-SSHFS home-folder mounts and their startup probes. The test harness records
+aligned without cross-architecture x86 emulation. Windows ARM64 hosted runners
+also use TCG through Lima's QEMU command override because nested WHPX cannot
+provide the required physical address width. This affects only disposable CI
+guests, not packaged runtime defaults or native WinFsp mounting. Windows also
+avoids unused SSHFS home-folder mounts and their startup probes. Short temporary
+directory names keep both guest SSH socket paths within macOS's Unix-socket
+length limit. The test harness records
 ownership only inside the isolated runner temporary directory, including native
 Windows paths. Windows disables CGO for the daemon/test build, as the client
 suite does not require WinFsp. The compiled client-test executable sits beside
 the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
-On software-emulated macOS, the host prepares Lima's pinned default containerd
+Before package installation, each disposable Ubuntu guest uses the
+[official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
+on the date its fixture configuration was generated. The snapshot ID is logged
+and reused for the destination, source VM, and restarts. Only the Ubuntu source
+URIs change; suites, components, archive signing keys, signature verification,
+and package hashes remain intact. Direct immutable URIs avoid mixing indexes
+from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
+indexes. An unavailable snapshot or failed index fetch remains an error, with
+no fallback to mutable mirrors or relaxed checks. The 20-minute boot deadline
+is unchanged, and installed Porto environments are not reconfigured.
+On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
 runtime version, rootless services, architecture, and 20-minute boot deadline,
 without repeatedly decompressing the large payload under QEMU. Failed boots
-print bounded host and guest cloud-init logs before the owned fixture is removed.
+print bounded kernel/device-discovery records, read-only QMP disk/CPU state,
+and host logs before the owned fixture is removed. When SSH is reachable, the
+same diagnostic attempt records the guest fstab, block labels, mounted devices,
+udev properties and unit timings, plus bounded udev and cloud-init logs.
+Cloud-init module durations and the systemd critical chain distinguish early
+network/SSH setup from later package and rootless provisioning. Both macOS
+architectures report host load, memory, swap, and owned-runner QEMU process names
+and usage while acceptance runs; guest CPU pressure alone is not a host capacity
+measurement. Periodic sampling reads fixed process fields, not every process's
+argument memory, so diagnostics do not add that expensive host-wide scan.
+Unavailable diagnostics are reported without replacing the original failure;
+diagnostics never repair mounts, change guest state or create engine ownership.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
+Linux runners without `/dev/kvm` use the same host-side archive preparation.
+Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
+source VM, avoiding the EDK2 LPA2 boot hang reported in
+[tianocore/edk2#11962](https://github.com/tianocore/edk2/issues/11962).
+The 20-minute guest startup budget and resource assertions remain unchanged.
+The isolated Ubuntu guests omit APT translation, AppStream and
+command-not-found indexes and the post-install `needrestart` scanner; signed
+package indexes and normal dependency resolution remain enabled. Source Docker
+installation omits optional recommendations. This keeps software-emulated setup
+from spending its boot budget on unrelated desktop/package-search metadata or
+restart suggestions for a disposable guest.
+macOS data jobs lower the fixture process priority, inherited by both QEMU
+guests, to leave scheduling priority for the hosted runner's heartbeat.
+Intel macOS data jobs use two vCPUs per fixture VM, 1.5 GiB for the destination
+and 1 GiB for the source, keeping the two-guest allocation within hosted RAM.
+They select Lima's complete TCG fallback configuration: multi-threaded execution,
+a 512 MiB translation cache per VM, disabled unsupported S3/S4 power states and
+a supported emulated CPU. Forcing just the accelerator while Lima selects its
+HVF configuration bypasses these TCG defaults. Serializing both guest vCPUs and
+reducing the translation cache slows the CPU-bound device discovery and rootless
+provisioning. The guest retains its two vCPUs and normal clock handling, without
+instruction counting. Raising Lima's outer timeout does not repair an
+emergency-mode boot.
+The Intel runtime-data phases verify that both destination and source retain
+the image's `LABEL=BOOT` and `LABEL=UEFI` fstab entries, resolve those labels to
+the actual mounted `/boot` and `/boot/efi` devices, and reach `local-fs.target`.
+The image, required mounts, rootless runtime and all boot/acceptance caps remain
+unchanged. See [QEMU's instruction-counting design](https://www.qemu.org/docs/master/devel/tcg-icount.html).
+A reported `kern.hv_support=1` does not establish supported nested
+HVF: GitHub does not support nested virtualization on macOS runner images
+([actions/runner-images#13277](https://github.com/actions/runner-images/issues/13277)).
+Both source and destination inherit this CI-only QEMU override; packaged runtime
+defaults are unchanged.
+They remove the Go build cache after compiling the fixture, leaving disk space
+for both guest disks, and emit periodic free-disk, RAM/swap and QEMU RSS/CPU
+samples as job notices to aid lost-runner diagnosis when normal logs are
+unavailable. Software-emulated data fixtures also log runtime
+command durations so slow guest work can be distinguished from host process
+startup and repeated discovery. Failed compatibility starts also retain nerdctl
+debug output and the exact synthetic workload's observed task state. Guest boot
+and acceptance thresholds are unchanged.
+Porto forwards its selected boot budget to Lima's own `--timeout` as well as
+the parent process context: first boots and recorded standalone restarts retain
+20 minutes, while Kubernetes-node restarts remain five minutes. Lima's internal
+ten-minute default must not silently shorten the recorded budget.
+Porto-owned Docker engine installation, explicit restart and ownership recovery
+likewise use the same 20-minute VM boot budget, without changing shorter caller
+deadlines or the separate Kubernetes-node restart policy.
 
 Ubuntu 26.04 avoids a [systemd v255 logind deadlock](https://github.com/lima-vm/lima/issues/5570)
 that affects Ubuntu 24.04: Lima's first-boot `loginctl terminate-user` can race an SSH login,
@@ -359,16 +611,24 @@ Its MIT license and version metadata ship beside the other runtime tools, and
 native packaging smoke tests execute `dive --version`.
 
 For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
-applies `scripts/patches/lima-2.2.0-windows-pid.patch` and
-`scripts/patches/lima-2.2.0-windows-stop.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.4`. The PID change is an upstream backport; the
+applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
+`scripts/patches/lima-2.2.0-windows-stop.patch` and
+`scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
+`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and rebuilds only
+`limactl.exe` as `v2.2.0+porto.6`. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.
 If `taskkill.exe` reports an already-exited target, its process handle must
 confirm termination before the stop succeeds; other failures block PID cleanup,
-restart, and deletion. Other signals keep
-upstream behavior. Both patches and the Apache-2.0 license
+restart, and deletion. Graceful QEMU stops use the owned QMP socket's ACPI
+powerdown command instead of an unavailable console event, then wait for normal
+host-agent exit and actual stopped state. The real Windows resource suite
+exercises VM loss/reconnect and engine update/shutdown through that path.
+The ARM64 fix reads the Windows-populated `x/sys/cpu` feature bits even when
+its `Initialized` flag is false, matching that library's platform behavior.
+Native ARM64 packaging checks that AES detection agrees with the OS feature bit.
+Other signals keep upstream behavior. All patches and the Apache-2.0 license
 ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
 Other platforms keep their verified upstream binaries. Remove each patch
 when moving to a stable Lima version containing its fix; keep the runtime

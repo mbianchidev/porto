@@ -1,0 +1,59 @@
+Porto Windows graceful QEMU shutdown for Lima v2.2.0 (Apache-2.0).
+
+Consoleless host agents cannot receive CTRL_BREAK_EVENT. Ask the selected
+instance's existing QMP socket for an ACPI powerdown instead, then retain
+Lima's normal host-agent event and stopped-state verification. Never turn a
+graceful stop into an implicit forced process termination.
+
+diff --git a/pkg/instance/stop.go b/pkg/instance/stop.go
+--- a/pkg/instance/stop.go
++++ b/pkg/instance/stop.go
+@@ -15,5 +15,7 @@ import (
+ 	"time"
+ 
++	"github.com/digitalocean/go-qemu/qmp"
++	"github.com/digitalocean/go-qemu/qmp/raw"
+ 	"github.com/sirupsen/logrus"
+ 
+ 	"github.com/lima-vm/lima/v2/pkg/autostart"
+@@ -35,5 +37,9 @@ func StopGracefully(ctx context.Context, inst *limatype.Instance, isRestart bool) error {
+ 	if requested, err := autostart.RequestStop(ctx, inst); err != nil && !errors.Is(err, autostart.ErrNotSupported) {
+ 		return fmt.Errorf("failed to request stop via autostart manager: %w", err)
++	} else if !requested && runtime.GOOS == "windows" && inst.VMType == limatype.QEMU {
++		if err := requestQEMUShutdown(ctx, inst.Dir); err != nil {
++			return err
++		}
+ 	} else if !requested {
+ 		logrus.Infof("Sending SIGINT to hostagent process %d", inst.HostAgentPID)
+ 		if err := osutil.SysKill(inst.HostAgentPID, osutil.SigInt); err != nil {
+@@ -53,6 +59,30 @@ func StopGracefully(ctx context.Context, inst *limatype.Instance, isRestart bool) error {
+ 	return waitForInstanceShutdown(ctx, inst)
+ }
+ 
++func requestQEMUShutdown(ctx context.Context, directory string) error {
++	if err := ctx.Err(); err != nil {
++		return err
++	}
++	socket := filepath.Join(directory, filenames.QMPSock)
++	monitor, err := qmp.NewSocketMonitor("unix", socket, 5*time.Second)
++	if err != nil {
++		return fmt.Errorf("open owned QEMU shutdown socket: %w", err)
++	}
++	if err := monitor.Connect(); err != nil {
++		return fmt.Errorf("connect owned QEMU shutdown socket: %w", err)
++	}
++	defer func() {
++		if err := monitor.Disconnect(); err != nil {
++			logrus.WithError(err).Warn("close QEMU shutdown socket")
++		}
++	}()
++	logrus.Info("Requesting graceful QEMU shutdown over its owned QMP socket")
++	if err := raw.NewMonitor(monitor).SystemPowerdown(); err != nil {
++		return fmt.Errorf("request graceful QEMU shutdown: %w", err)
++	}
++	return nil
++}
++
+ func waitForHostAgentTermination(ctx context.Context, inst *limatype.Instance, begin time.Time) error {
+ 	ctx, cancel := context.WithTimeout(ctx, 3*time.Minute+10*time.Second)
+ 	defer cancel()

@@ -27,6 +27,7 @@ import (
 
 const (
 	defaultTimeout     = 20 * time.Second
+	engineStartTimeout = 20 * time.Minute
 	engineInstanceName = "porto-engine"
 	engineStateFile    = "engine.json"
 	engineLockFile     = "engine-install.lock"
@@ -41,6 +42,17 @@ cat > "$temporary"
 chmod 0755 "$temporary"
 "$temporary" version
 mv -f "$temporary" "$HOME/.local/bin/porto-runtime-helper"
+`
+
+const limaOwnedRuntimeCommand = `set -eu
+expected="$1"
+shift
+actual="$(cat "$HOME/.porto-engine-owner")"
+if [ "$actual" != "$expected" ]; then
+  echo 'Porto engine ownership changed; refusing the runtime command' >&2
+  exit 1
+fi
+exec "$@"
 `
 
 var (
@@ -326,13 +338,9 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		if err != nil {
 			return Status{}, err
 		}
-		_, err = m.runCommand(
+		_, err = m.startLimaRuntime(
 			ctx,
-			10*time.Minute,
 			"create Porto container runtime",
-			nil,
-			"limactl",
-			"start",
 			"--tty=false",
 			"--name="+engineInstanceName,
 			"--containerd=user",
@@ -340,7 +348,7 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			limaEngineTemplate(runtime.GOOS),
 		)
 	} else if !running {
-		_, err = m.runCommand(ctx, 5*time.Minute, "start Porto container runtime", nil, "limactl", "start", engineInstanceName)
+		_, err = m.startLimaRuntime(ctx, "start Porto container runtime", engineInstanceName)
 	}
 	if err != nil {
 		if created {
@@ -428,6 +436,11 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	return installedStatus(limaBackend, versionOutput), nil
 }
 
+func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
+	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
+	return m.runCommand(ctx, engineStartTimeout, action, nil, "limactl", arguments...)
+}
+
 func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string) error {
 	path, err := m.runtimeHelperPath()
 	if err != nil {
@@ -504,7 +517,7 @@ func (m *Manager) StartEngine(ctx context.Context) (err error) {
 		return fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
 	}
 	if !running {
-		if _, err := m.runCommand(ctx, 5*time.Minute, "start Porto container runtime", nil, "limactl", "start", state.Instance); err != nil {
+		if _, err := m.startLimaRuntime(ctx, "start Porto container runtime", state.Instance); err != nil {
 			return err
 		}
 	}
@@ -1246,7 +1259,11 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	default:
 		return fmt.Errorf("unsupported container action %q", action)
 	}
-	_, err = m.run(ctx, action+" Porto container", args...)
+	commandTimeout := m.timeout
+	if action == "start" || action == "restart" {
+		commandTimeout = max(commandTimeout, time.Minute)
+	}
+	_, err = m.runWithTimeout(ctx, commandTimeout, action+" Porto container", nil, args...)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -2021,6 +2038,7 @@ type commandBackend struct {
 	prefix       []string
 	description  string
 	limaInstance string
+	ownerID      string
 }
 
 func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
@@ -2067,6 +2085,7 @@ func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 		prefix:       []string{"shell", state.Instance, "--", "nerdctl"},
 		description:  "containerd in Lima " + state.Instance,
 		limaInstance: state.Instance,
+		ownerID:      state.OwnerID,
 	}, nil
 }
 
@@ -2074,8 +2093,29 @@ func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byt
 	return m.runWithTimeout(ctx, m.timeout, action, nil, args...)
 }
 
+func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error) {
+	if !m.directCLI {
+		if inventory := m.activeContainerInventory(); inventory != nil {
+			if runtime, ok := inventory.activeRuntime().(*grpcContainerRuntime); ok {
+				origin := runtime.commandSource
+				state, err := m.readEngineState()
+				if err == nil && state.Mode == "lima" && origin.name == "limactl" &&
+					origin.ownerID != "" && origin.ownerID == state.OwnerID &&
+					origin.limaInstance == state.Instance {
+					origin.prefix = []string{
+						"shell", state.Instance, "--", "sh", "-c",
+						limaOwnedRuntimeCommand, "porto-runtime-command", state.OwnerID, "nerdctl",
+					}
+					return origin, nil
+				}
+			}
+		}
+	}
+	return m.backend(ctx)
+}
+
 func (m *Manager) runWithTimeout(ctx context.Context, timeout time.Duration, action string, stdin []byte, args ...string) ([]byte, error) {
-	backend, err := m.backend(ctx)
+	backend, err := m.backendForCommand(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -2391,15 +2431,7 @@ func (m *Manager) verifyOrRecoverLimaOwnership(ctx context.Context, ownerID stri
 		); err != nil {
 			return errors.Join(ownershipErr, err)
 		}
-		if _, err := m.runCommand(
-			ctx,
-			5*time.Minute,
-			"restart Porto container runtime",
-			nil,
-			"limactl",
-			"start",
-			engineInstanceName,
-		); err != nil {
+		if _, err := m.startLimaRuntime(ctx, "restart Porto container runtime", engineInstanceName); err != nil {
 			return errors.Join(ownershipErr, err)
 		}
 		if err := m.verifyLimaOwnershipUnlocked(ctx, ownerID); err != nil {
@@ -2491,7 +2523,7 @@ func (m *Manager) ensureLimaOwnership(ctx context.Context, state engineState) er
 		return fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
 	}
 	if !running {
-		if _, err := m.runCommand(ctx, 5*time.Minute, "start Porto container runtime for ownership verification", nil, "limactl", "start", state.Instance); err != nil {
+		if _, err := m.startLimaRuntime(ctx, "start Porto container runtime for ownership verification", state.Instance); err != nil {
 			return err
 		}
 	}

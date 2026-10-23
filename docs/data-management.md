@@ -107,6 +107,10 @@ helper before extraction. Temporary destination ownership is reserved in SQLite
 before creation. After interruption, recovery deletes only exact
 label-proven unfinished volumes; foreign or unverifiable objects are retained
 with an explicit failure instead of guessed cleanup.
+Owned cleanup reuses its fresh ownership inspection for guarded removal within
+the same data operation, rather than repeating a remote inspection. Native mounts
+and current container references still block removal. Failed cleanup retains its
+reservation for recovery.
 
 Archives are tar files containing `data/` members and a final
 `porto-manifest.json` (format version 1). The manifest records resource identity,
@@ -190,18 +194,41 @@ porto docker migrate --context desktop-linux \
   --confirm
 porto docker migrate --context desktop-linux \
   --objects volume:unattached-fixture --allow-source-helper --confirm
+porto docker migrate --context desktop-linux --objects volume:fixture-data \
+  --destinations volume:fixture-data=restored-data --confirm
+porto docker migrate --resume 42 --allow-source-helper --confirm
 ```
 
 Container dependencies must be selected too. Unsupported host paths,
 namespace/device/DNS/capability/runtime options are rejected before creating
-that container. Sensitive environment transfer requires separate explicit
-local consent; registry credentials and source context authentication material
+that container. CPU scheduling/cpuset, PID/ulimit, additional host/group, custom
+logging, static endpoint and unlimited-swap settings that cannot be preserved
+are also rejected rather than dropped. Exposed ports, IPv6 host bindings and
+network aliases retain their inspected values. Container recreation requires a
+selected named reference for its exact original image digest; it never pulls a
+replacement for a missing or retagged image. Sensitive environment transfer
+requires separate explicit local consent; registry credentials and source context authentication material
 are never imported. Selected resources are transferred through local Unix
 sockets or Windows named pipes, not unauthenticated remote endpoints.
+Unallocated host ports and rootless internal-network/published-port combinations
+are reported before creation because their source semantics cannot be retained.
+Original sources are never reconfigured to work around those limitations.
+Supported named-volume mounts are recreated with `nocopy`, preserving empty
+migrated volumes rather than populating them from the destination image.
 
-Image content is loaded and its config digest checked. Volume data uses the
-source's read-only container archive API or an already accessible local
-mountpoint. For an unattached Docker Desktop volume, select **Allow temporary
+Named image aliases are preserved and missing aliases are restored on retry.
+Untagged images require an explicit source tag, rather than importing under a
+generic name that could replace unrelated content. Legacy Docker config IDs and
+newer OCI manifest/index IDs are resolved to checksum-verified configuration
+bytes before load; destination config content is verified afterward.
+Native containerd migration compares configuration digests pinned by the
+original source OCI manifest, not an inspector's potentially rewritten unpacked
+layer presentation. Changed execution settings or rootfs diff IDs still conflict.
+Volume data always uses
+the selected source's read-only container archive API. A Unix socket can forward
+to another machine or VM; a source-reported mountpoint is never treated as host
+data merely because a path with that name exists locally.
+For an unattached volume, select **Allow temporary
 read-only source access** (CLI: `--allow-source-helper`). Porto loads a uniquely
 labelled empty scratch image and creates a stopped helper container. Its volume
 mount is **read-only with NoCopy**, its network disabled, and it is never started.
@@ -216,6 +243,36 @@ run rejects volumes needing a helper; local archive import remains available.
 Completed destination objects remain on partial failure, with per-object
 results and deterministic conflicts. A persisted volume identity ledger permits
 resuming a verified transfer without silently duplicating a recreated name.
+Source volume labels are retained. A verified destination identity is recorded
+before the temporary publication reservation is cleared, so an interrupted
+publication cannot silently become an unrelated existing volume.
+
+Each selected object's identity and destination are checkpointed as **pending**
+before transfer, **running** before mutation, and **succeeded**, **failed** or
+**cancelled** afterward. A daemon restart preserves recorded successes and marks
+the active object's unrecorded outcome **interrupted**; it may already exist, so
+its completion is never guessed. A failed checkpoint stops further transfers.
+Source metadata is rechecked against the confirmed dry run immediately before
+each object is handled. JSON member order, image-alias order and Docker's
+unordered observed mount list are canonicalized without discarding source
+configuration or exact numeric values.
+
+Use **Review migration** in the operation history to restore exact selections
+and destination names, then run a new dry run. Sensitive/helper consent is
+cleared and must be granted again. Missing, unsupported or recreated source
+identities are shown explicitly and are not silently replaced by matching names.
+The CLI uses `--resume <operation-id>` to retain the original identities and
+destinations, rather than resolving saved names against a new inventory.
+Sensitive/helper consent must be selected again; `--resume` obtains a new
+preview before `--confirm`. Use `--destinations kind:source=destination,...`
+with a new explicit selection to resolve supported naming conflicts.
+Completed networks/containers
+must match both their source identity and saved configuration plan. Container
+retries retain the original selection set and dependency destinations. Older
+source-only labels, changed configuration/dependencies, and incomplete or
+altered container resource limits produce deterministic conflicts, not implicit
+replacement or a false successful skip. Inspect such destinations before
+explicitly removing or changing them yourself.
 
 ## Native file-manager access
 
@@ -233,22 +290,42 @@ porto docker files                                  # attachment inventory
 porto docker files detach <attachment-id>
 ```
 
+Capability reports are scoped to the requested resource and write mode. They
+check current identity, ownership, stopped/running availability and read-only
+boundaries without allocating an attachment. The dashboard pins attachment
+requests and write consent to that identity; replacing a resource clears write
+consent and makes its old attachment unavailable. A supported capability is not
+itself evidence that a mount succeeded: the real host mount must become ready.
+
 | Host / backend | Native integration | Requirements / limitations |
 | --- | --- | --- |
-| Linux / local containerd | Owned Linux bind mount | Linux mount permission, kernel 5.12+ recursive safe attributes; stopped snapshots do not start workloads |
-| macOS / Porto Lima | Foreground SSHFS over Lima SSH | macFUSE and a maintained SSHFS build proving `contain_symlinks`; sudo SFTP access inside the Porto guest |
-| Linux / Porto Lima | Foreground SSHFS over Lima SSH | FUSE3 and containment-capable SSHFS |
+| Linux / local containerd | Owned Linux bind mount; confined SSHFS for live container roots | Linux mount permission and kernel 5.12+ recursive safe attributes for binds; FUSE3 and SSHFS 3.7.6+ or equivalent containment fixes for running containers. No workload is started implicitly. |
+| macOS / Porto Lima | Built-in macOS WebDAV filesystem over confined SFTP | No third-party filesystem driver. Private loopback authentication; images are read-only. Unix link creation and host chmod/chown are unavailable. |
+| Linux / Porto Lima | Foreground SSHFS over confined SFTP/stdio | FUSE3 and SSHFS 3.7.6+ or equivalent `contain_symlinks` fixes; the scoped guest helper enforces the same root, identity and read-only boundaries as other native drivers. |
 | Windows x64/ARM64 / Porto Lima | WinFsp host folder with direct confined SFTP | Install WinFsp 2.1+ once; the Porto desktop bundles its native mount helper. Running/stopped containers, images and local volumes use the identity-checked guest helper. |
-| Standalone managed VM | SSHFS of its guest home | Running, Porto-owned standalone VM; no implicit boot or access to unrelated VM resources |
+| Standalone managed VM | Host-native bridge to its guest home | Running, Porto-owned standalone VM; macOS uses built-in WebDAV, Windows WinFsp, and Linux SSHFS. No implicit boot or access to unrelated VM resources. |
 
-On Windows, the standalone VM row uses the same WinFsp/SFTP integration for
-its guest home. Porto installs a checksum-verified, version-scoped guest helper
+Standalone VM bridges use the scoped SFTP integration for their guest home.
+Porto installs a checksum-verified, version-scoped guest helper
 only after native-access consent, without replacing the VM's other tooling.
 WinFsp is the maintained OS filesystem driver; installation requires your
 administrator approval. Porto never installs a kernel driver silently. The
 capability report distinguishes **driver missing** from **guest disconnected**.
 Once installed, **Open files** exposes a real private folder usable by Explorer,
 VS Code and other ordinary host editors.
+
+macOS uses its built-in WebDAV filesystem and the same confined, direct SFTP
+backend as Windows. No macFUSE installation or kernel-extension approval is
+required. A private per-attachment password is passed to the OS through an
+unlinked credential descriptor, never a URL, command argument, keychain entry or
+diagnostic log. The server binds only to loopback. The native mount uses a
+private host directory, not a synchronized copy; closing a successful save
+commits it to the workload. macOS presents synthetic Unix ownership/mode bits;
+existing guest permissions remain unchanged. WebDAV cannot represent Unix links
+or chmod/chown, so links are not traversed through that native view and those
+operations require guest tooling or a verified archive. File names retain backend
+case semantics; refresh/reopen for concurrent changes and do not rely on guest
+filesystem notifications.
 
 Windows mounts use direct SFTP random-access I/O rather than a cached sync
 folder: a successful write is persisted in the workload filesystem before the
@@ -265,10 +342,15 @@ case-sensitive. Filesystem notifications from arbitrary guest processes are
 not guaranteed, so refresh or poll for external changes.
 
 Rootless local kernels may forbid binding a running container's locked mount
-subtree. In-app Files reads its live `/proc` root safely without a bind; native
-local access reports that limitation and requires an explicit stop before using
-the snapshot. Lima bridges can use the live root over contained SSHFS without
-starting another workload. Stopped/image snapshot mounts enter the actual
+subtree. In-app Files and native SFTP read its live `/proc` root without such a
+bind; Linux native access uses SSHFS for that resource. Writes enter the actual
+runtime user/mount namespaces so rootless ownership and overlay copy-up remain
+correct. Local stopped/image bind mounts reject symlink traversal at the kernel
+boundary. Confined SFTP permits contained relative links but rejects escapes;
+SSHFS additionally rejects any link target containing `..`, including otherwise
+contained parent-directory links. macOS WebDAV cannot represent Unix links and
+does not traverse them.
+Stopped/image snapshot mounts enter the actual
 containerd user/mount namespaces with maintained `nsenter`, never guess host
 snapshotter paths.
 
@@ -287,3 +369,82 @@ the actual mounted volume's label/serial, not an empty directory; recovery
 checks the bridge PID and creation time before stopping a process. Failed detach operations
 remain visible; cleanup never removes source data. If a driver or backend is
 unavailable, use the in-app inspector, verified archives, or VM copy instead.
+
+SSHFS readiness and later opens verify an exact `porto-<attachment-id>` mount
+source, not just a directory or a mount at the same path. Spaces and non-ASCII
+paths are supported. A missing bridge, exited process or replaced mount is
+reported disconnected; replaced mounts are never unmounted as Porto-owned.
+Local Linux binds also persist and recheck their kernel mount ID. An unmounted
+directory is not reported connected, and a replacement filesystem is never
+detached as the old attachment. Deleted or recreated source volumes do not
+prevent releasing the exact old owned bind.
+Connecting records are persisted before launching the bridge, and failed
+startup/backend cleanup retains a retryable recovery record. Completed backend
+releases are checkpointed so a later host-path cleanup failure does not release
+the backend again after restart. No recursive source deletion is used.
+A legacy attachment without an ownership-marked mount
+can require explicitly unmounting that exact host path with the OS tools before
+retrying `porto docker files detach`; Porto does not guess ownership.
+
+macOS verifies the exact owned loopback WebDAV mount source, including canonical
+temporary-directory aliases. Shutdown unmounts while its server is still alive.
+After a daemon/connection loss, recovery detaches only that identity-proven dead
+mount; in-flight edits that did not successfully close are not claimed committed.
+If the OS removes a dead bridge while an unmount is in progress, Porto verifies
+the mount table again before completing cleanup. A still-mounted or replaced
+filesystem retains a visible, retryable detach failure.
+Stopped-container helpers recursively detach their own nested mounts inside
+their private namespace. Managed VM file creation retains the guest SSH user's
+ownership rather than attempting a privileged root chown.
+
+### Real-runtime acceptance
+
+Required PR acceptance has two independent layers:
+
+| Layer | Required coverage |
+| --- | --- |
+| Runtime data | Native Linux x64/ARM64 containerd and KVM-backed x64 Lima; real migration, native-resource integration, recovery, and accelerated Lima engine lifecycle |
+| Host filesystem drivers | macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp; real OS mounts over confined synthetic SFTP sources, without a VM dependency |
+
+Full Linux ARM64 and macOS/Windows **Lima-backed** migration, native-resource integration, and
+engine restart remain available in the opt-in `Emulated runtime acceptance`
+workflow. Required VM-backed jobs check for KVM rather than silently falling
+back to emulation. Native Linux ARM64 destination coverage remains required.
+The unaccelerated Lima cells no longer gate every PR: hosted-runner software emulation and
+guest timer/SSH delays repeatedly failed independently of the migration
+assertions. This deliberately defers meaningful end-to-end coverage. Driver
+tests and Linux results do not count as passing those platform/backend cells.
+Use the [manual acceptance workflow](ci-cd.md#required-acceptance-and-optional-platform-integration)
+to qualify a specific revision on those platforms.
+
+Runtime cells retain independent migration, native, and applicable engine
+phases with separate owned fixtures, unchanged time caps, and unchanged
+assertions. Each phase creates a separate Porto-owned standalone source VM
+running an actual Docker Engine, exposing its
+API through the host's private Unix socket or named pipe and a real Docker
+context. This exercises the Docker Desktop-style local socket/API contract,
+not a mocked inventory or a claim about Docker Desktop's proprietary UI.
+
+The suite migrates selected images, volumes, networks and stopped containers;
+checks workload command/environment, health/restart/resource limits, labels,
+mount relationships and published service access; and repeats the migration
+without duplication. It exercises deterministic naming conflicts, unsupported
+settings, sensitive consent, corrupt archives, cancellation, an actual 8 MiB
+staging filesystem, killed-worker checkpoint recovery and ownership-proven
+cleanup of never-started source helpers.
+
+Full native-resource acceptance opens actual container/image/volume/VM host mounts, not
+copies. It covers immutable images, read-only submounts, long/non-ASCII and
+case-sensitive names, links, concurrent backend changes, guest permission
+failures, live/stopped containers, protected deletion, recreated identities,
+VM stop/reconnect and cleanup. Engine update/stop/restart is restricted to the
+independently owned disposable CI engine; local runs never stop an existing
+engine. The separately required native-driver fixtures use synthetic directories
+behind the real confined SFTP implementation and real OS filesystem drivers.
+They also exercise an actually killed macOS owner and a failed detach followed
+by owned recovery, but do not simulate a complete Lima-backed workload lifecycle.
+
+Unsupported semantics in the capability matrix remain explicit limitations,
+not successful mounts. Driver installation on a user's machine is never
+performed silently. In-app inspection and verified archives remain actionable
+alternatives but never count as passing a native mount.

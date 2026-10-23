@@ -11,7 +11,7 @@
     "start": "node dev-launcher.cjs",
     "package": "node package.cjs",
     "pretest": "node -e \"require('electron')\"",
-    "test": "node --test dev-launcher.test.cjs daemon-readiness.test.cjs dashboard-csp.test.cjs desktop-logging.test.cjs desktop-menu.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs windows-installer.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs ../../scripts/docker-toolchain-smoke.test.cjs ../../scripts/download-file.test.cjs ../../scripts/verify-runtime-checksum.test.cjs ../../scripts/lima-containerd-archive.test.cjs ../../scripts/release-version.test.cjs ../../scripts/macos-toolchain.test.cjs ../../scripts/macos-startup.test.cjs"
+    "test": "node --test dev-launcher.test.cjs daemon-readiness.test.cjs dashboard-csp.test.cjs desktop-logging.test.cjs desktop-menu.test.cjs desktop-preferences.test.cjs desktop-update-install.test.cjs desktop-updater.test.cjs windows-installer.test.cjs ../../scripts/desktop-runtime-symlinks.test.cjs ../../scripts/docker-toolchain-smoke.test.cjs ../../scripts/download-file.test.cjs ../../scripts/verify-runtime-checksum.test.cjs ../../scripts/lima-containerd-archive.test.cjs ../../scripts/lima-boot-diagnostics.test.cjs ../../scripts/release-version.test.cjs ../../scripts/macos-toolchain.test.cjs ../../scripts/macos-startup.test.cjs"
   },
   "build": {
     "appId": "dev.mbianchi.porto",

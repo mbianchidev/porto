@@ -17,10 +17,17 @@ Porto runs its own containerd and BuildKit backend rather than proxying another 
 ## What you can do
 
 - **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
-- **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup or source-preserving migration.
+- **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup.
 - **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
 - **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).
 - **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects and managed Kubernetes Services through local HTTP hostnames, with optional trusted portless HTTPS on macOS.
+- **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
+  Per-object migration checkpoints survive daemon interruptions; retries require a fresh dry run and never retarget recreated source names.
+  Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
+  macOS native folders use the built-in WebDAV filesystem over confined SFTP, without a third-party driver.
+  Linux bridges require FUSE3 and SSHFS 3.7.6+ or an equivalent maintained build with symlink containment.
+  CLI `--resume` retains exact migration identities and destinations.
+  Required CI covers native Linux backends on both architectures, KVM-backed x64 Lima, and real desktop filesystem drivers on both architectures; software-emulated Lima integration is [explicit opt-in acceptance](docs/data-management.md#real-runtime-acceptance).
 
 ## Platforms and prerequisites
 
@@ -33,6 +40,13 @@ Releases target **macOS, Linux, and Windows** on **x86-64 (`amd64`) and ARM64 (`
 | Windows | EXE installer | Lima and QEMU are bundled. kind is not bundled on Windows ARM64 because upstream has no native binary. |
 
 Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.
+
+They also include Porto's Linux runtime helper for direct container I/O, Windows
+containerd connections, CNI, and checkpoint capability discovery. New Windows
+container engines use Ubuntu 24.04 LTS. Bundled Lima includes stale-process
+recovery and consoleless graceful/forced shutdown fixes, without requiring
+manual PID-file deletion or VM recreation. See
+[Windows guest recovery](docs/installation.md#windows-guest-recovery).
 
 Native applications still need Git and their own language runtimes, package managers, and build tools in the daemon's `PATH`. Missing optional runtime providers do not prevent native project orchestration. Windows Explorer access to runtime files additionally requires an explicitly installed [WinFsp 2.1+ driver](https://winfsp.dev); in-app file browsing and volume archives do not.
 
@@ -190,6 +204,8 @@ npm --prefix ui run desktop
 ```
 
 On macOS this prepares a cached **Porto Dev.app** tied to the source checkout, without modifying the npm-installed Electron runtime. Packaging macOS desktop archives/DMGs and running startup regression tests require macOS 26+ and full Xcode 26+, not just Command Line Tools. See [source installation](docs/installation.md#build-from-source) and [packaging setup](docs/ci-cd.md#ci-details).
+The packaging guide also documents parallel target builds and the optional
+checksum-verified download cache.
 
 ## Documentation
 

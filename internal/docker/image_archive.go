@@ -2,6 +2,8 @@ package docker
 
 import (
 	"archive/tar"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +14,85 @@ import (
 
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+func imageArchiveConfigDigest(archive *os.File, source string, platform ocispec.Platform) (string, error) {
+	current := source
+	for depth := 0; depth < 8; depth++ {
+		algorithm, encoded, ok := strings.Cut(current, ":")
+		if !ok || algorithm != "sha256" || len(encoded) != 64 {
+			return "", errors.New("source image has an invalid SHA-256 identity")
+		}
+		var document []byte
+		for _, name := range []string{"blobs/sha256/" + encoded, encoded + ".json"} {
+			if _, err := archive.Seek(0, io.SeekStart); err != nil {
+				return "", err
+			}
+			reader := tar.NewReader(archive)
+			for {
+				header, err := reader.Next()
+				if err == io.EOF {
+					break
+				}
+				if err != nil {
+					return "", err
+				}
+				if header.Name != name {
+					continue
+				}
+				if header.Size < 0 || header.Size > 16*1024*1024 || header.Typeflag != tar.TypeReg {
+					return "", errors.New("image identity member is not bounded regular JSON")
+				}
+				document, err = io.ReadAll(reader)
+				if err != nil {
+					return "", err
+				}
+				break
+			}
+			if document != nil {
+				break
+			}
+		}
+		if document == nil {
+			return "", fmt.Errorf("image archive does not contain source identity %s", current)
+		}
+		sum := sha256.Sum256(document)
+		if hex.EncodeToString(sum[:]) != encoded {
+			return "", errors.New("image archive identity member checksum does not match")
+		}
+		var node struct {
+			Config    ocispec.Descriptor
+			Manifests []ocispec.Descriptor
+			RootFS    json.RawMessage `json:"rootfs"`
+		}
+		if err := json.Unmarshal(document, &node); err != nil {
+			return "", err
+		}
+		if node.RootFS != nil {
+			return current, nil
+		}
+		if node.Config.Digest != "" {
+			current = node.Config.Digest.String()
+			continue
+		}
+		matched := false
+		for _, manifest := range node.Manifests {
+			if manifest.Platform != nil && manifest.Platform.OS == platform.OS && manifest.Platform.Architecture == platform.Architecture &&
+				(platform.Variant == "" || manifest.Platform.Variant == platform.Variant) {
+				current = manifest.Digest.String()
+				matched = true
+				break
+			}
+		}
+		if !matched && len(node.Manifests) == 1 {
+			current = node.Manifests[0].Digest.String()
+			matched = true
+		}
+		if !matched {
+			return "", errors.New("image archive does not resolve the selected source platform")
+		}
+	}
+	return "", errors.New("image archive identity nesting exceeds its limit")
+}
 
 var errImageArchiveNoIndex = errors.New("image archive has no index.json")
 

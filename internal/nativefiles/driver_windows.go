@@ -95,11 +95,6 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 			}
 		}
 	}()
-	if err := json.NewEncoder(process.Stdin()).Encode(MountRequest{
-		Resource: target.Resource, Identity: target.Identity, Path: record.Path, ReadOnly: !writable, Command: *target.SFTP,
-	}); err != nil {
-		return record, err
-	}
 	event := make(chan MountEvent, 1)
 	outputDone := make(chan error, 1)
 	go func() {
@@ -137,6 +132,11 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 		done <- errors.Join(outputErr, waitErr)
 		close(done)
 	}()
+	if err := json.NewEncoder(process.Stdin()).Encode(MountRequest{
+		Resource: target.Resource, Identity: target.Identity, Path: record.Path, ReadOnly: !writable, Command: *target.SFTP,
+	}); err != nil {
+		return record, err
+	}
 	startup, cancelStartup := context.WithTimeout(ctx, 30*time.Second)
 	defer cancelStartup()
 	select {
@@ -153,7 +153,8 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if err := verifyWindowsMount(record); err == nil {
+		verificationErr := verifyWindowsMount(record)
+		if verificationErr == nil {
 			break
 		}
 		select {
@@ -161,7 +162,10 @@ func (m *Manager) attachWindowsLocked(ctx context.Context, target Target, writab
 		case processErr := <-done:
 			return record, errors.Join(errors.New("native mount exited before becoming accessible"), processErr)
 		case <-startup.Done():
-			return record, fmt.Errorf("WinFsp did not expose the owned host folder: %w", startup.Err())
+			return record, errors.Join(
+				fmt.Errorf("WinFsp did not expose the owned host folder: %w: %s", startup.Err(), diagnostics.String()),
+				verificationErr,
+			)
 		}
 	}
 	record.BridgePID = process.PID()
@@ -190,7 +194,8 @@ func verifyWindowsMount(record Attachment) error {
 		return fmt.Errorf("native host folder is disconnected: %w", err)
 	}
 	if serial != record.Serial || windows.UTF16ToString(label) != "Porto-"+record.Identity[:12] || windows.UTF16ToString(filesystem) != "PortoFS" {
-		return fmt.Errorf("%w: host folder is not the exact Porto-owned WinFsp volume", datafiles.ErrConflict)
+		return fmt.Errorf("%w: host folder is not the exact Porto-owned WinFsp volume: serial=%08x, label=%q, filesystem=%q; expected serial=%08x, label=%q, filesystem=PortoFS",
+			datafiles.ErrConflict, serial, windows.UTF16ToString(label), windows.UTF16ToString(filesystem), record.Serial, "Porto-"+record.Identity[:12])
 	}
 	return nil
 }
@@ -210,12 +215,14 @@ func windowsProcessStart(pid int) (uint64, error) {
 
 func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment) error {
 	if live.process == nil {
+		if _, err := os.Lstat(live.record.Path); errors.Is(err, os.ErrNotExist) {
+			return nil
+		} else if err != nil {
+			return err
+		}
 		created, err := windowsProcessStart(live.record.BridgePID)
 		if err != nil {
-			if err := verifyWindowsMount(live.record); err == nil {
-				return errors.New("native mount process is absent but its host folder remains; refusing an unowned detach")
-			}
-			return nil
+			return errors.New("native mount process is absent but its host folder remains; refusing an unowned detach")
 		}
 		if created != live.record.BridgeStart {
 			return datafiles.ErrConflict
@@ -229,6 +236,17 @@ func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment)
 			return err
 		}
 	} else {
+		select {
+		case <-live.done:
+			live.cancel()
+			_ = live.process.Stdin().Close()
+			live.cancel, live.process, live.done = nil, nil, nil
+			if _, err := os.Lstat(live.record.Path); errors.Is(err, os.ErrNotExist) {
+				return nil
+			}
+			return errors.New("native bridge exited but its host folder remains; refusing to remove an unowned path")
+		default:
+		}
 		live.stdinMu.Lock()
 		err := json.NewEncoder(live.process.Stdin()).Encode(MountEvent{Event: "detach", Identity: live.record.Identity})
 		live.stdinMu.Unlock()
@@ -245,6 +263,7 @@ func (m *Manager) detachWindowsLocked(ctx context.Context, live *liveAttachment)
 		}
 		live.cancel()
 		_ = live.process.Stdin().Close()
+		live.cancel, live.process, live.done = nil, nil, nil
 	}
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()

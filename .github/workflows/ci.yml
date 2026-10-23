@@ -205,6 +205,92 @@ jobs:
             bash scripts/test-docker-clients.sh lima
           fi
 
+  runtime-data:
+    name: Runtime data (${{ matrix.phase }}, ${{ matrix.runtime.backend }}, ${{ matrix.runtime.os }})
+    runs-on: ${{ matrix.runtime.os }}
+    timeout-minutes: 85
+    strategy:
+      fail-fast: true
+      matrix:
+        phase: [migration, native, engine]
+        runtime:
+          - os: ubuntu-26.04
+            backend: local
+          - os: ubuntu-26.04-arm
+            backend: local
+          - os: ubuntu-26.04
+            backend: lima
+        exclude:
+          - phase: engine
+            runtime:
+              os: ubuntu-26.04
+              backend: local
+          - phase: engine
+            runtime:
+              os: ubuntu-26.04-arm
+              backend: local
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Require hardware virtualization for the VM-backed gate
+        if: matrix.runtime.backend == 'lima'
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "::error::Required Lima acceptance needs KVM; software-emulated destinations belong in Emulated runtime acceptance."
+            exit 1
+          fi
+      - uses: ./.github/actions/runtime-data
+        with:
+          backend: ${{ matrix.runtime.backend }}
+          phase: ${{ matrix.phase }}
+
+  native-files:
+    name: Native filesystem (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [macos-26-intel, macos-26, windows-2025, windows-11-arm]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-scope: native-files
+      - name: Exercise actual macOS native mounts without a VM
+        if: runner.os == 'macOS'
+        env:
+          PORTO_TEST_WEBDAV_NATIVE: '1'
+        run: go test ./internal/nativefiles -run '^TestMacOSNativeWebDAV' -count=1 -failfast -timeout=5m -v
+      - name: Install the explicitly selected Windows native filesystem driver
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/install-winfsp-ci.ps1
+      - name: Exercise actual Windows native mounts without a VM
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CGO_ENABLED: '0'
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $helper = Join-Path $env:RUNNER_TEMP 'porto-files-mount.exe'
+          & go build -trimpath -o $helper ./cmd/porto-files-mount
+          if ($LASTEXITCODE -ne 0) { throw 'Native filesystem helper build failed.' }
+          $env:PORTO_TEST_NATIVE_MOUNT_HELPER = $helper
+          $env:PORTO_TEST_WINFSP_NATIVE = '1'
+          try {
+            & go test ./internal/nativefiles -run '^TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach$' -count=1 -failfast -timeout=10m -v
+            if ($LASTEXITCODE -ne 0) { throw 'Native WinFsp filesystem checks failed.' }
+          }
+          finally {
+            Remove-Item Env:PORTO_TEST_NATIVE_MOUNT_HELPER
+            Remove-Item Env:PORTO_TEST_WINFSP_NATIVE
+            Remove-Item -LiteralPath $helper -Force
+          }
+
   ui:
     name: UI (Node ${{ matrix.node }})
     runs-on: ubuntu-latest

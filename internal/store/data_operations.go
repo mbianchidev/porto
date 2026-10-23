@@ -166,6 +166,25 @@ func (s *Store) DataProgress(ctx context.Context, id int64, phase string, bytes 
 	return nil
 }
 
+func (s *Store) CheckpointDataOperation(ctx context.Context, id int64, result dataops.Result) error {
+	document, err := json.Marshal(result)
+	if err != nil {
+		return err
+	}
+	if len(document) > 1024*1024 {
+		return errors.New("data operation checkpoint exceeds its persistence limit")
+	}
+	updated, err := s.db.ExecContext(ctx, `UPDATE data_operations SET result=? WHERE id=? AND status='running'`, string(document), id)
+	if err != nil {
+		return err
+	}
+	count, err := updated.RowsAffected()
+	if err == nil && count != 1 {
+		return errors.New("refusing to checkpoint a completed data operation")
+	}
+	return err
+}
+
 func (s *Store) FinishDataOperation(ctx context.Context, id int64, status string, result dataops.Result, message string, now time.Time) error {
 	switch status {
 	case "succeeded", "failed", "cancelled", "interrupted", "skipped":
@@ -212,10 +231,45 @@ WHERE id=? AND resource_key=? AND status='running'`, string(document), id, archi
 }
 
 func (s *Store) RecoverDataOperations(ctx context.Context, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE data_operations SET status='interrupted',phase='interrupted',completed_at=?,error=?
-WHERE status='running'`, now.UTC().Format(time.RFC3339Nano),
-		"Porto stopped before this operation finished. Some verified transfers or confirmed cleanup changes may already be committed; refresh inventory before retrying.")
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(ctx, `SELECT `+dataOperationColumns+` FROM data_operations WHERE status='running'`)
+	if err != nil {
+		return err
+	}
+	var runs []dataops.Operation
+	for rows.Next() {
+		run, err := scanDataOperation(rows)
+		if err != nil {
+			return errors.Join(err, rows.Close())
+		}
+		runs = append(runs, run)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return err
+	}
+	for _, run := range runs {
+		for index := range run.Result.Steps {
+			step := &run.Result.Steps[index]
+			if step.Status == "running" {
+				step.Status = "interrupted"
+				step.Message = "Completion was not recorded. Refresh the source and review a new dry run before retrying."
+			}
+		}
+		document, err := json.Marshal(run.Result)
+		if err != nil {
+			return err
+		}
+		if _, err := tx.ExecContext(ctx, `UPDATE data_operations SET status='interrupted',phase='interrupted',completed_at=?,result=?,error=?
+WHERE id=? AND status='running'`, now.UTC().Format(time.RFC3339Nano), string(document),
+			"Porto stopped before this operation finished. Recorded successes remain; unrecorded transfers or cleanup changes may already be committed. Refresh inventory and review a new dry run before retrying.", run.ID); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 func (s *Store) SaveBackupSchedule(ctx context.Context, schedule dataops.Schedule, now time.Time) (dataops.Schedule, error) {

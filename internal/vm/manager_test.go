@@ -64,7 +64,7 @@ func (r *reusedInstanceRunner) Run(_ context.Context, command runtimes.Command) 
 	switch {
 	case len(command.Args) > 0 && command.Args[0] == "create":
 		return []byte(`time="2026-09-04T18:56:25+02:00" level=info msg="Using the existing instance ` + "`test-vm`" + `"`), nil
-	case joined == "start test-vm":
+	case joined == "start --timeout=20m0s test-vm":
 		return []byte("existing instance failed to start"), errors.New("exit status 1")
 	case joined == "list --json":
 		return []byte(`{"name":"test-vm","status":"Stopped","vmType":"vz"}` + "\n"), nil
@@ -101,7 +101,7 @@ func (r *brokenInstanceRunner) Run(_ context.Context, command runtimes.Command) 
 			`{"name":"test-vm","status":%q,"vmType":"vz","arch":"aarch64","cpus":2,"memory":2147483648,"disk":10737418240}`+"\n",
 			status,
 		)), nil
-	case "start test-vm":
+	case "start --timeout=5m0s test-vm", "start --timeout=20m0s test-vm":
 		if r.startError != nil {
 			return []byte(r.startOutput), r.startError
 		}
@@ -397,10 +397,10 @@ func TestStartRecoversBrokenLimaInstance(t *testing.T) {
 	}
 	want := []string{
 		"list --json test-vm",
-		"start test-vm",
+		"start --timeout=5m0s test-vm",
 		"list --json",
 		"stop --force test-vm",
-		"start test-vm",
+		"start --timeout=5m0s test-vm",
 		"shell --workdir=/ test-vm -- true",
 	}
 	if strings.Join(commands, "\n") != strings.Join(want, "\n") {
@@ -664,7 +664,7 @@ func TestSnapshotStopsAndRestartsRunningVM(t *testing.T) {
 		"stop test-vm",
 		"snapshot create test-vm --tag before",
 		"list --json test-vm",
-		"start test-vm",
+		"start --timeout=5m0s test-vm",
 		"shell --workdir=/ test-vm -- true",
 	}
 	if strings.Join(commands, "\n") != strings.Join(want, "\n") {

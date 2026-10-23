@@ -11,24 +11,8 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
-
-func TestNativeFixtureServerProcess(t *testing.T) {
-	directory := os.Getenv("PORTO_NATIVE_SYNTHETIC_SFTP")
-	if directory == "" {
-		t.Skip("only runs as an isolated synthetic SFTP helper")
-	}
-	if err := datafiles.ServeSFTP(context.Background(), &nativeFixtureStdio{}, directory, datafiles.SFTPOptions{}); err != nil {
-		os.Exit(2)
-	}
-	os.Exit(0)
-}
-
-type nativeFixtureStdio struct{}
-
-func (*nativeFixtureStdio) Read(buffer []byte) (int, error)  { return os.Stdin.Read(buffer) }
-func (*nativeFixtureStdio) Write(buffer []byte) (int, error) { return os.Stdout.Write(buffer) }
-func (*nativeFixtureStdio) Close() error                     { return os.Stdin.Close() }
 
 func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.T) {
 	if os.Getenv("PORTO_TEST_WINFSP_NATIVE") != "1" {
@@ -99,6 +83,7 @@ func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.
 					t.Fatalf("concurrent guest change hidden by native cache: %q %v", current, err)
 				}
 			}
+
 			if err := manager.Detach(ctx, attachment.ID); err != nil {
 				t.Fatal(err)
 			}
@@ -110,5 +95,20 @@ func TestWindowsNativeFoldersExposeDirectEditsReadonlyAndOwnedDetach(t *testing.
 				t.Fatalf("native cleanup changed source data: %q %v", current, err)
 			}
 		})
+	}
+}
+
+func TestWindowsAbsentNativePathNeverStopsAReusedPID(t *testing.T) {
+	commands := 0
+	manager := New(t.TempDir(), nativeRunnerFunc(func(context.Context, runtimes.Command) ([]byte, error) {
+		commands++
+		return nil, errors.New("a reused process must never be stopped")
+	}))
+	live := &liveAttachment{record: Attachment{
+		Path:      filepath.Join(manager.root, "already-detached"),
+		BridgePID: os.Getpid(), BridgeStart: 1,
+	}}
+	if err := manager.detachWindowsLocked(context.Background(), live); err != nil || commands != 0 {
+		t.Fatalf("an absent mount led recovery to a reused PID: %v, commands=%d", err, commands)
 	}
 }

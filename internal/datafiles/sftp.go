@@ -37,10 +37,10 @@ func ServeSFTP(ctx context.Context, connection io.ReadWriteCloser, directory str
 	defer stop()
 	err = server.Serve()
 	closeErr := server.Close()
-	if errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrClosedPipe) || errors.Is(err, net.ErrClosed) || errors.Is(err, os.ErrClosed) {
 		err = nil
 	}
-	if errors.Is(closeErr, net.ErrClosed) || errors.Is(closeErr, os.ErrClosed) {
+	if errors.Is(closeErr, io.ErrClosedPipe) || errors.Is(closeErr, net.ErrClosed) || errors.Is(closeErr, os.ErrClosed) {
 		closeErr = nil
 	}
 	return errors.Join(err, closeErr)

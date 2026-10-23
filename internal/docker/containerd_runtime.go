@@ -83,6 +83,7 @@ type grpcContainerRuntime struct {
 	fifoDir         string
 	runner          runtimes.Runner
 	lima            string
+	commandSource   commandBackend
 	helperPath      string
 	address         string
 	networkLocks    *containerMutexes
@@ -193,6 +194,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		)
 		if err == nil {
 			client.address = socket
+			client.commandSource = backend
 		}
 		return client, err
 	}
@@ -278,12 +280,12 @@ func newGRPCContainerRuntime(
 		enrichment:        map[string]Container{},
 	}
 	validationContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	health, err := grpc_health_v1.NewHealthClient(connection).Check(
 		validationContext,
 		&grpc_health_v1.HealthCheckRequest{},
 		grpc.WaitForReady(true),
 	)
+	cancel()
 	if err != nil {
 		_ = connection.Close()
 		return nil, fmt.Errorf("check containerd health: %w", err)
@@ -292,8 +294,10 @@ func newGRPCContainerRuntime(
 		_ = connection.Close()
 		return nil, fmt.Errorf("%w; containerd health is %s", ErrUnavailable, health.GetStatus())
 	}
+	namespaceContext, cancelNamespace := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelNamespace()
 	namespaces, err := namespacesapi.NewNamespacesClient(connection).List(
-		validationContext,
+		namespaceContext,
 		&namespacesapi.ListNamespacesRequest{},
 	)
 	if err != nil {
@@ -368,28 +372,6 @@ func (m *Manager) discoverLimaContainerd(ctx context.Context, instance string) (
 		return "", "", errors.New("Lima containerd discovery returned an incomplete socket and namespace")
 	}
 	return strings.TrimSpace(lines[0]), strings.TrimSpace(lines[1]), nil
-}
-
-func (m *Manager) discoverLimaSSHConfig(ctx context.Context, instance string) (string, error) {
-	output, err := m.runCommand(
-		ctx,
-		10*time.Second,
-		"discover Lima SSH configuration",
-		nil,
-		"limactl",
-		"list",
-		"--format",
-		"{{.SSHConfigFile}}",
-		instance,
-	)
-	if err != nil {
-		return "", err
-	}
-	configPath := strings.TrimSpace(string(output))
-	if configPath == "" {
-		return "", errors.New("Lima SSH configuration path is unavailable")
-	}
-	return configPath, nil
 }
 
 func dialLimaContainerd(ctx context.Context, instance, socket string) (net.Conn, error) {
@@ -472,6 +454,12 @@ func (r *grpcContainerRuntime) compatibilityMetadata(
 ) (map[string]Container, error) {
 	r.enrichMu.Lock()
 	defer r.enrichMu.Unlock()
+	if len(records) == 0 {
+		r.enrichmentReady = true
+		r.enrichmentVersion, r.enrichment = nil, nil
+		r.enrichmentError = nil
+		return nil, nil
+	}
 	currentVersions := make(map[string]string, len(records))
 	needsRefresh := !r.enrichmentReady
 	for _, record := range records {

@@ -294,7 +294,11 @@ func (m *Manager) CloneVolume(ctx context.Context, source datafiles.Resource, id
 	return m.ImportVolume(ctx, destination, archive.Path, archive.SHA256, progress)
 }
 
-func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, archiveSHA string, progress func(string, int64) error) (result dataops.Result, err error) {
+func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, archiveSHA string, progress func(string, int64) error) (dataops.Result, error) {
+	return m.importVolume(ctx, destination, archivePath, archiveSHA, progress, nil, nil)
+}
+
+func (m *Manager) importVolume(ctx context.Context, destination, archivePath, archiveSHA string, progress func(string, int64) error, labels map[string]string, publish func(datafiles.Resource) error) (result dataops.Result, err error) {
 	ctx, release, err := m.BeginDataTransaction(ctx)
 	if err != nil {
 		return result, err
@@ -339,7 +343,12 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 		defer cancel()
 		err = errors.Join(err, m.cleanupVolumeTemporary(cleanupContext, temporary))
 	}()
-	created, createErr := m.CreateVolume(ctx, destination, "local", map[string]string{transferOwnerLabel: owner})
+	labels = cloneStringMap(labels)
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[transferOwnerLabel] = owner
+	created, createErr := m.CreateVolume(ctx, destination, "local", labels)
 	if createErr != nil {
 		return result, createErr
 	}
@@ -349,6 +358,11 @@ func (m *Manager) ImportVolume(ctx context.Context, destination, archivePath, ar
 	}
 	if err := m.RestoreVolume(ctx, descriptor.Resource, descriptor.Resource.Fingerprint(), archivePath, archiveSHA, progress); err != nil {
 		return result, err
+	}
+	if publish != nil {
+		if err := publish(descriptor.Resource); err != nil {
+			return result, fmt.Errorf("record verified volume migration before publication: %w", err)
+		}
 	}
 	if m.volumeTemporaryClear != nil {
 		if err := m.volumeTemporaryClear(ctx, temporary); err != nil {
@@ -386,7 +400,7 @@ func (m *Manager) cleanupVolumeTemporary(ctx context.Context, temporary dataops.
 		if inspectErr != nil || volume.Labels[transferOwnerLabel] != temporary.Owner {
 			return errors.Join(errors.New("temporary volume ownership could not be proven; no volume was deleted"), inspectErr)
 		}
-		if err := m.RemoveVolume(ctx, temporary.Destination, false); err != nil {
+		if err := m.removeVolume(ctx, temporary.Destination, false, document); err != nil {
 			return err
 		}
 	}

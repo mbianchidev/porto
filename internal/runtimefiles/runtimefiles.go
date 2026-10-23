@@ -61,6 +61,7 @@ type Attachment struct {
 	Snapshotter  string             `json:"snapshotter,omitempty"`
 	SnapshotKey  string             `json:"snapshotKey,omitempty"`
 	NamespacePID int32              `json:"namespacePid,omitempty"`
+	MountID      uint64             `json:"mountId,omitempty"`
 }
 
 func Run(ctx context.Context, input io.Reader, output io.Writer) error {
@@ -113,7 +114,7 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 			}
 			return json.NewEncoder(output).Encode(resource)
 		}
-		if descriptor.VolumeIdentity != "" {
+		if descriptor.VolumeIdentity != "" && envelope.Request.Action != "detach" {
 			current, err := nativeVolumeResource(descriptor)
 			if err != nil || current.ID != descriptor.VolumeIdentity || current.Fingerprint() != descriptor.Resource.Fingerprint() {
 				return errors.Join(datafiles.ErrConflict, err)
@@ -134,6 +135,11 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 			return err
 		}
 		return json.NewEncoder(output).Encode(map[string]bool{"detached": true})
+	case "attachment-status":
+		if err := attachmentStatus(ctx, descriptor, envelope.Request.Token); err != nil {
+			return err
+		}
+		return json.NewEncoder(output).Encode(map[string]bool{"connected": true})
 	default:
 		readOnly := envelope.Request.Action != "write" && envelope.Request.Action != "delete"
 		if envelope.Request.Action == "sftp" {
@@ -169,11 +175,15 @@ func ExecuteDirectory(ctx context.Context, descriptor Descriptor, request datafi
 		if request.Writable && descriptor.Resource.ReadOnly {
 			return os.ErrPermission
 		}
-		return datafiles.ServeSFTP(ctx, &sftpStdio{Reader: input, Writer: output}, descriptor.RootPath, datafiles.SFTPOptions{
+		options := datafiles.SFTPOptions{
 			ReadOnly:   !request.Writable || descriptor.Resource.ReadOnly,
 			ReadOnlyAt: func(value string) bool { return readOnlyPath(descriptor, value) },
 			MapOwner:   descriptor.hostOwner, Owner: descriptor.namespaceOwner,
-		})
+		}
+		if descriptor.Resource.Kind == "vm" {
+			options.MapOwner, options.Owner = nil, nil
+		}
+		return datafiles.ServeSFTP(ctx, &sftpStdio{Reader: input, Writer: output}, descriptor.RootPath, options)
 	case "list":
 		var listing datafiles.Listing
 		listing, err = datafiles.List(ctx, descriptor.RootPath, request.Path, descriptor.Resource)

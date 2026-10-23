@@ -45,6 +45,53 @@ import (
 
 const snapshotterTestNamespace = "synthetic-snapshotter"
 
+func TestContainerdBootstrapRPCsHaveIndependentBoundedDeadlines(t *testing.T) {
+	deadlines := make(chan time.Time, 2)
+	listener := bufconn.Listen(1024 * 1024)
+	server := grpc.NewServer(grpc.UnaryInterceptor(func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		deadline, ok := ctx.Deadline()
+		if !ok {
+			return nil, status.Error(codes.InvalidArgument, "bootstrap RPC has no deadline")
+		}
+		deadlines <- deadline
+		if strings.HasSuffix(info.FullMethod, "/Check") {
+			time.Sleep(100 * time.Millisecond)
+		}
+		return handler(ctx, request)
+	}))
+	healthService := health.NewServer()
+	healthService.SetServingStatus("", grpc_health_v1.HealthCheckResponse_SERVING)
+	grpc_health_v1.RegisterHealthServer(server, healthService)
+	namespacesapi.RegisterNamespacesServer(server, &snapshotterNamespaceServer{})
+	go func() {
+		if err := server.Serve(listener); err != nil {
+			t.Errorf("serve synthetic bootstrap: %v", err)
+		}
+	}()
+	t.Cleanup(func() {
+		server.Stop()
+		_ = listener.Close()
+	})
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	runtimeClient, err := newGRPCContainerRuntime(
+		ctx, snapshotterTestNamespace, "synthetic bootstrap",
+		func(ctx context.Context, _ string) (net.Conn, error) { return listener.DialContext(ctx) },
+		nil, t.TempDir(), &fakeRunner{}, "", "", nil, nil,
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer runtimeClient.Close()
+	healthDeadline, namespaceDeadline := <-deadlines, <-deadlines
+	if namespaceDeadline.Sub(healthDeadline) < 75*time.Millisecond {
+		t.Fatalf("namespace discovery inherited the health/connection handshake's consumed deadline: health=%s namespace=%s", healthDeadline, namespaceDeadline)
+	}
+	if time.Until(namespaceDeadline) > 10*time.Second {
+		t.Fatal("namespace RPC exceeded its original ten-second validation cap")
+	}
+}
+
 func TestContainerdSnapshotterSelectionAndCleanup(t *testing.T) {
 	for _, test := range []struct {
 		name        string

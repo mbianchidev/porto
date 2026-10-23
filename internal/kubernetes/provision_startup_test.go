@@ -176,9 +176,9 @@ func TestVMClusterLifecycleAvoidsWindowsSSHFSDependencies(t *testing.T) {
 				}
 			}
 			wantLifecycle := []string{
-				"start " + wantNodes[0], "start " + wantNodes[1],
+				"start --timeout=20m0s " + wantNodes[0], "start --timeout=20m0s " + wantNodes[1],
 				"stop " + wantNodes[1], "stop " + wantNodes[0],
-				"start " + wantNodes[0], "start " + wantNodes[1],
+				"start --timeout=5m0s " + wantNodes[0], "start --timeout=5m0s " + wantNodes[1],
 				"delete --force " + wantNodes[1], "delete --force " + wantNodes[0],
 			}
 			if !slices.Equal(lifecycle, wantLifecycle) {
@@ -271,8 +271,8 @@ func TestVMClusterFailureCleansOnlyProvenCreatedNodes(t *testing.T) {
 					args := command.Args
 					joined := strings.Join(args, " ")
 					fail := stage == "create-server" && args[0] == "create" && slices.Contains(args, server) ||
-						stage == "start-server" && joined == "start "+server ||
-						stage == "start-worker" && joined == "start "+worker ||
+						stage == "start-server" && joined == "start --timeout=20m0s "+server ||
+						stage == "start-worker" && joined == "start --timeout=20m0s "+worker ||
 						stage == "provision-worker" && args[0] == "shell" && args[1] == worker &&
 							(strings.Contains(joined, "agent --node-name") || strings.Contains(joined, "k0s install worker"))
 					if fail {

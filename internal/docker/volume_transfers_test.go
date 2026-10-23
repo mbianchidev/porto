@@ -8,12 +8,153 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+func TestTemporaryVolumeCleanupUsesOneFreshInspectionWithinDeadline(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		temporary := dataops.VolumeTemporary{Owner: strings.Repeat("a", 32), Destination: "synthetic-staging"}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		inspections, removals, clears := 0, 0, 0
+		manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+			switch strings.Join(command.Args, " ") {
+			case "volume inspect synthetic-staging":
+				inspections++
+				select {
+				case <-time.After(12 * time.Second):
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+				return json.Marshal([]map[string]any{{
+					"Name": temporary.Destination, "Mountpoint": "/synthetic/staging/_data",
+					"Labels": map[string]string{transferOwnerLabel: temporary.Owner},
+				}})
+			case "volume rm synthetic-staging":
+				removals++
+				select {
+				case <-time.After(8 * time.Second):
+					return nil, nil
+				case <-ctx.Done():
+					return nil, ctx.Err()
+				}
+			default:
+				return nil, nil
+			}
+		}})
+		manager.SetVolumeTransferLedger(nil, func(ctx context.Context, current dataops.VolumeTemporary) error {
+			if current != temporary {
+				t.Errorf("cleared another reservation: %+v", current)
+			}
+			clears++
+			return ctx.Err()
+		}, func(context.Context) ([]dataops.VolumeTemporary, error) {
+			return []dataops.VolumeTemporary{temporary}, nil
+		})
+		started := time.Now()
+		if err := manager.RecoverVolumeTransfers(ctx); err != nil {
+			t.Fatalf("owned cleanup exceeded its unchanged thirty-second budget: %v", err)
+		}
+		if elapsed := time.Since(started); elapsed != 20*time.Second {
+			t.Fatalf("cleanup took %s instead of one inspection and removal", elapsed)
+		}
+		if inspections != 1 || removals != 1 || clears != 1 {
+			t.Fatalf("cleanup inspection/removal/clear counts = %d/%d/%d, want 1/1/1", inspections, removals, clears)
+		}
+	})
+}
+
+func TestTemporaryVolumeCleanupRetainsReservationWhenRemovalFails(t *testing.T) {
+	temporary := dataops.VolumeTemporary{Owner: strings.Repeat("b", 32), Destination: "synthetic-staging"}
+	failure := errors.New("synthetic volume removal failure")
+	inspections, cleared := 0, false
+	manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		switch strings.Join(command.Args, " ") {
+		case "volume inspect synthetic-staging":
+			inspections++
+			return json.Marshal([]map[string]any{{
+				"Name": temporary.Destination, "Labels": map[string]string{transferOwnerLabel: temporary.Owner},
+			}})
+		case "volume rm synthetic-staging":
+			return nil, failure
+		default:
+			return nil, nil
+		}
+	}})
+	manager.SetVolumeTransferLedger(nil, func(context.Context, dataops.VolumeTemporary) error {
+		cleared = true
+		return nil
+	}, func(context.Context) ([]dataops.VolumeTemporary, error) {
+		return []dataops.VolumeTemporary{temporary}, nil
+	})
+	err := manager.RecoverVolumeTransfers(context.Background())
+	if !errors.Is(err, failure) || cleared || inspections != 1 {
+		t.Fatalf("failed cleanup lost its error or recoverable reservation: err=%v cleared=%v inspections=%d", err, cleared, inspections)
+	}
+}
+
+func TestTemporaryVolumeCleanupKeepsRemovalGuardsWithInspectedMetadata(t *testing.T) {
+	for _, boundary := range []string{"native mount", "stopped container reference", "changed name"} {
+		t.Run(boundary, func(t *testing.T) {
+			temporary := dataops.VolumeTemporary{Owner: strings.Repeat("c", 32), Destination: "synthetic-staging"}
+			root := "/synthetic/staging/_data"
+			removed, cleared := false, false
+			inspections := 0
+			manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				switch strings.Join(command.Args, " ") {
+				case "volume inspect synthetic-staging":
+					inspections++
+					name := temporary.Destination
+					if boundary == "changed name" {
+						name = "another-volume"
+					}
+					return json.Marshal([]map[string]any{{
+						"Name": name, "Mountpoint": root,
+						"Labels": map[string]string{transferOwnerLabel: temporary.Owner},
+					}})
+				case "volume rm synthetic-staging":
+					removed = true
+				}
+				return nil, nil
+			}})
+			if boundary == "native mount" {
+				manager.SetNativeFilesGuard(func(string, string) error { return ErrConflict })
+			}
+			var containers []Container
+			if boundary == "stopped container reference" {
+				containers = []Container{{
+					ID: "synthetic-container", Name: "synthetic-owner", State: "exited",
+					MountDetails: []ContainerMount{{Source: root, Destination: "/data"}},
+				}}
+			}
+			runtime := newFakeContainerRuntime(containers)
+			runtime.Subscribe(context.Background())
+			manager.inventoryCancel = func() {}
+			manager.inventory = &containerInventory{
+				snapshot: ContainerSnapshot{Available: true}, runtimeClient: runtime,
+			}
+			manager.SetVolumeTransferLedger(nil, func(context.Context, dataops.VolumeTemporary) error {
+				cleared = true
+				return nil
+			}, func(context.Context) ([]dataops.VolumeTemporary, error) {
+				return []dataops.VolumeTemporary{temporary}, nil
+			})
+			err := manager.RecoverVolumeTransfers(context.Background())
+			if !errors.Is(err, ErrConflict) || removed || cleared || inspections != 1 {
+				t.Fatalf("cleanup bypassed %s: err=%v removed=%v cleared=%v inspections=%d", boundary, err, removed, cleared, inspections)
+			}
+			if runtime.closed {
+				t.Fatal("owned cleanup closed the borrowed inventory connection")
+			}
+		})
+	}
+}
 
 func TestCancelledVolumeCreationCleansOnlyProvenTemporaryResources(t *testing.T) {
 	for _, owned := range []bool{true, false} {

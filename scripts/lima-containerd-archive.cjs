@@ -54,6 +54,22 @@ function run(command, args, capture = false) {
   return capture ? result.stdout.trim() : ''
 }
 
+function dependencyProvisionOverride(date = new Date()) {
+  const snapshot = `${date.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
+  const script = [
+    '#!/bin/sh',
+    'set -eu',
+    `printf '%s\\n' 'CI Ubuntu snapshot: ${snapshot}' >&2`,
+    'sources=/etc/apt/sources.list.d/ubuntu.sources',
+    'if ! grep -q "^URIs: " "$sources"; then echo "CI Ubuntu archive sources are unavailable" >&2; exit 1; fi',
+    `sed -i '/^Snapshot:/d; s|^URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/${snapshot}/|' "$sources"`,
+    "printf '%s\\n' 'Acquire::Languages \"none\";' 'Acquire::IndexTargets::deb::DEP-11::DefaultEnabled \"false\";' 'Acquire::IndexTargets::deb::CNF::DefaultEnabled \"false\";' 'APT::Update::Error-Mode \"any\";' > /etc/apt/apt.conf.d/99porto-ci",
+    'rm -f /etc/apt/apt.conf.d/99needrestart',
+    '',
+  ].join('\n')
+  return `.provision += ${JSON.stringify([{ mode: 'dependency', script }])}`
+}
+
 async function prepareContainerdArchive(goarch, directory) {
   const archive = selectArchive(JSON.parse(run('limactl', ['info'], true)), goarch)
   const destination = path.resolve(directory)
@@ -69,8 +85,10 @@ async function prepareContainerdArchive(goarch, directory) {
 
 if (require.main === module) {
   const args = process.argv.slice(2)
-  if (args.length !== 2) {
-    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory>')
+  if (args.length === 1 && args[0] === '--dependencies') {
+    process.stdout.write(`${dependencyProvisionOverride()}\n`)
+  } else if (args.length !== 2) {
+    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies')
     process.exitCode = 2
   } else {
     prepareContainerdArchive(...args).then((expression) => {
@@ -82,4 +100,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectArchive, decompressArchive }
+module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride }

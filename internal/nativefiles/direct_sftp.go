@@ -97,11 +97,11 @@ func (fs *DirectSFTP) Open(value string, flags int, mode os.FileMode) (uint64, e
 			return 0, err
 		}
 	}
-	file, err := fs.client.OpenFile(name, flags)
+	file, created, err := openNativeSFTPFile(fs.client, name, flags)
 	if err != nil {
 		return 0, err
 	}
-	if flags&os.O_CREATE != 0 {
+	if created {
 		if err := file.Chmod(mode.Perm()); err != nil {
 			return 0, errors.Join(err, file.Close())
 		}
@@ -112,6 +112,23 @@ func (fs *DirectSFTP) Open(value string, flags int, mode os.FileMode) (uint64, e
 	fs.next++
 	fs.files[handle] = file
 	return handle, nil
+}
+
+func openNativeSFTPFile(client *sftp.Client, name string, flags int) (*sftp.File, bool, error) {
+	if flags&os.O_CREATE == 0 || flags&os.O_EXCL != 0 {
+		file, err := client.OpenFile(name, flags)
+		return file, flags&os.O_CREATE != 0 && err == nil, err
+	}
+	file, err := client.OpenFile(name, flags|os.O_EXCL)
+	if err == nil {
+		return file, true, nil
+	}
+	// SFTP v3 reports an existing exclusive-create target as a generic failure.
+	if _, statErr := client.Lstat(name); statErr != nil {
+		return nil, false, errors.Join(err, statErr)
+	}
+	file, err = client.OpenFile(name, flags&^os.O_CREATE)
+	return file, false, err
 }
 
 func (fs *DirectSFTP) file(handle uint64) (*sftp.File, error) {
@@ -298,10 +315,14 @@ func (fs *DirectSFTP) Close() error {
 }
 
 func ConnectNativeSFTP(ctx context.Context, command SFTPCommand) (*sftp.Client, runtimes.Process, func() error, error) {
+	return connectNativeSFTP(ctx, command, runtimes.ExecRunner{})
+}
+
+func connectNativeSFTP(ctx context.Context, command SFTPCommand, runner runtimes.ProcessRunner) (*sftp.Client, runtimes.Process, func() error, error) {
 	if command.Name == "" || len(command.Args) == 0 {
 		return nil, nil, nil, datafiles.ErrInvalid
 	}
-	connection, err := (runtimes.ExecRunner{}).Start(ctx, runtimes.Command{Name: command.Name, Args: command.Args, Env: command.Env})
+	connection, err := runner.Start(ctx, runtimes.Command{Name: command.Name, Args: command.Args, Env: command.Env})
 	if err != nil {
 		return nil, nil, nil, err
 	}

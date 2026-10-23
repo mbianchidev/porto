@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
@@ -16,6 +17,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
@@ -95,7 +98,7 @@ func (r *ownershipRecoveryRunner) Run(_ context.Context, command runtimes.Comman
 			return []byte("ssh: connect to host 127.0.0.1: connection timed out"), context.DeadlineExceeded
 		}
 		return []byte("test-owner\n"), nil
-	case "stop porto-engine", "start porto-engine":
+	case "stop porto-engine", "start --timeout=20m0s porto-engine":
 		return nil, nil
 	default:
 		return nil, fmt.Errorf("unexpected command: %s %s", command.Name, joined)
@@ -173,7 +176,7 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 			return nil, nil
 		case joined == "list porto-engine --json" && r.created:
 			return []byte(`{"name":"porto-engine","status":"Running"}` + "\n"), nil
-		case strings.HasPrefix(joined, "start --tty=false"):
+		case strings.HasPrefix(joined, "start --timeout=20m0s --tty=false"):
 			r.created = true
 			return nil, nil
 		case joined == `shell --workdir=/ porto-engine -- sh -c umask 077; cat > "$HOME/.porto-engine-owner"`:
@@ -517,7 +520,7 @@ func TestEngineOwnershipTimeoutRecoversOwnedGuest(t *testing.T) {
 	}
 	commands := strings.Join(runner.commands, "\n")
 	if !strings.Contains(commands, "stop porto-engine") ||
-		!strings.Contains(commands, "start porto-engine") {
+		!strings.Contains(commands, "start --timeout=20m0s porto-engine") {
 		t.Fatalf("recovery commands missing:\n%s", commands)
 	}
 }
@@ -550,7 +553,7 @@ func TestEngineOwnershipStatusReportsMarkerCollisionWithoutRecovery(t *testing.T
 	}
 	for _, command := range runner.commands {
 		joined := strings.Join(command.Args, " ")
-		if joined == "stop porto-engine" || joined == "start porto-engine" {
+		if joined == "stop porto-engine" || joined == "start --timeout=20m0s porto-engine" {
 			t.Fatalf("ownership diagnosis changed guest lifecycle: %s", joined)
 		}
 	}
@@ -1368,6 +1371,49 @@ func TestStartEngineReportsBinfmtFailure(t *testing.T) {
 	}
 }
 
+func TestOwnedEngineStartupUsesItsBootBudgetAndCallerDeadline(t *testing.T) {
+	for _, callerBudget := range []time.Duration{time.Hour, 30 * time.Second} {
+		t.Run(callerBudget.String(), func(t *testing.T) {
+			var budget time.Duration
+			var arguments []string
+			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				joined := strings.Join(command.Args, " ")
+				switch {
+				case joined == "list porto-engine --json":
+					return []byte(`{"name":"porto-engine","status":"Stopped"}`), nil
+				case len(command.Args) > 0 && command.Args[0] == "start":
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						return nil, errors.New("owned engine startup has no deadline")
+					}
+					budget = time.Until(deadline)
+					arguments = append([]string(nil), command.Args...)
+				case strings.Contains(joined, `cat "$HOME/.porto-engine-owner"`):
+					return []byte("synthetic-owner\n"), nil
+				}
+				return nil, nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			manager.dialBuildKit = workingBuildKitDialer(t)
+			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+				t.Fatal(err)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), callerBudget)
+			defer cancel()
+			if err := manager.StartEngine(ctx); err != nil {
+				t.Fatal(err)
+			}
+			want := min(20*time.Minute, callerBudget)
+			if budget <= want-time.Second || budget > want {
+				t.Fatalf("owned engine boot budget = %s, want %s", budget, want)
+			}
+			if !reflect.DeepEqual(arguments, []string{"start", "--timeout=20m0s", engineInstanceName}) {
+				t.Fatalf("owned engine did not forward its boot budget to Lima: %v", arguments)
+			}
+		})
+	}
+}
+
 func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
 	root := t.TempDir()
 	executable := filepath.Join(root, "porto.exe")
@@ -1445,6 +1491,104 @@ func TestInstallLimaRuntimeHelperPreservesPreviousBinaryOnFailure(t *testing.T) 
 	}
 	if len(entries) != 1 || entries[0].Name() != "porto-runtime-helper" {
 		t.Fatalf("failed helper installation left temporary files: %+v", entries)
+	}
+}
+
+func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
+	for _, scenario := range []struct {
+		name, owner, instance string
+		available, borrowed   bool
+	}{
+		{name: "healthy owned engine", owner: "synthetic-owner", instance: engineInstanceName, available: true, borrowed: true},
+		{name: "disconnected inventory", owner: "synthetic-owner", instance: engineInstanceName},
+		{name: "changed owner", owner: "new-synthetic-owner", instance: engineInstanceName, available: true},
+		{name: "changed instance", owner: "synthetic-owner", instance: "another-synthetic-engine", available: true},
+	} {
+		for _, operation := range []string{"nerdctl", "files"} {
+			t.Run(scenario.name+"/"+operation, func(t *testing.T) {
+				runner := &fakeRunner{}
+				manager := NewWithStateDir(runner, t.TempDir())
+				manager.lookPath = func(string) (string, error) { return "", errors.New("no fallback CLI in this fixture") }
+				if err := manager.writeEngineState(engineState{Mode: "lima", Instance: scenario.instance, OwnerID: scenario.owner}); err != nil {
+					t.Fatal(err)
+				}
+				manager.inventoryCancel = func() {}
+				manager.inventory = &containerInventory{
+					snapshot: ContainerSnapshot{Available: scenario.available},
+					runtimeClient: &grpcContainerRuntime{commandSource: commandBackend{
+						name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner",
+					}},
+				}
+				var err error
+				want := []string{"shell", engineInstanceName, "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls"}
+				if operation == "files" {
+					descriptor := runtimefiles.Descriptor{Resource: datafiles.Resource{Kind: "volume", Name: "synthetic-volume", ID: "synthetic-identity"}}
+					err = manager.RunFileRequest(context.Background(), descriptor, datafiles.Request{
+						Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
+					}, nil, io.Discard)
+					want = []string{
+						"shell", "--workdir=/", engineInstanceName, "--", "sh", "-c",
+						limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "sh", "-c",
+						`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files`,
+					}
+				} else {
+					_, err = manager.run(context.Background(), "list synthetic volumes", "volume", "ls")
+				}
+				if !scenario.borrowed {
+					if !errors.Is(err, ErrUnavailable) || len(runner.commands) != 0 {
+						t.Fatalf("an unrelated or disconnected engine origin was reused: err=%v commands=%+v", err, runner.commands)
+					}
+					return
+				}
+				if err != nil || len(runner.commands) != 1 {
+					t.Fatalf("the healthy origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
+				}
+				if runner.commands[0].Name != "limactl" || !reflect.DeepEqual(runner.commands[0].Args, want) {
+					t.Fatalf("the borrowed command omitted in-guest ownership verification: %+v", runner.commands[0])
+				}
+			})
+		}
+	}
+}
+
+func TestBorrowedRuntimeCommandVerifiesOwnershipBeforeExecuting(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the ownership guard executes in the Linux guest")
+	}
+	for _, owner := range []string{"synthetic-owner", "foreign-owner", ""} {
+		t.Run("owner-"+owner, func(t *testing.T) {
+			home := t.TempDir()
+			if owner != "" {
+				if err := os.WriteFile(filepath.Join(home, ".porto-engine-owner"), []byte(owner+"\n"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			bin := filepath.Join(t.TempDir(), "bin")
+			if err := os.Mkdir(bin, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(bin, "nerdctl"), []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/invoked\"\ncat > \"$HOME/input\"\n"), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			input := []byte("synthetic\x00binary\xffarchive")
+			_, err := (runtimes.ExecRunner{}).Run(context.Background(), runtimes.Command{
+				Name: "sh", Args: []string{"-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls", "synthetic name"},
+				Env:   []string{"HOME=" + home, "PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},
+				Stdin: input,
+			})
+			content, readErr := os.ReadFile(filepath.Join(home, "invoked"))
+			if owner == "synthetic-owner" {
+				if err != nil || readErr != nil || string(content) != "volume\nls\nsynthetic name\n" {
+					t.Fatalf("owned command did not preserve its arguments: output=%q run=%v read=%v", content, err, readErr)
+				}
+				received, readErr := os.ReadFile(filepath.Join(home, "input"))
+				if readErr != nil || !bytes.Equal(received, input) {
+					t.Fatalf("ownership verification consumed or changed command input: %q, %v", received, readErr)
+				}
+			} else if err == nil || !errors.Is(readErr, os.ErrNotExist) {
+				t.Fatalf("an unverified engine executed the command: run=%v read=%v", err, readErr)
+			}
+		})
 	}
 }
 

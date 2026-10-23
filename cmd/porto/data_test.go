@@ -162,3 +162,17 @@ func TestVolumeDownloadPinsThePreviewedArchiveChecksum(t *testing.T) {
 		t.Fatalf("unverified download or temporary file remained: %+v, %v", entries, err)
 	}
 }
+
+func TestNativeFilesCLIReportsTheExactRequestedResourceCapability(t *testing.T) {
+	mockDataAPI(t, func(request *http.Request) (any, error) {
+		query := request.URL.Query()
+		if request.URL.Path != "/api/files/capabilities" || query.Get("kind") != "container" ||
+			query.Get("name") != "synthetic-container" || query.Get("writable") != "true" {
+			return nil, fmt.Errorf("native capability lost the resource or write boundary: %s", request.URL)
+		}
+		return map[string]any{"supported": false, "message": "Synthetic stopped resource is unavailable."}, nil
+	})
+	if err := dockerFilesCmd([]string{"container", "synthetic-container", "--writable"}); err != nil {
+		t.Fatal(err)
+	}
+}

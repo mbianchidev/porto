@@ -6,8 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
-	"time"
 
 	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/nativefiles"
@@ -23,63 +23,69 @@ func (m *Manager) NativeFilesLocal(ctx context.Context) (bool, error) {
 	return backend.limaInstance == "" && runtime.GOOS == "linux", err
 }
 
-func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writable bool) (target nativefiles.Target, err error) {
-	descriptor, err := m.FileDescriptor(ctx, kind, name)
+func (m *Manager) nativeFilesDescriptor(ctx context.Context, kind, name string, writable bool) (descriptor runtimefiles.Descriptor, backend commandBackend, err error) {
+	descriptor, err = m.FileDescriptor(ctx, kind, name)
 	if err != nil {
-		return target, err
-	}
-	backend, err := m.backend(ctx)
-	if err != nil {
-		return target, err
+		return descriptor, backend, err
 	}
 	if writable && (descriptor.Resource.ReadOnly || kind == "image") {
-		return target, fmt.Errorf("%w: native image or read-only container writes are rejected", datafiles.ErrUnsupported)
+		return descriptor, backend, fmt.Errorf("%w: native image or read-only container writes are rejected", datafiles.ErrUnsupported)
 	}
-	if runtime.GOOS == "windows" {
-		if backend.limaInstance == "" {
-			return target, fmt.Errorf("%w: native Windows runtime files require the Porto Linux guest", datafiles.ErrUnsupported)
+	backend, err = m.backend(ctx)
+	if err != nil {
+		return descriptor, backend, err
+	}
+	if backend.limaInstance == "" {
+		if runtime.GOOS != "linux" {
+			return descriptor, backend, fmt.Errorf("%w: native local runtime files require Linux; use the Porto Lima engine", datafiles.ErrUnsupported)
 		}
+	}
+	return descriptor, backend, nil
+}
+
+func (m *Manager) NativeFilesResource(ctx context.Context, kind, name string, writable bool) (datafiles.Resource, bool, error) {
+	descriptor, backend, err := m.nativeFilesDescriptor(ctx, kind, name, writable)
+	return descriptor.Resource, backend.limaInstance == "" && runtime.GOOS == "linux" && !(kind == "container" && descriptor.PID > 0), err
+}
+
+func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writable bool) (target nativefiles.Target, err error) {
+	descriptor, backend, err := m.nativeFilesDescriptor(ctx, kind, name, writable)
+	if err != nil {
+		return target, err
+	}
+	if backend.limaInstance != "" || kind == "container" && descriptor.PID > 0 {
 		encoded, err := nativefiles.EncodeNativeRequest(descriptor, writable)
 		if err != nil {
 			return target, err
 		}
 		target = nativefiles.Target{
 			Resource: descriptor.Resource, Identity: descriptor.Resource.Fingerprint(),
-			SFTP: &nativefiles.SFTPCommand{
-				Name: backend.name,
-				Args: []string{"shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
-					`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files-sftp "$1"`, "porto-native-files", encoded},
-			},
 			Release: func(context.Context) error { return nil },
 		}
-		target.Verify = func(ctx context.Context) error {
-			current, err := m.FileDescriptor(ctx, kind, descriptor.Resource.Name)
-			if err != nil {
-				return err
+		if backend.limaInstance != "" {
+			target.SFTP = &nativefiles.SFTPCommand{Name: backend.name, Args: []string{
+				"shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+				`exec sudo -n -- "$HOME/.local/bin/porto-runtime-helper" files-sftp "$1"`, "porto-native-files", encoded,
+			}}
+		} else {
+			helper, err := m.runtimeHelperPath()
+			if err != nil || helper == "" {
+				return target, errors.Join(errors.New("the native runtime helper is unavailable"), err)
 			}
-			if current.Resource.Fingerprint() != target.Identity || current.PID != descriptor.PID {
-				return datafiles.ErrConflict
+			target.SFTP = &nativefiles.SFTPCommand{Name: helper, Args: []string{"files-sftp", encoded}}
+			if os.Geteuid() != 0 {
+				target.SFTP.Name = "sudo"
+				target.SFTP.Args = []string{"-n", "--", helper, "files-sftp", encoded}
 			}
-			return nil
-		}
-		return target, nil
-	}
-	if kind == "container" && descriptor.PID > 0 {
-		if backend.limaInstance == "" {
-			return target, fmt.Errorf("%w: this rootless kernel locks the running container's mount subtree; use in-app Files or stop it explicitly before mounting its snapshot", datafiles.ErrUnsupported)
-		}
-		config, err := m.discoverLimaSSHConfig(ctx, backend.limaInstance)
-		if err != nil {
-			return target, err
-		}
-		target = nativefiles.Target{
-			Resource: descriptor.Resource, Identity: descriptor.Resource.Fingerprint(),
-			RemotePath: fmt.Sprintf("/proc/%d/root", descriptor.PID),
-			SSHConfig:  config, SSHHost: "lima-" + backend.limaInstance,
-			Release: func(context.Context) error { return nil },
 		}
 		target.Verify = func(ctx context.Context) error {
-			current, err := m.FileDescriptor(ctx, "container", descriptor.Resource.ID)
+			var current runtimefiles.Descriptor
+			var err error
+			if kind == "volume" && descriptor.VolumeIdentity != "" && descriptor.VolumeIdentity == descriptor.Resource.ID {
+				current.Resource, err = m.volumeFileIdentity(ctx, descriptor)
+			} else {
+				current, err = m.FileDescriptor(ctx, kind, descriptor.Resource.Name)
+			}
 			if err != nil {
 				return err
 			}
@@ -120,16 +126,8 @@ func (m *Manager) NativeFilesTarget(ctx context.Context, kind, name string, writ
 		if current.Resource.Fingerprint() != target.Identity || current.PID != descriptor.PID {
 			return datafiles.ErrConflict
 		}
-		return nil
-	}
-	if backend.limaInstance != "" {
-		config, err := m.discoverLimaSSHConfig(ctx, backend.limaInstance)
-		if err != nil {
-			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), 20*time.Second)
-			defer cancel()
-			return target, errors.Join(err, target.Release(cleanup))
-		}
-		target.SSHConfig, target.SSHHost = config, "lima-"+backend.limaInstance
+		var status bytes.Buffer
+		return m.RunFileRequest(ctx, descriptor, datafiles.Request{Action: "attachment-status", Identity: target.Identity, Token: attachment.Token}, nil, &status)
 	}
 	return target, nil
 }

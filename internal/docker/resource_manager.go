@@ -145,6 +145,10 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 }
 
 func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) error {
+	return m.removeVolume(ctx, name, force, nil)
+}
+
+func (m *Manager) removeVolume(ctx context.Context, name string, force bool, document json.RawMessage) error {
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err
@@ -158,9 +162,12 @@ func (m *Manager) RemoveVolume(ctx context.Context, name string, force bool) err
 			return err
 		}
 	}
-	document, err := m.InspectVolume(ctx, name)
-	if err != nil {
-		return err
+	// Owned cleanup can reuse its fresh inspection under the same data-operation gate.
+	if document == nil {
+		document, err = m.InspectVolume(ctx, name)
+		if err != nil {
+			return err
+		}
 	}
 	var volume struct {
 		Name       string

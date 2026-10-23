@@ -21,8 +21,8 @@ import (
 
 const defaultTimeout = 2 * time.Minute
 
-// Lima downloads/prepares the image during start, before its 10-minute boot watch.
-const firstStartTimeout = 20 * time.Minute
+// Image preparation and software-emulated restarts share the same bounded boot budget.
+const startTimeout = 20 * time.Minute
 
 var (
 	ErrUnavailable = errors.New("Lima is unavailable; install limactl to manage Porto virtual machines")
@@ -386,7 +386,7 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
-		if err := m.start(ctx, request.Name, firstStartTimeout); err != nil {
+		if err := m.start(ctx, request.Name, startTimeout); err != nil {
 			return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
 		}
 		if strings.TrimSpace(request.Provision) != "" {
@@ -462,7 +462,23 @@ func (m *Manager) EnsureStandalone(name string) error {
 }
 
 func (m *Manager) Start(ctx context.Context, name string) error {
-	return m.start(ctx, name, 5*time.Minute)
+	if err := validateName(name); err != nil {
+		return err
+	}
+	timeout := 5 * time.Minute
+	if m.stateDir != "" {
+		metadata, err := m.readMetadata(name)
+		if errors.Is(err, os.ErrNotExist) {
+			return fmt.Errorf("VM %q is not managed by Porto", name)
+		}
+		if err != nil {
+			return fmt.Errorf("read VM ownership: %w", err)
+		}
+		if metadata.Kind == "standalone" {
+			timeout = startTimeout
+		}
+	}
+	return m.start(ctx, name, timeout)
 }
 
 func (m *Manager) start(ctx context.Context, name string, timeout time.Duration) error {
@@ -479,7 +495,8 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 	if len(existing) == 0 {
 		return fmt.Errorf("VM %q not found; refusing to create a replacement during start", name)
 	}
-	_, startErr := m.run(ctx, timeout, "start Lima instance", "start", name)
+	startArgs := []string{"start", "--timeout=" + timeout.String(), name}
+	_, startErr := m.run(ctx, timeout, "start Lima instance", startArgs...)
 	if startErr != nil {
 		if errors.Is(startErr, context.DeadlineExceeded) || errors.Is(startErr, context.Canceled) {
 			return startErr
@@ -494,7 +511,7 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 		if _, err := m.run(ctx, 2*time.Minute, "recover broken Lima instance", "stop", "--force", name); err != nil {
 			return errors.Join(startErr, err)
 		}
-		if _, err := m.run(ctx, 5*time.Minute, "start recovered Lima instance", "start", name); err != nil {
+		if _, err := m.run(ctx, timeout, "start recovered Lima instance", startArgs...); err != nil {
 			return errors.Join(startErr, err)
 		}
 	}

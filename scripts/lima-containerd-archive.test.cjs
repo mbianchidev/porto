@@ -5,7 +5,7 @@ const path = require('node:path')
 const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 
-const { selectArchive, decompressArchive } = require('./lima-containerd-archive.cjs')
+const { selectArchive, decompressArchive, dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
 const { sha256 } = require('./verify-runtime-checksum.cjs')
 
 function fixture(t) {
@@ -13,6 +13,25 @@ function fixture(t) {
   t.after(() => fs.rmSync(directory, { recursive: true, force: true }))
   return { source: path.join(directory, 'runtime.tar.gz'), destination: path.join(directory, 'runtime.tar') }
 }
+
+test('CI dependencies use one immutable Ubuntu snapshot for the current UTC date', () => {
+  const date = new Date('2026-10-22T14:35:00Z')
+  const override = dependencyProvisionOverride(date)
+  const entries = JSON.parse(override.slice('.provision += '.length))
+  assert.equal(entries.length, 1)
+  assert.equal(entries[0].mode, 'dependency')
+  assert.match(entries[0].script, /URIs: https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261022T000000Z\//)
+  assert.doesNotMatch(entries[0].script, /APT::Snapshot/)
+  assert.match(entries[0].script, /APT::Update::Error-Mode "any";/)
+  assert.match(entries[0].script, /Ubuntu snapshot: 20261022T000000Z/)
+  assert.equal(override, dependencyProvisionOverride(date))
+})
+
+test('CI snapshot selection uses UTC boundaries and rejects an invalid date', () => {
+  const override = dependencyProvisionOverride(new Date('2026-10-22T23:30:00-07:00'))
+  assert.match(override, /20261023T000000Z/)
+  assert.throws(() => dependencyProvisionOverride(new Date('invalid')), RangeError)
+})
 
 test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {
   const script = fs.readFileSync(path.join(__dirname, 'test-docker-clients.sh'), 'utf8')

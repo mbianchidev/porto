@@ -5,6 +5,7 @@ import (
 	"flag"
 	"net/url"
 	"os"
+	"strconv"
 )
 
 func dockerFilesCmd(args []string) error {
@@ -25,7 +26,8 @@ func dockerFilesCmd(args []string) error {
 	}
 	kind, name := flags.Arg(0), flags.Arg(1)
 	if !*confirm {
-		return runtimeGET("/api/files/capabilities?kind=" + url.QueryEscape(kind))
+		query := url.Values{"kind": {kind}, "name": {name}, "writable": {strconv.FormatBool(*writable)}}
+		return runtimeGET("/api/files/capabilities?" + query.Encode())
 	}
 	return runtimePOST("/api/files/attachments", map[string]any{"kind": kind, "name": name, "writable": *writable, "confirm": true})
 }
