@@ -403,12 +403,14 @@ Required PR acceptance has two independent layers:
 
 | Layer | Required coverage |
 | --- | --- |
-| Runtime data | Linux x64/ARM64 with local containerd and Lima; real migration, native-resource integration, recovery, and Lima engine lifecycle |
+| Runtime data | Native Linux x64/ARM64 containerd and KVM-backed x64 Lima; real migration, native-resource integration, recovery, and accelerated Lima engine lifecycle |
 | Host filesystem drivers | macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp; real OS mounts over confined synthetic SFTP sources, without a VM dependency |
 
-Full macOS/Windows **Lima-backed** migration, native-resource integration, and
+Full Linux ARM64 and macOS/Windows **Lima-backed** migration, native-resource integration, and
 engine restart remain available in the opt-in `Emulated runtime acceptance`
-workflow. They no longer gate every PR: hosted-runner software emulation and
+workflow. Required VM-backed jobs check for KVM rather than silently falling
+back to emulation. Native Linux ARM64 destination coverage remains required.
+The unaccelerated Lima cells no longer gate every PR: hosted-runner software emulation and
 guest timer/SSH delays repeatedly failed independently of the migration
 assertions. This deliberately defers meaningful end-to-end coverage. Driver
 tests and Linux results do not count as passing those platform/backend cells.

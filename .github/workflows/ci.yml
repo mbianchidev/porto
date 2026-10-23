@@ -220,8 +220,6 @@ jobs:
             backend: local
           - os: ubuntu-26.04
             backend: lima
-          - os: ubuntu-26.04-arm
-            backend: lima
         exclude:
           - phase: engine
             runtime:
@@ -235,6 +233,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Require hardware virtualization for the VM-backed gate
+        if: matrix.runtime.backend == 'lima'
+        run: |
+          if [ ! -c /dev/kvm ]; then
+            echo "::error::Required Lima acceptance needs KVM; software-emulated destinations belong in Emulated runtime acceptance."
+            exit 1
+          fi
       - uses: ./.github/actions/runtime-data
         with:
           backend: ${{ matrix.runtime.backend }}

@@ -27,7 +27,7 @@ Porto runs its own containerd and BuildKit backend rather than proxying another 
   macOS native folders use the built-in WebDAV filesystem over confined SFTP, without a third-party driver.
   Linux bridges require FUSE3 and SSHFS 3.7.6+ or an equivalent maintained build with symlink containment.
   CLI `--resume` retains exact migration identities and destinations.
-  Required CI covers Linux runtime integration and real desktop filesystem drivers on both release architectures; full macOS/Windows Lima integration is [explicit opt-in acceptance](docs/data-management.md#real-runtime-acceptance).
+  Required CI covers native Linux backends on both architectures, KVM-backed x64 Lima, and real desktop filesystem drivers on both architectures; software-emulated Lima integration is [explicit opt-in acceptance](docs/data-management.md#real-runtime-acceptance).
 
 ## Platforms and prerequisites
 

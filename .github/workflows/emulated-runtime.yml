@@ -4,11 +4,12 @@ on:
   workflow_dispatch:
     inputs:
       platform:
-        description: Desktop host to exercise with a disposable Lima VM.
+        description: Host for software-emulated Lima acceptance.
         type: choice
         default: all
         options:
           - all
+          - ubuntu-26.04-arm
           - macos-26-intel
           - macos-26
           - windows-2025
@@ -38,7 +39,7 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: ${{ fromJSON(inputs.platform == 'all' && '["macos-26-intel","macos-26","windows-2025","windows-11-arm"]' || format('["{0}"]', inputs.platform)) }}
+        os: ${{ fromJSON(inputs.platform == 'all' && '["ubuntu-26.04-arm","macos-26-intel","macos-26","windows-2025","windows-11-arm"]' || format('["{0}"]', inputs.platform)) }}
         phase: ${{ fromJSON(inputs.phase == 'all' && '["migration","native","engine"]' || format('["{0}"]', inputs.phase)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7

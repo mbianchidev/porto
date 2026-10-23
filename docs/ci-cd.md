@@ -85,9 +85,9 @@ VMs booting and remaining responsive.
 
 | Coverage | Default PR gate | Execution |
 | --- | --- | --- |
-| Real runtime data | Yes, 10 jobs | Linux x64/ARM64, local containerd and Lima; migration/native phases plus Lima engine lifecycle |
+| Real runtime data | Yes, 7 jobs | Native Linux x64/ARM64 containerd; KVM-backed x64 Lima; migration/native phases plus the accelerated Lima engine lifecycle |
 | Native filesystem drivers | Yes, 4 jobs | Actual macOS Intel/Apple Silicon WebDAV and Windows x64/ARM64 WinFsp mounts, with confined synthetic SFTP sources and no guest VM |
-| Full desktop Lima integration | No, 12 opt-in cells | macOS Intel/Apple Silicon and Windows x64/ARM64; migration, native, and engine phases |
+| Software-emulated Lima integration | No, 15 opt-in cells | Linux ARM64, macOS Intel/Apple Silicon and Windows x64/ARM64; migration, native, and engine phases |
 
 The `Native filesystem` jobs exercise real host-mounted files, not an in-memory
 filesystem mock. Windows builds the current native helper and installs the
@@ -97,12 +97,21 @@ the macOS suite also exercises delayed readiness, owner-process death, and detac
 recovery. They run independently of guest provisioning. Existing packaged
 Windows-helper checks in `Native installers` remain required as well.
 
-The expensive macOS/Windows Lima cells live in the manually dispatched
-`Emulated runtime acceptance` workflow. Hosted-runner TCG timing, guest kernel
-timer panics, and repeated SSH startup made that matrix an unreliable PR gate.
-Deferring it is an explicit coverage tradeoff, not a fix for those upstream or
+Required VM-backed acceptance checks for `/dev/kvm` before provisioning; it
+must not silently fall back to a software-emulated destination. Linux ARM64's
+native containerd migration and native-resource tests remain required. Those
+local-backend fixtures may use an isolated emulated Docker source VM, but do
+not qualify the host's Lima destination/restart behavior.
+
+The Linux ARM64 and macOS/Windows Lima cells live in the manually dispatched
+`Emulated runtime acceptance` workflow. This is a virtualization boundary,
+not just an OS-name distinction: the hosted Linux ARM64 runner also lacks KVM,
+and its restart case exhausted the 85-minute job budget. Hosted-runner TCG
+timing, guest kernel timer panics, and repeated SSH startup made those
+VM-backed cells an unreliable PR gate.
+Deferring this matrix is an explicit coverage tradeoff, not a fix for those upstream or
 timing problems. Passing the default gate does **not** establish full
-macOS/Windows Lima migration, native-resource integration, or engine-restart
+software-emulated Lima migration, native-resource integration, or engine-restart
 acceptance. Those results require a separate successful run on the selected
 revision and platform. Nothing uses `continue-on-error` to disguise failures.
 
@@ -114,7 +123,8 @@ gh workflow run emulated-runtime.yml --ref <branch-or-tag> \
   -f platform=windows-11-arm -f phase=migration
 ```
 
-Use `platform=all` and `phase=all` for all 12 cells. Manual failures remain
+Use `platform=all` and `phase=all` for all 15 cells, or select
+`platform=ubuntu-26.04-arm` for the unaccelerated Linux Lima row. Manual failures remain
 failures, and canceled or unrun cells never count as accepted.
 
 Both runtime workflows share `.github/actions/runtime-data/action.yml`, retain
