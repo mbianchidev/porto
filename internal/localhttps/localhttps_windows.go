@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"crypto/x509"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -158,15 +157,18 @@ func quotePowerShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
-func userRootStore() (windows.Handle, error) {
+func userRootStore(readOnly bool) (windows.Handle, error) {
 	name, err := windows.UTF16PtrFromString("ROOT")
 	if err != nil {
 		return 0, err
 	}
 	// Trust is explicitly requested by the caller. Keep it in the registry-backed
 	// CurrentUser store, without a machine-wide write or modal certificate shell.
-	return windows.CertOpenStore(windows.CERT_STORE_PROV_SYSTEM_REGISTRY, 0, 0,
-		windows.CERT_SYSTEM_STORE_CURRENT_USER, uintptr(unsafe.Pointer(name)))
+	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER | windows.CERT_SYSTEM_STORE_UNPROTECTED_FLAG)
+	if readOnly {
+		flags |= windows.CERT_STORE_READONLY_FLAG | windows.CERT_STORE_OPEN_EXISTING_FLAG
+	}
+	return windows.CertOpenStore(windows.CERT_STORE_PROV_SYSTEM_REGISTRY, 0, 0, flags, uintptr(unsafe.Pointer(name)))
 }
 
 func Trust(path string) (err error) {
@@ -175,7 +177,7 @@ func Trust(path string) (err error) {
 		return err
 	}
 	block, _ := pem.Decode(data)
-	store, err := userRootStore()
+	store, err := userRootStore(false)
 	if err != nil {
 		return fmt.Errorf("open current-user certificate root store: %w", err)
 	}
@@ -198,7 +200,7 @@ func Untrust(path string) (err error) {
 	}
 	block, _ := pem.Decode(data)
 	thumbprint := sha1.Sum(block.Bytes)
-	store, err := userRootStore()
+	store, err := userRootStore(false)
 	if err != nil {
 		return err
 	}
@@ -222,7 +224,12 @@ func Untrust(path string) (err error) {
 	return nil
 }
 
-func Trusted(path string) bool { return verifySystemTrust(path) }
+func Trusted(path string) bool {
+	if !authoritySystemTrusted(filepath.Join(filepath.Dir(path), "porto-root-ca.pem")) {
+		return false
+	}
+	return verifySystemTrust(path)
+}
 
 func authoritySystemTrusted(path string) bool {
 	data, _, err := readAuthorityIdentity(path)
@@ -230,12 +237,20 @@ func authoritySystemTrusted(path string) bool {
 		return false
 	}
 	block, _ := pem.Decode(data)
-	certificate, err := x509.ParseCertificate(block.Bytes)
+	store, err := userRootStore(true)
 	if err != nil {
 		return false
 	}
-	_, err = certificate.Verify(x509.VerifyOptions{KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
-	return err == nil
+	defer windows.CertCloseStore(store, 0)
+	thumbprint := sha1.Sum(block.Bytes)
+	hash := windows.CryptHashBlob{Size: uint32(len(thumbprint)), Data: &thumbprint[0]}
+	certificate, err := windows.CertFindCertificateInStore(store, windows.X509_ASN_ENCODING, 0,
+		windows.CERT_FIND_SHA1_HASH, unsafe.Pointer(&hash), nil)
+	if err != nil {
+		return false
+	}
+	defer windows.CertFreeCertificateContext(certificate)
+	return bytes.Equal(unsafe.Slice(certificate.EncodedCert, int(certificate.Length)), block.Bytes)
 }
 
 func privilegedAction(action string, args ...string) error {

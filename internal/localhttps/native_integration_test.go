@@ -51,9 +51,18 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 		t.Fatal("refusing to replace a pre-existing HTTPS integration on the test host")
 	}
 	run := func(configuration string, args ...string) ([]byte, error) {
-		command := process.NewCommand(ctx, "", binary, args...)
+		commandContext, stopCommand := context.WithTimeout(ctx, 30*time.Second)
+		defer stopCommand()
+		started := time.Now()
+		t.Logf("native HTTPS command starting: %v", args)
+		command := process.NewCommand(commandContext, "", binary, args...)
 		command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+configuration)
-		return command.CombinedOutput()
+		output, err := command.CombinedOutput()
+		t.Logf("native HTTPS command completed after %s: %v (error=%v)", time.Since(started), args, err)
+		if commandContext.Err() != nil {
+			err = errors.Join(err, commandContext.Err())
+		}
+		return output, err
 	}
 	mustRun := func(configuration string, args ...string) []byte {
 		t.Helper()
@@ -82,6 +91,9 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 		}
 		output, installErr := run(home, "https", "install")
 		closeErr := occupied.Close()
+		if errors.Is(installErr, context.DeadlineExceeded) || errors.Is(installErr, context.Canceled) {
+			t.Fatalf("port conflict at %s timed out instead of being diagnosed: %v: %s", address, installErr, output)
+		}
 		if installErr == nil {
 			t.Fatalf("occupied %s did not reject installation: %s", address, output)
 		}
