@@ -34,7 +34,10 @@ func TestWSLMountPlanPreservesUnrelatedHostMountOptions(t *testing.T) {
 `)
 	expression, err := wslMountPlan(configuration,
 		[]wsl.Share{{WindowsPath: "old-owned-share", GuestPath: "/mnt/porto-wsl/old"}},
-		[]wsl.Share{{WindowsPath: `\\wsl.localhost\synthetic\home\dev`, GuestPath: "/mnt/porto-wsl/new"}},
+		[]wsl.Share{
+			{WindowsPath: `\\wsl.localhost\synthetic\home\dev`, GuestPath: "/mnt/porto-wsl/new"},
+			{WindowsPath: `C:\Users\synthetic`, GuestPath: "/mnt/porto-wsl/windows"},
+		},
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -50,11 +53,14 @@ func TestWSLMountPlanPreservesUnrelatedHostMountOptions(t *testing.T) {
 	var mounts []struct {
 		Location string `json:"location"`
 	}
-	if err := json.Unmarshal(data, &mounts); err != nil || len(mounts) != 2 {
+	if err := json.Unmarshal(data, &mounts); err != nil || len(mounts) != 3 {
 		t.Fatalf("mount plan = %s: %v", data, err)
 	}
 	if mounts[1].Location != `\\wsl.localhost\synthetic\home\dev` {
 		t.Fatalf("UNC mount lost its absolute path prefix: %q", mounts[1].Location)
+	}
+	if mounts[2].Location != mounts[0].Location || mounts[2].Location != `C:\Users\synthetic` {
+		t.Fatalf("native Windows home was not mounted independently: %+v", mounts)
 	}
 	for _, expected := range []string{`"mountPoint":"/host"`, `"writable":false`, `"cache":true`, `"mountPoint":"/mnt/porto-wsl/new"`} {
 		if !strings.Contains(string(data), expected) {

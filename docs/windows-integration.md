@@ -51,6 +51,12 @@ porto wsl enable --mount-root /workspace "Ubuntu-24.04"
 porto wsl apply-mounts --restart-engine
 ```
 
+Linux filesystem roots use the selected distribution's `\\wsl.localhost` share.
+Windows-drive roots use their native Windows paths instead of a UNC round trip
+through WSL, which can deny access to mounted Windows drives. Each selected root
+gets a distinct guest mount point; existing Lima host-home mounts and their
+permissions/options remain unchanged.
+
 The second command is a separate, explicit maintenance action. It verifies
 the existing engine's ownership, preserves unrelated Lima mount options and
 restarts only Porto's owned Linux engine. Save running work first. It does not

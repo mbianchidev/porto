@@ -91,6 +91,18 @@ func TestWSLInstallRepairAndRemovalPreserveUserDockerConfiguration(t *testing.T)
 	if first.Owner != second.Owner {
 		t.Fatal("repair replaced the integration identity")
 	}
+	windowsHomeShared := false
+	for _, share := range second.Shares {
+		if share.LinuxPath == "/mnt/c/Users/Synthetic User" {
+			windowsHomeShared = true
+			if share.WindowsPath != `C:\Users\Synthetic User` {
+				t.Fatalf("Windows drive was routed back through the WSL network provider: %q", share.WindowsPath)
+			}
+		}
+	}
+	if !windowsHomeShared {
+		t.Fatal("selected Windows home was not shared")
+	}
 	profile, err := os.ReadFile(filepath.Join(runner.home, ".profile"))
 	if err != nil || strings.Count(string(profile), "# Porto WSL "+first.Owner) != 1 {
 		t.Fatalf("repair duplicated shell hooks: %s, %v", profile, err)

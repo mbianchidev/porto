@@ -103,10 +103,10 @@ func (m *Manager) state() ([]Integration, error) {
 		}
 		seen[integration.Distribution] = true
 		for _, share := range integration.Shares {
-			expectedWindows := `\\wsl.localhost\` + integration.Distribution + strings.ReplaceAll(share.LinuxPath, "/", `\`)
+			expectedWindows, pathErr := windowsSharePath(integration.Distribution, share.LinuxPath, share.WindowsPath)
 			sum := sha256.Sum256([]byte(integration.ID + "\x00" + share.LinuxPath))
 			if !path.IsAbs(share.LinuxPath) || path.Clean(share.LinuxPath) != share.LinuxPath ||
-				share.LinuxPath == "/" || share.WindowsPath != expectedWindows ||
+				share.LinuxPath == "/" || pathErr != nil || share.WindowsPath != expectedWindows ||
 				share.GuestPath != "/mnt/porto-wsl/"+hex.EncodeToString(sum[:8]) {
 				return nil, errors.New("selected WSL share metadata no longer matches its distribution identity")
 			}
@@ -326,7 +326,10 @@ func (m *Manager) Enable(ctx context.Context, name string, roots []string) (inte
 			continue
 		}
 		seen[linuxPath] = true
-		windowsPath = `\\wsl.localhost\` + name + strings.ReplaceAll(linuxPath, "/", `\`)
+		windowsPath, err = windowsSharePath(name, linuxPath, windowsPath)
+		if err != nil {
+			return integration, err
+		}
 		sum := sha256.Sum256([]byte(distribution.ID + "\x00" + linuxPath))
 		integration.Shares = append(integration.Shares, Share{
 			LinuxPath: linuxPath, WindowsPath: windowsPath, GuestPath: "/mnt/porto-wsl/" + hex.EncodeToString(sum[:8]),
@@ -447,6 +450,22 @@ func TranslatePath(integration Integration, source string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("WSL bind source %q is outside the selected shared roots; enable this distribution with '--mount-root %s' and explicitly apply its engine mounts", source, path.Dir(source))
+}
+
+func windowsSharePath(distribution, linuxPath, probedPath string) (string, error) {
+	if strings.ContainsAny(probedPath, "\x00\r\n") {
+		return "", errors.New("WSL returned an invalid Windows share path")
+	}
+	if len(probedPath) >= 2 && probedPath[1] == ':' {
+		drive := probedPath[0]
+		if len(probedPath) < 3 || !((drive >= 'a' && drive <= 'z') || (drive >= 'A' && drive <= 'Z')) ||
+			(probedPath[2] != '\\' && probedPath[2] != '/') || strings.ContainsAny(probedPath[2:], `<>:"|?*`) {
+			return "", errors.New("WSL returned a non-absolute or invalid native Windows drive path")
+		}
+		tail := path.Clean(strings.ReplaceAll(probedPath[2:], `\`, "/"))
+		return strings.ToUpper(probedPath[:1]) + ":" + strings.ReplaceAll(tail, "/", `\`), nil
+	}
+	return `\\wsl.localhost\` + distribution + strings.ReplaceAll(linuxPath, "/", `\`), nil
 }
 
 func (m *Manager) Shares() ([]Share, error) {

@@ -37,7 +37,7 @@ func wslMountPlan(configuration []byte, previous, desired []wsl.Share) (string, 
 	}
 	for _, share := range desired {
 		for _, mount := range mounts {
-			if mount["mountPoint"] == share.GuestPath || mount["location"] == share.WindowsPath {
+			if mount["mountPoint"] == share.GuestPath {
 				return "", fmt.Errorf("WSL share conflicts with an unrelated Lima mount at %s; no mount was replaced", share.GuestPath)
 			}
 		}
