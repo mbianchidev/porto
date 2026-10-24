@@ -25,6 +25,9 @@ are scoped by runner OS/architecture, resolved Go version, workload, target,
 and dependency/runtime inputs, so a host-only cache cannot displace a
 cross-build or native-packaging cache. Go still validates compiler cache
 entries against current source and flags; test executions retain `-count=1`.
+Cache paths are exported through the job environment so post-job saves can
+resolve them even when setup actions are nested inside runtime acceptance.
+The same rule keeps nested Electron/builder download caches available at cleanup.
 On privileged Linux client fixtures, downloading and compilation run as the
 runner user so restored caches remain usable and readable by cache upload.
 Only the integration executable and its isolated runtime run as root.
@@ -57,7 +60,10 @@ start, preventing concurrent first-run extraction of its runtime.
 
 The Node 24 job also runs the Playwright data-dashboard suite with Chromium.
 Its browser downloads are cached by dashboard lockfile; the browser/system
-dependency installation step still runs on every build. npm caches include
+dependency installation step still runs on every build. The suite selects the
+full `chromium` channel, so `--no-shell` omits the unused Chrome Headless Shell.
+The browser cache uses a separate layout version instead of restoring the old
+archive containing both browsers. npm caches include
 both dashboard and Electron lockfiles where both are installed. Neither
 `npm ci`, dependency audits, nor desktop/browser tests are skipped on cache hits.
 Synthetic container fixtures cover bounded stdout/stderr streams, cancellation,
@@ -145,8 +151,11 @@ dedicated engine phase without an independently owned CI Lima runtime is an erro
 No job waits for another phase's artifacts. The 85-minute job, 55-minute
 executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.
 Normal development-client jobs retain their existing scope. Linux installs
-FUSE3/QEMU and builds checksum-pinned SSHFS 3.7.6 with the required symlink
-containment fixes instead of the older distribution binary. It grants the runner
+FUSE3, `qemu-utils`, and only the host-architecture QEMU package:
+`qemu-system-x86` on x64 or `qemu-system-arm` on ARM64. All source and destination
+fixtures retain their host-architecture guests. Linux builds checksum-pinned
+SSHFS 3.7.6 with the required symlink containment fixes instead of the older
+distribution binary. It grants the runner
 access to an available KVM device. A fresh KVM-group process retains access in both destination and source
 QEMU children. Rootful jobs explicitly forward the CI identity, temporary directory,
 architecture, toolchain, phase and download-cache environment across elevation, including Ubuntu 26's
@@ -273,7 +282,10 @@ assertion deadlines. Log rendering shares one time formatter per render rather
 than creating one for every record.
 
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
-branches. A downloader override makes `app-builder-lib` use the same fetch-based
+branches, `fast-uri` 3.1.9, and node-gyp's `undici` 6.29.1. Electron stays on the
+compatible 44.9.x line at 44.9.3; development-client fixtures use patched `undici`
+8.12.3. Dependency audits remain enforced without advisory suppressions.
+A downloader override makes `app-builder-lib` use the same fetch-based
 `@electron/get` 5.x downloader as Electron and Electron Packager, removing its
 legacy `got`/`http-cache-semantics` dependency chain without downgrading
 electron-builder or changing Electron. The installer script enables that
@@ -466,7 +478,7 @@ points at that file. No user database or running daemon is used.
 
 macOS CI and DMG releases also run
 `scripts/macos-startup.test.cjs`. It forces a failed power-registration call in
-an isolated Electron process and verifies that the unmodified Electron 44.7.1
+an isolated Electron process and verifies that the unmodified Electron 44.9.3
 runtime still loads a sandboxed renderer and exits cleanly. The former native
 workaround and crash-expecting negative control have been removed.
 It also runs the production packager against an isolated synthetic source tree

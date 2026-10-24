@@ -25,8 +25,13 @@ runs:
       if: runner.os == 'Linux'
       shell: bash
       run: |
+        case "$RUNNER_ARCH" in
+          X64) qemu_package=qemu-system-x86 ;;
+          ARM64) qemu_package=qemu-system-arm ;;
+          *) echo "::error::Unsupported QEMU runner architecture: $RUNNER_ARCH"; exit 1 ;;
+        esac
         sudo apt-get update -qq
-        sudo apt-get install -y -qq acl fuse3 libfuse3-dev libglib2.0-dev meson ninja-build pkg-config qemu-system qemu-utils
+        sudo apt-get install -y -qq acl fuse3 libfuse3-dev libglib2.0-dev meson ninja-build pkg-config "$qemu_package" qemu-utils
         sshfs_build="$(mktemp -d "$RUNNER_TEMP/porto-sshfs.XXXXXX")"
         trap 'rm -r -- "$sshfs_build"' EXIT
         bash scripts/download-file.sh \
