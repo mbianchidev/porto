@@ -30,6 +30,25 @@ independent jobs, one for each release target (`linux`, `darwin`, and `windows`
 on `amd64` and `arm64`). All targets remain mandatory; a broken platform build
 fails the pull request instead of the release.
 
+Generic Linux x64 jobs use `ubuntu-latest`, including native containerd and
+KVM-backed Lima acceptance. ARM macOS jobs use `macos-latest`, including the
+native-filesystem and optional emulated-runtime rows. These rolling aliases track
+GitHub's stable images, which can lag the OS vendor's newest release during a
+rollout. Acceptance explicitly rejects the wrong architecture on rolling-image
+rows; a future alias change must not silently replace x64 Linux or ARM macOS
+coverage.
+
+Linux ARM64 remains `ubuntu-26.04-arm` and Intel macOS remains
+`macos-26-intel`: GitHub provides neither `ubuntu-latest-arm` nor an Intel
+`macos-latest` alias. These pins preserve architecture coverage, not a blanket
+host-version requirement. Windows runner labels, guest/container images and
+toolchain pins are unchanged. Linux still builds SSHFS against the host's FUSE3
+libraries, checks the actual FUSE device and requires actual `/dev/kvm` for the
+VM-backed PR gate; a rolling image is not permission to fall back to emulation.
+The Ubuntu 26.04 **guest** requirement for rootless startup and the macOS 26/Xcode
+26 minimum for Icon Composer packaging are separate from host-runner aliases.
+See GitHub's [supported runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners).
+
 CI shares Go module downloads separately from compiler objects. Build caches
 are scoped by runner OS/architecture, resolved Go version, workload, target,
 and dependency/runtime inputs, so a host-only cache cannot displace a
@@ -142,6 +161,8 @@ gh workflow run emulated-runtime.yml --ref <branch-or-tag> \
 Use `platform=all` and `phase=all` for all 15 cells, or select
 `platform=ubuntu-26.04-arm` for the unaccelerated Linux Lima row. Manual failures remain
 failures, and canceled or unrun cells never count as accepted.
+Select `platform=macos-latest` for Apple Silicon or `platform=macos-26-intel`
+for Intel macOS; the input choices and full matrix use the same runner labels.
 
 Both runtime workflows share `.github/actions/runtime-data/action.yml`, retain
 workload-scoped Go and verified-download caches, and use fail-fast within their

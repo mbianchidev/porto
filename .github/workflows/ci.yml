@@ -214,16 +214,16 @@ jobs:
       matrix:
         phase: [migration, native, engine]
         runtime:
-          - os: ubuntu-26.04
+          - os: ubuntu-latest
             backend: local
           - os: ubuntu-26.04-arm
             backend: local
-          - os: ubuntu-26.04
+          - os: ubuntu-latest
             backend: lima
         exclude:
           - phase: engine
             runtime:
-              os: ubuntu-26.04
+              os: ubuntu-latest
               backend: local
           - phase: engine
             runtime:
@@ -233,6 +233,13 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Require x64 for the rolling Linux image
+        if: matrix.runtime.os == 'ubuntu-latest'
+        run: |
+          if [ "$RUNNER_ARCH" != X64 ]; then
+            echo "::error::This runtime acceptance row requires Linux x64, got $RUNNER_ARCH."
+            exit 1
+          fi
       - name: Require hardware virtualization for the VM-backed gate
         if: matrix.runtime.backend == 'lima'
         run: |
@@ -252,11 +259,19 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: [macos-26-intel, macos-26, windows-2025, windows-11-arm]
+        os: [macos-26-intel, macos-latest, windows-2025, windows-11-arm]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Require ARM64 for the rolling macOS image
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [ "$RUNNER_ARCH" != ARM64 ]; then
+            echo "::error::This native filesystem row requires macOS ARM64, got $RUNNER_ARCH."
+            exit 1
+          fi
       - uses: ./.github/actions/setup-go
         with:
           cache-scope: native-files
