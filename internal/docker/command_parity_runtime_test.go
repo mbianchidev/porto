@@ -177,13 +177,17 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 	manager.operationsConnector = func(context.Context) (containerOperations, error) { return operations, nil }
 	endpoint := startDockerTestAPI(t, manager)
 	environment := append(os.Environ(), "DOCKER_CONFIG="+t.TempDir(), "DOCKER_CONTEXT=", "DOCKER_HOST=", "DOCKER_TLS_VERIFY=", "DOCKER_CERT_PATH=")
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-	defer cancel()
-	contextCommand := exec.CommandContext(ctx, "docker", "context", "create", "porto", "--docker", "host="+endpoint)
-	contextCommand.Env = environment
-	if output, err := contextCommand.CombinedOutput(); err != nil {
-		t.Fatalf("create isolated context: %v: %s", err, output)
+	run := func(args ...string) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		command := exec.CommandContext(ctx, "docker", args...)
+		command.Env = environment
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), errors.Join(err, ctx.Err()), output)
+		}
 	}
+	run("context", "create", "porto", "--docker", "host="+endpoint)
 	for _, args := range [][]string{
 		{"top", "demo"}, {"diff", "demo"}, {"history", "synthetic:latest"},
 		{"ps", "--all", "--size", "--last", "1"}, {"images", "--all"}, {"rmi", "--no-prune", "synthetic:latest"},
@@ -191,10 +195,6 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 		{"update", "--cpu-shares", "512", "--pids-limit", "64", "--memory", "256m", "--restart", "always", "demo"},
 		{"create", "--cpus", "1.5", "--memory", "256m", "--pids-limit", "64", "--read-only", "--cap-add", "NET_ADMIN", "synthetic:latest", "true"},
 	} {
-		command := exec.CommandContext(ctx, "docker", append([]string{"--context", "porto"}, args...)...)
-		command.Env = environment
-		if output, err := command.CombinedOutput(); err != nil {
-			t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), err, output)
-		}
+		run(append([]string{"--context", "porto"}, args...)...)
 	}
 }

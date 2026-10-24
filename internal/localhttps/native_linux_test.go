@@ -3,13 +3,19 @@
 package localhttps
 
 import (
+	"context"
 	"errors"
 	"os"
 	"strconv"
 	"strings"
+	"testing"
 )
 
 func nativeBrowserArguments() []string { return []string{"--no-sandbox"} }
+
+func nativeCertificateConsent(*testing.T, context.Context, int, string) func() error {
+	return func() error { return nil }
+}
 
 func assertNativeHelperLeastPrivilege() error {
 	command, err := linuxNativeCommand("systemctl", "show", "-p", "MainPID", "--value", httpsService)

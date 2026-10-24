@@ -39,6 +39,11 @@ opens Porto's database, or launches workloads.
 | Windows | Automatically started `PortoHTTPS` service running as `NT AUTHORITY\LocalService`; administrator-protected copy under `%ProgramData%\PortoHTTPS` | Current user's native Windows Root store, not the machine-wide store |
 | systemd Linux | Owned `porto-https.socket` and `porto-https.service`; systemd binds both loopbacks and runs `systemd-socket-proxyd` with `DynamicUser=yes`, no capabilities and loopback-only egress | Distribution CA store plus the current user's Chromium NSS shared database |
 
+Windows can display a separate native security confirmation for adding or
+removing a root CA. Approve the current Porto CA when requested. Porto respects
+the protected-root list and does not silently bypass that confirmation or
+install the CA machine-wide.
+
 On Debian/Ubuntu, install `ca-certificates` and `libnss3-tools` first. Fedora uses
 `ca-certificates` and `nss-tools`. Linux also requires a running systemd host,
 `systemd-socket-proxyd`, and the distribution's `update-ca-certificates` or

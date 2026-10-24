@@ -3,6 +3,7 @@
 package localhttps
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -55,9 +56,7 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 		defer stopCommand()
 		started := time.Now()
 		t.Logf("native HTTPS command starting: %v", args)
-		command := process.NewCommand(commandContext, "", binary, args...)
-		command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+configuration)
-		output, err := command.CombinedOutput()
+		output, err := runNativeHTTPSCommand(t, commandContext, binary, configuration, args...)
 		t.Logf("native HTTPS command completed after %s: %v (error=%v)", time.Since(started), args, err)
 		if commandContext.Err() != nil {
 			err = errors.Join(err, commandContext.Err())
@@ -75,9 +74,7 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 	t.Cleanup(func() {
 		for _, args := range [][]string{{"https", "uninstall"}, {"cert", "untrust"}} {
 			cleanupContext, stop := context.WithTimeout(context.Background(), time.Minute)
-			command := process.NewCommand(cleanupContext, "", binary, args...)
-			command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+home)
-			output, err := command.CombinedOutput()
+			output, err := runNativeHTTPSCommand(t, cleanupContext, binary, home, args...)
 			stop()
 			if err != nil {
 				t.Errorf("clean owned native HTTPS %v: %v: %s", args, err, output)
@@ -108,9 +105,7 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 	t.Cleanup(func() {
 		cleanupContext, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
-		command := process.NewCommand(cleanupContext, "", binary, "cert", "untrust")
-		command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+other)
-		output, err := command.CombinedOutput()
+		output, err := runNativeHTTPSCommand(t, cleanupContext, binary, other, "cert", "untrust")
 		if err != nil {
 			t.Errorf("remove unrelated synthetic CA fixture: %v: %s", err, output)
 		}
@@ -167,6 +162,7 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 			t.Fatalf("native system trust on %s: %v", address, err)
 		}
 	}
+
 	if status := Snapshot(certificatePath); !status.Installed || !status.Listening || !status.Trusted || !status.BrowserTrusted {
 		t.Fatalf("native integration is not operational: %+v", status)
 	}
@@ -224,4 +220,21 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 	if err := json.Unmarshal(mustRun(other, "cert", "status"), &otherStatus); err != nil || !otherStatus.Trusted {
 		t.Fatalf("uninstall removed an unrelated certificate: %+v, %v", otherStatus, err)
 	}
+}
+
+func runNativeHTTPSCommand(t *testing.T, ctx context.Context, binary, configuration string, args ...string) ([]byte, error) {
+	t.Helper()
+	if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("PORTO_TEST_NATIVE_HTTPS") != "1" {
+		return nil, errors.New("native HTTPS command fixtures are restricted to disposable CI hosts")
+	}
+	command := process.NewCommand(ctx, "", binary, args...)
+	command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+configuration)
+	var output bytes.Buffer
+	command.Stdout, command.Stderr = &output, &output
+	if err := command.Start(); err != nil {
+		return output.Bytes(), err
+	}
+	stopConsent := nativeCertificateConsent(t, ctx, command.Process.Pid, filepath.Join(configuration, "certificates", "porto-root-ca.pem"))
+	err := command.Wait()
+	return output.Bytes(), errors.Join(err, stopConsent())
 }

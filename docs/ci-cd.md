@@ -32,6 +32,10 @@ portless route in a real browser without certificate-error bypass flags. It
 checks native trust, certificate renewal, least-privilege helper identity,
 crash recovery, reinstall and fingerprint-scoped removal. Ubuntu includes
 Chromium's real NSS database; Windows uses the current user's native store.
+The Windows fixture answers the real protected-root confirmation only in its
+own CLI child process and only when the dialog displays the complete synthetic
+CA fingerprint. This consent helper exists only in the disposable CI test; it
+does not change Windows trust policy or automate a developer's desktop.
 ConPTY resize, subprocess exit and disconnect/reaping contracts run natively
 on both Windows architectures. The privileged Linux fixture is a synthetic TLS
 server, not a privileged Porto daemon or workload.
