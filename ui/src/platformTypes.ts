@@ -14,6 +14,8 @@ export type ProxyStatus = ProxyConfig & {
   message?: string
 }
 
+export type CertificateImport = { reference: string; fingerprint: string; subject: string }
+
 export type NetworkStatus = {
   platform: string
   https: { supported: boolean; installed: boolean; listening: boolean; trusted: boolean; message?: string }

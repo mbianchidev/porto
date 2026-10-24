@@ -17,13 +17,23 @@ func networkingCmd(args []string) error {
 		args = []string{"status"}
 	}
 	if len(args) != 1 {
-		return errors.New("usage: porto networking status|configure|apply|inspect")
+		return errors.New("usage: porto networking status|configure|ca-import|apply|inspect")
 	}
 	manager, err := networking.Default()
 	if err != nil {
 		return err
 	}
 	switch args[0] {
+	case "ca-import":
+		data, err := io.ReadAll(io.LimitReader(os.Stdin, networking.MaxRegistryCABytes+1))
+		if err != nil {
+			return err
+		}
+		certificate, err := manager.ImportCertificate(data)
+		if err != nil {
+			return err
+		}
+		return writeOutput(certificate)
 	case "status":
 		if daemonUp() {
 			return runtimeGET("/api/networking")
@@ -63,6 +73,6 @@ func networkingCmd(args []string) error {
 		}
 		return writeOutput(networking.InspectHost(context.Background()))
 	default:
-		return errors.New("usage: porto networking status|configure|apply|inspect")
+		return errors.New("usage: porto networking status|configure|ca-import|apply|inspect")
 	}
 }

@@ -4,12 +4,10 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"net"
@@ -173,21 +171,12 @@ func (m *Manager) Save(configuration Config) (err error) {
 		return err
 	}
 	next.RegistryCAs = make([]string, 0, len(configuration.RegistryCAs))
-	for _, path := range configuration.RegistryCAs {
-		data, err := readRegistryCA(path)
+	for _, reference := range configuration.RegistryCAs {
+		_, err := m.readRegistryCA(reference)
 		if err != nil {
 			return err
 		}
-		sum := sha256.Sum256(data)
-		directory := filepath.Join(m.root, "network-certificates")
-		if err := os.MkdirAll(directory, 0o700); err != nil {
-			return err
-		}
-		destination := filepath.Join(directory, hex.EncodeToString(sum[:])+".pem")
-		if err := atomicWrite(destination, data); err != nil {
-			return err
-		}
-		next.RegistryCAs = append(next.RegistryCAs, destination)
+		next.RegistryCAs = append(next.RegistryCAs, reference)
 	}
 	data, err := json.MarshalIndent(next, "", "  ")
 	if err != nil {
@@ -369,8 +358,8 @@ func (m *Manager) Transport() (*http.Transport, error) {
 		if err != nil {
 			return nil, fmt.Errorf("read system certificate trust: %w", err)
 		}
-		for _, path := range stored.RegistryCAs {
-			data, err := readRegistryCA(path)
+		for _, reference := range stored.RegistryCAs {
+			data, err := m.readRegistryCA(reference)
 			if err != nil {
 				return nil, err
 			}
@@ -381,29 +370,6 @@ func (m *Manager) Transport() (*http.Transport, error) {
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
 	return transport, nil
-}
-
-func readRegistryCA(path string) ([]byte, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("read registry CA: %w", err)
-	}
-	rest, count := data, 0
-	for len(bytes.TrimSpace(rest)) > 0 {
-		block, remaining := pem.Decode(rest)
-		if block == nil || block.Type != "CERTIFICATE" {
-			return nil, errors.New("registry CA files must contain only public PEM certificates")
-		}
-		certificate, err := x509.ParseCertificate(block.Bytes)
-		if err != nil || !certificate.IsCA || time.Now().Before(certificate.NotBefore) || !time.Now().Before(certificate.NotAfter) {
-			return nil, errors.New("registry CA is invalid, expired, or not a certificate authority")
-		}
-		rest, count = remaining, count+1
-	}
-	if count == 0 {
-		return nil, errors.New("registry CA file is empty")
-	}
-	return data, nil
 }
 
 func atomicWrite(path string, data []byte) error {

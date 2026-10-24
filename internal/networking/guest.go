@@ -35,8 +35,8 @@ func (m *Manager) registryBundle() ([]byte, error) {
 		return nil, err
 	}
 	var bundle []byte
-	for _, path := range stored.RegistryCAs {
-		data, err := readRegistryCA(path)
+	for _, reference := range stored.RegistryCAs {
+		data, err := m.readRegistryCA(reference)
 		if err != nil {
 			return nil, err
 		}

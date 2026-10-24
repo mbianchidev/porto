@@ -715,7 +715,7 @@ Commands:
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status
   porto https install|status|uninstall
-  porto networking status|configure|apply|inspect
+  porto networking status|configure|ca-import|apply|inspect
   porto wsl status|list|enable|disable|apply-mounts
   porto branch <project> <branch>
   porto port <project> <port>

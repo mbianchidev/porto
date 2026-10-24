@@ -22,6 +22,7 @@ import (
 func (s *Server) platformRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/networking", s.getNetworking)
 	mux.HandleFunc("PUT /api/networking/proxy", s.setNetworkProxy)
+	mux.HandleFunc("POST /api/networking/certificates", s.importNetworkCertificate)
 	mux.HandleFunc("GET /api/networking/connectivity", s.networkConnectivity)
 	mux.HandleFunc("POST /api/networking/apply", s.applyEngineNetworking)
 	mux.HandleFunc("POST /api/tls/https/{action}", s.localHTTPSAction)
@@ -77,6 +78,21 @@ func errorText(err error) string {
 		return err.Error()
 	}
 	return ""
+}
+
+func (s *Server) importNetworkCertificate(w http.ResponseWriter, r *http.Request) {
+	var request struct {
+		PEM string `json:"pem"`
+	}
+	if !integrationJSON(w, r, &request) {
+		return
+	}
+	certificate, err := s.networking.ImportCertificate([]byte(request.PEM))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, certificate)
 }
 
 func (s *Server) setNetworkProxy(w http.ResponseWriter, r *http.Request) {

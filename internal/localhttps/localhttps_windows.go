@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha1"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
@@ -158,10 +159,16 @@ func quotePowerShell(value string) string {
 }
 
 func Trust(path string) error {
-	if _, _, err := readAuthority(path); err != nil {
+	data, _, err := readAuthority(path)
+	if err != nil {
 		return err
 	}
-	return powershell("Import-Certificate -FilePath " + quotePowerShell(path) + " -CertStoreLocation Cert:\\CurrentUser\\Root | Out-Null")
+	block, _ := pem.Decode(data)
+	encoded := base64.StdEncoding.EncodeToString(block.Bytes)
+	return powershell(`$store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root',[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);
+$certificate=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String(` + quotePowerShell(encoded) + `));
+try { $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $store.Add($certificate) }
+finally { $certificate.Dispose(); $store.Dispose() }`)
 }
 
 func Untrust(path string) error {
@@ -171,9 +178,16 @@ func Untrust(path string) error {
 	}
 	block, _ := pem.Decode(data)
 	thumbprint := sha1.Sum(block.Bytes)
-	// Windows indexes certificate stores by the native SHA-1 thumbprint, not by subject name.
-	storePath := `Cert:\CurrentUser\Root\` + strings.ToUpper(hex.EncodeToString(thumbprint[:]))
-	return powershell("if (Test-Path -LiteralPath " + quotePowerShell(storePath) + ") { Remove-Item -LiteralPath " + quotePowerShell(storePath) + " }")
+	encoded := base64.StdEncoding.EncodeToString(block.Bytes)
+	return powershell(`$store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root',[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);
+try {
+  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);
+  $matches=$store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,` + quotePowerShell(strings.ToUpper(hex.EncodeToString(thumbprint[:]))) + `,$false);
+  foreach ($certificate in $matches) {
+    if ([Convert]::ToBase64String($certificate.RawData) -ne ` + quotePowerShell(encoded) + `) { throw 'Native CA fingerprint collision; refusing removal' }
+    $store.Remove($certificate)
+  }
+} finally { $store.Dispose() }`)
 }
 
 func Trusted(path string) bool { return verifySystemTrust(path) }

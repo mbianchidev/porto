@@ -168,7 +168,7 @@ PAC/WPAD evaluation is not implemented and produces a capability error instead
 of silently choosing a direct connection.
 
 **Settings > Proxy and registry trust** accepts HTTP, HTTPS and SOCKS5/SOCKS5h
-URLs, bypass rules, public PEM registry CA files and explicit proxy-off mode.
+URLs, bypass rules, explicit public PEM registry CA uploads and proxy-off mode.
 Manual URL credentials go into the native credential vault, not the JSON
 configuration. Leave an unchanged URL to keep its credential, or choose
 **Clear saved proxy credentials on save**. Diagnostics redact URL userinfo.
@@ -209,8 +209,13 @@ Re-apply after changing OS proxy settings. External/local containerd and
 BuildKit services remain administrator-owned: configure their builder
 environment explicitly rather than letting Porto alter unrelated services.
 
-Registry CAs are validated, copied into owned files and added to registry-client
+Import a public CA through the file selector, or use
+`porto networking ca-import < public-registry-ca.pem` and place its returned
+`sha256:...` reference in the `registryCAs` array. The API accepts only imported
+references, never caller-supplied host paths.
+
+Registry CAs are validated, copied into a confined owned store and added to registry-client
 or owned-builder trust only. They are not injected into containers, Kubernetes
 pods or standalone VMs. Even Porto's development CA requires an explicit
-selection. Remove the selected paths, save and apply again to reverse that
+selection. Remove the selected references, save and apply again to reverse that
 owned trust change. Workload trust propagation remains a separate user action.

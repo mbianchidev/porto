@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
-import type { ConnectivityReport, NetworkStatus, ProxyConfig, ProxyStatus } from '../platformTypes'
+import type { CertificateImport, ConnectivityReport, NetworkStatus, ProxyConfig, ProxyStatus } from '../platformTypes'
 import { useMessages } from '../useMessages'
 
 function editableProxy(proxy: ProxyStatus): ProxyConfig {
@@ -163,10 +163,28 @@ export function NetworkSettings() {
                   <input type="text" value={draft.noProxy} disabled={busy || draft.mode !== 'manual'} onChange={(event) => edit('noProxy', event.target.value)} placeholder=".internal.example,10.0.0.0/8" />
                 </label>
                 <label className="settingsField">
-                  <span>Trusted registry CA files</span>
-                  <textarea rows={3} value={draft.registryCAs.join('\n')} disabled={busy} onChange={(event) => edit('registryCAs', event.target.value.split('\n').filter((path) => path.trim() !== ''))} placeholder="One public PEM CA file path per line" />
-                  <small>Copied into owned registry trust. Remove paths and apply again to reverse. The Porto development CA is never added to workloads automatically.</small>
+                  <span>Import public registry CA files</span>
+                  <input type="file" accept=".pem,.crt,.cer" multiple disabled={busy} onChange={(event) => {
+                    const input = event.currentTarget
+                    const files = Array.from(input.files ?? [])
+                    void perform(async () => {
+                      const references: string[] = []
+                      for (const file of files) {
+                        if (file.size > 1024 * 1024) throw new Error('Public registry CA files must not exceed one MiB.')
+                        const imported = await apiSend<CertificateImport>('/api/networking/certificates', 'POST', { pem: await file.text() })
+                        references.push(imported.reference)
+                      }
+                      setDraft((current) => current ? { ...current, registryCAs: [...new Set([...current.registryCAs, ...references])] } : current)
+                      setDirty(true)
+                      input.value = ''
+                    })
+                  }} />
+                  <small>Only the selected public PEM bytes are uploaded. The daemon never reads a caller-supplied host path. Save and apply to enable trust; remove a reference and repeat to reverse it. The Porto development CA is never added to workloads automatically.</small>
                 </label>
+                {draft.registryCAs.length > 0 && <ul className="platformRoutes">{draft.registryCAs.map((reference) => <li key={reference}>
+                  <code>{reference}</code>{' '}
+                  <button type="button" disabled={busy} aria-label={`Remove registry CA ${reference}`} onClick={() => edit('registryCAs', draft.registryCAs.filter((value) => value !== reference))}>Remove</button>
+                </li>)}</ul>}
                 <label className="toggleRow">
                   <span>Clear saved proxy credentials on save</span>
                   <input type="checkbox" checked={draft.clearCredentials ?? false} disabled={busy} onChange={(event) => edit('clearCredentials', event.target.checked)} />
