@@ -11,7 +11,7 @@ on:
           - all
           - ubuntu-26.04-arm
           - macos-26-intel
-          - macos-26
+          - macos-latest
           - windows-2025
           - windows-11-arm
       phase:
@@ -39,12 +39,20 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        os: ${{ fromJSON(inputs.platform == 'all' && '["ubuntu-26.04-arm","macos-26-intel","macos-26","windows-2025","windows-11-arm"]' || format('["{0}"]', inputs.platform)) }}
+        os: ${{ fromJSON(inputs.platform == 'all' && '["ubuntu-26.04-arm","macos-26-intel","macos-latest","windows-2025","windows-11-arm"]' || format('["{0}"]', inputs.platform)) }}
         phase: ${{ fromJSON(inputs.phase == 'all' && '["migration","native","engine"]' || format('["{0}"]', inputs.phase)) }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           persist-credentials: false
+      - name: Require ARM64 for the rolling macOS image
+        if: matrix.os == 'macos-latest'
+        shell: bash
+        run: |
+          if [ "$RUNNER_ARCH" != ARM64 ]; then
+            echo "::error::This emulated runtime row requires macOS ARM64, got $RUNNER_ARCH."
+            exit 1
+          fi
       - uses: ./.github/actions/runtime-data
         with:
           backend: lima
