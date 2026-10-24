@@ -54,6 +54,10 @@ start the daemon with `sudo`.
 Linux uses Chromium's existing `~/.pki/nssdb` SQL database when present,
 otherwise its current `~/.local/share/pki/nssdb` location. It initializes only an
 empty database and adds a SHA-256-fingerprint-named CA with SSL-only trust.
+Identity checks read only the SQL store's public certificate labels and DER
+values, because NSS exports can include every certificate sharing a subject.
+Native `certutil` still performs trust changes and validation; the private-key
+database is not opened.
 Legacy or incomplete databases are rejected rather than reset. Firefox,
 Snap/Flatpak browsers, custom profiles, Java and applications with private trust
 stores can require explicit CA import. Restart an already-open browser after

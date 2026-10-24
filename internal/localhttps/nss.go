@@ -2,12 +2,18 @@ package localhttps
 
 import (
 	"bytes"
+	"context"
+	"database/sql"
 	"encoding/pem"
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
+
+	_ "modernc.org/sqlite"
 )
 
 type nssTrust struct {
@@ -50,19 +56,46 @@ func (s nssTrust) lookup(authorityPath string) (string, bool, error) {
 	if err != nil || !initialized {
 		return nickname, false, err
 	}
-	data, err := s.run("-L", "-d", "sql:"+s.directory, "-n", nickname, "-a")
-	if err != nil {
-		if strings.Contains(string(data), "SEC_ERROR_UNKNOWN_CERT") || strings.Contains(string(data), "Could not find cert") {
-			return nickname, false, nil
-		}
-		return nickname, false, fmt.Errorf("inspect Chromium CA trust: %w: %s", err, data)
+	data, found, err := s.certificate(nickname)
+	if err != nil || !found {
+		return nickname, false, err
 	}
 	expected, _ := pem.Decode(authority)
-	actual, _ := pem.Decode(data)
-	if actual == nil || !bytes.Equal(expected.Bytes, actual.Bytes) {
+	if !bytes.Equal(expected.Bytes, data) {
 		return nickname, false, errors.New("Chromium CA nickname contains a different certificate; refusing to replace or remove it")
 	}
 	return nickname, true, nil
+}
+
+func (s nssTrust) certificate(nickname string) (data []byte, found bool, err error) {
+	// certutil -L -n exports every same-subject certificate, in arbitrary order.
+	// Read the exact PKCS#11 CKA_LABEL/CKA_VALUE in the supported SQL store.
+	databasePath := filepath.ToSlash(filepath.Join(s.directory, "cert9.db"))
+	if !strings.HasPrefix(databasePath, "/") {
+		databasePath = "/" + databasePath
+	}
+	location := url.URL{Scheme: "file", Path: databasePath, RawQuery: "mode=ro"}
+	database, err := sql.Open("sqlite", location.String())
+	if err != nil {
+		return nil, false, fmt.Errorf("open Chromium public certificate identities: %w", err)
+	}
+	defer func() { err = errors.Join(err, database.Close()) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	var count int
+	err = database.QueryRowContext(ctx,
+		`SELECT a11, COUNT(*) OVER () FROM nssPublic WHERE a0 = x'00000001' AND a3 = ?`,
+		[]byte(nickname)).Scan(&data, &count)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("inspect Chromium certificate nickname identity: %w", err)
+	}
+	if count != 1 {
+		return nil, false, errors.New("Chromium CA nickname is ambiguous; refusing to change its certificates")
+	}
+	return data, true, nil
 }
 
 func (s nssTrust) trusted(authorityPath string) (bool, error) {

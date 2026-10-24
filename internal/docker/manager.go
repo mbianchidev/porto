@@ -2054,6 +2054,9 @@ func (m *Manager) inspect(ctx context.Context, kind, id string, options ...strin
 	args = append(args, id)
 	output, err := m.run(ctx, "inspect Porto "+kind, args...)
 	if err != nil {
+		if missingDockerObject(err, kind) {
+			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
+		}
 		return nil, err
 	}
 	var values []json.RawMessage

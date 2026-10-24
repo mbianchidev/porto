@@ -1932,7 +1932,7 @@ func TestDockerComposeUpUsesPortoNativeSocket(t *testing.T) {
 					return []byte(fmt.Sprintf(`[{"Name":%q,"Id":%q,"Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"compose-test","com.docker.compose.network":%q}}]`, name, id, networkName)), nil
 				}
 			}
-			return nil, errors.New("no such network")
+			return nil, fmt.Errorf("no network found matching: %s\nunable to find any network matching the provided request", target)
 		case strings.HasPrefix(args, "volume ls "):
 			if volumeExists {
 				return []byte(`{"Name":"compose-test_data","Driver":"local","Scope":"local","Labels":"com.docker.compose.project=compose-test,com.docker.compose.volume=data"}` + "\n"), nil
