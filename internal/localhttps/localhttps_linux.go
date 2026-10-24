@@ -163,6 +163,9 @@ func Install(certificatePath, authorityPath string) (err error) {
 			err = errors.Join(err, privilegedAction("untrust-root", authorityPath))
 		}
 	}()
+	if !listenersReady() {
+		return errors.New("owned HTTPS socket did not become ready on both loopbacks; inspect 'systemctl status porto-https.socket' for port conflicts")
+	}
 	if err := store.set(authorityPath, false); err != nil {
 		return err
 	}
@@ -289,6 +292,23 @@ func RootInstall(_ string, authorityPaths ...string) error {
 	integration, err := linuxIntegration()
 	if err != nil {
 		return err
+	}
+	previous, err := ownedUnit(filepath.Join(integration.unitDirectory, httpsSocket))
+	if err != nil {
+		return err
+	}
+	active := false
+	if previous != nil {
+		command, err := linuxNativeCommand("systemctl", "is-active", "--quiet", httpsSocket)
+		if err != nil {
+			return err
+		}
+		active = command.Run() == nil
+	}
+	if !active {
+		if err := checkPortsAvailable(); err != nil {
+			return err
+		}
 	}
 	if err := os.MkdirAll(integration.trustDirectory, 0o755); err != nil {
 		return err

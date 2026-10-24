@@ -140,6 +140,9 @@ func (s systemdIntegration) install(authorityPath string) (err error) {
 	if err := s.run("systemctl", "enable", "--now", httpsSocket); err != nil {
 		return fmt.Errorf("activate loopback HTTPS; check port 443 and 'systemctl status porto-https.socket': %w", err)
 	}
+	if err := s.run("systemctl", "is-active", "--quiet", httpsSocket); err != nil {
+		return fmt.Errorf("owned HTTPS socket did not activate; inspect 'systemctl status porto-https.socket': %w", err)
+	}
 	return nil
 }
 
