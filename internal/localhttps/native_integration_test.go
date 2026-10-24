@@ -105,7 +105,6 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 		}
 	}
 	other := t.TempDir()
-	mustRun(other, "cert", "trust")
 	t.Cleanup(func() {
 		cleanupContext, stop := context.WithTimeout(context.Background(), time.Minute)
 		defer stop()
@@ -116,6 +115,12 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 			t.Errorf("remove unrelated synthetic CA fixture: %v: %s", err, output)
 		}
 	})
+	var imported struct {
+		Trusted bool `json:"trusted"`
+	}
+	if err := json.Unmarshal(mustRun(other, "cert", "trust"), &imported); err != nil || !imported.Trusted {
+		t.Fatalf("native CA import did not establish trust: %+v, %v", imported, err)
+	}
 	listener, err := net.Listen("tcp", TargetAddress)
 	if err != nil {
 		t.Fatal(err)

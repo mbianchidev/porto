@@ -162,9 +162,9 @@ func userRootStore(readOnly bool) (windows.Handle, error) {
 	if err != nil {
 		return 0, err
 	}
-	// Trust is explicitly requested by the caller. Keep it in the registry-backed
-	// CurrentUser store, without a machine-wide write or modal certificate shell.
-	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER | windows.CERT_SYSTEM_STORE_UNPROTECTED_FLAG)
+	// Keep CurrentUser's protected-root list authoritative; bypassing it can
+	// import a certificate that Windows will not actually trust.
+	flags := uint32(windows.CERT_SYSTEM_STORE_CURRENT_USER)
 	if readOnly {
 		flags |= windows.CERT_STORE_READONLY_FLAG | windows.CERT_STORE_OPEN_EXISTING_FLAG
 	}
