@@ -334,11 +334,11 @@ jobs:
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/ms-playwright
-          key: porto-playwright-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/package-lock.json') }}
+          key: porto-playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/package-lock.json') }}
 
       - name: Install browser test dependencies
         if: matrix.node == '24'
-        run: npx --no-install playwright install --with-deps chromium
+        run: npx --no-install playwright install --with-deps --no-shell chromium
 
       - name: Test data dashboards
         if: matrix.node == '24'
