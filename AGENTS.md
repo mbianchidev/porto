@@ -1,6 +1,6 @@
 # macOS startup regression coverage
 
-Electron 44.7.1 passes the unguarded, injected power-registration failure that
+Electron 44.9.3 passes the unguarded, injected power-registration failure that
 previously required Porto's temporary macOS 27 workaround. The upstream fix is
 [Chromium 69403d85](https://github.com/chromium/chromium/commit/69403d85b78bef2370cc9f8206dce84c5ff63ea4)
 ([issue 562777834](https://issues.chromium.org/issues/562777834)).

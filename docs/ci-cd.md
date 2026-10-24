@@ -282,7 +282,10 @@ assertion deadlines. Log rendering shares one time formatter per render rather
 than creating one for every record.
 
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
-branches. A downloader override makes `app-builder-lib` use the same fetch-based
+branches, `fast-uri` 3.1.9, and node-gyp's `undici` 6.29.1. Electron stays on the
+compatible 44.9.x line at 44.9.3; development-client fixtures use patched `undici`
+8.12.3. Dependency audits remain enforced without advisory suppressions.
+A downloader override makes `app-builder-lib` use the same fetch-based
 `@electron/get` 5.x downloader as Electron and Electron Packager, removing its
 legacy `got`/`http-cache-semantics` dependency chain without downgrading
 electron-builder or changing Electron. The installer script enables that
@@ -475,7 +478,7 @@ points at that file. No user database or running daemon is used.
 
 macOS CI and DMG releases also run
 `scripts/macos-startup.test.cjs`. It forces a failed power-registration call in
-an isolated Electron process and verifies that the unmodified Electron 44.7.1
+an isolated Electron process and verifies that the unmodified Electron 44.9.3
 runtime still loads a sandboxed renderer and exits cleanly. The former native
 workaround and crash-expecting negative control have been removed.
 It also runs the production packager against an isolated synthetic source tree
