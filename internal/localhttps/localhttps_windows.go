@@ -3,11 +3,10 @@
 package localhttps
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha1"
 	"crypto/x509"
-	"encoding/base64"
-	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
@@ -17,6 +16,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unsafe"
 
 	"github.com/mbianchidev/porto/internal/process"
 	"golang.org/x/sys/windows"
@@ -158,36 +158,68 @@ func quotePowerShell(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
 }
 
-func Trust(path string) error {
+func userRootStore() (windows.Handle, error) {
+	name, err := windows.UTF16PtrFromString("ROOT")
+	if err != nil {
+		return 0, err
+	}
+	// Trust is explicitly requested by the caller. Keep it in the registry-backed
+	// CurrentUser store, without a machine-wide write or modal certificate shell.
+	return windows.CertOpenStore(windows.CERT_STORE_PROV_SYSTEM_REGISTRY, 0, 0,
+		windows.CERT_SYSTEM_STORE_CURRENT_USER, uintptr(unsafe.Pointer(name)))
+}
+
+func Trust(path string) (err error) {
 	data, _, err := readAuthority(path)
 	if err != nil {
 		return err
 	}
 	block, _ := pem.Decode(data)
-	encoded := base64.StdEncoding.EncodeToString(block.Bytes)
-	return powershell(`$store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root',[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);
-$certificate=[System.Security.Cryptography.X509Certificates.X509Certificate2]::new([Convert]::FromBase64String(` + quotePowerShell(encoded) + `));
-try { $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite); $store.Add($certificate) }
-finally { $certificate.Dispose(); $store.Dispose() }`)
+	store, err := userRootStore()
+	if err != nil {
+		return fmt.Errorf("open current-user certificate root store: %w", err)
+	}
+	defer func() { err = errors.Join(err, windows.CertCloseStore(store, 0)) }()
+	certificate, err := windows.CertCreateCertificateContext(windows.X509_ASN_ENCODING, &block.Bytes[0], uint32(len(block.Bytes)))
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, windows.CertFreeCertificateContext(certificate)) }()
+	if err := windows.CertAddCertificateContextToStore(store, certificate, windows.CERT_STORE_ADD_USE_EXISTING, nil); err != nil {
+		return fmt.Errorf("trust Porto CA in the current-user native root store: %w", err)
+	}
+	return nil
 }
 
-func Untrust(path string) error {
+func Untrust(path string) (err error) {
 	data, _, err := readAuthorityIdentity(path)
 	if err != nil {
 		return err
 	}
 	block, _ := pem.Decode(data)
 	thumbprint := sha1.Sum(block.Bytes)
-	encoded := base64.StdEncoding.EncodeToString(block.Bytes)
-	return powershell(`$store=[System.Security.Cryptography.X509Certificates.X509Store]::new('Root',[System.Security.Cryptography.X509Certificates.StoreLocation]::CurrentUser);
-try {
-  $store.Open([System.Security.Cryptography.X509Certificates.OpenFlags]::ReadWrite);
-  $matches=$store.Certificates.Find([System.Security.Cryptography.X509Certificates.X509FindType]::FindByThumbprint,` + quotePowerShell(strings.ToUpper(hex.EncodeToString(thumbprint[:]))) + `,$false);
-  foreach ($certificate in $matches) {
-    if ([Convert]::ToBase64String($certificate.RawData) -ne ` + quotePowerShell(encoded) + `) { throw 'Native CA fingerprint collision; refusing removal' }
-    $store.Remove($certificate)
-  }
-} finally { $store.Dispose() }`)
+	store, err := userRootStore()
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, windows.CertCloseStore(store, 0)) }()
+	hash := windows.CryptHashBlob{Size: uint32(len(thumbprint)), Data: &thumbprint[0]}
+	certificate, err := windows.CertFindCertificateInStore(store, windows.X509_ASN_ENCODING, 0,
+		windows.CERT_FIND_SHA1_HASH, unsafe.Pointer(&hash), nil)
+	if errors.Is(err, syscall.Errno(windows.CRYPT_E_NOT_FOUND)) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !bytes.Equal(unsafe.Slice(certificate.EncodedCert, int(certificate.Length)), block.Bytes) {
+		return errors.Join(errors.New("native CA fingerprint contains a different certificate; refusing removal"), windows.CertFreeCertificateContext(certificate))
+	}
+	// CertDeleteCertificateFromStore releases the context even when deletion fails.
+	if err := windows.CertDeleteCertificateFromStore(certificate); err != nil {
+		return fmt.Errorf("remove only Porto's current-user certificate: %w", err)
+	}
+	return nil
 }
 
 func Trusted(path string) bool { return verifySystemTrust(path) }
