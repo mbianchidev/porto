@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -49,7 +50,8 @@ func wslMountPlan(configuration []byte, previous, desired []wsl.Share) (string, 
 	if err != nil {
 		return "", err
 	}
-	return ".mounts = " + string(data), nil
+	// yq expression literals unescape backslashes again, destroying UNC roots.
+	return `.mounts = ("` + base64.StdEncoding.EncodeToString(data) + `" | @base64d | from_json)`, nil
 }
 
 func (m *Manager) ApplyWSLMounts(ctx context.Context, restartConfirmed bool) (err error) {
