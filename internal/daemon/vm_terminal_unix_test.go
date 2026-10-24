@@ -3,10 +3,17 @@
 package daemon
 
 import (
+	"os"
 	"testing"
 
 	"github.com/creack/pty"
 )
+
+type resizePTYFile struct{ *os.File }
+
+func (file resizePTYFile) Resize(cols, rows int) error {
+	return pty.Setsize(file.File, &pty.Winsize{Cols: uint16(cols), Rows: uint16(rows)})
+}
 
 func TestApplyTerminalResize(t *testing.T) {
 	master, slave, err := pty.Open()
@@ -16,7 +23,7 @@ func TestApplyTerminalResize(t *testing.T) {
 	defer master.Close()
 	defer slave.Close()
 
-	handled, err := applyTerminalResize(master, []byte(`{"type":"resize","cols":132,"rows":41}`))
+	handled, err := applyTerminalResize(resizePTYFile{master}, []byte(`{"type":"resize","cols":132,"rows":41}`))
 	if err != nil {
 		t.Fatalf("apply resize: %v", err)
 	}
@@ -40,7 +47,7 @@ func TestApplyTerminalResizeLeavesInputFramesUntouched(t *testing.T) {
 	defer master.Close()
 	defer slave.Close()
 
-	handled, err := applyTerminalResize(master, []byte("echo hello"))
+	handled, err := applyTerminalResize(resizePTYFile{master}, []byte("echo hello"))
 	if err != nil {
 		t.Fatalf("apply input frame: %v", err)
 	}

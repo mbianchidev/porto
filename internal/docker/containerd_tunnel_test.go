@@ -32,11 +32,11 @@ func TestLimaContainerdUsesHelperWithoutIndependentSSHForward(t *testing.T) {
 	}
 	channel := connection.(*commandConn)
 	select {
-	case <-channel.done:
+	case <-channel.Done():
 	default:
 		t.Fatal("closing the helper channel did not reap its own subprocess")
 	}
-	if channel.command.ProcessState == nil {
+	if channel.ProcessState() == nil {
 		t.Fatal("closing the channel left its subprocess unreaped")
 	}
 }
@@ -185,7 +185,7 @@ func TestLimaContainerdStdioSurvivesDialCancellation(t *testing.T) {
 		t.Fatalf("close containerd tunnel: %v", err)
 	}
 	select {
-	case <-connection.(*commandConn).done:
+	case <-connection.(*commandConn).Done():
 	default:
 		t.Fatal("closing the tunnel did not reap its subprocess")
 	}

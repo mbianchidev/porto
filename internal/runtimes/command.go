@@ -14,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/process"
 )
 
@@ -40,6 +41,10 @@ type ExecRunner struct{}
 func (ExecRunner) Run(ctx context.Context, command Command) (output []byte, err error) {
 	finish := traceCommand(command)
 	defer func() { finish(err) }()
+	command, err = withNetworkEnvironment(command)
+	if err != nil {
+		return nil, err
+	}
 	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
@@ -56,6 +61,10 @@ func (ExecRunner) RunStreaming(
 ) (result []byte, err error) {
 	finish := traceCommand(command)
 	defer func() { finish(err) }()
+	command, err = withNetworkEnvironment(command)
+	if err != nil {
+		return nil, err
+	}
 	cmd := newExecCommand(ctx, command)
 	closeInput, err := configureCommandInput(cmd, command)
 	if err != nil {
@@ -67,6 +76,19 @@ func (ExecRunner) RunStreaming(
 	cmd.Stderr = chunkWriter{stream: "stderr", output: output}
 	err = cmd.Run()
 	return output.diagnostic, err
+}
+
+func withNetworkEnvironment(command Command) (Command, error) {
+	manager, err := networking.Default()
+	if err != nil {
+		return command, err
+	}
+	environment, err := manager.Environment()
+	if err != nil {
+		return command, fmt.Errorf("configure runtime networking: %w", err)
+	}
+	command.Env = append(environment, command.Env...)
+	return command, nil
 }
 
 func traceCommand(command Command) func(error) {
@@ -99,7 +121,7 @@ func configureCommandInput(cmd *exec.Cmd, command Command) (func(), error) {
 }
 
 func CommandError(action string, output []byte, err error) error {
-	message := strings.TrimSpace(string(output))
+	message := networking.Redact(strings.TrimSpace(string(output)))
 	if message == "" {
 		return fmt.Errorf("%s: %w", action, err)
 	}

@@ -20,6 +20,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/mbianchidev/porto/internal/wsl"
 )
 
 const (
@@ -54,12 +55,17 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Docker-Experimental", "true")
 	w.Header().Set("Ostype", "linux")
 	w.Header().Set("Server", "Porto/"+config.Version)
+	requestContext, err := a.manager.wslRequestContext(r)
+	if err != nil {
+		writeDockerJSON(w, http.StatusForbidden, map[string]string{"message": err.Error()})
+		return
+	}
 	path, version, err := dockerVersionedPath(r.URL.Path)
 	if err != nil {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
-	request := r.Clone(dockerVersionedContext(r.Context(), version))
+	request := r.Clone(dockerVersionedContext(requestContext, version))
 	request.URL.Path = path
 	if request.URL.RawPath != "" {
 		request.URL.RawPath, _, err = dockerVersionedPath(request.URL.RawPath)
@@ -592,6 +598,18 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if len(networks) == 0 && request.HostConfig.NetworkMode != "" {
 		networks = append(networks, ContainerNetwork{Name: request.HostConfig.NetworkMode})
 	}
+	var wslBinds bool
+	request.HostConfig.Binds, request.HostConfig.Mounts, request.Env, wslBinds, err = a.manager.translateWSLMounts(
+		r.Context(), request.HostConfig.Binds, request.HostConfig.Mounts, request.Env,
+	)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	if _, selected := r.Context().Value(wslContextKey{}).(wsl.Integration); selected && len(request.HostConfig.Devices) > 0 {
+		writeDockerUnsupported(w, "passing WSL distribution devices into a separate Lima engine")
+		return
+	}
 	structuredVolumes, structuredMounts, tmpfs, err := structuredMountArguments(
 		request.HostConfig.Mounts,
 		request.HostConfig.Tmpfs,
@@ -703,7 +721,11 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": []string{}})
+	warnings := []string{}
+	if wslBinds {
+		warnings = append(warnings, "WSL shared binds use polling file watches; native inotify does not cross the Windows/Lima filesystem boundary")
+	}
+	writeDockerJSON(w, http.StatusCreated, map[string]any{"Id": id, "Warnings": warnings})
 }
 
 func composeContainerName(labels map[string]string, networks []ContainerNetwork) string {

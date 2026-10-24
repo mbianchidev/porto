@@ -25,12 +25,6 @@ const (
 	launchDaemonPath  = "/Library/LaunchDaemons/" + launchDaemonLabel + ".plist"
 )
 
-type Status struct {
-	Installed bool `json:"installed"`
-	Listening bool `json:"listening"`
-	Trusted   bool `json:"trusted"`
-}
-
 func Install(certificatePath, authorityPath string) error {
 	executable, err := os.Executable()
 	if err != nil {
@@ -84,6 +78,7 @@ func Snapshot(certificatePath string) Status {
 		Installed: statErr == nil,
 		Listening: listening,
 		Trusted:   Trusted(certificatePath),
+		Supported: true,
 	}
 }
 
@@ -117,7 +112,7 @@ func Trusted(certificatePath string) bool {
 	return command.Run() == nil
 }
 
-func RootInstall(sourceExecutable string) error {
+func RootInstall(sourceExecutable string, _ ...string) error {
 	if os.Geteuid() != 0 {
 		return errors.New("HTTPS forwarder installation must run as root")
 	}

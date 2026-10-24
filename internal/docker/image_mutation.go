@@ -146,6 +146,10 @@ DOCKER_CONFIG="$config_dir" "$@"
 			"sh", "-c", script, "porto-registry-auth", "nerdctl",
 		}
 		commandArgs = append(commandArgs, args...)
+		commandArgs, err = m.networkCommandArgs(backend, commandArgs)
+		if err != nil {
+			return err
+		}
 		return m.runStreamingCommand(ctx, timeout, action, runtimes.Command{
 			Name: backend.name, Args: commandArgs, Stdin: config,
 		}, emit)

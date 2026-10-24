@@ -72,7 +72,7 @@ func TestCommandConnPreservesFinalOutput(t *testing.T) {
 	go func() {
 		_, err := connection.Write(payload)
 		if err == nil {
-			err = connection.(*commandConn).stdin.Close()
+			err = connection.(*commandConn).CloseWrite()
 		}
 		written <- err
 	}()

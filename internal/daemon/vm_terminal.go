@@ -1,5 +1,3 @@
-//go:build !windows
-
 package daemon
 
 import (
@@ -8,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"os"
 	"os/exec"
@@ -16,9 +15,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	"github.com/creack/pty"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 type terminalResize struct {
@@ -28,7 +27,7 @@ type terminalResize struct {
 }
 
 func podTerminalSupported() bool {
-	return true
+	return hostPTYSupported()
 }
 
 func bridgeVMTerminal(w http.ResponseWriter, r *http.Request, name string) {
@@ -74,12 +73,17 @@ func bridgePTYTerminal(
 	commandFactory func(context.Context) (*exec.Cmd, error),
 	startFailure string,
 ) {
+	if !hostPTYSupported() {
+		http.Error(w, "embedded terminals require Windows 10 1809 or newer with ConPTY, or a Unix PTY", http.StatusNotImplemented)
+		return
+	}
 	connection, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
 		return
 	}
+	defer connection.CloseNow()
 	connection.SetReadLimit(terminalReadLimit)
 
 	sessionContext, cancel := context.WithCancel(context.Background())
@@ -89,8 +93,9 @@ func bridgePTYTerminal(
 		_ = connection.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
-	terminal, err := pty.StartWithSize(command, &pty.Winsize{Cols: 120, Rows: 32})
+	terminal, err := startHostPTY(sessionContext, command)
 	if err != nil {
+		slog.Warn(startFailure, "error", err)
 		_ = connection.Close(websocket.StatusInternalError, startFailure)
 		return
 	}
@@ -107,6 +112,8 @@ func bridgePTYTerminal(
 
 	outputDone := make(chan error, 1)
 	go streamPTYOutput(terminal, writeOutput, outputDone)
+	processDone := make(chan error, 1)
+	go func() { processDone <- terminal.Wait() }()
 	inputDone := make(chan error, 1)
 	go func() {
 		for {
@@ -134,43 +141,54 @@ func bridgePTYTerminal(
 
 	var sessionErr error
 	select {
+	case processErr := <-processDone:
+		_ = terminal.Close()
+		sessionErr = errors.Join(processErr, <-outputDone)
 	case outputErr := <-outputDone:
 		if outputErr != nil {
 			cancel()
 			_ = terminal.Close()
 		}
-		sessionErr = errors.Join(outputErr, command.Wait())
+		sessionErr = errors.Join(outputErr, <-processDone)
 	case inputErr := <-inputDone:
+		if err := process.Kill(command); err != nil && !errors.Is(err, os.ErrProcessDone) {
+			slog.Debug("Terminal disconnect cleanup", "error", err)
+		}
 		cancel()
 		_ = terminal.Close()
-		sessionErr = errors.Join(inputErr, <-outputDone, command.Wait())
+		sessionErr = errors.Join(inputErr, <-outputDone, <-processDone)
 	}
-	cancel()
+	var exit *exec.ExitError
+	if errors.As(sessionErr, &exit) {
+		_ = connection.Close(websocket.StatusInternalError, fmt.Sprintf("terminal exited with exit code %d", exit.ExitCode()))
+		return
+	}
 	if errors.Is(sessionErr, context.Canceled) || errors.Is(sessionErr, os.ErrClosed) {
 		sessionErr = nil
 	}
 	if sessionErr != nil {
+		slog.Warn("Terminal session ended", "error", sessionErr)
 		_ = connection.Close(websocket.StatusInternalError, "terminal session ended")
 		return
 	}
 	_ = connection.Close(websocket.StatusNormalClosure, "terminal session complete")
 }
 
-func applyTerminalResize(terminal *os.File, data []byte) (bool, error) {
+func applyTerminalResize(terminal interface{ Resize(int, int) error }, data []byte) (bool, error) {
 	var resize terminalResize
 	if json.Unmarshal(data, &resize) != nil || resize.Type != "resize" {
 		return false, nil
 	}
 	if resize.Cols < 1 || resize.Cols > 1000 || resize.Rows < 1 || resize.Rows > 1000 {
-		return true, nil
+		return true, errors.New("terminal dimensions must be between 1 and 1000")
 	}
-	if err := pty.Setsize(terminal, &pty.Winsize{Cols: uint16(resize.Cols), Rows: uint16(resize.Rows)}); err != nil {
-		return true, fmt.Errorf("resize VM terminal: %w", err)
+	if err := terminal.Resize(resize.Cols, resize.Rows); err != nil {
+		return true, fmt.Errorf("resize terminal: %w", err)
 	}
 	return true, nil
 }
 
-func streamPTYOutput(terminal *os.File, write func([]byte) error, done chan<- error) {
+func streamPTYOutput(terminal io.Reader, write func([]byte) error, done chan<- error) {
 	buffer := make([]byte, 32*1024)
 	for {
 		read, err := terminal.Read(buffer)

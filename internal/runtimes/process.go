@@ -21,6 +21,10 @@ type ProcessRunner interface {
 }
 
 func (ExecRunner) Start(ctx context.Context, command Command) (Process, error) {
+	command, err := withNetworkEnvironment(command)
+	if err != nil {
+		return nil, err
+	}
 	cmd := newExecCommand(ctx, command)
 	stdin, err := cmd.StdinPipe()
 	if err != nil {

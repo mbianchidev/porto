@@ -22,6 +22,7 @@ import (
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/mbianchidev/porto/internal/wsl"
 	"github.com/moby/moby/api/types/network"
 )
 
@@ -107,15 +108,19 @@ type Manager struct {
 	volumeTemporaryClear      func(context.Context, dataops.VolumeTemporary) error
 	volumeTemporaryPending    func(context.Context) ([]dataops.VolumeTemporary, error)
 	nativeClose               func(context.Context) error
+	wslResolve                func(context.Context, string, string) (wsl.Integration, error)
+	wslShares                 func() ([]wsl.Share, error)
+	wslShareGuard             func(context.Context, []string) error
 }
 
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
 
 type engineState struct {
-	Mode      string    `json:"mode"`
-	Instance  string    `json:"instance,omitempty"`
-	OwnerID   string    `json:"ownerId,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
+	Mode      string      `json:"mode"`
+	Instance  string      `json:"instance,omitempty"`
+	OwnerID   string      `json:"ownerId,omitempty"`
+	CreatedAt time.Time   `json:"createdAt"`
+	WSLMounts []wsl.Share `json:"wslMounts,omitempty"`
 }
 
 func New(runner runtimes.Runner) *Manager {
@@ -332,21 +337,35 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	}
 	created := false
 	ownerID := existingState.OwnerID
+	wslMounts := existingState.WSLMounts
 	if !exists {
 		created = true
 		ownerID, err = randomResourceName()
 		if err != nil {
 			return Status{}, err
 		}
-		_, err = m.startLimaRuntime(
-			ctx,
-			"create Porto container runtime",
+		arguments := []string{
 			"--tty=false",
-			"--name="+engineInstanceName,
+			"--name=" + engineInstanceName,
 			"--containerd=user",
 			"--mount-writable",
-			limaEngineTemplate(runtime.GOOS),
-		)
+		}
+		if m.wslShares != nil {
+			wslMounts, err = m.wslShares()
+			if err != nil {
+				return Status{}, err
+			}
+			if len(wslMounts) > 0 {
+				expression, planErr := wslMountPlan(nil, nil, wslMounts)
+				if planErr != nil {
+					return Status{}, planErr
+				}
+				// Append selected shares without replacing Lima's default host mounts.
+				arguments = append(arguments, "--set="+strings.Replace(expression, ".mounts = ", ".mounts = (.mounts // []) + ", 1))
+			}
+		}
+		arguments = append(arguments, limaEngineTemplate(runtime.GOOS))
+		_, err = m.startLimaRuntime(ctx, "create Porto container runtime", arguments...)
 	} else if !running {
 		_, err = m.startLimaRuntime(ctx, "start Porto container runtime", engineInstanceName)
 	}
@@ -400,8 +419,13 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		prefix:       []string{"shell", "--workdir=/", engineInstanceName, "--", "nerdctl"},
 		description:  "containerd in Lima " + engineInstanceName,
 		limaInstance: engineInstanceName,
+		ownerID:      ownerID,
 	}
-	versionOutput, err := m.runBackend(ctx, limaBackend, 30*time.Second, "verify Porto container runtime", nil, "version")
+	var versionOutput []byte
+	err = m.applyGuestNetworking(ctx, limaBackend, false)
+	if err == nil {
+		versionOutput, err = m.runBackend(ctx, limaBackend, 30*time.Second, "verify Porto container runtime", nil, "version")
+	}
 	if err != nil {
 		if created {
 			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -424,6 +448,7 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	_ = buildKit.Close()
 	if err := m.writeEngineState(engineState{
 		Mode: "lima", Instance: engineInstanceName, OwnerID: ownerID, CreatedAt: time.Now().UTC(),
+		WSLMounts: wslMounts,
 	}); err != nil {
 		if created {
 			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
@@ -534,7 +559,10 @@ func (m *Manager) StartEngine(ctx context.Context) (err error) {
 		_, stopErr := m.runCommand(context.Background(), 5*time.Minute, "stop unowned Lima instance", nil, "limactl", "stop", state.Instance)
 		return errors.Join(ownershipErr, stopErr)
 	}
-	return m.installLimaBinfmt(ctx)
+	if err := m.installLimaBinfmt(ctx); err != nil {
+		return err
+	}
+	return m.applyGuestNetworking(ctx, commandBackend{name: "limactl", limaInstance: state.Instance, ownerID: state.OwnerID}, false)
 }
 
 func (m *Manager) StopEngine(ctx context.Context) error {
@@ -1728,6 +1756,11 @@ func (m *Manager) ContainerTerminalCommand(ctx context.Context, id, shell string
 		)
 	}
 	command := exec.CommandContext(ctx, backend.name, args...)
+	command.Args, err = m.networkCommandArgs(backend, command.Args[1:])
+	if err != nil {
+		return nil, err
+	}
+	command.Args = append([]string{backend.name}, command.Args...)
 	command.Env = append(os.Environ(), "TERM=xterm-256color", "COLORTERM=truecolor")
 	return command, nil
 }
@@ -2130,7 +2163,11 @@ func (m *Manager) runBackend(
 	stdin []byte,
 	args ...string,
 ) ([]byte, error) {
-	return m.runCommand(ctx, timeout, action, stdin, backend.name, append(append([]string(nil), backend.prefix...), args...)...)
+	commandArgs, err := m.networkCommandArgs(backend, append(append([]string(nil), backend.prefix...), args...))
+	if err != nil {
+		return nil, err
+	}
+	return m.runCommand(ctx, timeout, action, stdin, backend.name, commandArgs...)
 }
 
 func (m *Manager) runBackendWithDockerConfig(
@@ -2155,6 +2192,10 @@ DOCKER_CONFIG="$config_dir" "$@"
 			"sh", "-c", script, "porto-registry-auth", "nerdctl",
 		}
 		commandArgs = append(commandArgs, args...)
+		commandArgs, err = m.networkCommandArgs(backend, commandArgs)
+		if err != nil {
+			return nil, err
+		}
 		return m.runCommand(ctx, timeout, action, config, backend.name, commandArgs...)
 	}
 	configDir, err := os.MkdirTemp("", "porto-registry-auth-*")
@@ -2241,9 +2282,13 @@ func (m *Manager) runBackendStreamingInput(
 	emit func(runtimes.OutputChunk) error,
 	args ...string,
 ) error {
+	commandArgs, err := m.networkCommandArgs(backend, append(append([]string(nil), backend.prefix...), args...))
+	if err != nil {
+		return err
+	}
 	return m.runStreamingCommand(ctx, timeout, action, runtimes.Command{
 		Name:        backend.name,
-		Args:        append(append([]string(nil), backend.prefix...), args...),
+		Args:        commandArgs,
 		Stdin:       stdin,
 		StdinReader: stdinReader,
 	}, emit)

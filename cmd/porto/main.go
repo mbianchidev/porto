@@ -90,6 +90,12 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	if args[0] == "https" {
 		return httpsAction(args[1:])
 	}
+	if args[0] == "wsl" {
+		return wslCmd(args[1:])
+	}
+	if args[0] == "networking" {
+		return networkingCmd(args[1:])
+	}
 	if args[0] == "docker" {
 		return dockerCmd(args[1:])
 	}
@@ -199,6 +205,23 @@ func httpsAction(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: porto https install|status|uninstall")
 	}
+	switch args[0] {
+	case "install-root":
+		if len(args) < 2 || len(args) > 3 {
+			return errors.New("invalid HTTPS forwarder installation")
+		}
+		return localhttps.RootInstall(args[1], args[2:]...)
+	case "uninstall-root":
+		if len(args) != 1 {
+			return errors.New("invalid HTTPS forwarder removal")
+		}
+		return localhttps.RootUninstall()
+	case "trust-root", "untrust-root":
+		if len(args) != 2 {
+			return errors.New("invalid HTTPS authority trust operation")
+		}
+		return localhttps.RootTrust(args[1], args[0] == "untrust-root")
+	}
 	certificatePath, keyPath, err := config.CertificatePaths()
 	if err != nil {
 		return err
@@ -229,16 +252,6 @@ func httpsAction(args []string) error {
 			return errors.New("usage: porto https uninstall")
 		}
 		return localhttps.Uninstall()
-	case "install-root":
-		if len(args) != 2 {
-			return errors.New("invalid HTTPS forwarder installation")
-		}
-		return localhttps.RootInstall(args[1])
-	case "uninstall-root":
-		if len(args) != 1 {
-			return errors.New("invalid HTTPS forwarder removal")
-		}
-		return localhttps.RootUninstall()
 	default:
 		return fmt.Errorf("unsupported HTTPS command %q", args[0])
 	}

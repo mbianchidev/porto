@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/mbianchidev/porto/internal/credentials"
 	"github.com/zalando/go-keyring"
 )
 
@@ -35,25 +36,8 @@ type dockerAuthEntry struct {
 	Auth string `json:"auth"`
 }
 
-type secretBackend interface {
-	Set(service, account, secret string) error
-	Get(service, account string) (string, error)
-	Delete(service, account string) error
-}
-
-type systemKeyring struct{}
-
-func (systemKeyring) Set(service, account, secret string) error {
-	return keyring.Set(service, account, secret)
-}
-
-func (systemKeyring) Get(service, account string) (string, error) {
-	return keyring.Get(service, account)
-}
-
-func (systemKeyring) Delete(service, account string) error {
-	return keyring.Delete(service, account)
-}
+type secretBackend = credentials.Store
+type systemKeyring = credentials.System
 
 type Vault struct {
 	backend secretBackend
