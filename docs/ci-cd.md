@@ -78,16 +78,20 @@ Leaving it unset preserves uncached downloads. `scripts/download-file.sh`
 accepts an optional third SHA-256 argument; only downloads with an expected
 checksum can enter the cache.
 
+Build, packaging, runtime-acceptance, and security jobs use the latest Node 26.x
+release. This host/build toolchain selection does not change the Node runtime
+embedded in Electron.
+
 The `ui` job installs with `npm ci` and runs `npm run lint`, `npm run build`,
 and the desktop shell tests on Node 22.12, 24, and 26. Node 22.12 is the lowest
-version Vite and oxlint accept. The Node 24 job audits the Electron lockfile
+version Vite and oxlint accept. The Node 26 job audits the Electron lockfile
 once, avoiding redundant registry requests and npm-version-specific tree checks.
 Confirmed npm registry transport or server outages emit a warning instead of
 failing the matrix; vulnerability reports and invalid lockfiles still fail.
 The desktop test command initializes Electron before parallel test workers
 start, preventing concurrent first-run extraction of its runtime.
 
-The Node 24 job also runs the Playwright data-dashboard suite with Chromium.
+The Node 26 job also runs the Playwright data-dashboard suite with Chromium.
 Its browser downloads are cached by dashboard lockfile; the browser/system
 dependency installation step still runs on every build. The suite selects the
 full `chromium` channel, so `--no-shell` omits the unused Chrome Headless Shell.

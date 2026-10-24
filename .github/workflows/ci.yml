@@ -135,7 +135,8 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '24'
+          node-version: '26'
+          check-latest: true
 
       - uses: ./.github/actions/cache-desktop
         with:
@@ -176,7 +177,8 @@ jobs:
           cache-scope: development-${{ matrix.backend }}
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '24'
+          node-version: '26'
+          check-latest: true
           cache: npm
           cache-dependency-path: |
             scripts/docker-clients/package-lock.json
@@ -326,6 +328,7 @@ jobs:
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
           node-version: ${{ matrix.node }}
+          check-latest: true
           cache: npm
           cache-dependency-path: |
             ui/package-lock.json
@@ -345,18 +348,18 @@ jobs:
         run: npm run build
 
       - name: Cache browser downloads
-        if: matrix.node == '24'
+        if: matrix.node == '26'
         uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
         with:
           path: ~/.cache/ms-playwright
           key: porto-playwright-v2-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ui/package-lock.json') }}
 
       - name: Install browser test dependencies
-        if: matrix.node == '24'
+        if: matrix.node == '26'
         run: npx --no-install playwright install --with-deps --no-shell chromium
 
       - name: Test data dashboards
-        if: matrix.node == '24'
+        if: matrix.node == '26'
         run: npm test -- --reporter=line --max-failures=1
 
       - name: Validate desktop shell
@@ -375,7 +378,7 @@ jobs:
           node --check ../scripts/macos-development-app.cjs
 
       - name: Audit desktop dependencies
-        if: matrix.node == '24'
+        if: matrix.node == '26'
         run: |
           set -o pipefail
           audit_log="$(mktemp)"
@@ -390,7 +393,7 @@ jobs:
           exit 1
 
       - name: Validate release installers
-        if: matrix.node == '24'
+        if: matrix.node == '26'
         working-directory: ${{ github.workspace }}
         run: |
           bash -n scripts/download-file.sh
@@ -431,7 +434,8 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
         with:
-          node-version: '24'
+          node-version: '26'
+          check-latest: true
           cache: npm
           cache-dependency-path: |
             ui/package-lock.json
