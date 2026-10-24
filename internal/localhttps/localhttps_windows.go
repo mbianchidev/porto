@@ -5,11 +5,11 @@ package localhttps
 import (
 	"context"
 	"crypto/sha1"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/pem"
 	"errors"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -94,7 +94,7 @@ func Install(certificatePath, authorityPath string) error {
 		return err
 	}
 	return installWithRollback(installSteps{
-		installed: before.Installed, trusted: before.Trusted,
+		installed: before.Installed, trusted: authoritySystemTrusted(authorityPath),
 		install: func() error { return privilegedAction("install-root", executable) },
 		remove:  func() error { return privilegedAction("uninstall-root") },
 		trust:   func() error { return Trust(authorityPath) },
@@ -112,7 +112,8 @@ func Uninstall() error {
 }
 
 func Snapshot(certificatePath string) Status {
-	status := Status{Supported: true, Trusted: Trusted(certificatePath)}
+	trusted := Trusted(certificatePath)
+	status := Status{Supported: true, Trusted: trusted, BrowserTrusted: trusted}
 	service, err := openHTTPSService(true)
 	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
 		return status
@@ -140,7 +141,11 @@ func Snapshot(certificatePath string) Status {
 }
 
 func powershell(script string) error {
-	command := process.NewCommand(context.Background(), "", "powershell.exe", "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; "+script)
+	directory, err := windows.GetSystemDirectory()
+	if err != nil {
+		return err
+	}
+	command := process.NewCommand(context.Background(), "", filepath.Join(directory, "WindowsPowerShell", "v1.0", "powershell.exe"), "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", "$ErrorActionPreference='Stop'; "+script)
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("Windows HTTPS integration failed: %w: %s", err, output)
@@ -160,7 +165,7 @@ func Trust(path string) error {
 }
 
 func Untrust(path string) error {
-	data, _, err := readAuthority(path)
+	data, _, err := readAuthorityIdentity(path)
 	if err != nil {
 		return err
 	}
@@ -172,6 +177,20 @@ func Untrust(path string) error {
 }
 
 func Trusted(path string) bool { return verifySystemTrust(path) }
+
+func authoritySystemTrusted(path string) bool {
+	data, _, err := readAuthorityIdentity(path)
+	if err != nil {
+		return false
+	}
+	block, _ := pem.Decode(data)
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return false
+	}
+	_, err = certificate.Verify(x509.VerifyOptions{KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+	return err == nil
+}
 
 func privilegedAction(action string, args ...string) error {
 	executable, err := os.Executable()
@@ -239,26 +258,59 @@ func RootInstall(source string, _ ...string) (err error) {
 		}
 	}()
 	var previous []byte
+	wasRunning := false
+	previousExists := false
 	if existing {
 		if err := requireOwnedService(service); err != nil {
-			_ = service.Close()
 			return err
 		}
 		previous, err = os.ReadFile(binary)
-		if err != nil {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			return fmt.Errorf("read installed HTTPS helper before repair: %w", err)
 		}
-		if err := stopHTTPSService(service); err != nil {
+		previousExists = err == nil
+		state, err := service.Query()
+		if err != nil {
 			return err
 		}
+		wasRunning = state.State == svc.Running
 	}
-	if err := checkPortsAvailable(); err != nil {
-		if existing {
-			return errors.Join(err, service.Start())
-		}
-		return err
+	data, err := os.ReadFile(source)
+	if err != nil {
+		return fmt.Errorf("read replacement HTTPS helper: %w", err)
 	}
 	directory := filepath.Dir(binary)
+	createdDirectory, changedBinary, stoppedExisting := false, false, false
+	defer func() {
+		if err == nil {
+			return
+		}
+		if existing {
+			if changedBinary {
+				err = errors.Join(err, stopHTTPSService(service))
+				if previousExists {
+					err = errors.Join(err, replaceServiceBinary(binary, previous))
+				} else {
+					err = errors.Join(err, removeServiceBinary(binary))
+				}
+			}
+			if stoppedExisting && wasRunning {
+				err = errors.Join(err, service.Start())
+			}
+		} else {
+			if service != nil {
+				err = errors.Join(err, stopHTTPSService(service), service.Delete())
+			}
+			if changedBinary {
+				err = errors.Join(err, removeServiceBinary(binary))
+			}
+			if createdDirectory {
+				if removeErr := os.Remove(directory); !errors.Is(removeErr, os.ErrNotExist) {
+					err = errors.Join(err, removeErr)
+				}
+			}
+		}
+	}()
 	if info, err := os.Lstat(directory); err == nil {
 		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
 			return errors.New("HTTPS helper directory is not a regular directory")
@@ -270,46 +322,35 @@ func RootInstall(source string, _ ...string) (err error) {
 		return err
 	} else if err := os.Mkdir(directory, 0o755); err != nil {
 		return err
+	} else {
+		createdDirectory = true
 	}
-	acl := process.NewCommand(context.Background(), "", "icacls.exe", directory, "/inheritance:r",
-		"/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-19:(OI)(CI)RX",
-		"/setowner", "*S-1-5-32-544")
-	if output, err := acl.CombinedOutput(); err != nil {
-		return fmt.Errorf("protect HTTPS helper directory: %w: %s", err, output)
-	}
-	defer func() {
-		if err == nil {
-			return
-		}
-		if service != nil {
-			err = errors.Join(err, stopHTTPSService(service))
-		}
-		if existing {
-			err = errors.Join(err, writeIntegrationFile(binary, previous, 0o755), service.Start())
-		} else {
-			if service != nil {
-				err = errors.Join(err, service.Delete())
-			}
-			if removeErr := os.Remove(binary); !errors.Is(removeErr, os.ErrNotExist) {
-				err = errors.Join(err, removeErr)
-			}
-			if removeErr := os.Remove(directory); !errors.Is(removeErr, os.ErrNotExist) {
-				err = errors.Join(err, removeErr)
-			}
-		}
-	}()
-	input, err := os.Open(source)
+	systemDirectory, err := windows.GetSystemDirectory()
 	if err != nil {
 		return err
 	}
-	data, err := io.ReadAll(input)
-	closeErr := input.Close()
-	if err := errors.Join(err, closeErr); err != nil {
+	for _, arguments := range [][]string{
+		{directory, "/inheritance:r", "/grant:r", "*S-1-5-18:(OI)(CI)F", "*S-1-5-32-544:(OI)(CI)F", "*S-1-5-19:(OI)(CI)RX"},
+		{directory, "/setowner", "*S-1-5-32-544"},
+	} {
+		acl := process.NewCommand(context.Background(), "", filepath.Join(systemDirectory, "icacls.exe"), arguments...)
+		if output, err := acl.CombinedOutput(); err != nil {
+			return fmt.Errorf("protect HTTPS helper directory: %w: %s", err, output)
+		}
+	}
+	if existing {
+		if err := stopHTTPSService(service); err != nil {
+			return err
+		}
+		stoppedExisting = true
+	}
+	if err := checkPortsAvailable(); err != nil {
 		return err
 	}
-	if err := writeIntegrationFile(binary, data, 0o755); err != nil {
+	if err := replaceServiceBinary(binary, data); err != nil {
 		return err
 	}
+	changedBinary = true
 	if !existing {
 		manager, err := mgr.Connect()
 		if err != nil {
@@ -374,10 +415,38 @@ func RootUninstall() error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(binary); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := removeServiceBinary(binary); err != nil {
 		return err
 	}
+
 	return os.Remove(filepath.Dir(binary))
+}
+
+func replaceServiceBinary(path string, data []byte) error {
+	var err error
+	for range 50 {
+		err = writeIntegrationFile(path, data, 0o755)
+		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) && !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("replace stopped HTTPS helper: %w", err)
+}
+
+func removeServiceBinary(path string) error {
+	var err error
+	for range 50 {
+		err = os.Remove(path)
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_SHARING_VIOLATION) && !errors.Is(err, windows.ERROR_ACCESS_DENIED) {
+			return err
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	return fmt.Errorf("remove stopped HTTPS helper: %w", err)
 }
 
 type windowsHTTPSService struct{}

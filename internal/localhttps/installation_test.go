@@ -31,6 +31,18 @@ func TestInstallationRollsBackNewHelperAndTrust(t *testing.T) {
 	}
 }
 
+func TestDeniedElevationDoesNotPromptAgainForCleanup(t *testing.T) {
+	denied := errors.New("synthetic authorization denied")
+	cleanup := false
+	steps := installSteps{
+		install: func() error { return denied },
+		remove:  func() error { cleanup = true; return nil },
+	}
+	if err := installWithRollback(steps); !errors.Is(err, denied) || cleanup {
+		t.Fatalf("denied elevation prompted for another action: cleanup=%t, error=%v", cleanup, err)
+	}
+}
+
 func TestSystemdInstallationRollsBackPartialActivation(t *testing.T) {
 	root := t.TempDir()
 	certificate := filepath.Join(root, "leaf.pem")

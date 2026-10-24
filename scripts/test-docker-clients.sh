@@ -285,6 +285,18 @@ else
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 
+if [ "$suite/$goos/$goarch" = clients/windows/amd64 ]; then
+  wsl_rootfs="$temporary/ubuntu-24.04.5-wsl-amd64.wsl"
+  wsl_checksum="bb415d824822c4b878125729af451a5d18fb13d1cf5cbed9a7393ad64ac6039e"
+  run_as_runner bash scripts/download-file.sh \
+    "https://releases.ubuntu.com/noble/ubuntu-24.04.5-wsl-amd64.wsl" \
+    "$wsl_rootfs" "$wsl_checksum"
+  node scripts/verify-runtime-checksum.cjs --verify "$wsl_checksum" "$wsl_rootfs"
+  export PORTO_TEST_WSL_ROOTFS="$(cygpath -w "$wsl_rootfs")"
+  export PORTO_TEST_PORTO_BINARY="$(cygpath -w "$porto")"
+  export PORTO_TEST_WSL_RUNTIME="$(cygpath -w "$runtime/wsl")"
+fi
+
 run_as_runner go test -c -o "$client_tests" ./internal/docker
 if [ "$suite/$goos/$goarch" = data/darwin/amd64 ]; then
   go clean -cache

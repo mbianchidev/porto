@@ -91,6 +91,66 @@ jobs:
             throw "Invalid dive.cmd wrapper: $diveCommand"
           }
 
+  platform-networking:
+    name: Native HTTPS and console (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [ubuntu-latest, windows-2025, windows-11-arm]
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-scope: platform-networking
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        if: runner.os == 'Linux'
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: ui/package-lock.json
+      - name: Install Linux browser and trust prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends ca-certificates libnss3-tools
+          npm --prefix ui ci
+          cd ui
+          npx --no-install playwright install --with-deps --no-shell chromium
+      - name: Exercise real Linux systemd, NSS, renewal, rollback and browser trust
+        if: runner.os == 'Linux'
+        run: |
+          go build -o "$RUNNER_TEMP/porto-native" ./cmd/porto
+          go test -c -o "$RUNNER_TEMP/https-native-tests" ./internal/localhttps
+          browser="$(node -e "process.stdout.write(require('./ui/node_modules/@playwright/test').chromium.executablePath())")"
+          sudo -E env "PATH=$PATH" \
+            "PORTO_TEST_NATIVE_HTTPS=1" \
+            "PORTO_TEST_HTTPS_BINARY=$RUNNER_TEMP/porto-native" \
+            "PORTO_TEST_HTTPS_BROWSER=$browser" \
+            "$RUNNER_TEMP/https-native-tests" -test.run '^TestNativePortlessHTTPS' -test.count=1 -test.failfast -test.timeout=5m -test.v
+      - name: Exercise real Windows service, native trust, browser and ConPTY
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $env:PORTO_TEST_NATIVE_HTTPS = '1'
+          $env:PORTO_TEST_HTTPS_BINARY = Join-Path $env:RUNNER_TEMP 'porto-native.exe'
+          $browser = @(
+            (Join-Path ${env:ProgramFiles(x86)} 'Microsoft\Edge\Application\msedge.exe'),
+            (Join-Path $env:ProgramFiles 'Microsoft\Edge\Application\msedge.exe')
+          ) | Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $browser) { throw 'Native HTTPS acceptance requires the installed Edge browser.' }
+          $env:PORTO_TEST_HTTPS_BROWSER = $browser
+          go build -o $env:PORTO_TEST_HTTPS_BINARY ./cmd/porto
+          if ($LASTEXITCODE -ne 0) { throw 'Native CLI build failed.' }
+          go test ./internal/localhttps ./internal/daemon -run 'TestNativePortlessHTTPS|TestHostPTY|TestPTYBridge|TestApplyTerminal' -count=1 -failfast -timeout=5m -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native HTTPS/ConPTY acceptance failed.' }
+
   cross-build:
     name: Cross build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest

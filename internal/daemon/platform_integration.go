@@ -162,7 +162,7 @@ func (s *Server) networkConnectivity(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{
 		"host": host, "containerDirectIP": capability, "containers": snapshot.Containers,
 		"networks": networks, "virtualMachines": machines,
-		"vmDirectIP": networking.Capability{Message: "QEMU user-mode guest addresses are not host routes. Use the reported loopback SSH port or explicit forwards; macOS VZ can opt in to vzNAT when creating a VM"},
+		"vmDirectIP": networking.Capability{Message: "Reported VM guest addresses are not proof of a host route. Use the reported loopback SSH port or explicitly configured forwards; Porto does not install host routes automatically"},
 	})
 }
 

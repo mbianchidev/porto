@@ -276,6 +276,11 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatalf("Dev Containers/Testcontainers workflows: %v", err)
 	}
 	t.Log("real Testcontainers and Dev Containers workflows completed")
+	if os.Getenv("PORTO_TEST_WSL_ROOTFS") != "" {
+		t.Run("selected-distribution-WSL", func(t *testing.T) {
+			testWSLDevelopmentWorkflow(t, ctx, manager, image, suite)
+		})
+	}
 }
 
 func readDevelopmentClientStats(

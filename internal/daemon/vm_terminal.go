@@ -17,7 +17,6 @@ import (
 	"github.com/coder/websocket"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/process"
 )
 
 type terminalResize struct {
@@ -151,9 +150,6 @@ func bridgePTYTerminal(
 		}
 		sessionErr = errors.Join(outputErr, <-processDone)
 	case inputErr := <-inputDone:
-		if err := process.Kill(command); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			slog.Debug("Terminal disconnect cleanup", "error", err)
-		}
 		cancel()
 		_ = terminal.Close()
 		sessionErr = errors.Join(inputErr, <-outputDone, <-processDone)

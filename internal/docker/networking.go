@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 )
 
@@ -262,6 +263,16 @@ func (m *Manager) applyGuestNetworking(ctx context.Context, backend commandBacke
 
 func (m *Manager) networkCommandArgs(backend commandBackend, args []string) ([]string, error) {
 	if backend.limaInstance == "" {
+		return args, nil
+	}
+	outbound := false
+	for index, argument := range args {
+		if argument == "nerdctl" {
+			outbound = runtimes.RegistryOperation(args[index+1:])
+			break
+		}
+	}
+	if !outbound {
 		return args, nil
 	}
 	manager, err := networking.Default()

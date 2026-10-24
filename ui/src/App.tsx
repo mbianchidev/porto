@@ -30,7 +30,6 @@ import { Machines } from './pages/Machines'
 import { Databases } from './pages/Databases'
 import { Diagnostics } from './pages/Diagnostics'
 import { Activity } from './pages/Activity'
-import { SettingsPage } from './pages/SettingsPage'
 import type {
   IntegrationStatus,
   KillSwitchStatus,
@@ -51,6 +50,7 @@ const KNOWN_ROUTES: RouteID[] = [
 
 const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
 const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
+const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 
 function routeFromHash(): RouteID {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -197,6 +197,7 @@ function AppShell() {
         {route === 'diagnostics' && <Diagnostics />}
         {route === 'activity' && <Activity />}
         {route === 'settings' && (
+          <Suspense fallback={<p role="status">Loading settings...</p>}>
           <SettingsPage
             settings={settings}
             onSettingsSaved={setSettingsOverride}
@@ -205,6 +206,7 @@ function AppShell() {
             killSwitchStatus={killSwitch.data}
             onIntegrationsChanged={reloadIntegrations}
           />
+          </Suspense>
         )}
         </main>
       </div>

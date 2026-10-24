@@ -25,6 +25,32 @@ still fail the security audit.
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
+The native platform-networking job runs on Ubuntu, Windows x64 and Windows
+ARM64. Disposable hosts install the real loopback HTTPS integration, check
+occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted
+portless route in a real browser without certificate-error bypass flags. It
+checks native trust, certificate renewal, least-privilege helper identity,
+crash recovery, reinstall and fingerprint-scoped removal. Ubuntu includes
+Chromium's real NSS database; Windows uses the current user's native store.
+ConPTY resize, subprocess exit and disconnect/reaping contracts run natively
+on both Windows architectures. The privileged Linux fixture is a synthetic TLS
+server, not a privileged Porto daemon or workload.
+
+The Windows x64 development-client row also imports two fresh, named WSL 2
+distributions from a checksum-pinned Ubuntu 24.04.5 rootfs. Only one opts in.
+The existing independently owned QEMU engine serves real native Linux Docker,
+Compose and Buildx clients through the private Windows pipe. Acceptance checks
+quoted/non-ASCII paths, bidirectional bind writes, polling file changes, the
+native Windows credential vault, distro shutdown/reconnect and removal without
+changing the control distribution. No WSL driver replaces QEMU, and there is no
+WSL 1 fallback or expected-failure path. The fixture releases owned shares
+before unregistering only its own distributions.
+
+Hosted Windows ARM64 does not provide the nested virtualization needed for WSL
+2. That row verifies native HTTPS/ConPTY and architecture-matched Linux ELF
+artifacts rather than claiming a real ARM64 WSL workflow. The complete platform
+boundaries are in [Windows development integration](windows-integration.md).
+
 The `cross-build` matrix compiles `./cmd/porto` with `CGO_ENABLED=0` in six
 independent jobs, one for each release target (`linux`, `darwin`, and `windows`
 on `amd64` and `arm64`). All targets remain mandatory; a broken platform build

@@ -9,12 +9,17 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
+	"syscall"
 
 	"github.com/mbianchidev/porto/internal/process"
 )
 
 func linuxIntegration() (systemdIntegration, error) {
-	integration := systemdIntegration{unitDirectory: "/etc/systemd/system", run: linuxCommand}
+	integration, err := linuxTrustIntegration()
+	if err != nil {
+		return integration, err
+	}
 	if _, err := os.Stat("/run/systemd/system"); err != nil {
 		return integration, errors.New("portless HTTPS requires a running systemd host; use HTTPS on port 37681 on other Linux installations")
 	}
@@ -27,6 +32,14 @@ func linuxIntegration() (systemdIntegration, error) {
 	if integration.proxyExecutable == "" {
 		return integration, errors.New("install the distribution's systemd-socket-proxyd package, then retry")
 	}
+	if !commandAvailable("certutil") {
+		return integration, errors.New("install libnss3-tools (Debian/Ubuntu) or nss-tools (Fedora) for Chromium user trust, then retry 'porto https install'")
+	}
+	return integration, nil
+}
+
+func linuxTrustIntegration() (systemdIntegration, error) {
+	integration := systemdIntegration{unitDirectory: "/etc/systemd/system", run: linuxCommand}
 	switch {
 	case commandAvailable("update-ca-certificates"):
 		integration.trustDirectory = "/usr/local/share/ca-certificates"
@@ -40,13 +53,71 @@ func linuxIntegration() (systemdIntegration, error) {
 	return integration, nil
 }
 
+func linuxNSSStore() (nssTrust, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nssTrust{}, err
+	}
+	directory := filepath.Join(home, ".local", "share", "pki", "nssdb")
+	legacy := filepath.Join(home, ".pki", "nssdb")
+	for _, name := range []string{"cert9.db", "cert8.db"} {
+		if _, err := os.Stat(filepath.Join(legacy, name)); err == nil {
+			directory = legacy
+			break
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nssTrust{}, err
+		}
+	}
+	if !commandAvailable("certutil") {
+		return nssTrust{}, errors.New("Chromium trust requires libnss3-tools or nss-tools")
+	}
+	return nssTrust{directory: directory, run: func(args ...string) ([]byte, error) {
+		command, err := linuxNativeCommand("certutil", args...)
+		if err != nil {
+			return nil, err
+		}
+		return command.CombinedOutput()
+	}}, nil
+}
+
 func commandAvailable(name string) bool {
-	_, err := exec.LookPath(name)
+	_, err := linuxSystemTool(name)
 	return err == nil
 }
 
+func linuxSystemTool(name string) (string, error) {
+	for _, directory := range []string{"/usr/sbin", "/usr/bin", "/sbin", "/bin"} {
+		path, err := filepath.EvalSymlinks(filepath.Join(directory, name))
+		if err != nil {
+			continue
+		}
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		owner, ok := info.Sys().(*syscall.Stat_t)
+		if ok && info.Mode().IsRegular() && info.Mode()&0o022 == 0 && owner.Uid == 0 {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("trusted system tool %s is unavailable; install it with the distribution package manager", name)
+}
+
+func linuxNativeCommand(name string, args ...string) (*exec.Cmd, error) {
+	path, err := linuxSystemTool(name)
+	if err != nil {
+		return nil, err
+	}
+	command := process.NewCommand(context.Background(), "", path, args...)
+	command.Env = []string{"PATH=/usr/sbin:/usr/bin:/sbin:/bin", "LANG=C", "LC_ALL=C"}
+	return command, nil
+}
+
 func linuxCommand(name string, args ...string) error {
-	command := process.NewCommand(context.Background(), "", name, args...)
+	command, err := linuxNativeCommand(name, args...)
+	if err != nil {
+		return err
+	}
 	output, err := command.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("%s failed: %w: %s", name, err, output)
@@ -54,7 +125,7 @@ func linuxCommand(name string, args ...string) error {
 	return nil
 }
 
-func Install(certificatePath, authorityPath string) error {
+func Install(certificatePath, authorityPath string) (err error) {
 	if _, _, err := readAuthority(authorityPath); err != nil {
 		return err
 	}
@@ -62,6 +133,15 @@ func Install(certificatePath, authorityPath string) error {
 	if !before.Supported {
 		return errors.New(before.Message)
 	}
+	store, err := linuxNSSStore()
+	if err != nil {
+		return err
+	}
+	_, hadBrowserCertificate, err := store.lookup(authorityPath)
+	if err != nil {
+		return err
+	}
+	hadSystemTrust := authoritySystemTrusted(authorityPath)
 	executable, err := os.Executable()
 	if err != nil {
 		return err
@@ -69,8 +149,25 @@ func Install(certificatePath, authorityPath string) error {
 	if err := privilegedAction("install-root", executable, authorityPath); err != nil {
 		return err
 	}
+	defer func() {
+		if err == nil {
+			return
+		}
+		if !hadBrowserCertificate {
+			err = errors.Join(err, store.set(authorityPath, true))
+		}
+		if !before.Installed {
+			err = errors.Join(err, privilegedAction("uninstall-root"))
+		}
+		if !hadSystemTrust {
+			err = errors.Join(err, privilegedAction("untrust-root", authorityPath))
+		}
+	}()
+	if err := store.set(authorityPath, false); err != nil {
+		return err
+	}
 	if !Trusted(certificatePath) {
-		return errors.New("HTTPS is installed but system trust verification failed; check 'porto cert status', renew expired certificates and rerun 'porto https install'")
+		return errors.New("system or Chromium certificate verification failed; renew expired certificates and retry")
 	}
 	return markInstalled()
 }
@@ -83,11 +180,20 @@ func Uninstall() error {
 }
 
 func Snapshot(certificatePath string) Status {
-	integration, err := linuxIntegration()
-	if err != nil {
-		return Status{Message: err.Error()}
+	integration, integrationErr := linuxIntegration()
+	status := Status{Supported: integrationErr == nil}
+	if integrationErr != nil {
+		status.Message = integrationErr.Error()
 	}
-	status := Status{Supported: true, Trusted: Trusted(certificatePath)}
+	authorityPath := filepath.Join(filepath.Dir(certificatePath), "porto-root-ca.pem")
+	if store, err := linuxNSSStore(); err != nil {
+		status.Message = strings.TrimSpace(status.Message + " " + err.Error())
+	} else if trusted, err := store.trusted(authorityPath); err != nil {
+		status.Message = strings.TrimSpace(status.Message + " " + err.Error())
+	} else {
+		status.BrowserTrusted = trusted
+	}
+	status.Trusted = systemTrusted(certificatePath) && status.BrowserTrusted
 	for name := range integration.units() {
 		data, err := ownedUnit(filepath.Join(integration.unitDirectory, name))
 		if err != nil {
@@ -99,18 +205,78 @@ func Snapshot(certificatePath string) Status {
 		}
 	}
 	status.Installed = true
-	status.Listening = exec.Command("systemctl", "is-active", "--quiet", httpsSocket).Run() == nil && listenersReady()
+	command, err := linuxNativeCommand("systemctl", "is-active", "--quiet", httpsSocket)
+	status.Listening = err == nil && command.Run() == nil && listenersReady()
 	if !status.Listening {
-		status.Message = "Run 'porto https install' to repair the owned socket; inspect 'systemctl status porto-https.socket porto-https.service' for port conflicts or helper failures"
+		status.Message = strings.TrimSpace(status.Message + " Run 'porto https install' to repair the owned socket; inspect 'systemctl status porto-https.socket porto-https.service' for port conflicts or helper failures")
+	} else if status.Trusted {
+		status.Message = "System clients and Chromium NSS trust are ready. Restart an already-open browser; Firefox, Snap, and Flatpak profiles may require explicit CA import"
 	}
 	return status
 }
 
-func Trust(path string) error   { return privilegedAction("trust-root", path) }
-func Untrust(path string) error { return privilegedAction("untrust-root", path) }
+func Trust(path string) (err error) {
+	if _, _, err := readAuthority(path); err != nil {
+		return err
+	}
+	store, err := linuxNSSStore()
+	if err != nil {
+		return err
+	}
+	_, hadBrowserCertificate, err := store.lookup(path)
+	if err != nil {
+		return err
+	}
+	hadSystemTrust := authoritySystemTrusted(path)
+	if err := privilegedAction("trust-root", path); err != nil {
+		return err
+	}
+	if err := store.set(path, false); err != nil {
+		if !hadBrowserCertificate {
+			err = errors.Join(err, store.set(path, true))
+		}
+		if !hadSystemTrust {
+			err = errors.Join(err, privilegedAction("untrust-root", path))
+		}
+		return err
+	}
+	return nil
+}
+
+func Untrust(path string) error {
+	if _, _, err := readAuthorityIdentity(path); err != nil {
+		return err
+	}
+	store, err := linuxNSSStore()
+	if err != nil {
+		return err
+	}
+	if err := privilegedAction("untrust-root", path); err != nil {
+		return err
+	}
+	return store.set(path, true)
+}
 
 func Trusted(path string) bool {
-	return exec.Command("openssl", "verify", "-purpose", "sslserver", "-verify_hostname", "porto.localhost", path).Run() == nil
+	if !systemTrusted(path) {
+		return false
+	}
+	store, err := linuxNSSStore()
+	if err != nil {
+		return false
+	}
+	trusted, err := store.trusted(filepath.Join(filepath.Dir(path), "porto-root-ca.pem"))
+	return err == nil && trusted
+}
+
+func systemTrusted(path string) bool {
+	command, err := linuxNativeCommand("openssl", "verify", "-purpose", "sslserver", "-verify_hostname", "porto.localhost", path)
+	return err == nil && command.Run() == nil
+}
+
+func authoritySystemTrusted(path string) bool {
+	command, err := linuxNativeCommand("openssl", "verify", path)
+	return err == nil && command.Run() == nil
 }
 
 func RootInstall(_ string, authorityPaths ...string) error {
@@ -134,10 +300,7 @@ func RootUninstall() error {
 	if os.Geteuid() != 0 {
 		return errors.New("HTTPS socket removal requires root")
 	}
-	integration, err := linuxIntegration()
-	if err != nil {
-		return err
-	}
+	integration := systemdIntegration{unitDirectory: "/etc/systemd/system", run: linuxCommand}
 	return integration.uninstall()
 }
 
@@ -145,7 +308,7 @@ func RootTrust(path string, remove bool) error {
 	if os.Geteuid() != 0 {
 		return errors.New("system certificate trust changes require root")
 	}
-	integration, err := linuxIntegration()
+	integration, err := linuxTrustIntegration()
 	if err != nil {
 		return err
 	}
@@ -165,9 +328,17 @@ func privilegedAction(action string, args ...string) error {
 	if os.Geteuid() == 0 {
 		command = exec.Command(commandArgs[0], commandArgs[1:]...)
 	} else if commandAvailable("pkexec") {
-		command = exec.Command("pkexec", commandArgs...)
+		path, err := linuxSystemTool("pkexec")
+		if err != nil {
+			return err
+		}
+		command = exec.Command(path, commandArgs...)
 	} else {
-		command = exec.Command("sudo", append([]string{"--"}, commandArgs...)...)
+		path, err := linuxSystemTool("sudo")
+		if err != nil {
+			return err
+		}
+		command = exec.Command(path, append([]string{"--"}, commandArgs...)...)
 	}
 	command.Stdin, command.Stdout, command.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := command.Run(); err != nil {

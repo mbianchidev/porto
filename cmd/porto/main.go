@@ -235,6 +235,9 @@ func httpsAction(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto https install")
 		}
+		if config.RouterTLSAddress() != localhttps.TargetAddress {
+			return errors.New("the owned HTTPS helper targets 127.0.0.1:37681; restore PORTO_TLS_ADDR to that loopback endpoint or manage custom forwarding explicitly")
+		}
 		if _, err := certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath).Ensure(); err != nil {
 			return err
 		}
@@ -712,6 +715,8 @@ Commands:
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status
   porto https install|status|uninstall
+  porto networking status|configure|apply|inspect
+  porto wsl status|list|enable|disable|apply-mounts
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup

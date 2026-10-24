@@ -978,6 +978,22 @@ func TestMakeWrappedComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	backend := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	defer backend.Close()
+	backendURL, err := url.Parse(backend.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, backendPort, err := net.SplitHostPort(backendURL.Host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	unreadyPort, err := strconv.Atoi(backendPort)
+	if err != nil {
+		t.Fatal(err)
+	}
 	projectPath := t.TempDir()
 	if err := os.WriteFile(filepath.Join(projectPath, "compose.yaml"), []byte("services: {}\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -991,7 +1007,7 @@ func TestMakeWrappedComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
 	server := New(st, nil)
 	server.readinessDelay = 10 * time.Millisecond
 	server.compose = &fakeComposeCleanup{ports: []compose.PublishedPort{
-		{Service: "backend", Port: frontendPort + 1},
+		{Service: "backend", Port: unreadyPort},
 		{Service: "frontend", Port: frontendPort},
 	}}
 
@@ -999,6 +1015,16 @@ func TestMakeWrappedComposeReadinessUsesPublishedFrontendPort(t *testing.T) {
 	if err != nil {
 		t.Fatalf("start project: %v", err)
 	}
+	t.Cleanup(func() {
+		server.mu.Lock()
+		active := server.running[project.ID] != nil
+		server.mu.Unlock()
+		if active {
+			if _, err := server.stopProject(context.Background(), project.Name, false); err != nil {
+				t.Errorf("stop synthetic readiness process: %v", err)
+			}
+		}
+	})
 	assignedPort := started.Port
 	waitForProjectStatus(t, st, project.ID, "running")
 	got, err := st.GetProject(context.Background(), project.Name)

@@ -21,6 +21,8 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 
 ## Integrations
 
+- [Windows development integration](windows-integration.md): selected WSL tooling,
+  shared paths, watch policy, native credentials, ConPTY and validation boundaries
 - [Optional integrations](integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox
 - [KillSwitch integration](kill-switch.md) — detailed requirements, commands, port ownership, and troubleshooting
 

@@ -27,7 +27,8 @@ func TestExecRunnerAppliesConfiguredProxyWithoutMutatingParent(t *testing.T) {
 	}
 	output, err := (ExecRunner{}).Run(context.Background(), Command{
 		Name: os.Args[0], Args: []string{"-test.run=^TestNetworkingEnvironmentHelper$"},
-		Env: []string{"PORTO_TEST_NETWORK_CHILD=1"},
+		Env:     []string{"PORTO_TEST_NETWORK_CHILD=1"},
+		Network: true,
 	})
 	if err != nil {
 		t.Fatalf("run proxy probe: %v: %s", err, output)

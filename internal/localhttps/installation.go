@@ -16,11 +16,12 @@ import (
 )
 
 type Status struct {
-	Installed bool   `json:"installed"`
-	Listening bool   `json:"listening"`
-	Trusted   bool   `json:"trusted"`
-	Supported bool   `json:"supported"`
-	Message   string `json:"message,omitempty"`
+	Installed      bool   `json:"installed"`
+	Listening      bool   `json:"listening"`
+	Trusted        bool   `json:"trusted"`
+	Supported      bool   `json:"supported"`
+	Message        string `json:"message,omitempty"`
+	BrowserTrusted bool   `json:"browserTrusted"`
 }
 
 type installSteps struct {
@@ -32,7 +33,7 @@ type installSteps struct {
 }
 
 func installWithRollback(steps installSteps) (err error) {
-	helperAttempted, trustAttempted := false, false
+	helperInstalled, trustAttempted := false, false
 	defer func() {
 		if err == nil {
 			return
@@ -40,14 +41,14 @@ func installWithRollback(steps installSteps) (err error) {
 		if trustAttempted && !steps.trusted {
 			err = errors.Join(err, steps.untrust())
 		}
-		if helperAttempted && !steps.installed {
+		if helperInstalled && !steps.installed {
 			err = errors.Join(err, steps.remove())
 		}
 	}()
-	helperAttempted = true
 	if err = steps.install(); err != nil {
 		return err
 	}
+	helperInstalled = true
 	if !steps.trusted {
 		trustAttempted = true
 		if err = steps.trust(); err != nil {
@@ -65,7 +66,7 @@ func markInstalled() error {
 	if err != nil {
 		return err
 	}
-	if err := os.WriteFile(path, nil, 0o600); err != nil {
+	if err := writeIntegrationFile(path, nil, 0o600); err != nil {
 		return fmt.Errorf("record portless HTTPS installation: %w", err)
 	}
 	return nil
@@ -111,6 +112,23 @@ func checkPortsAvailable() error {
 }
 
 func readAuthority(path string) ([]byte, string, error) {
+	data, fingerprint, err := readAuthorityIdentity(path)
+	if err != nil {
+		return nil, "", err
+	}
+	block, _ := pem.Decode(data)
+	certificate, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, "", err
+	}
+	now := time.Now()
+	if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+		return nil, "", errors.New("Porto certificate authority is not yet valid or is expired")
+	}
+	return data, fingerprint, nil
+}
+
+func readAuthorityIdentity(path string) ([]byte, string, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, "", fmt.Errorf("read Porto certificate authority: %w", err)
@@ -126,10 +144,8 @@ func readAuthority(path string) ([]byte, string, error) {
 	if err != nil {
 		return nil, "", fmt.Errorf("parse Porto certificate authority: %w", err)
 	}
-	now := time.Now()
-	if !certificate.IsCA || certificate.CheckSignatureFrom(certificate) != nil ||
-		now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
-		return nil, "", errors.New("Porto certificate authority must be a valid, unexpired self-signed CA")
+	if !certificate.IsCA || certificate.CheckSignatureFrom(certificate) != nil {
+		return nil, "", errors.New("Porto certificate authority must be a self-signed CA")
 	}
 	sum := sha256.Sum256(certificate.Raw)
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificate.Raw}), hex.EncodeToString(sum[:]), nil

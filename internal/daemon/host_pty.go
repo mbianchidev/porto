@@ -18,7 +18,7 @@ func startHostPTY(ctx context.Context, command *exec.Cmd) (*hostPTY, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := terminal.Start(command); err != nil {
+	if err := startPTYCommand(terminal, command); err != nil {
 		_ = terminal.Close()
 		return nil, err
 	}

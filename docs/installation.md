@@ -1,5 +1,15 @@
 # Installation
 
+Optional trusted HTTPS is available through **Settings > Trusted local HTTPS**
+or `porto https install` on macOS, Windows and supported systemd Linux hosts.
+Only platform setup is elevated. Linux requires distribution CA tooling and
+Chromium NSS tools; see [networking prerequisites and trust boundaries](networking.md).
+
+Windows installations also bundle architecture-matched Linux WSL client tools.
+Enable individual WSL 2 distributions explicitly; the app never converts a
+distribution or replaces its existing Lima/QEMU Linux engine. See the
+[Windows integration and validation matrix](windows-integration.md).
+
 For live Windows Explorer/editor access to runtime files, install the maintained
 [WinFsp 2.1+ driver](https://winfsp.dev) explicitly, then use **Open files** in
 Porto. Desktop packages bundle the matching native mount helper; no SSHFS-Win

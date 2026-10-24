@@ -2,6 +2,7 @@ package networking
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/tls"
@@ -23,6 +24,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/credentials"
+	"github.com/mbianchidev/porto/internal/filelock"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/net/http/httpproxy"
 )
@@ -36,17 +38,19 @@ var configMu sync.Mutex
 var credentialURL = regexp.MustCompile(`(?i)(https?|socks5h?)://[^\s/@]+@`)
 
 type Config struct {
-	Mode        string   `json:"mode"`
-	HTTPProxy   string   `json:"httpProxy"`
-	HTTPSProxy  string   `json:"httpsProxy"`
-	SOCKSProxy  string   `json:"socksProxy"`
-	NoProxy     string   `json:"noProxy"`
-	RegistryCAs []string `json:"registryCAs"`
+	Mode             string   `json:"mode"`
+	HTTPProxy        string   `json:"httpProxy"`
+	HTTPSProxy       string   `json:"httpsProxy"`
+	SOCKSProxy       string   `json:"socksProxy"`
+	NoProxy          string   `json:"noProxy"`
+	RegistryCAs      []string `json:"registryCAs"`
+	ClearCredentials bool     `json:"clearCredentials,omitempty"`
 }
 
 type storedConfig struct {
 	Config
 	CredentialRefs map[string]string `json:"credentialRefs,omitempty"`
+	configured     bool
 }
 
 type Status struct {
@@ -80,7 +84,7 @@ func Default() (*Manager, error) {
 func (m *Manager) load() (storedConfig, error) {
 	data, err := os.ReadFile(filepath.Join(m.root, "networking.json"))
 	if errors.Is(err, os.ErrNotExist) {
-		return storedConfig{Config: Config{Mode: "system"}, CredentialRefs: map[string]string{}}, nil
+		return storedConfig{Config: Config{Mode: "system", RegistryCAs: []string{}}, CredentialRefs: map[string]string{}}, nil
 	}
 	if err != nil {
 		return storedConfig{}, fmt.Errorf("read networking configuration: %w", err)
@@ -94,12 +98,23 @@ func (m *Manager) load() (storedConfig, error) {
 	if configuration.CredentialRefs == nil {
 		configuration.CredentialRefs = map[string]string{}
 	}
+	if configuration.RegistryCAs == nil {
+		configuration.RegistryCAs = []string{}
+	}
+	configuration.configured = true
 	return configuration, nil
 }
 
 func (m *Manager) Save(configuration Config) (err error) {
 	configMu.Lock()
 	defer configMu.Unlock()
+	lockContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	lease, err := filelock.Acquire(lockContext, filepath.Join(m.root, "networking.lock"))
+	if err != nil {
+		return fmt.Errorf("lock networking settings: %w", err)
+	}
+	defer func() { err = errors.Join(err, lease.Close()) }()
 	switch configuration.Mode {
 	case "system", "manual", "off":
 	default:
@@ -133,6 +148,9 @@ func (m *Manager) Save(configuration Config) (err error) {
 			return fmt.Errorf("invalid %s proxy: %w", name, err)
 		}
 		if proxy.User != nil {
+			if configuration.ClearCredentials {
+				return errors.New("clear saved proxy credentials without supplying replacement URL credentials")
+			}
 			secret := proxy.User.String()
 			proxy.User = nil
 			var random [16]byte
@@ -145,11 +163,12 @@ func (m *Manager) Save(configuration Config) (err error) {
 			}
 			createdSecrets = append(createdSecrets, account)
 			next.CredentialRefs[name] = account
-		} else if proxy.String() == oldProxies[name] {
+		} else if proxy.String() == oldProxies[name] && !configuration.ClearCredentials {
 			next.CredentialRefs[name] = previous.CredentialRefs[name]
 		}
 		*value = proxy.String()
 	}
+	next.ClearCredentials = false
 	if err := os.MkdirAll(m.root, 0o700); err != nil {
 		return err
 	}
@@ -210,6 +229,10 @@ func (m *Manager) resolved() (Config, string, error) {
 	if err != nil {
 		return Config{}, "", err
 	}
+	if !stored.configured {
+		configuration, _ := environmentProxy()
+		return configuration, "inherited environment", nil
+	}
 	if stored.Mode == "off" {
 		return Config{Mode: "off"}, "disabled", nil
 	}
@@ -232,8 +255,11 @@ func (m *Manager) resolved() (Config, string, error) {
 		}
 		if account := stored.CredentialRefs[name]; account != "" {
 			secret, err := m.secrets.Get(secretService, account)
-			if err != nil || secret == "" {
+			if err != nil {
 				return Config{}, "", fmt.Errorf("proxy credentials are unavailable in the native vault; save them again: %w", err)
+			}
+			if secret == "" {
+				return Config{}, "", errors.New("proxy credentials are empty in the native vault; save them again")
 			}
 			authenticated, err := url.Parse(proxy.Scheme + "://" + secret + "@" + proxy.Host)
 			if err != nil {
@@ -251,19 +277,21 @@ func (m *Manager) Snapshot() (Status, error) {
 	if err != nil {
 		return Status{}, err
 	}
+	status := Status{Config: stored.Config, CredentialsStored: map[string]bool{}}
+	for name, account := range stored.CredentialRefs {
+		status.CredentialsStored[name] = account != ""
+	}
 	resolved, source, err := m.resolved()
 	if err != nil {
-		return Status{Config: stored.Config, Message: err.Error()}, err
+		status.Message = err.Error()
+		return status, err
 	}
-	status := Status{Config: stored.Config, Source: source, CredentialsStored: map[string]bool{}}
+	status.Source = source
 	if stored.Mode == "system" {
 		status.HTTPProxy = redactURL(resolved.HTTPProxy)
 		status.HTTPSProxy = redactURL(resolved.HTTPSProxy)
 		status.SOCKSProxy = redactURL(resolved.SOCKSProxy)
 		status.NoProxy = resolved.NoProxy
-	}
-	for name, account := range stored.CredentialRefs {
-		status.CredentialsStored[name] = account != ""
 	}
 	return status, nil
 }

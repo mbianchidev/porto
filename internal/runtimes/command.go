@@ -25,6 +25,8 @@ type Command struct {
 	Env         []string
 	Stdin       []byte
 	StdinReader io.Reader
+	// Local ownership and cleanup must not depend on proxy-vault availability.
+	Network bool
 }
 
 type Runner interface {
@@ -79,6 +81,17 @@ func (ExecRunner) RunStreaming(
 }
 
 func withNetworkEnvironment(command Command) (Command, error) {
+	binary := strings.TrimSuffix(strings.ToLower(filepath.Base(command.Name)), ".exe")
+	required := command.Network
+	switch binary {
+	case "limactl":
+		required = required || (len(command.Args) > 0 && (command.Args[0] == "start" || command.Args[0] == "create"))
+	case "docker", "nerdctl":
+		required = required || RegistryOperation(command.Args)
+	}
+	if !required {
+		return command, nil
+	}
 	manager, err := networking.Default()
 	if err != nil {
 		return command, err
@@ -89,6 +102,20 @@ func withNetworkEnvironment(command Command) (Command, error) {
 	}
 	command.Env = append(environment, command.Env...)
 	return command, nil
+}
+
+func RegistryOperation(arguments []string) bool {
+	if len(arguments) == 0 {
+		return false
+	}
+	switch arguments[0] {
+	case "pull", "push", "build", "buildx", "compose", "login", "search", "run", "create":
+		return true
+	case "container", "image":
+		return RegistryOperation(arguments[1:])
+	default:
+		return false
+	}
 }
 
 func traceCommand(command Command) func(error) {
@@ -122,11 +149,20 @@ func configureCommandInput(cmd *exec.Cmd, command Command) (func(), error) {
 
 func CommandError(action string, output []byte, err error) error {
 	message := networking.Redact(strings.TrimSpace(string(output)))
+	action = networking.Redact(action)
+	if err != nil {
+		err = redactedCommandError{err: err}
+	}
 	if message == "" {
 		return fmt.Errorf("%s: %w", action, err)
 	}
 	return fmt.Errorf("%s: %w: %s", action, err, message)
 }
+
+type redactedCommandError struct{ err error }
+
+func (e redactedCommandError) Error() string { return networking.Redact(e.err.Error()) }
+func (e redactedCommandError) Unwrap() error { return e.err }
 
 type streamOutput struct {
 	mu         sync.Mutex

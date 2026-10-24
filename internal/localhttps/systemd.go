@@ -170,11 +170,23 @@ func (s systemdIntegration) uninstall() error {
 }
 
 func (s systemdIntegration) trust(path string, remove bool) error {
-	data, fingerprint, err := readAuthority(path)
+	data, fingerprint, err := readAuthorityIdentity(path)
 	if err != nil {
 		return err
 	}
+	if !remove {
+		if _, _, err := readAuthority(path); err != nil {
+			return err
+		}
+	}
 	destination := filepath.Join(s.trustDirectory, "porto-"+fingerprint+".crt")
+	previous, previousErr := os.ReadFile(destination)
+	if previousErr != nil && !errors.Is(previousErr, os.ErrNotExist) {
+		return previousErr
+	}
+	if previous != nil && !bytes.Equal(previous, data) {
+		return errors.New("existing trust file does not match Porto's authority; refusing replacement or removal")
+	}
 	if remove {
 		existing, err := os.ReadFile(destination)
 		if errors.Is(err, os.ErrNotExist) {
@@ -196,7 +208,17 @@ func (s systemdIntegration) trust(path string, remove bool) error {
 		return err
 	}
 	if err := s.run(s.refreshTrust[0], s.refreshTrust[1:]...); err != nil {
-		return fmt.Errorf("refresh certificate trust with %s: %w", strings.Join(s.refreshTrust, " "), err)
+		var rollbackErr error
+		if previous == nil {
+			rollbackErr = os.Remove(destination)
+			if errors.Is(rollbackErr, os.ErrNotExist) {
+				rollbackErr = nil
+			}
+		} else {
+			rollbackErr = writeIntegrationFile(destination, previous, 0o644)
+		}
+		return errors.Join(fmt.Errorf("refresh certificate trust with %s: %w", strings.Join(s.refreshTrust, " "), err),
+			rollbackErr, s.run(s.refreshTrust[0], s.refreshTrust[1:]...))
 	}
 	return nil
 }

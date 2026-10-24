@@ -19,6 +19,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/filelock"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/wslbridge"
 )
@@ -93,6 +94,23 @@ func (m *Manager) state() ([]Integration, error) {
 	var integrations []Integration
 	if err := json.Unmarshal(data, &integrations); err != nil {
 		return nil, fmt.Errorf("read selected WSL integrations: %w", err)
+	}
+	seen := map[string]bool{}
+	for _, integration := range integrations {
+		owner, err := hex.DecodeString(integration.Owner)
+		if !validDistribution(integration.Distribution) || integration.ID == "" || err != nil || len(owner) != 16 || seen[integration.Distribution] {
+			return nil, errors.New("invalid selected WSL integration identity; repair its owned metadata before mutation")
+		}
+		seen[integration.Distribution] = true
+		for _, share := range integration.Shares {
+			expectedWindows := `\\wsl.localhost\` + integration.Distribution + strings.ReplaceAll(share.LinuxPath, "/", `\`)
+			sum := sha256.Sum256([]byte(integration.ID + "\x00" + share.LinuxPath))
+			if !path.IsAbs(share.LinuxPath) || path.Clean(share.LinuxPath) != share.LinuxPath ||
+				share.LinuxPath == "/" || share.WindowsPath != expectedWindows ||
+				share.GuestPath != "/mnt/porto-wsl/"+hex.EncodeToString(sum[:8]) {
+				return nil, errors.New("selected WSL share metadata no longer matches its distribution identity")
+			}
+		}
 	}
 	return integrations, nil
 }
@@ -228,6 +246,13 @@ func (m *Manager) Enable(ctx context.Context, name string, roots []string) (inte
 	if err != nil {
 		return integration, err
 	}
+	lockContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	lease, err := filelock.Acquire(lockContext, filepath.Join(m.root, "wsl-integrations.lock"))
+	if err != nil {
+		return integration, fmt.Errorf("lock WSL integration: %w", err)
+	}
+	defer func() { err = errors.Join(err, lease.Close()) }()
 	previous, err := m.state()
 	if err != nil {
 		return integration, err
@@ -243,6 +268,11 @@ func (m *Manager) Enable(ctx context.Context, name string, roots []string) (inte
 				return integration, errors.New("selected distribution was replaced; refusing to overwrite its integration")
 			}
 			integration.Owner = existing.Owner
+			if len(roots) == 0 {
+				for _, share := range existing.Shares {
+					roots = append(roots, share.LinuxPath)
+				}
+			}
 		}
 	}
 	executable, err := m.executable()
@@ -275,9 +305,13 @@ func (m *Manager) Enable(ctx context.Context, name string, roots []string) (inte
 		return integration, fmt.Errorf("WSL architecture %q has no bundled native development tools", fields[0])
 	}
 	integration.Home = fields[1]
+	windowsConfigurationHome, err := filepath.Abs(m.root)
+	if err != nil {
+		return integration, err
+	}
 	integration.Bridge = wslbridge.Config{
 		Distribution: name, Owner: integration.Owner, WindowsExecutable: fields[2],
-		WindowsHome: m.root, Socket: path.Join("/tmp", "porto-wsl-"+integration.Owner, "docker.sock"),
+		WindowsHome: windowsConfigurationHome, Socket: path.Join("/tmp", "porto-wsl-"+integration.Owner, "docker.sock"),
 	}
 	if !path.IsAbs(integration.Home) || !path.IsAbs(fields[2]) {
 		return integration, errors.New("WSL returned non-absolute home or executable paths")
@@ -343,9 +377,19 @@ func (m *Manager) Enable(ctx context.Context, name string, roots []string) (inte
 	return integration, nil
 }
 
-func (m *Manager) Disable(ctx context.Context, name string) error {
+func (m *Manager) Disable(ctx context.Context, name string) (err error) {
+	if !m.Supported() || !validDistribution(name) {
+		return errors.New("a valid selected Windows WSL distribution is required")
+	}
 	stateMu.Lock()
 	defer stateMu.Unlock()
+	lockContext, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	lease, err := filelock.Acquire(lockContext, filepath.Join(m.root, "wsl-integrations.lock"))
+	if err != nil {
+		return fmt.Errorf("lock WSL integration removal: %w", err)
+	}
+	defer func() { err = errors.Join(err, lease.Close()) }()
 	integrations, err := m.state()
 	if err != nil {
 		return err
@@ -459,8 +503,7 @@ func (m *Manager) bundle(root string, integration Integration) (*os.File, error)
 	for name, data := range map[string][]byte{
 		"owner": []byte(integration.Owner + "\n"), "integration.json": configuration,
 		"bin/docker": []byte(dockerWrapper), "bin/docker-credential-porto": []byte(credentialWrapper),
-		"docker-config/config.json": []byte("{\"credsStore\":\"porto\"}\n"),
-		"environment":               []byte("export PATH=\"$HOME/.local/share/porto/wsl/bin:$PATH\"\n"),
+		"environment": []byte("case \"$PATH\" in \"$HOME/.local/share/porto/wsl/bin\"|\"$HOME/.local/share/porto/wsl/bin\":*) ;; *) export PATH=\"$HOME/.local/share/porto/wsl/bin:$PATH\" ;; esac\n"),
 	} {
 		mode := int64(0o600)
 		if strings.HasPrefix(name, "bin/") {

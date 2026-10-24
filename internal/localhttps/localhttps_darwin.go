@@ -74,11 +74,13 @@ func Snapshot(certificatePath string) Status {
 		_ = connection.Close()
 	}
 	_, statErr := os.Stat(launchDaemonPath)
+	trusted := Trusted(certificatePath)
 	return Status{
-		Installed: statErr == nil,
-		Listening: listening,
-		Trusted:   Trusted(certificatePath),
-		Supported: true,
+		Installed:      statErr == nil,
+		Listening:      listening,
+		Trusted:        trusted,
+		Supported:      true,
+		BrowserTrusted: trusted,
 	}
 }
 

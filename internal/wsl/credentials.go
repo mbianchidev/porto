@@ -1,6 +1,7 @@
 package wsl
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -11,8 +12,10 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/credentials"
+	"github.com/mbianchidev/porto/internal/filelock"
 	"github.com/mbianchidev/porto/internal/registries"
 	"github.com/zalando/go-keyring"
 )
@@ -54,9 +57,16 @@ func (v *CredentialVault) index() ([]string, error) {
 	return servers, nil
 }
 
-func (v *CredentialVault) Handle(action string, input io.Reader, output io.Writer) error {
+func (v *CredentialVault) Handle(action string, input io.Reader, output io.Writer) (err error) {
 	stateMu.Lock()
 	defer stateMu.Unlock()
+	lockContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	lease, err := filelock.Acquire(lockContext, filepath.Join(v.root, "wsl-credentials.lock"))
+	if err != nil {
+		return fmt.Errorf("lock native WSL credential index: %w", err)
+	}
+	defer func() { err = errors.Join(err, lease.Close()) }()
 	if action == "list" {
 		servers, err := v.index()
 		if err != nil {

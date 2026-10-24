@@ -20,7 +20,8 @@ Porto runs its own containerd and BuildKit backend rather than proxying another 
 - **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup.
 - **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
 - **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).
-- **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects and managed Kubernetes Services through local HTTP hostnames, with optional trusted portless HTTPS on macOS.
+- **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects, opted-in containers and managed Kubernetes Services through local HTTP hostnames, with trusted portless HTTPS on macOS, Windows and supported systemd Linux hosts.
+- **Use selected WSL distributions.** Native Linux Docker, Compose and Buildx use Porto's private Windows pipe, selected shared roots, polling watches and native-vault credentials. Embedded Windows terminals use ConPTY. The existing Lima/QEMU Linux engine remains in place; see [Windows integration](docs/windows-integration.md).
 - **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
   Per-object migration checkpoints survive daemon interruptions; retries require a fresh dry run and never retarget recreated source names.
   Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
@@ -126,13 +127,17 @@ Replace `api` with a project name shown by `porto list`. Startup normally runs `
 
 Automatic port assignment starts at `41000`; Compose-published ports are also supported. Porto marks an application ready when its HTTP endpoint returns 200. Pin a port with `porto port api 8080`. Running projects are also available at `http://<project>.porto.localhost:37680` without DNS setup.
 
-On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
+On macOS, Windows, or a supported systemd Linux host, install trusted portless
+HTTPS once to use `https://<project>.porto.localhost/`:
 
 ```sh
 porto https install
 ```
 
-This requests administrator authorization for the loopback forwarder and trusts Porto's local certificate authority. See [local networking](docs/networking.md) for certificate, DNS, dotted-hostname, and custom-forwarding details.
+This authorizes only platform setup, not the daemon or workloads. Linux needs
+the documented CA/NSS prerequisites. Settings also provides trust, renewal,
+proxy, registry CA and connectivity controls. See [local networking](docs/networking.md)
+for lifecycle, browser limitations, dotted hostnames and direct-IP capabilities.
 
 For an always-available setup, follow the [daily-use guide](docs/daily-use.md) to install Porto in a stable location and start it at login or boot.
 

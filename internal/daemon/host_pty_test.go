@@ -17,11 +17,56 @@ import (
 )
 
 func TestHostPTYSubprocess(t *testing.T) {
-	if os.Getenv("PORTO_TEST_PTY_CHILD") != "1" {
+	mode := os.Getenv("PORTO_TEST_PTY_CHILD")
+	if mode != "1" && mode != "wait" {
 		return
 	}
 	fmt.Fprintln(os.Stdout, "synthetic PTY output")
+	if mode == "wait" {
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		os.Exit(0)
+	}
 	os.Exit(7)
+}
+
+func TestPTYBridgeDisconnectReapsOnlyItsCommand(t *testing.T) {
+	commands := make(chan *exec.Cmd, 1)
+	done := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		defer close(done)
+		bridgePTYTerminal(w, r, func(ctx context.Context) (*exec.Cmd, error) {
+			command := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestHostPTYSubprocess$")
+			command.Env = append(os.Environ(), "PORTO_TEST_PTY_CHILD=wait")
+			commands <- command
+			return command, nil
+		}, "synthetic terminal failed")
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	connection, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(server.URL, "http"), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.CloseNow()
+	var output strings.Builder
+	for !strings.Contains(output.String(), "synthetic PTY output") {
+		_, data, err := connection.Read(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		output.Write(data)
+	}
+	command := <-commands
+	_ = connection.CloseNow()
+	select {
+	case <-done:
+		if command.ProcessState == nil {
+			t.Fatal("terminal command was not reaped on disconnect")
+		}
+	case <-ctx.Done():
+		t.Fatal("terminal disconnect did not close and reap its command")
+	}
 }
 
 func TestPTYBridgeReportsExitCode(t *testing.T) {
