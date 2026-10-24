@@ -9,7 +9,17 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 | CI | `ci.yml` | pull requests, pushes to `main`, manual | Formatting, vet, tests, cross-compilation, dashboard lint and build |
 | CodeQL | `codeql.yml` | pull requests, pushes to `main`, weekly | Static analysis for `go` and `javascript-typescript` |
 | Security audit | `security.yml` | pushes to `main`, weekly, manual | `govulncheck` and `npm audit` |
+| Emulated runtime acceptance | `emulated-runtime.yml` | manual | Full software-emulated Lima platform/phase matrix |
 | Release | `release.yml` | tags matching `v*`, manual | Builds, packages, and publishes archives plus native macOS and Windows installers |
+
+CodeQL retains both complete language analyses on every existing event, including
+draft pull requests; there are no changed-file or language-selection exclusions.
+The security audit runs `govulncheck@latest` and audits the complete dashboard
+lockfile with `npm audit --package-lock-only --audit-level=high`. The audit-only
+job does not install packages, run dependency lifecycle scripts, or transfer an
+unused npm download cache. Locked `npm ci` installations, builds, and tests remain
+part of CI and release validation; registry errors and high-severity findings
+still fail the security audit.
 
 ## CI details
 
@@ -587,6 +597,23 @@ Re-running a failed job can refresh that draft safely. A published release is
 immutable: reruns fail instead of replacing assets that update clients may
 already be downloading. A manual run from the Actions tab still requires the
 tag to exist.
+
+Release tag resolution checks out the explicit tag reference, validates SemVer,
+and pins all three packaging jobs to that tag's resolved commit. The archive/test
+job and the macOS and Windows installer jobs then run concurrently, keeping their
+existing native builds, architecture loops, dependency installations, audits and
+startup checks. Installers can finish even if the independent archive/test job
+fails, but publication requires every job to succeed. Per-tag release concurrency
+never cancels an in-progress publication.
+
+Each producer uploads its existing artifact with seven-day retention and no
+additional compression of the already-compressed archives, DMGs and EXEs.
+The publisher downloads the three exact artifact IDs from those jobs in parallel
+into the existing `dist` layout, rather than selecting arbitrary artifacts by a
+wildcard. The sixteen-asset gate, checksum verification, provenance attestations,
+draft recovery and immutable published-release checks are unchanged. This reduces
+release serialization and transfer overhead without reusing PR-built packages or
+skipping cold-install/build checks.
 
 ## Release artifacts
 

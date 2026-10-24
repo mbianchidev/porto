@@ -18,18 +18,19 @@ permissions:
   contents: read
 
 jobs:
-  build:
-    name: Test and package
+  version:
+    name: Resolve release tag
     runs-on: ubuntu-latest
-    timeout-minutes: 60
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.version.outputs.tag }}
       version: ${{ steps.version.outputs.version }}
       prerelease: ${{ steps.version.outputs.prerelease }}
+      commit: ${{ steps.version.outputs.commit }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: refs/tags/${{ inputs.tag || github.ref_name }}
           persist-credentials: false
 
       - name: Resolve release version
@@ -66,7 +67,21 @@ jobs:
             echo "tag=${tag}"
             echo "version=${version}"
             echo "prerelease=${prerelease}"
+            echo "commit=$(git rev-parse HEAD)"
           } >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Test and package
+    needs: version
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.archives.outputs.artifact-id }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          ref: ${{ needs.version.outputs.commit }}
+          persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
@@ -108,7 +123,7 @@ jobs:
 
       - name: Package release archives
         env:
-          VERSION: ${{ steps.version.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
           CGO_ENABLED: '0'
         run: |
           set -euo pipefail
@@ -142,7 +157,7 @@ jobs:
             fi
 
             if [ "$goos" = "darwin" ]; then
-              echo "macOS desktop archives are built with the native startup guard in macos-installers."
+              echo "macOS desktop archives are built natively in macos-installers."
               echo "::endgroup::"
               continue
             fi
@@ -190,21 +205,25 @@ jobs:
           ls -l dist
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        id: archives
         with:
           name: release-archives
           path: dist
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
 
   macos-installers:
     name: Package macOS desktop
-    needs: build
+    needs: version
     runs-on: macos-latest
     timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.installers.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -230,7 +249,7 @@ jobs:
 
       - name: Package DMGs and desktop archives
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -241,6 +260,7 @@ jobs:
           test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "2"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        id: installers
         with:
           name: macos-installers
           path: |
@@ -248,19 +268,22 @@ jobs:
             dist/*.tar.gz
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
 
   windows-installers:
     name: Package Windows installers
-    needs: build
+    needs: version
     runs-on: windows-latest
     timeout-minutes: 60
+    outputs:
+      artifact-id: ${{ steps.installers.outputs.artifact-id }}
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ needs.version.outputs.commit }}
           persist-credentials: false
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
@@ -290,7 +313,7 @@ jobs:
 
       - name: Package EXE installers
         env:
-          VERSION: ${{ needs.build.outputs.version }}
+          VERSION: ${{ needs.version.outputs.version }}
         run: |
           set -euo pipefail
           mkdir -p dist
@@ -300,15 +323,17 @@ jobs:
           test "$(find dist -maxdepth 1 -name '*.exe' | wc -l | tr -d ' ')" = "2"
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        id: installers
         with:
           name: windows-installers
           path: dist/*.exe
           if-no-files-found: error
           retention-days: 7
+          compression-level: 0
 
   publish:
     name: Publish GitHub release
-    needs: [build, macos-installers, windows-installers]
+    needs: [version, build, macos-installers, windows-installers]
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -318,18 +343,9 @@ jobs:
     steps:
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
         with:
-          name: release-archives
+          artifact-ids: ${{ needs.build.outputs.artifact-id }},${{ needs.macos-installers.outputs.artifact-id }},${{ needs.windows-installers.outputs.artifact-id }}
           path: dist
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: macos-installers
-          path: dist
-
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: windows-installers
-          path: dist
+          merge-multiple: true
 
       - name: Verify release assets
         run: |
@@ -352,8 +368,8 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ needs.build.outputs.tag }}
-          PRERELEASE: ${{ needs.build.outputs.prerelease }}
+          TAG: ${{ needs.version.outputs.tag }}
+          PRERELEASE: ${{ needs.version.outputs.prerelease }}
         run: |
           set -euo pipefail
 
