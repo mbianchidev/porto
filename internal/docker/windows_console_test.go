@@ -440,7 +440,13 @@ func TestNativeWindowsContainersExecExitCodeOnlyUsesPrivateCLILog(t *testing.T) 
 			t.Fatalf("CLI exit parser=%d,%v", code, ok)
 		}
 	}
-	for _, data := range []string{`exec failed with exit code 37`, `{"level":"info","msg":"exec failed with exit code 37"}`, `{"level":"fatal","msg":"exec failed with exit code -1"}`} {
+	for _, data := range []string{
+		`exec failed with exit code 37`,
+		`{"level":"info","msg":"exec failed with exit code 37"}`,
+		`{"level":"fatal","msg":"exec failed with exit code -1"}`,
+		`{"level":"fatal","msg":"exec failed with exit code 4294967296"}`,
+		`{"level":"fatal","msg":"exec failed with exit code 18446744073709551616"}`,
+	} {
 		if _, ok := windowsExecLogExitCode([]byte(data)); ok {
 			t.Fatalf("untrusted/nonfatal diagnostic accepted: %s", data)
 		}

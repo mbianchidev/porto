@@ -222,9 +222,9 @@ func windowsExecLogExitCode(data []byte) (int, bool) {
 		if !strings.HasPrefix(record.Message, prefix) {
 			continue
 		}
-		value, err := strconv.ParseUint(strings.TrimPrefix(record.Message, prefix), 10, 32)
-		if err == nil && value > 0 {
-			code, found = int(value), true
+		value, err := strconv.Atoi(strings.TrimPrefix(record.Message, prefix))
+		if err == nil && value > 0 && uint64(value) <= (1<<32)-1 {
+			code, found = value, true
 		}
 	}
 	return code, found

@@ -3,8 +3,10 @@
 package windowscontainers
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"path/filepath"
 	"strings"
@@ -48,9 +50,11 @@ func Probe(ctx context.Context) (Host, error) {
 	powershell := filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
 	modules := filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules")
 	script := `$ErrorActionPreference='Stop'
-$features=@(Get-WindowsOptionalFeature -Online)
-$containers=@($features | Where-Object {$_.FeatureName -eq 'Containers' -and $_.State -eq 'Enabled'}).Count -gt 0
-$hyperv=@($features | Where-Object {$_.FeatureName -in @('Microsoft-Hyper-V-All','Microsoft-Hyper-V') -and $_.State -eq 'Enabled'}).Count -gt 0
+[Console]::Error.WriteLine('Inspecting Windows Containers feature')
+$containers=(Get-WindowsOptionalFeature -Online -FeatureName Containers).State -eq 'Enabled'
+[Console]::Error.WriteLine('Inspecting Hyper-V management service')
+$hyperv=@(Get-Service -Name vmms -ErrorAction SilentlyContinue | Where-Object {$_.Status -eq 'Running'}).Count -gt 0
+[Console]::Error.WriteLine('Inspecting processor virtualization capability')
 $processors=@(Get-CimInstance -ClassName Win32_Processor)
 $ready=$processors.Count -gt 0 -and @($processors | Where-Object {
   -not $_.VirtualizationFirmwareEnabled -or -not $_.SecondLevelAddressTranslationExtensions
@@ -58,10 +62,33 @@ $ready=$processors.Count -gt 0 -and @($processors | Where-Object {
 @{Containers=$containers; HyperV=$hyperv; Virtualization=$ready} | ConvertTo-Json -Compress`
 	command := process.NewCommand(ctx, "", powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
 	command.Env = []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system),
-		"PATH=" + system, "PSModulePath=" + modules}
-	output, err := command.CombinedOutput()
+		"SystemDrive=" + filepath.VolumeName(system), "ComSpec=" + filepath.Join(system, "cmd.exe"),
+		"PATH=" + system + ";" + filepath.Dir(system) + ";" + filepath.Dir(powershell), "PSModulePath=" + modules}
+	for _, folder := range []struct {
+		name string
+		id   *windows.KNOWNFOLDERID
+	}{
+		{"USERPROFILE", windows.FOLDERID_Profile},
+		{"LOCALAPPDATA", windows.FOLDERID_LocalAppData},
+		{"APPDATA", windows.FOLDERID_RoamingAppData},
+		{"ProgramData", windows.FOLDERID_ProgramData},
+	} {
+		value, err := windows.KnownFolderPath(folder.id, 0)
+		if err != nil {
+			return host, fmt.Errorf("resolve native probe environment %s: %w", folder.name, err)
+		}
+		command.Env = append(command.Env, folder.name+"="+value)
+		if folder.name == "LOCALAPPDATA" {
+			command.Env = append(command.Env, "TEMP="+filepath.Join(value, "Temp"), "TMP="+filepath.Join(value, "Temp"))
+		} else if folder.name == "ProgramData" {
+			command.Env = append(command.Env, "ALLUSERSPROFILE="+value)
+		}
+	}
+	var diagnostics bytes.Buffer
+	command.Stderr = &diagnostics
+	output, err := command.Output()
 	if err != nil {
-		return host, fmt.Errorf("inspect native Windows features without changing them: %w: %s", err, output)
+		return host, fmt.Errorf("inspect native Windows features without changing them: %w: %s", errors.Join(err, ctx.Err()), diagnostics.String())
 	}
 	var features struct {
 		Containers, HyperV, Virtualization bool
