@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"syscall"
@@ -20,7 +21,51 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func prepareNativeDaemonOwner(string) error { return nil }
+func prepareNativeDaemonOwner(home string) error {
+	user, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	descriptor, err := windows.SecurityDescriptorFromString("O:" + user.User.Sid.String() +
+		"D:P(A;OICI;FA;;;SY)(A;OICI;FA;;;" + user.User.Sid.String() + ")S:(ML;OICI;NW;;;ME)")
+	if err != nil {
+		return err
+	}
+	owner, _, err := descriptor.Owner()
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	sacl, _, err := descriptor.SACL()
+	if err != nil {
+		return err
+	}
+	return filepath.WalkDir(home, func(path string, entry os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
+		}
+		pointer, err := windows.UTF16PtrFromString(path)
+		if err != nil {
+			return err
+		}
+		attributes, err := windows.GetFileAttributes(pointer)
+		if err != nil {
+			return err
+		}
+		if entry.Type()&os.ModeSymlink != 0 || attributes&windows.FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+			return errors.New("refuse a redirected native daemon fixture path")
+		}
+		if err := windows.SetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.OWNER_SECURITY_INFORMATION|
+			windows.DACL_SECURITY_INFORMATION|windows.PROTECTED_DACL_SECURITY_INFORMATION|windows.LABEL_SECURITY_INFORMATION,
+			owner, nil, dacl, sacl); err != nil {
+			return fmt.Errorf("grant only the fixture owner medium-integrity write access: %w", err)
+		}
+		return nil
+	})
+}
 
 func nativeDaemonTokenInformation(token windows.Token, class uint32) ([]byte, error) {
 	var size uint32
