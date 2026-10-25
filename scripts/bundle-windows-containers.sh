@@ -23,6 +23,7 @@ destination="$(cd "$destination" && pwd -P)"
 
 compiler="$(go env GOVERSION)"
 node -e 'const match=/^go(\d+)\.(\d+)\.(\d+)$/.exec(process.argv[1]); if(!match || Number(match[1])<1 || (Number(match[1])===1 && (Number(match[2])<27 || (Number(match[2])===27 && Number(match[3])<3)))) throw new Error("Patched Go 1.27.3 or newer is required for native Windows runtime builds")' "$compiler"
+export GOTOOLCHAIN="$compiler"
 
 download() {
   bash "$script_directory/download-file.sh" "$1" "$2" "$3"
@@ -52,7 +53,8 @@ build_source() {
     # source tag while building against patched official dependencies.
     GOWORK=off go mod edit -require=golang.org/x/crypto@v0.58.0 \
       -require=golang.org/x/net@v0.60.0 -require=golang.org/x/sys@v0.49.0 \
-      -require=github.com/sirupsen/logrus@v1.10.2
+      -require=github.com/sirupsen/logrus@v1.10.2 -require=google.golang.org/grpc@v1.83.2 \
+      -dropreplace=golang.org/x/sys
     imports="$(CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off go list -mod=mod -deps -f '{{.ImportPath}}' "$package")"
     if printf '%s\n' "$imports" | grep -E '^golang\.org/x/crypto/openpgp($|/)' >&2; then
       echo "GO-2026-5932: a native runtime source imports deprecated OpenPGP" >&2
@@ -60,6 +62,9 @@ build_source() {
     fi
     CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off \
       go build -mod=mod -buildvcs=false -trimpath -ldflags "-s -w $flags" -o "$output" "$package"
+    binary_name="$(basename "$output" .exe)"
+    printf '%s\n' "$imports" > "$destination/licenses/$binary_name.imports.txt"
+    go version -m "$output" | tail -n +2 > "$destination/licenses/$binary_name.buildinfo.txt"
   )
 }
 
@@ -83,6 +88,7 @@ windows-runhcs v${hcsshim_version} (source sha256:${hcsshim_checksum})
 windows-nerdctl v${nerdctl_version}+porto.1 (source sha256:${nerdctl_checksum})
 windows-cni v${cni_version}+porto.1 (source sha256:${cni_checksum})
 windows-runtime-compiler ${compiler}
-windows-runtime-patched-dependencies x/crypto v0.58.0, x/net v0.60.0, x/sys v0.49.0, logrus v1.10.2
+windows-runtime-patched-dependencies x/crypto v0.58.0, x/net v0.60.0, x/sys v0.49.0, logrus v1.10.2, grpc v1.83.2; no stale x/sys replacement
+windows-runtime-import-policy exact production import graphs and resolved build information in licenses/
 EOF
 node "$script_directory/windows-container-toolchain.cjs" "$destination/bin" amd64

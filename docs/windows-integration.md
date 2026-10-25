@@ -21,7 +21,7 @@ features or reboot automatically.
 ```powershell
 porto docker windows status
 porto docker windows install
-porto docker windows context
+porto docker windows context --confirm
 docker --context porto-windows info
 docker --context porto-windows pull mcr.microsoft.com/windows/nanoserver:ltsc2025
 docker --context porto-windows run --name synthetic-windows --isolation process mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd.exe /c echo synthetic-windows
@@ -53,8 +53,8 @@ access and grant it only to the owning user and administrators.
 Stop/remove the owned integration explicitly:
 
 ```powershell
-porto docker windows stop
-porto docker windows remove
+porto docker windows stop --confirm
+porto docker windows remove --confirm
 ```
 
 Active native workloads prevent unsafe stop/update/removal. Removal keeps

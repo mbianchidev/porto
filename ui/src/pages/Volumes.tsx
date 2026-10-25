@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
+import { useDockerMode } from '../dockerMode'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { RuntimeFiles } from '../components/RuntimeFiles'
@@ -18,6 +19,7 @@ import type { DockerStatus, DockerVolume } from '../types'
 const COLUMNS_TEMPLATE = 'minmax(180px,1.3fr) minmax(100px,0.6fr) minmax(220px,1.4fr) minmax(90px,0.5fr)'
 
 export function Volumes() {
+  const mode = useDockerMode()
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
   const [selectedName, setSelectedName] = useState<string | null>(null)
@@ -31,7 +33,7 @@ export function Volumes() {
 
   const status = usePolledResource<DockerStatus>((signal) => apiGet('/api/docker/status', signal), 10000, [], 'docker:status')
   const volumes = usePolledResource<DockerVolume[]>((signal) => apiGet('/api/docker/volumes', signal), 8000, [], 'docker:volumes')
-  const allocation = usePolledResource<StorageResource | null>((signal) => selectedName
+  const allocation = usePolledResource<StorageResource | null>((signal) => selectedName && mode === 'linux'
     ? apiGet(`/api/docker/volumes/${encodeURIComponent(selectedName)}/storage`, signal) : Promise.resolve(null),
   selectedName ? 10000 : 0, [selectedName], selectedName ? `docker:volume-storage:${selectedName}` : undefined)
   const items = volumes.data ?? []
@@ -82,7 +84,7 @@ export function Volumes() {
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} volumes</span>
         <button className="refreshControl" type="button" onClick={volumes.reload}>Refresh</button>
         <button type="button" disabled={!available} onClick={() => { setSelectedName(null); setImporting(false); setCreating(true) }}>New volume</button>
-        <button type="button" disabled={!available} onClick={() => { setSelectedName(null); setCreating(false); setImporting(true) }}>Import local archive</button>
+        <button type="button" disabled={!available || mode === 'windows'} onClick={() => { setSelectedName(null); setCreating(false); setImporting(true) }}>Import local archive</button>
       </div>
       <div className="workArea">
         {!available ? (
@@ -103,7 +105,7 @@ export function Volumes() {
               { header: 'Scope', className: 'mono', render: (volume) => volume.scope },
             ]}
             renderActions={(volume) => (
-              <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(volume)} />
+              <ActionButton className="removeButton" label="Remove volume" icon="remove" disabled={mode === 'windows'} onClick={() => removeVolume(volume)} />
             )}
           />
         )}
@@ -125,12 +127,17 @@ export function Volumes() {
             <div className="maintenanceBar">
               <span>Maintenance controls</span>
               <div className="actions">
-                <ActionButton className="removeButton" label="Remove volume" icon="remove" onClick={() => removeVolume(selected)} />
+                <ActionButton className="removeButton" label="Remove volume" icon="remove" disabled={mode === 'windows'} onClick={() => removeVolume(selected)} />
               </div>
             </div>
             </>}
-            {tab === 'files' && <RuntimeFiles key={selected.name} kind="volume" name={selected.name} />}
-            {tab === 'data' && <VolumeTools key={`${selected.name}:${dataAction}`} name={selected.name} initialAction={dataAction} />}
+            {tab === 'files' && (mode === 'linux'
+              ? <RuntimeFiles key={selected.name} kind="volume" name={selected.name} />
+              : <p role="status">Linux file helpers are not used for native Windows volumes. Use explicit Windows bind mounts and the porto-windows Docker context.</p>)}
+            {tab === 'data' && (mode === 'linux'
+              ? <VolumeTools key={`${selected.name}:${dataAction}`} name={selected.name} initialAction={dataAction} />
+              : <p role="status">Linux backup, restore and identity-preview operations are disabled for native Windows volumes. Manage their lifecycle explicitly through the porto-windows Docker context.</p>)}
+            {mode === 'windows' && <p className="hintLine">Native Windows volumes have a separate store. Linux data operations and deletion previews are never applied to them.</p>}
           </Inspector>
         )}
 
@@ -151,7 +158,7 @@ export function Volumes() {
         )}
         {importing && <Inspector title="Import local archive" subtitle="Restore a verified archive into a new volume" onClose={() => setImporting(false)}><VolumeTools initialAction="volume-import" /></Inspector>}
       </div>
-      {!selected && !importing && <div className="dataWorkArea"><DataOperations onComplete={volumes.reload} /></div>}
+      {mode === 'linux' && !selected && !importing && <div className="dataWorkArea"><DataOperations onComplete={volumes.reload} /></div>}
     </>
   )
 }

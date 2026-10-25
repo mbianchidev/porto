@@ -154,6 +154,50 @@ jobs:
           go test ./internal/localhttps ./internal/daemon -run 'TestNativePortlessHTTPS|TestHostPTY|TestPTYBridge|TestApplyTerminal' -count=1 -failfast -timeout=5m -v
           if ($LASTEXITCODE -ne 0) { throw 'Native HTTPS/ConPTY acceptance failed.' }
 
+  native-windows-containers:
+    name: Native Windows containers (windows-2025/amd64)
+    runs-on: windows-2025
+    timeout-minutes: 30
+    env:
+      CGO_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-scope: native-windows-containers
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: '24'
+          package-manager-cache: false
+
+      - uses: ./.github/actions/cache-desktop
+        with:
+          target: native-windows-containers-amd64
+
+      - name: Build only the native Windows payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          native_runtime="$RUNNER_TEMP/porto-native-windows-runtime"
+          bash scripts/bundle-windows-containers.sh amd64 "$native_runtime"
+          echo "PORTO_WINDOWS_RUNTIME_DIR=$(cygpath -w "$native_runtime/bin")" >> "$GITHUB_ENV"
+
+      - name: Exercise owned native Windows containers and safe mode boundaries
+        shell: pwsh
+        env:
+          PORTO_TEST_NATIVE_WINDOWS_CONTAINERS: '1'
+          PORTO_TEST_WINDOWS_IMAGE: mcr.microsoft.com/windows/nanoserver:ltsc2025@sha256:4d81c65bfec7e1b00e004ba8d7306347a880935179bc20cae1044b5a7d35f789
+        run: |
+          $env:PORTO_TEST_WINDOWS_BINARY = Join-Path $env:RUNNER_TEMP 'porto-native-windows.exe'
+          go build -o $env:PORTO_TEST_WINDOWS_BINARY ./cmd/porto
+          if ($LASTEXITCODE -ne 0) { throw 'Current native Windows CLI build failed.' }
+          go test ./internal/windowscontainers ./internal/docker ./internal/daemon -run '^TestNativeWindowsContainers' -count=1 -failfast -timeout=20m -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native Windows-container acceptance failed.' }
+
   cross-build:
     name: Cross build (${{ matrix.goos }}/${{ matrix.goarch }})
     runs-on: ubuntu-latest

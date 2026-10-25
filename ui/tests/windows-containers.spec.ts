@@ -46,6 +46,7 @@ async function mockWindows(page: Page, supported = true, ready = false) {
       '/api/integrations/windows-containers': status,
       '/api/docker/status': { enabled: true, available: true, backend: native ? 'Windows containerd/runhcs' : 'Lima Linux' },
       '/api/docker/containers/snapshot': snapshot,
+      '/api/docker/volumes': [{ name: native ? 'synthetic-windows-volume' : 'synthetic-linux-volume', driver: 'local', scope: 'local', mountpoint: 'synthetic-volume', createdAt: '' }],
       '/api/docker/cleanup': { enabled: false, dockerEnabled: true, runs: [] },
       '/api/wsl': { supported: true, distributions: [], integrations: [] },
     }
@@ -123,4 +124,18 @@ test('native terminals use Windows shells and an explicitly scoped WebSocket', a
   await expect(page.getByRole('button', { name: 'Debug toolbox', exact: true })).toBeDisabled()
   await expect.poll(() => connected).toContain('containerMode=windows')
   expect(new URL(connected).searchParams.get('shell')).toBe('cmd.exe')
+})
+
+test('native volumes never enter Linux data or native-file workflows', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('porto.container-view.v1', 'windows'))
+  const fixture = await mockWindows(page, true, true)
+  await page.goto('/#/volumes')
+  await page.getByRole('option', { name: /synthetic-windows-volume/ }).click()
+  await expect(page.getByRole('button', { name: 'Import local archive', exact: true })).toBeDisabled()
+  await page.getByRole('tab', { name: 'Files', exact: true }).click()
+  await expect(page.getByText(/Linux file helpers are not used for native Windows volumes/)).toBeVisible()
+  await page.getByRole('tab', { name: 'Data and backups', exact: true }).click()
+  await expect(page.getByText(/Linux backup, restore and identity-preview operations are disabled/)).toBeVisible()
+  expect(fixture.requests.some(request => request.path.startsWith('/api/data/') || request.path.startsWith('/api/native-files'))).toBe(false)
+  expect(fixture.mutations).toHaveLength(0)
 })

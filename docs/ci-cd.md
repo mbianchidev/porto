@@ -48,6 +48,20 @@ ConPTY resize, subprocess exit and disconnect/reaping contracts run natively
 on both Windows architectures. The privileged Linux fixture is a synthetic TLS
 server, not a privileged Porto daemon or workload.
 
+Native Windows-container acceptance has a separate Windows Server 2025 AMD64
+row. It builds only the owned native payload and current Porto CLI, using an
+immutable Nano Server image reference. Its native fixture covers lifecycle,
+networking, bind writes, logs/exec, host/image/isolation rejection and
+ownership-safe mode/data preservation. Unsupported hosts/architectures have
+unit and capability gates, not an x64 binary fallback.
+
+The native payload is built from checksum-pinned official source archives with
+Go 1.27.3 or newer and patched crypto/network/sys/logging/gRPC dependencies.
+This avoids newly shipping old upstream executable toolchains or the CNI
+release's pinned vulnerable `x/sys` replacement. Each built entry point rejects
+deprecated OpenPGP imports; the ordinary vulnerability audit remains enabled.
+Download caches contain verified inputs, not trusted final native executables.
+
 The Windows x64 development-client row also imports two fresh, named WSL 2
 distributions from a checksum-pinned Ubuntu 24.04.5 rootfs. Only one opts in.
 The existing independently owned QEMU engine serves real native Linux Docker,
