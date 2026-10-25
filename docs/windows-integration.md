@@ -1,11 +1,78 @@
 # Windows development integration
 
-Porto's Windows container execution backend remains **Linux containerd and
-BuildKit in its owned Lima/QEMU VM**. Selected WSL distributions are development
-clients of that engine, not replacement engines. This slice does not introduce
-a Windows-container runtime, change the Docker API's Linux OS reporting or
-switch Lima to an experimental WSL driver. Native Windows containers remain
-tracked separately in [#104](https://github.com/mbianchidev/porto/issues/104).
+Porto keeps **Linux containerd and BuildKit in its owned Lima/QEMU VM** as the
+default Windows-hosted engine. Selected WSL distributions remain development
+clients of that engine. Native Windows containers use a separately owned
+containerd/runhcs backend, selected explicitly through the `porto-windows`
+Docker context or the dashboard's **Container backend view**.
+
+These are separate endpoints and stores, not an image conversion or a switch to
+Lima's WSL driver. Both API endpoints report their actual backend OS.
+
+## Native Windows setup
+
+In **Settings > Native Windows containers**, inspect host capabilities and
+explicitly install the native runtime. Setup requests administrator permission
+for its protected service, binaries and named pipe. The ordinary desktop/project
+daemon remains unprivileged. Missing Windows Containers or Hyper-V features
+require explicit OS setup and any requested reboot; Porto does not enable
+features or reboot automatically.
+
+```powershell
+porto docker windows status
+porto docker windows install
+porto docker windows context
+docker --context porto-windows info
+docker --context porto-windows pull mcr.microsoft.com/windows/nanoserver:ltsc2025
+docker --context porto-windows run --name synthetic-windows --isolation process mcr.microsoft.com/windows/nanoserver:ltsc2025 cmd.exe /c echo synthetic-windows
+docker --context porto-windows logs synthetic-windows
+docker --context porto-windows inspect synthetic-windows
+docker --context porto-windows rm synthetic-windows
+```
+
+Choose an image compatible with the inspected host, not merely one labelled
+`windows/amd64`. Process isolation requires a matching supported Windows build;
+different patch revisions are not different builds. Hyper-V isolation requires
+the actual feature and usable hardware/nested virtualization. Unsupported
+architectures, editions, image versions, host-process isolation and unverified
+virtualization fail before native workload mutation.
+
+`porto docker windows context` explicitly selects the native CLI context.
+Changing **Container backend view** only changes the dashboard view: open
+inspectors/terminals disconnect, but neither engine nor its running workloads
+are stopped. Opted-in WSL wrappers continue using the original Linux endpoint.
+Native inventory, request caches and live streams are separated from Linux;
+native terminals select Windows shells such as `cmd.exe`, not a Linux toolbox.
+
+Native bind mounts use explicit Windows host/container paths. Spaces and
+non-ASCII paths remain argument values. Native networking uses its supported
+Windows NAT/HCS integration; it does not substitute Linux CNI or create a public
+Docker TCP listener. Treat access to the native control pipe as privileged host
+access and grant it only to the owning user and administrators.
+
+Stop/remove the owned integration explicitly:
+
+```powershell
+porto docker windows stop
+porto docker windows remove
+```
+
+Active native workloads prevent unsafe stop/update/removal. Removal keeps
+native images, containers and volume data, and does not delete or interrupt the
+Linux engine, WSL distributions or unrelated services/networks. A conflicting
+service identity or ownership marker is an error, not permission to adopt it.
+
+The Windows AMD64 package includes checksum-pinned source builds of containerd,
+the maintained runhcs shim, nerdctl and Windows CNI plugins. They use a patched
+Go compiler and official crypto/network dependencies rather than shipping old
+upstream prebuilt executables with known advisories. Build metadata and licenses
+are retained in the runtime bundle. Native ARM64 Windows-container payloads are
+not substituted with AMD64 binaries.
+
+Linux BuildKit, CRIU, cgroup metrics, Linux file helpers, and the existing
+Linux backup/migration workflows are not advertised as native Windows features.
+Switch to the Linux view for those workflows instead of applying them to a
+Windows store.
 
 ## Select a distribution
 
@@ -131,7 +198,7 @@ Background tools continue using consoleless Windows subprocesses.
 | Linux Docker, Compose, Buildx and WSL helper artifacts | Native Linux ELF checked and exercised in WSL 2 | Native ARM64 Linux ELF checked, never replaced with x64 artifacts |
 | Selected-distribution Compose/build/bind/watch/credential workflow | Real WSL 2 acceptance with an independent owned QEMU engine and an untouched control distribution | Requires a real WSL 2-capable ARM64 host; hosted ARM64 runners do not provide that kernel capability |
 | Native trusted portless HTTPS and embedded ConPTY | Dedicated native service/browser/console acceptance | Dedicated native service/browser/console acceptance |
-| Native Windows containers | Not implemented in this slice | Not implemented in this slice |
+| Native Windows containers | Separately selected containerd/runhcs; native acceptance targets supported Windows Server 2025 process-isolated workloads; other host/isolation combinations remain capability-gated | Native WCOW image/runtime support is unavailable; Linux/WSL ARM64 tooling remains separate and supported |
 | KinD binary | Bundled x64 binary | Upstream native binary unavailable; reported separately |
 
 The acceptance rows are executable CI contracts, not a claim of universal VPN,

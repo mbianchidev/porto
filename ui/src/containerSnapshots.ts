@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { apiGet, errorMessage, isAbortError } from './api'
+import { dockerModeURL, getDockerMode, subscribeDockerMode } from './dockerMode'
 import type { DockerContainer, DockerContainerSnapshot } from './types'
 
 type ContainerSnapshotState = {
@@ -31,6 +32,7 @@ let request: AbortController | null = null
 let reconnectTimer: number | undefined
 let fallbackTimer: number | undefined
 let reconnectDelay = 1000
+let activeMode = getDockerMode()
 
 function emit(next: ContainerSnapshotState) {
   state = next
@@ -54,15 +56,16 @@ function acceptSnapshot(snapshot: DockerContainerSnapshot) {
 async function refresh() {
   request?.abort()
   const controller = new AbortController()
+  const requestMode = activeMode
   request = controller
   if (!state.snapshot) {
     emit({ ...state, loading: true, error: '' })
   }
   try {
-    const snapshot = await apiGet<DockerContainerSnapshot>('/api/docker/containers/snapshot', controller.signal)
-    acceptSnapshot(snapshot)
+    const snapshot = await apiGet<DockerContainerSnapshot>(dockerModeURL('/api/docker/containers/snapshot', requestMode), controller.signal)
+    if (!controller.signal.aborted && requestMode === activeMode) acceptSnapshot(snapshot)
   } catch (err) {
-    if (!isAbortError(err)) {
+    if (!isAbortError(err) && requestMode === activeMode) {
       emit({
         ...state,
         error: errorMessage(err, 'Unable to load container inventory'),
@@ -105,7 +108,7 @@ function scheduleReconnect() {
 
 function connect() {
   if (source || consumers === 0) return
-  const nextSource = new EventSource('/api/docker/containers/events')
+  const nextSource = new EventSource(dockerModeURL('/api/docker/containers/events', activeMode))
   source = nextSource
   nextSource.onopen = () => {
     if (source !== nextSource) return
@@ -168,6 +171,23 @@ function subscribe(listener: () => void) {
 function getSnapshot() {
   return state
 }
+
+const unsubscribeMode = subscribeDockerMode(() => {
+  source?.close()
+  source = null
+  request?.abort()
+  request = null
+  clearReconnectTimer()
+  clearFallbackTimer()
+  reconnectDelay = 1000
+  activeMode = getDockerMode()
+  emit({ snapshot: null, error: '', loading: true, connected: false })
+  if (consumers > 0) {
+    void refresh()
+    connect()
+  }
+})
+import.meta.hot?.dispose(unsubscribeMode)
 
 export function useContainerSnapshots(enabled = true): ContainerSnapshotResource {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)

@@ -3,6 +3,7 @@ import { apiGet, apiSend, errorMessage } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
+import { useDockerMode } from '../dockerMode'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
 import { RuntimeFiles } from '../components/RuntimeFiles'
@@ -46,7 +47,8 @@ const ContainerInspect = lazy(async () => {
   return { default: inspector.ContainerInspect }
 })
 const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
-type TerminalShell = (typeof TERMINAL_SHELLS)[number]
+const WINDOWS_TERMINAL_SHELLS = ['cmd.exe', 'powershell.exe'] as const
+type TerminalShell = (typeof TERMINAL_SHELLS)[number] | (typeof WINDOWS_TERMINAL_SHELLS)[number]
 
 function containerState(container: DockerContainer) {
   return container.state.toLocaleLowerCase()
@@ -115,6 +117,7 @@ function containerColumns(grouped: boolean): InventoryColumn<DockerContainer>[] 
 }
 
 export function Containers() {
+  const dockerMode = useDockerMode()
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
@@ -233,7 +236,7 @@ export function Containers() {
     const active = isActive(container)
     return (
       <>
-        <ActionButton label="Inspect image layers" icon="terminal" onClick={() => openContainer(container, 'layers')} />
+        <ActionButton label="Inspect image layers" icon="terminal" disabled={dockerMode === 'windows'} onClick={() => openContainer(container, 'layers')} />
         <ActionButton label="Start container" icon="play" disabled={!startable} onClick={() => containerAction(container, 'start')} />
         <ActionButton label="Resume container" icon="play" disabled={!paused} onClick={() => containerAction(container, 'unpause')} />
         <ActionButton label="Stop container" icon="stop" disabled={!active} onClick={() => containerAction(container, 'stop')} />
@@ -497,11 +500,15 @@ export function Containers() {
               </>
             )}
             {containerTab === 'terminal' && <ContainerTerminal container={selected} />}
-            {containerTab === 'files' && <RuntimeFiles key={selected.id} kind="container" name={selected.id} />}
+            {containerTab === 'files' && (dockerMode === 'linux'
+              ? <RuntimeFiles key={selected.id} kind="container" name={selected.id} />
+              : <p role="status">The Linux file helper is not used for native Windows containers. Use explicitly selected Windows bind mounts and container exec.</p>)}
             <InspectorErrorBoundary key={`${selected.id}:${containerTab}`} resourceName="Container">
               <Suspense fallback={<p role="status">Loading container data view…</p>}>
                 {containerTab === 'logs' && <ContainerLogs key={selected.id} id={selected.id} />}
-                {containerTab === 'stats' && <ContainerStats key={selected.id} id={selected.id} running={containerState(selected) === 'running'} />}
+                {containerTab === 'stats' && (dockerMode === 'linux'
+                  ? <ContainerStats key={selected.id} id={selected.id} running={containerState(selected) === 'running'} />
+                  : <p role="status">Linux cgroup metrics are not advertised for native Windows containers.</p>)}
                 {containerTab === 'inspect' && <ContainerInspect key={selected.id} id={selected.id} />}
               </Suspense>
             </InspectorErrorBoundary>
@@ -565,8 +572,10 @@ function ComposeContainerGroup({
 }
 
 function ContainerTerminal({ container }: { container: DockerContainer }) {
+  const dockerMode = useDockerMode()
   const [mode, setMode] = useState<'application' | 'debug'>('application')
-  const [shell, setShell] = useState<TerminalShell>('sh')
+  const [shell, setShell] = useState<TerminalShell>(dockerMode === 'windows' ? 'cmd.exe' : 'sh')
+  const terminalShells = dockerMode === 'windows' ? WINDOWS_TERMINAL_SHELLS : TERMINAL_SHELLS
   const running = containerState(container) === 'running'
   const debug = mode === 'debug'
   const endpoint = containerTerminalSocketURL(container, shell, debug)
@@ -577,14 +586,14 @@ function ContainerTerminal({ container }: { container: DockerContainer }) {
         <h3>Terminal session</h3>
         <div className="terminalModePicker" role="group" aria-label="Container terminal target">
           <button type="button" aria-pressed={!debug} onClick={() => setMode('application')}>Application shell</button>
-          <button type="button" aria-pressed={debug} disabled={!running} onClick={() => setMode('debug')}>Debug toolbox</button>
+          <button type="button" aria-pressed={debug} disabled={!running || dockerMode === 'windows'} onClick={() => setMode('debug')}>Debug toolbox</button>
         </div>
         {!debug && (
           <div className="inspectorForm inline">
             <label>
               <span>Shell</span>
               <select value={shell} onChange={(event) => setShell(event.target.value as TerminalShell)}>
-                {TERMINAL_SHELLS.map((option) => <option value={option} key={option}>{option}</option>)}
+                {terminalShells.map((option) => <option value={option} key={option}>{option}</option>)}
               </select>
             </label>
           </div>
@@ -592,7 +601,9 @@ function ContainerTerminal({ container }: { container: DockerContainer }) {
         <p className="hintLine">
           {debug
             ? 'Runs a disposable netshoot toolbox sharing the target container network, process namespace, and volumes.'
-            : 'Executes the selected shell inside the container. Use the debug toolbox when the image has no shell.'}
+            : dockerMode === 'windows'
+              ? 'Executes a Windows shell supplied by the image. The Linux netshoot toolbox is not used for Windows containers.'
+              : 'Executes the selected shell inside the container. Use the debug toolbox when the image has no shell.'}
         </p>
       </section>
       <Suspense fallback={<section className="logConsole vmTerminal"><div className="terminalPlaceholder">Loading container terminal…</div></section>}>

@@ -175,6 +175,9 @@ bundle_wsl_tools() {
 
 if [ "$goos" = "windows" ]; then
   bundle_wsl_tools
+  if [ "$goarch" = "amd64" ]; then
+    bash "$script_directory/bundle-windows-containers.sh" amd64 "$destination/windows-containers/amd64"
+  fi
 fi
 
 case "$goos/$goarch" in
@@ -425,6 +428,11 @@ wsl-compose ${compose_version} (${wsl_compose_asset}, sha256:${wsl_compose_check
 wsl-buildx ${buildx_version} (${wsl_buildx_asset}, sha256:${wsl_buildx_checksum})
 porto-wsl 1
 EOF
+  if [ "$goarch" = "amd64" ]; then
+    cat "$destination/windows-containers/amd64/VERSIONS" >> "$destination/VERSIONS"
+  else
+    printf '%s\n' 'windows-containers unavailable: native Windows images/runtime require amd64; Linux/WSL ARM64 tooling remains supported' >> "$destination/VERSIONS"
+  fi
   node "$script_directory/docker-toolchain-smoke.cjs" --wsl-only "$destination" "$goarch"
 fi
 

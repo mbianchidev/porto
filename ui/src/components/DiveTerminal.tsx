@@ -1,4 +1,5 @@
 import { lazy, Suspense } from 'react'
+import { useDockerMode } from '../dockerMode'
 
 const InteractiveTerminal = lazy(async () => {
   const terminal = await import('./VMTerminal')
@@ -11,6 +12,10 @@ function diveSocketURL(image: string): string {
 }
 
 export function DiveTerminal({ image }: { image: string }) {
+  const mode = useDockerMode()
+  if (mode === 'windows') {
+    return <section className="drawerPanel" role="status"><h3>Windows image layers</h3><p>The Linux-oriented Dive workflow is not advertised for native Windows images. Use image inspection or switch to the Linux backend.</p></section>
+  }
   return (
     <>
       <section className="drawerPanel">

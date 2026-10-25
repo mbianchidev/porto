@@ -21,6 +21,14 @@ unused npm download cache. Locked `npm ci` installations, builds, and tests rema
 part of CI and release validation; registry errors and high-severity findings
 still fail the security audit.
 
+The maintained official `golang.org/x/crypto` module is required for SSH.
+GO-2026-5932 covers its retired OpenPGP packages in every module version and has
+no upstream fixed version; Porto imports none of those packages. The crypto
+dependency policy checks production and test dependency graphs for all six
+release targets and rejects any future deprecated OpenPGP import. It does not
+suppress vulnerability findings, replace official cryptography with a fork, or
+claim that the upstream module-only advisory has disappeared.
+
 ## CI details
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.

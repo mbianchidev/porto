@@ -55,6 +55,9 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      - name: Check crypto dependency policy
+        run: node scripts/check-go-crypto.cjs
+
       - name: Build
         run: go build ./cmd/porto
 
@@ -174,7 +177,13 @@ jobs:
           CGO_ENABLED: '0'
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
-        run: go build -o /dev/null ./cmd/porto
+        run: |
+          node scripts/check-go-crypto.cjs
+          go build -o /dev/null ./cmd/porto
+
+      - name: Test runtime dependency policies
+        if: matrix.goos == 'linux' && matrix.goarch == 'amd64'
+        run: node --test scripts/check-go-crypto.test.cjs scripts/windows-container-toolchain.test.cjs
 
   linux-toolchain:
     name: Linux Docker toolchain (${{ matrix.arch }})
