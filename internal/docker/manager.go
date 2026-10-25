@@ -693,6 +693,13 @@ func (m *Manager) Containers(ctx context.Context) ([]Container, error) {
 }
 
 func (m *Manager) DockerContainers(ctx context.Context, all bool) ([]Container, error) {
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return driver.Containers(ctx, all)
+	}
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		snapshot := inventory.snapshotValue()
 		if !snapshot.Available {
@@ -817,6 +824,17 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", err
 		}
 	}
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return "", err
+		}
+		id, err := driver.Create(ctx, request)
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return id, err
+	}
 	if id, handled, err := m.createContainerDirect(ctx, request); handled {
 		if err == nil {
 			m.invalidateContainerInventory()
@@ -828,9 +846,6 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", err
 	}
 	args := []string{"create"}
-	if m.windows != nil {
-		args = append(args, "--runtime", windowscontainers.RuntimeName, "--isolation", request.Isolation, "--pull=never")
-	}
 	args = request.Limits.arguments(args)
 	if request.ReadOnly {
 		args = append(args, "--read-only")
@@ -1296,10 +1311,16 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
-	if m.windows != nil && (action == "start" || action == "restart") {
-		if err := m.validateWindowsStart(ctx, id); err != nil {
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
 			return err
 		}
+		err = driver.Action(ctx, id, action, timeout)
+		if err == nil {
+			m.invalidateContainerInventory()
+		}
+		return err
 	}
 	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
 	if handled {
@@ -1440,6 +1461,20 @@ func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {
 	if err != nil {
 		return err
 	}
+	if m.IsNativeWindows() {
+		if signalNumber != 9 && signalNumber != 15 {
+			return fmt.Errorf("%w: native Windows kill supports SIGKILL and SIGTERM", ErrUnsupported)
+		}
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return err
+		}
+		action := "kill"
+		if signalNumber == 15 {
+			action = "stop"
+		}
+		return driver.Action(ctx, id, action, 0)
+	}
 	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
 		return operations.Kill(ctx, id, signalNumber)
 	}); handled {
@@ -1528,6 +1563,20 @@ func (m *Manager) ContainerName(ctx context.Context, id string) (string, error) 
 }
 
 func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (string, string, error) {
+	if m.IsNativeWindows() {
+		document, err := m.InspectContainer(ctx, id)
+		if err != nil {
+			return "", "", err
+		}
+		var value struct {
+			ID   string `json:"Id"`
+			Name string
+		}
+		if err := json.Unmarshal(document, &value); err != nil {
+			return "", "", err
+		}
+		return value.ID, strings.TrimPrefix(value.Name, "/"), nil
+	}
 	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
 		return "", "", err
@@ -1591,6 +1640,32 @@ func (m *Manager) WaitContainer(ctx context.Context, id, condition string) (int,
 	}
 	waitContext, cancel := context.WithTimeout(ctx, 24*time.Hour)
 	defer cancel()
+	if m.IsNativeWindows() {
+		if condition == "removed" {
+			return m.waitForContainerRemoval(waitContext, id)
+		}
+		initial, err := m.containerWaitState(waitContext, id)
+		if err != nil {
+			return 0, err
+		}
+		if condition == "next-exit" {
+			return m.waitForNextContainerExit(waitContext, id, initial)
+		}
+		for {
+			if !initial.active() {
+				return initial.ExitCode, nil
+			}
+			select {
+			case <-waitContext.Done():
+				return 0, waitContext.Err()
+			case <-time.After(25 * time.Millisecond):
+			}
+			initial, err = m.containerWaitState(waitContext, id)
+			if err != nil {
+				return 0, err
+			}
+		}
+	}
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		return inventory.wait(waitContext, id, condition)
 	}
@@ -1775,6 +1850,38 @@ func (m *Manager) ExecContainer(ctx context.Context, id string, command []string
 	}
 	if len(command) == 0 || strings.TrimSpace(command[0]) == "" {
 		return nil, errors.New("container command is required")
+	}
+	if m.IsNativeWindows() {
+		process, err := m.StartExec(ctx, ExecRequest{ContainerID: id, Command: command, AttachStdin: stdin != nil, AttachStdout: true, AttachStderr: true})
+		if err != nil {
+			return nil, err
+		}
+		var stdout, stderr []byte
+		var first, second error
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() { defer wait.Done(); stdout, first = io.ReadAll(process.Stdout()) }()
+		go func() { defer wait.Done(); stderr, second = io.ReadAll(process.Stderr()) }()
+		var inputErr error
+		input := process.Stdin()
+		if len(stdin) > 0 {
+			written, writeErr := input.Write(stdin)
+			if writeErr == nil && written != len(stdin) {
+				writeErr = io.ErrShortWrite
+			}
+			if writeErr != nil {
+				inputErr = fmt.Errorf("transfer native exec stdin: %w", writeErr)
+			}
+		}
+		if closeErr := input.Close(); closeErr != nil {
+			inputErr = errors.Join(inputErr, fmt.Errorf("close native exec stdin: %w", closeErr))
+		}
+		var cleanupErr error
+		if inputErr != nil {
+			cleanupErr = process.Kill()
+		}
+		wait.Wait()
+		return append(stdout, stderr...), errors.Join(inputErr, cleanupErr, process.Wait(), first, second)
 	}
 	args := []string{"exec"}
 	if stdin != nil {
@@ -2130,6 +2237,13 @@ func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextS
 func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
+	}
+	if m.IsNativeWindows() && kind == "container" {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return driver.Inspect(ctx, id)
 	}
 	args := []string{kind, "inspect"}
 	args = append(args, options...)

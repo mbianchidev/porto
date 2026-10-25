@@ -13,13 +13,6 @@ import (
 )
 
 func (m *Manager) createContainerCommand(ctx context.Context, args []string, optionEnd int) (output []byte, err error) {
-	if m.IsNativeWindows() {
-		for _, arg := range args[:optionEnd] {
-			if arg == "--tty" {
-				return m.createWindowsTerminalContainer(ctx, args)
-			}
-		}
-	}
 	profileIndex := -1
 	var profile []byte
 	for index := 0; index+1 < optionEnd; index++ {

@@ -168,7 +168,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		client, err := newGRPCContainerRuntime(ctx, windowscontainers.Namespace, backend.description,
 			func(ctx context.Context, _ string) (net.Conn, error) {
 				return dialLocalContainerd(ctx, m.windows.installation.ContainerdPipe())
-			}, m.containerInventoryEnricher(backend), m.stateDir, m.runner, "", "", m.networkLocks, m.containerNameMu)
+			}, nil, m.stateDir, m.runner, "", "", m.networkLocks, m.containerNameMu)
 		if err != nil {
 			return nil, err
 		}
@@ -710,6 +710,11 @@ func containerFromContainerd(record *containersapi.Container, process *tasktypes
 			mappingErrors = append(mappingErrors, fmt.Errorf("decode OCI spec: %w", err))
 		} else {
 			mapContainerSpec(&container, &spec)
+			if spec.Windows != nil && spec.Linux == nil {
+				if err := applyWindowsContainerMetadata(&container, labels, process != nil); err != nil {
+					mappingErrors = append(mappingErrors, err)
+				}
+			}
 		}
 	}
 	if err := mapContainerNetworks(&container, labels); err != nil {

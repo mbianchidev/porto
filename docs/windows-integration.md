@@ -42,6 +42,12 @@ Porto resolves full or short image IDs before native creation, tagging and
 removal, and uses the validated immutable manifest for creation. Image inspection
 retains the actual Windows `os.version` from the matching OCI configuration.
 
+Native creation prepares the Windows snapshot and container metadata through the
+maintained containerd/runhcs SDK, without executing the workload. Only an
+explicit start allocates its owned network endpoint and starts the task. Native
+logs, exec and TTY streams use protected Windows named pipes and the runhcs
+console, not the experimental Windows `nerdctl create` implementation.
+
 `porto docker windows context` explicitly selects the native CLI context.
 Changing **Container backend view** only changes the dashboard view: open
 inspectors/terminals disconnect, but neither engine nor its running workloads
@@ -54,6 +60,10 @@ non-ASCII paths remain argument values. Native networking uses its supported
 Windows NAT/HCS integration; it does not substitute Linux CNI or create a public
 Docker TCP listener. Treat access to the native control pipe as privileged host
 access and grant it only to the owning user and administrators.
+
+Workload mounts currently require existing directory bind sources. Managed or
+anonymous volume mounts, pause/resume and automatic restart policies are rejected
+explicitly rather than translated into different behavior.
 
 Stop/remove the owned integration explicitly:
 
@@ -191,11 +201,13 @@ automatically adopting a replacement distribution.
 ## Embedded terminals and supported boundaries
 
 Windows 10 1809 and newer provide ConPTY. Porto uses the maintained Charm
-ConPTY implementation for container, pod, VM, k9s and Dive terminals. Resize,
+ConPTY implementation for Linux container, pod, VM, k9s and Dive terminals. Resize,
 disconnect, cancellation and exit codes use the same WebSocket contract as
 Unix PTYs. The terminal waits for and reaps its own command; it does not
 terminate unrelated host agents or the shared engine to close a console.
 Background tools continue using consoleless Windows subprocesses.
+Native Windows-container terminals use the runhcs console and protected named-pipe
+I/O, with the same resize, disconnect and exit-code contract.
 
 | Windows capability | x64 validation | ARM64 validation |
 | --- | --- | --- |

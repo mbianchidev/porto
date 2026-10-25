@@ -172,7 +172,9 @@ selected, owned containerd/runhcs service and `porto-windows` context, with
 distinct stores and explicit host/image/isolation checks. Switching the
 dashboard view does not stop either engine or retarget WSL tooling; see
 [native Windows setup](windows-integration.md#native-windows-setup).
-Windows embedded terminals use ConPTY on Windows 10 1809 and newer.
+Windows-hosted Linux/VM terminals use ConPTY on Windows 10 1809 and newer.
+Native Windows-container execution uses the maintained containerd/runhcs SDK;
+its consoles use protected Windows named-pipe I/O.
 
 ### Docker resources
 

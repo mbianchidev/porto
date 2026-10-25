@@ -104,23 +104,7 @@ func TestNativeWindowsNeverDiscoversAnExternalRuntimeOrLinuxHelpers(t *testing.T
 }
 
 func TestNativeWindowsCreationValidatesBeforeMutationAndPreservesBindArguments(t *testing.T) {
-	runner := &fakeRunner{}
-	manager := nativeTestManager(t, runner)
-	var created runtimes.Command
-	runner.handler = func(command runtimes.Command) ([]byte, error) {
-		args := nativeCommandArguments(t, manager, command)
-		switch args[0] {
-		case "image":
-			return []byte(`[{"Id":"sha256:` + strings.Repeat("3", 64) + `","Descriptor":{"digest":"sha256:` +
-				strings.Repeat("1", 64) + `"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1000"}]`), nil
-		case "create":
-			created = command
-			return []byte("owned-container-id\n"), nil
-		default:
-			t.Fatalf("unexpected native command: %+v", command)
-			return nil, nil
-		}
-	}
+	manager, _, store := nativeEngineFixture(t)
 	mount, err := dockerCSV([]string{"type=bind", `source=C:\porto-é's fixture,one`, `target=C:\data`})
 	if err != nil {
 		t.Fatal(err)
@@ -128,21 +112,15 @@ func TestNativeWindowsCreationValidatesBeforeMutationAndPreservesBindArguments(t
 	request := CreateContainerRequest{Name: "native-fixture", Image: "registry.example.test/native:v1",
 		Isolation: "process", Mounts: []string{mount}, Command: []string{"cmd.exe", "/S", "/C", "echo synthetic"}}
 	id, err := manager.CreateContainer(context.Background(), request)
-	if err != nil || id != "owned-container-id" {
+	if err != nil || len(id) != 64 {
 		t.Fatalf("create = %q, %v", id, err)
 	}
-	args := nativeCommandArguments(t, manager, created)
-	for _, value := range []string{"--runtime", windowscontainers.RuntimeName, "--isolation", "process", "--pull=never", mount, manager.windows.installation.DefaultNetwork(),
-		"sha256:" + strings.Repeat("1", 64), "echo synthetic"} {
-		found := false
-		for _, argument := range args {
-			if argument == value {
-				found = true
-			}
-		}
-		if !found {
-			t.Fatalf("native create lost %q: %q", value, args)
-		}
+	plan := store.plans[0]
+	if plan.Spec.Windows == nil || plan.Spec.Linux != nil || plan.Request.Isolation != "process" ||
+		plan.Request.Image != "sha256:"+strings.Repeat("1", 64) ||
+		len(plan.Spec.Mounts) != 1 || plan.Spec.Mounts[0].Source != `C:\porto-é's fixture,one` || plan.Spec.Mounts[0].Destination != `C:\data` ||
+		!reflect.DeepEqual(plan.Spec.Process.Args, request.Command) {
+		t.Fatalf("native Windows SDK plan lost validated bind/command/image semantics: %+v", plan)
 	}
 	for _, bad := range []struct {
 		name string
@@ -161,13 +139,13 @@ func TestNativeWindowsCreationValidatesBeforeMutationAndPreservesBindArguments(t
 		{"linux-limits", func(r *CreateContainerRequest) { r.Limits.CPUQuota = 100000 }},
 	} {
 		t.Run(bad.name, func(t *testing.T) {
-			created = runtimes.Command{}
+			before := len(store.plans)
 			candidate := request
 			bad.edit(&candidate)
 			if _, err := manager.CreateContainer(context.Background(), candidate); err == nil {
 				t.Fatal("unsupported native request succeeded")
 			}
-			if created.Name != "" {
+			if len(store.plans) != before {
 				t.Fatal("unsupported native request mutated container state")
 			}
 		})

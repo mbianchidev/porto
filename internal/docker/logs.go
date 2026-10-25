@@ -61,6 +61,13 @@ func (m *Manager) StreamDockerContainerLogs(
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return err
+		}
+		return driver.Logs(ctx, id, options, emit)
+	}
 	if handled, err := m.streamContainerLogsDirect(ctx, id, options, emit); handled {
 		return err
 	}

@@ -19,9 +19,10 @@ import (
 )
 
 type windowsRuntime struct {
+	driverMu        sync.Mutex
+	driver          windowsDriver
+	connectDriver   func(context.Context) (windowsDriver, error)
 	networkMu       sync.Mutex
-	attachMu        sync.Mutex
-	attachProcesses map[string]map[runtimes.Process]struct{}
 	imageReferences *windowsImageReferences
 	installation    windowscontainers.Installation
 	checkNetworks   func(windowscontainers.Installation) error
@@ -70,9 +71,10 @@ func newWindowsManager(runner runtimes.Runner, installation windowscontainers.In
 		},
 	}
 	manager.windows.resolveImage = manager.resolveWindowsImage
+	manager.windows.connectDriver = manager.connectWindowsDriver
 	manager.directCLI = true
-	// Inventory is read-only. In particular, none of the Linux OCI, FIFO,
-	// health, CRIU or runtime-helper operation interfaces escape this backend.
+	// The native driver uses runhcs and Windows named pipes, never these Linux
+	// OCI/FIFO, health, CRIU or runtime-helper operation interfaces.
 	manager.creationConnector = nil
 	manager.operationsConnector = nil
 	manager.execConnector = nil
@@ -104,9 +106,9 @@ func (windowsInventory) Capabilities(context.Context) ContainerCapabilities {
 	return ContainerCapabilities{
 		DirectInventory:   RuntimeCapability{Supported: true},
 		LifecycleEvents:   RuntimeCapability{Supported: true},
-		DirectCreation:    RuntimeCapability{Reason: "native Windows uses maintained nerdctl/runhcs, not Porto's Linux OCI creation"},
-		TaskRecreation:    RuntimeCapability{Supported: true, Reason: "native stopped tasks are recreated by maintained nerdctl/runhcs, not the Linux OCI helper"},
-		ExecLifecycle:     RuntimeCapability{Supported: true, Reason: "native Windows nerdctl exec with runhcs"},
+		DirectCreation:    RuntimeCapability{Supported: true, Reason: "native Windows containerd/runhcs metadata and Windows snapshot preparation"},
+		TaskRecreation:    RuntimeCapability{Supported: true, Reason: "native stopped tasks are recreated with runhcs and protected Windows named-pipe I/O"},
+		ExecLifecycle:     RuntimeCapability{Supported: true, Reason: "native Windows runhcs exec and console I/O"},
 		HealthUpdates:     RuntimeCapability{Reason: "native Windows health scheduling is not supported"},
 		NetworkUpdates:    RuntimeCapability{Reason: "native Windows uses owned NAT at container creation; live network connect/disconnect is not supported"},
 		CheckpointRestore: RuntimeCapability{Reason: "native Windows checkpoints and Linux CRIU helpers are not supported"},
@@ -220,15 +222,15 @@ func (m *Manager) validateWindowsContainer(ctx context.Context, request *CreateC
 		}
 	}()
 	host := m.windows.installation.Host
+	if _, err := windowsEnvironment(nil, request.Environment); err != nil {
+		return err
+	}
 	if request.TTY {
 		if err := runtimes.ValidatePTYSize(request.ConsoleSize); err != nil {
 			return err
 		}
 		if !runtimes.PTYSupported() {
 			return fmt.Errorf("%w: native Windows ConPTY is unavailable", ErrUnsupported)
-		}
-		if _, ok := m.runner.(runtimes.PTYRunner); !ok {
-			return fmt.Errorf("%w: native ConPTY process runner", ErrUnsupported)
 		}
 	}
 	isolation, err := host.Isolation(request.Isolation)
@@ -257,7 +259,7 @@ func (m *Manager) validateWindowsContainer(ctx context.Context, request *CreateC
 		return fmt.Errorf("%w: native Windows automatic restart policies", ErrUnsupported)
 	}
 	// Linux-only resource controls must never be translated to a different
-	// Windows meaning. Memory and whole CPU counts use nerdctl's native flags.
+	// Windows meaning. Memory and whole CPU counts use the native OCI Windows resources.
 	limits := request.Limits
 	limits.Memory, limits.NanoCPUs = 0, 0
 	encoded, _ := json.Marshal(limits)
@@ -277,7 +279,12 @@ func (m *Manager) validateWindowsContainer(ctx context.Context, request *CreateC
 			if err := m.windows.checkBind(source); err != nil {
 				return err
 			}
+		} else {
+			return fmt.Errorf("%w: native Windows create requires explicit bind directories, not managed or anonymous volumes", ErrUnsupported)
 		}
+	}
+	if _, err := windowscontainers.ParsePublishedPorts(request.Publish); err != nil {
+		return err
 	}
 	for _, mount := range request.Mounts {
 		reader := csv.NewReader(strings.NewReader(mount))

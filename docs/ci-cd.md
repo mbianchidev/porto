@@ -52,7 +52,10 @@ Native Windows-container acceptance has a separate Windows Server 2025 AMD64
 row. It builds only the owned native payload and current Porto CLI, using an
 immutable Nano Server image reference. Its native fixture covers lifecycle,
 networking, bind writes, logs/exec, host/image/isolation rejection and
-ownership-safe mode/data preservation. Unsupported hosts/architectures have
+ownership-safe mode/data preservation. Docker create must leave the task Created,
+without a PID or fixture side effects; start is tested separately. Native image
+configuration IDs remain distinct from manifest targets across listing,
+inspection, tagging and creation. Unsupported hosts/architectures have
 unit and capability gates, not an x64 binary fallback.
 
 The native payload is built from checksum-pinned official source archives with

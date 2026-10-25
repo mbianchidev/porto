@@ -195,9 +195,26 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 				t.Errorf("refusing cleanup of changed native ownership: %v", readErr)
 				return
 			}
+			nativeClient := ClientFor(current)
 			for _, id := range nativeFixtureContainers(cleanupContext, current) {
-				_, _ = runNerdctl(cleanupContext, current, "rm", "--force", id)
+				request, _ := http.NewRequestWithContext(cleanupContext, http.MethodDelete, "http://localhost/containers/"+url.PathEscape(id)+"?force=true", nil)
+				response, err := nativeClient.Do(request)
+				if err != nil {
+					nativeClient.CloseIdleConnections()
+					service.Close()
+					t.Errorf("remove only owned native fixture through its runtime API: %v", err)
+					return
+				}
+				body, readErr := io.ReadAll(io.LimitReader(response.Body, 64*1024))
+				response.Body.Close()
+				if readErr != nil || response.StatusCode != http.StatusNoContent && response.StatusCode != http.StatusNotFound {
+					nativeClient.CloseIdleConnections()
+					service.Close()
+					t.Errorf("remove owned native fixture %s: HTTP %d, %s, %v", id, response.StatusCode, body, readErr)
+					return
+				}
 			}
+			nativeClient.CloseIdleConnections()
 			if err := stopService(cleanupContext, service, current); err != nil {
 				service.Close()
 				t.Errorf("stop only owned fixture service: %v", err)
@@ -390,6 +407,21 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 	}
 	if err := json.Unmarshal(created, &container); err != nil || container.ID == "" {
 		t.Fatalf("native create identity: %s, %v", created, err)
+	}
+	beforeStart := request("GET", "/containers/"+container.ID+"/json", nil, http.StatusOK)
+	var createdState struct {
+		State struct {
+			Status  string
+			Running bool
+			Pid     uint32
+		}
+	}
+	if err := json.Unmarshal(beforeStart, &createdState); err != nil || createdState.State.Status != "created" ||
+		createdState.State.Running || createdState.State.Pid != 0 {
+		t.Fatalf("native Docker create executed or started a workload: %s, %v", beforeStart, err)
+	}
+	if _, err := os.Stat(filepath.Join(bind, "container.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("native fixture ran before explicit /start: %v", err)
 	}
 	request("POST", "/containers/"+container.ID+"/start", nil, http.StatusNoContent)
 	waitNativeHTTP(t, ctx, port, "host-to-native-one")

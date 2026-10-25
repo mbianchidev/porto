@@ -21,7 +21,11 @@ type containerConsoleOperations interface {
 
 func (m *Manager) configureContainerConsole(ctx context.Context, id string, size [2]uint) error {
 	if m.IsNativeWindows() {
-		return m.withWindowsConsole(ctx, func(console containerConsoleOperations) error { return console.ConfigureConsole(ctx, id, size) })
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return err
+		}
+		return driver.Console(ctx, id, size, false)
 	}
 	handled, err, reason := m.attemptContainerOperation(ctx, func(operations containerOperations) error {
 		console, ok := operations.(containerConsoleOperations)
