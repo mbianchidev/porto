@@ -55,3 +55,5 @@ func nativeUnprivilegedDaemon(_ *testing.T, ctx context.Context, binary, home, u
 	}
 	return command, nil
 }
+
+func startNativeDaemon(_ *testing.T, command *exec.Cmd) error { return command.Start() }
