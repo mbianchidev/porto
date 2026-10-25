@@ -101,6 +101,60 @@ func (r *clusterStartupRunner) Run(ctx context.Context, command runtimes.Command
 	return r.delegate.Run(ctx, command)
 }
 
+func TestInstallK3sDisablesBundledGatewayAPIOnlyOnServers(t *testing.T) {
+	for _, release := range []struct {
+		name    string
+		version string
+	}{
+		{name: "default"},
+		{name: "older", version: "v1.33.4+k3s1"},
+		{name: "gateway-api-bundled", version: "v1.37.1+k3s1"},
+	} {
+		for _, role := range []string{"server", "agent"} {
+			t.Run(release.name+"/"+role, func(t *testing.T) {
+				runner := newFakeRunner()
+				provisioner := NewClusterProvisioner(vm.New(runner), runner, t.TempDir())
+				machineName := "porto-synthetic-gateway-" + role + "-1"
+				err := provisioner.installK3s(
+					context.Background(), machineName, release.version, role == "server",
+					"192.0.2.10", "synthetic-token",
+					map[string]string{"workload": "synthetic"},
+					[]string{"workload=synthetic:NoSchedule"},
+				)
+				if err != nil {
+					t.Fatalf("install k3s: %v", err)
+				}
+
+				want := []string{"shell", machineName, "--", "sudo", "env"}
+				if release.version != "" {
+					want = append(want, "INSTALL_K3S_VERSION="+release.version)
+				}
+				if role == "agent" {
+					want = append(want, "K3S_URL=https://192.0.2.10:6443", "K3S_TOKEN=synthetic-token")
+				}
+				want = append(want, "sh", "/tmp/porto-install-k3s.sh", role)
+				if role == "server" {
+					want = append(want,
+						"--disable", "traefik", "--disable", "gateway-api-crd",
+						"--node-name", machineName, "--write-kubeconfig-mode", "600",
+					)
+				} else {
+					want = append(want, "--node-name", machineName)
+				}
+				want = append(want, "--node-label", "workload=synthetic", "--node-taint", "workload=synthetic:NoSchedule")
+
+				if len(runner.commands) != 2 {
+					t.Fatalf("expected only installer download and execution, got %d commands", len(runner.commands))
+				}
+				command := runner.commands[1]
+				if command.Name != "limactl" || !slices.Equal(command.Args, want) {
+					t.Fatalf("installer command = %s %v, want limactl %v", command.Name, command.Args, want)
+				}
+			})
+		}
+	}
+}
+
 func TestVMClusterLifecycleAvoidsWindowsSSHFSDependencies(t *testing.T) {
 	for _, provider := range []string{"k3s", "k0s"} {
 		t.Run(provider, func(t *testing.T) {
@@ -222,7 +276,7 @@ func assertVMDistributionInstalled(t *testing.T, commands []runtimes.Command, pr
 		if provider == "k3s" {
 			required = []string{"curl -sfL https://get.k3s.io", "sh /tmp/porto-install-k3s.sh"}
 			if index == 0 {
-				required = append(required, "server --disable traefik --node-name "+name+" --write-kubeconfig-mode 600")
+				required = append(required, "server --disable traefik --disable gateway-api-crd --node-name "+name+" --write-kubeconfig-mode 600")
 			} else {
 				required = append(required, "K3S_URL=https://192.168.105.2:6443", "K3S_TOKEN=test-token", "agent --node-name "+name)
 			}
