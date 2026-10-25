@@ -101,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-2025, windows-11-arm]
+        os: [ubuntu-latest, windows-2025, windows-11-arm]
     env:
       CGO_ENABLED: '0'
     steps:
@@ -131,11 +131,13 @@ jobs:
           go build -o "$RUNNER_TEMP/porto-native" ./cmd/porto
           go test -c -o "$RUNNER_TEMP/https-native-tests" ./internal/localhttps
           browser="$(node -e "process.stdout.write(require('./ui/node_modules/@playwright/test').chromium.executablePath())")"
-          sudo -E env "PATH=$PATH" \
-            "PORTO_TEST_NATIVE_HTTPS=1" \
-            "PORTO_TEST_HTTPS_BINARY=$RUNNER_TEMP/porto-native" \
-            "PORTO_TEST_HTTPS_BROWSER=$browser" \
-            "$RUNNER_TEMP/https-native-tests" -test.run '^TestNativePortlessHTTPS' -test.count=1 -test.failfast -test.timeout=5m -test.v
+          for native_test in TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval TestNativePortlessHTTPSRealDaemonRestartAndRenewal; do
+            sudo -E env "PATH=$PATH" \
+              "PORTO_TEST_NATIVE_HTTPS=1" \
+              "PORTO_TEST_HTTPS_BINARY=$RUNNER_TEMP/porto-native" \
+              "PORTO_TEST_HTTPS_BROWSER=$browser" \
+              "$RUNNER_TEMP/https-native-tests" -test.run "^$native_test$" -test.count=1 -test.failfast -test.timeout=5m -test.v
+          done
       - name: Exercise real Windows service, native trust, browser and ConPTY
         if: runner.os == 'Windows'
         shell: pwsh
@@ -151,19 +153,12 @@ jobs:
           $env:PORTO_TEST_HTTPS_BROWSER = $browser
           go build -o $env:PORTO_TEST_HTTPS_BINARY ./cmd/porto
           if ($LASTEXITCODE -ne 0) { throw 'Native CLI build failed.' }
-          go test ./internal/localhttps ./internal/daemon -run 'TestNativePortlessHTTPS|TestHostPTY|TestPTYBridge|TestApplyTerminal' -count=1 -failfast -timeout=5m -v
-          if ($LASTEXITCODE -ne 0) { throw 'Native HTTPS/ConPTY acceptance failed.' }
-      - name: Exercise real macOS launchd, login-keychain trust and daemon restart
-        if: runner.os == 'macOS'
-        env:
-          PORTO_TEST_NATIVE_HTTPS: '1'
-        run: |
-          set -euo pipefail
-          export PORTO_TEST_HTTPS_BINARY="$RUNNER_TEMP/porto-native"
-          export PORTO_TEST_HTTPS_BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
-          test -x "$PORTO_TEST_HTTPS_BROWSER"
-          go build -o "$PORTO_TEST_HTTPS_BINARY" ./cmd/porto
-          go test ./internal/localhttps -run '^TestNativePortlessHTTPS' -count=1 -failfast -timeout=7m -v
+          foreach ($nativeTest in @('TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval', 'TestNativePortlessHTTPSRealDaemonRestartAndRenewal')) {
+            go test ./internal/localhttps -run "^$nativeTest`$" -count=1 -failfast -timeout=5m -v
+            if ($LASTEXITCODE -ne 0) { throw "Native HTTPS acceptance failed: $nativeTest" }
+          }
+          go test ./internal/daemon -run 'TestHostPTY|TestPTYBridge|TestApplyTerminal' -count=1 -failfast -timeout=5m -v
+          if ($LASTEXITCODE -ne 0) { throw 'Native ConPTY acceptance failed.' }
 
   native-windows-containers:
     name: Native Windows containers (windows-2025/amd64)

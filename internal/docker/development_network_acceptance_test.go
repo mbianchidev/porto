@@ -52,6 +52,15 @@ func testDevelopmentNetworking(t *testing.T, parent context.Context, manager *Ma
 			return err
 		}
 		if backend.limaInstance != "" {
+			if strings.HasPrefix(proxy, "https://127.0.0.1:") {
+				err := manager.ApplyNetworking(ctx)
+				if err == nil || !strings.Contains(err.Error(), "TLS-encrypted loopback proxy") {
+					return errors.New("guest encrypted-loopback proxy must report its unverified guest hostname without changing builder trust")
+				}
+				// The owner-side image resolver can use this TLS proxy.
+				// The separate builder needs an explicitly guest-reachable name.
+				return nil
+			}
 			return manager.ApplyNetworking(ctx)
 		}
 		return nil
@@ -87,9 +96,6 @@ func testDevelopmentNetworking(t *testing.T, parent context.Context, manager *Ma
 		}
 	}()
 	for _, proxy := range []string{fixture.Proxy, fixture.TLSProxy, fixture.SOCKS} {
-		if backend.limaInstance != "" && strings.HasPrefix(proxy, "https://") {
-			proxy = strings.Replace(proxy, "127.0.0.1", "host.lima.internal", 1)
-		}
 		if err := apply(proxy, true); err != nil {
 			t.Fatal(err)
 		}

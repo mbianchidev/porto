@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/process"
@@ -26,10 +27,10 @@ func nativeHeadlessHTTPSCommand(t *testing.T, ctx context.Context, binary, home 
 	if len(args) != 2 || args[0] != "https" {
 		return nil, false, nil
 	}
-	run := func(elevated bool, arguments ...string) error {
-		command := process.NewCommand(ctx, "", binary, arguments...)
+	runContext := func(commandContext context.Context, elevated bool, arguments ...string) error {
+		command := process.NewCommand(commandContext, "", binary, arguments...)
 		if elevated {
-			command = process.NewCommand(ctx, "", "/usr/bin/sudo", append([]string{"-n", binary}, arguments...)...)
+			command = process.NewCommand(commandContext, "", "/usr/bin/sudo", append([]string{"-n", binary}, arguments...)...)
 		}
 		command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+home)
 		output, err := command.CombinedOutput()
@@ -38,6 +39,12 @@ func nativeHeadlessHTTPSCommand(t *testing.T, ctx context.Context, binary, home 
 		}
 		return nil
 	}
+	run := func(elevated bool, arguments ...string) error { return runContext(ctx, elevated, arguments...) }
+	cleanup := func(elevated bool, arguments ...string) error {
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return runContext(cleanupContext, elevated, arguments...)
+	}
 	certificate := filepath.Join(home, "certificates", "porto.local.pem")
 	switch args[1] {
 	case "install":
@@ -45,9 +52,9 @@ func nativeHeadlessHTTPSCommand(t *testing.T, ctx context.Context, binary, home 
 		err := installWithRollback(installSteps{
 			installed: prior.Installed, trusted: prior.Trusted,
 			install: func() error { return run(true, "https", "install-root", binary) },
-			remove:  func() error { return run(true, "https", "uninstall-root") },
+			remove:  func() error { return cleanup(true, "https", "uninstall-root") },
 			trust:   func() error { return run(false, "cert", "trust") },
-			untrust: func() error { return run(false, "cert", "untrust") },
+			untrust: func() error { return cleanup(false, "cert", "untrust") },
 			verify:  func() bool { return Trusted(certificate) },
 			mark:    func() error { return writeIntegrationFile(filepath.Join(home, config.PortlessHTTPSMarker), nil, 0o600) },
 		})

@@ -145,8 +145,11 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 					t.Fatalf("load real dashboard SDK exec %s: %v", details.ExecID, err)
 				}
 				status, err := exec.Status(nativeContext)
-				if err != nil || status.Status != containerd.Running || exec.Pid() != process.Pid {
-					t.Fatalf("dashboard SDK exec is not a real live process: %+v, %v", status, err)
+				// LoadProcess does not populate its client-side Pid field.
+				// The authoritative PID is the task's live HCS enumeration.
+				if err != nil || status.Status != containerd.Running || process.Pid == 0 ||
+					process.Pid == task.Pid() || process.Pid == uint32(unrelatedState.PID) {
+					t.Fatalf("dashboard SDK exec is not a real live process: PID=%d status=%+v, %v", process.Pid, status, err)
 				}
 				dashboardExecs = append(dashboardExecs, details.ExecID)
 			}

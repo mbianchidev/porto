@@ -76,10 +76,29 @@ verify recovery without replacing the trusted CA.
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;
 the daemon runs under the original Unix user or a restricted Windows token.
-The macOS row uses the existing launchd/login-keychain integration and installed
-Chrome, with noninteractive sudo only for the existing root install/uninstall
-entry points. Required native cases fail on unavailable trust/authorization
-instead of disabling TLS checks or silently passing.
+The approved macOS workflow uses the existing launchd/login-keychain integration
+and installed Chrome, with noninteractive sudo only for the existing root
+install/uninstall entry points. Each trust fixture runs in a fresh process so
+Go's cached system root pool cannot retain the preceding fixture's removed CA.
+Native cases fail on unavailable trust/authorization instead of disabling TLS
+checks or silently passing.
+
+### Blocked hosted macOS trust verification
+
+The hosted macOS attempt reached the existing `cert trust` login-keychain
+operation but did not complete within its 120-second acceptance deadline.
+[The recorded run](https://github.com/mbianchidev/porto/actions/runs/40232377758/job/121286650808)
+does not establish native macOS HTTPS acceptance. Porto will not bypass user
+trust authorization or replace login-keychain trust with machine-wide trust to
+make hosted CI pass.
+
+Full launchd/login-keychain/browser/restart tests remain executable in
+`Approved macOS native HTTPS`, a manual workflow requiring a disposable
+`[self-hosted, macOS, porto-native-trust]` runner and a logged-in operator
+available to approve only its synthetic certificate. Select the revision being
+reviewed and confirm `approve_user_trust`. No success is claimed until that
+workflow actually passes. Ordinary macOS Go, desktop startup, filesystem,
+installer and development-client gates remain automatic.
 
 The native payload is built from checksum-pinned official source archives with
 Go 1.27.3 or newer and patched crypto/network/sys/logging/gRPC dependencies.
