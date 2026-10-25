@@ -174,17 +174,49 @@ printf '%s\n' registry.synthetic.invalid | docker-credential-porto erase
 	if err := json.Unmarshal(credential, &decoded); err != nil || decoded.Username != "synthetic" || decoded.Secret != "mock-password" {
 		t.Fatal("WSL credential helper did not round-trip through the native Windows vault")
 	}
-	mustRun("wsl.exe", "--terminate", selected)
-	status, err := integration.Snapshot(ctx)
-	if err != nil {
+	// Active UNC readers can legitimately wake their WSL file provider again.
+	// Quiesce only this fixture before verifying the read-only stopped status.
+	if err := manager.ContainerAction(ctx, containerName, "pause"); err != nil {
 		t.Fatal(err)
 	}
-	for _, distribution := range status.Distributions {
-		if distribution.Name == selected && (distribution.Running || !distribution.Enabled) {
-			t.Fatalf("shutdown changed selection or invented a running distribution: %+v", distribution)
+	mustRun("wsl.exe", "--terminate", selected)
+	stoppedDeadline := time.Now().Add(30 * time.Second)
+	for {
+		status, err := integration.Snapshot(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		found, stopped := false, false
+		for _, distribution := range status.Distributions {
+			if distribution.Name != selected {
+				continue
+			}
+			found = true
+			if !distribution.Enabled {
+				t.Fatalf("shutdown changed the selected registration identity: %+v", distribution)
+			}
+			stopped = !distribution.Running
+		}
+		if !found {
+			t.Fatal("shutdown removed the selected registration")
+		}
+		if stopped {
+			break
+		}
+		if time.Now().After(stoppedDeadline) {
+			t.Fatal("the quiesced selected WSL fixture did not stop; status must not start it")
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatal(ctx.Err())
+		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	shell(selected, `set -eu; docker inspect "$1" >/dev/null; docker exec "$1" test -f /workspace/from-container`, containerName)
+	shell(selected, `set -eu; docker inspect "$1" >/dev/null`, containerName)
+	if err := manager.ContainerAction(ctx, containerName, "unpause"); err != nil {
+		t.Fatal(err)
+	}
+	shell(selected, `set -eu; docker exec "$1" test -f /workspace/from-container`, containerName)
 	mustRun(binary, "wsl", "disable", selected)
 	otherAfter := shell(untouched, `set -eu
 for file in "$HOME/.profile" "$HOME/.bashrc" "$HOME/porto-unrelated-fixture"; do

@@ -135,6 +135,11 @@ Buildx streams through the installed Windows `porto.exe` to the private
 The integration is tied to the distribution's registration ID and a generated
 ownership token. Replaced registrations, missing tools and stopped
 distributions are errors, not reasons to mutate or start other distributions.
+Windows' UNC file provider can itself restart a distribution while existing
+shared-file consumers keep reading it. Pause/stop those consumers or release
+the selected shares before expecting the distribution to remain stopped.
+Status inspection only lists registrations and running state; it does not
+execute a command inside the distribution.
 
 ## Shares and file changes
 
