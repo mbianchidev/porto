@@ -273,10 +273,29 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 			_ = terminal.CloseNow()
 		case "client cancellation":
 			readContext, stopRead := context.WithCancel(ctx)
+			readDone := make(chan error, 1)
+			go func() {
+				for {
+					if _, _, err := terminal.Read(readContext); err != nil {
+						readDone <- err
+						return
+					}
+				}
+			}()
+			// A pong proves the reader entered I/O. A context cancelled before
+			// Read starts need not close the connection or notify its peer.
+			pingContext, stopPing := context.WithTimeout(ctx, 5*time.Second)
+			pingErr := terminal.Ping(pingContext)
+			stopPing()
 			stopRead()
+			if pingErr != nil {
+				t.Fatalf("native cancellation reader did not enter protocol I/O: %v", pingErr)
+			}
 			var err error
-			for err == nil {
-				_, _, err = terminal.Read(readContext)
+			select {
+			case err = <-readDone:
+			case <-ctx.Done():
+				t.Fatal(ctx.Err())
 			}
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("client read cancellation did not close its WebSocket: %v", err)
