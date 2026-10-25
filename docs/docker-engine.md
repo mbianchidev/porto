@@ -258,7 +258,7 @@ before any backend operation. Escaped image names remain intact.
 | Networks | Supported | list, create, inspect, connect, disconnect, remove and category prune |
 | Volumes | Supported | list, create, inspect, reference-protected remove and category prune; Porto API adds local file/transfer/backup tools |
 | Builds | Supported | Docker build API plus BuildKit `/grpc` and `/session` upgrades, Buildx `--load`, image export, registry push and selective cache prune |
-| Orchestration | Unsupported | Swarm services/tasks/nodes, generic engine plugins, and Windows containers return explicit errors |
+| Orchestration | Unsupported | Swarm services/tasks/nodes and generic engine plugins return explicit errors; native Windows containers use a separately selected [containerd/runhcs endpoint](windows-integration.md#native-windows-setup), not the Linux backend |
 
 ### Endpoint and version boundaries
 
@@ -655,7 +655,7 @@ Not implemented:
 - namespace overrides beyond KinD's host/private modes, combined resource and restart-policy updates, and resource limits beyond CPU/memory container updates
 - more than the standard Compose container-name/service-name network alias pair;
   extra custom aliases fail before container creation
-- remote TCP/TLS exposure and Windows containers
+- remote TCP/TLS exposure; native Windows containers require the separately selected [Windows backend](windows-integration.md#native-windows-setup)
 
 The Porto dashboard's existing container exec endpoint is separate from the
 Docker exec protocol and remains a compatibility path. Standard Docker exec,

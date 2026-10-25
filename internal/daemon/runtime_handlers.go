@@ -37,39 +37,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/diagnostics/bundle/preview", s.diagnosticsBundlePreview)
 	mux.HandleFunc("GET /api/diagnostics/bundle", s.diagnosticsBundle)
 	mux.HandleFunc("POST /api/diagnostics/repair/{action}", s.diagnosticsRepair)
-	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
-	mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
-	mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
-	mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
-	mux.HandleFunc("POST /api/docker/engine/stop", s.requireRuntime("docker", s.stopDockerEngine))
-	mux.HandleFunc("POST /api/docker/engine/remove", s.requireRuntime("docker", s.removeDockerEngine))
-	mux.HandleFunc("POST /api/docker/engine/prepare-update", s.prepareDockerEngineUpdate)
-	mux.HandleFunc("POST /api/docker/context/install", s.requireRuntime("docker", s.installDockerContext))
-	mux.HandleFunc("GET /api/docker/containers", s.requireRuntime("docker", s.dockerContainers))
-	mux.HandleFunc("POST /api/docker/containers", s.requireRuntime("docker", s.createDockerContainer))
-	mux.HandleFunc("GET /api/docker/containers/snapshot", s.requireRuntime("docker", s.dockerContainerSnapshot))
-	mux.HandleFunc("GET /api/docker/containers/events", s.requireRuntime("docker", s.dockerContainerEvents))
-	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
-	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
-	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
-	mux.HandleFunc("GET /api/docker/containers/{id}/terminal", s.requireRuntime("docker", s.dockerContainerTerminal))
-	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
-	mux.HandleFunc("POST /api/docker/containers/{id}/{action}", s.requireRuntime("docker", s.dockerContainerAction))
-	mux.HandleFunc("GET /api/docker/images", s.requireRuntime("docker", s.dockerImages))
-	mux.HandleFunc("GET /api/docker/images/{id}/dive", s.requireRuntime("docker", s.dockerImageDiveTerminal))
-	mux.HandleFunc("GET /api/docker/images/{id}", s.requireRuntime("docker", s.dockerImage))
-	mux.HandleFunc("POST /api/docker/images/pull", s.requireRuntime("docker", s.dockerPullImage))
-	mux.HandleFunc("DELETE /api/docker/images/{id}", s.requireRuntime("docker", s.dockerRemoveImage))
-	mux.HandleFunc("GET /api/docker/builds", s.requireRuntime("docker", s.dockerBuilds))
-	mux.HandleFunc("POST /api/docker/builds", s.requireRuntime("docker", s.dockerBuild))
-	mux.HandleFunc("GET /api/docker/networks", s.requireRuntime("docker", s.dockerNetworks))
-	mux.HandleFunc("GET /api/docker/networks/{name}", s.requireRuntime("docker", s.dockerNetwork))
-	mux.HandleFunc("POST /api/docker/networks", s.requireRuntime("docker", s.dockerCreateNetwork))
-	mux.HandleFunc("DELETE /api/docker/networks/{name}", s.requireRuntime("docker", s.dockerRemoveNetwork))
-	mux.HandleFunc("GET /api/docker/volumes", s.requireRuntime("docker", s.dockerVolumes))
-	mux.HandleFunc("GET /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerVolume))
-	mux.HandleFunc("POST /api/docker/volumes", s.requireRuntime("docker", s.dockerCreateVolume))
-	mux.HandleFunc("DELETE /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerRemoveVolume))
+	s.dockerResourceRoutes(mux)
 
 	mux.HandleFunc("GET /api/kubernetes/status", s.kubernetesStatus)
 	mux.HandleFunc("GET /api/kubernetes/contexts", s.requireRuntime("kubernetes", s.kubernetesContexts))
@@ -140,10 +108,13 @@ func (s *Server) runtimeStatus(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	dockerStatus := portodocker.Status{Enabled: settings.DockerEnabled, Message: "Docker runtime is disabled"}
-	if settings.DockerEnabled {
+	if settings.DockerEnabled && !windowsContainerMode(r) {
 		dockerStatus = s.docker.Status(r.Context(), s.dockerSocket)
 		dockerStatus.Enabled = true
 		dockerStatus = s.dockerEndpointStatus(dockerStatus)
+	}
+	if windowsContainerMode(r) {
+		dockerStatus = s.windowsDockerStatus(r.Context())
 	}
 	kubernetesStatus := kubernetes.Status{Enabled: settings.KubernetesEnabled, Message: "Kubernetes runtime is disabled"}
 	if settings.KubernetesEnabled {
@@ -176,6 +147,12 @@ func (s *Server) installRuntimeProvider(w http.ResponseWriter, r *http.Request) 
 }
 
 func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
+	if s.windowsWorker {
+		status := s.docker.Status(r.Context(), s.dockerSocket)
+		status.Enabled = true
+		writeJSON(w, status)
+		return
+	}
 	settings, err := s.store.Settings(r.Context())
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -230,11 +207,13 @@ func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Name          string `json:"name"`
-		Image         string `json:"image"`
-		HostPort      int    `json:"hostPort"`
-		ContainerPort int    `json:"containerPort"`
-		HealthCommand string `json:"healthCommand"`
+		Isolation     string   `json:"isolation"`
+		Command       []string `json:"command"`
+		Name          string   `json:"name"`
+		Image         string   `json:"image"`
+		HostPort      int      `json:"hostPort"`
+		ContainerPort int      `json:"containerPort"`
+		HealthCommand string   `json:"healthCommand"`
 	}
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
@@ -261,6 +240,7 @@ func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	createRequest := portodocker.CreateContainerRequest{
+		Isolation: request.Isolation, Command: request.Command,
 		Name:  request.Name,
 		Image: request.Image,
 	}
@@ -411,7 +391,12 @@ func (s *Server) dockerPullImage(w http.ResponseWriter, r *http.Request) {
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
 	}
-	if err := s.docker.PullImage(r.Context(), request.Reference, ""); err != nil {
+	auth, err := portodocker.DecodeRegistryAuthHeader(r.Header.Get("X-Registry-Auth"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if err := s.docker.PullImageWithAuth(r.Context(), request.Reference, "", auth); err != nil {
 		writeRuntimeError(w, err)
 		return
 	}
@@ -1558,6 +1543,10 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireRuntime(feature string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.windowsWorker && feature == "docker" {
+			next(w, r)
+			return
+		}
 		settings, err := s.store.Settings(r.Context())
 		if err != nil {
 			writeRuntimeError(w, err)

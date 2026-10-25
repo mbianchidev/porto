@@ -57,6 +57,10 @@ type healthSchedulerState struct {
 }
 
 func (m *Manager) runHealthScheduler(ctx context.Context) {
+	if m.IsNativeWindows() {
+		<-ctx.Done()
+		return
+	}
 	state := &healthSchedulerState{
 		schedules:          make(map[string]*healthSchedule),
 		networkNext:        make(map[string]time.Time),

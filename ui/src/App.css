@@ -1386,6 +1386,70 @@ dd a {
   gap: 7px;
 }
 
+.platformSettings,
+.platformSettings .hygieneControls,
+.platformForm,
+.platformConnectivity {
+  min-width: 0;
+}
+
+.platformActions,
+.platformPath {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.platformPath {
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  color: var(--ink-soft);
+  background: var(--field);
+}
+
+.platformForm,
+.platformDistributionList,
+.platformConnectivity {
+  display: grid;
+  gap: 12px;
+}
+
+.platformDistribution {
+  min-width: 0;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--line);
+}
+
+.platformSettings p,
+.platformSettings a,
+.platformSettings code,
+.platformSettings strong,
+.platformSettings button {
+  overflow-wrap: anywhere;
+}
+
+.platformSettings textarea {
+  width: 100%;
+  resize: vertical;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius-md);
+  padding: 8px 10px;
+  color: var(--ink);
+  background: var(--field);
+  font: inherit;
+}
+
+.platformSettings textarea:focus-visible {
+  outline: 2px solid var(--olive);
+  outline-offset: 2px;
+}
+
+.platformRoutes {
+  padding-left: 18px;
+}
+
 .cleanupRuns,
 .cleanupSteps {
   display: grid;

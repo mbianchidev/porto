@@ -21,9 +21,111 @@ unused npm download cache. Locked `npm ci` installations, builds, and tests rema
 part of CI and release validation; registry errors and high-severity findings
 still fail the security audit.
 
+The maintained official `golang.org/x/crypto` module is required for SSH.
+GO-2026-5932 covers its retired OpenPGP packages in every module version and has
+no upstream fixed version; Porto imports none of those packages. The crypto
+dependency policy checks production and test dependency graphs for all six
+release targets and rejects any future deprecated OpenPGP import. It does not
+suppress vulnerability findings, replace official cryptography with a fork, or
+claim that the upstream module-only advisory has disappeared.
+
 ## CI details
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
+
+The native platform-networking job runs on Ubuntu, Windows x64 and Windows
+ARM64. Disposable hosts install the real loopback HTTPS integration, check
+occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted
+portless route in a real browser without certificate-error bypass flags. It
+checks native trust, certificate renewal, least-privilege helper identity,
+crash recovery, reinstall and fingerprint-scoped removal. Ubuntu includes
+Chromium's real NSS database; Windows uses the current user's native store.
+The Windows fixture answers the real protected-root confirmation only in its
+own CLI child process and only when the dialog displays the complete synthetic
+CA fingerprint. This consent helper exists only in the disposable CI test; it
+does not change Windows trust policy or automate a developer's desktop.
+ConPTY resize, subprocess exit and disconnect/reaping contracts run natively
+on both Windows architectures. The privileged Linux fixture is a synthetic TLS
+server, not a privileged Porto daemon or workload.
+
+Native Windows-container acceptance has a separate Windows Server 2025 AMD64
+row. It builds only the owned native payload and current Porto CLI, using an
+immutable Nano Server image reference. Its native fixture covers lifecycle,
+networking, bind writes, logs/exec, host/image/isolation rejection and
+ownership-safe mode/data preservation. Docker create must leave the task Created,
+without a PID or fixture side effects; start is tested separately. Native image
+configuration IDs remain distinct from manifest targets across listing,
+inspection, tagging and creation. Unsupported hosts/architectures have
+unit and capability gates, not an x64 binary fallback.
+
+The native fixture also exercises the actual dashboard WebSocket against SDK
+execs, including exact nonzero exit, resize, process/exec-metadata reaping and an
+unrelated interactive exec that must survive. The Windows development-client
+row enables `PORTO_TEST_WINDOWS_COEXISTENCE=1` against its already running owned
+Linux engine, preserving live PID/start identity and exact binary volume data
+through native install, changed-binary update, repair and context changes.
+
+Networking acceptance uses loopback-only synthetic TLS registries and real
+HTTP, HTTPS and SOCKS proxies on every existing development-client backend.
+The matrix includes rootful local Linux and KVM-backed Linux Lima, plus Lima
+on macOS and Windows. The Linux Lima row fails if native KVM is unavailable;
+software emulation is not substituted for that required acceptance.
+It verifies custom CA trust and its removal, proxy transitions and local
+bypass; rootful local Linux additionally requests a real container private IP.
+Unit transport gates run on Linux, macOS and Windows and exercise changing
+resolver answers without modifying host DNS. Expired/near-expiry leaf fixtures
+verify recovery without replacing the trusted CA.
+
+Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
+not only a substitute TLS server. Only its helper installation is elevated;
+the daemon runs under the original Unix user or a restricted Windows token.
+The approved macOS workflow uses the existing launchd/login-keychain integration
+and installed Chrome, with noninteractive sudo only for the existing root
+install/uninstall entry points. Each trust fixture runs in a fresh process so
+Go's cached system root pool cannot retain the preceding fixture's removed CA.
+Native cases fail on unavailable trust/authorization instead of disabling TLS
+checks or silently passing.
+
+### Blocked hosted macOS trust verification
+
+The hosted macOS attempt reached the existing `cert trust` login-keychain
+operation but did not complete within its 120-second acceptance deadline.
+[The recorded run](https://github.com/mbianchidev/porto/actions/runs/40232377758/job/121286650808)
+does not establish native macOS HTTPS acceptance. Porto will not bypass user
+trust authorization or replace login-keychain trust with machine-wide trust to
+make hosted CI pass.
+
+Full launchd/login-keychain/browser/restart tests remain executable in
+`Approved macOS native HTTPS`, a manual workflow requiring a disposable
+`[self-hosted, macOS, porto-native-trust]` runner and a logged-in operator
+available to approve only its synthetic certificate. Select the revision being
+reviewed and confirm `approve_user_trust`. No success is claimed until that
+workflow actually passes. Ordinary macOS Go, desktop startup, filesystem,
+installer and development-client gates remain automatic.
+No self-hosted runner carrying the required approval label was registered when
+this blocker was recorded, so the manual workflow has not been dispatched.
+
+The native payload is built from checksum-pinned official source archives with
+Go 1.27.3 or newer and patched crypto/network/sys/logging/gRPC dependencies.
+This avoids newly shipping old upstream executable toolchains or the CNI
+release's pinned vulnerable `x/sys` replacement. Each built entry point rejects
+deprecated OpenPGP imports; the ordinary vulnerability audit remains enabled.
+Download caches contain verified inputs, not trusted final native executables.
+
+The Windows x64 development-client row also imports two fresh, named WSL 2
+distributions from a checksum-pinned Ubuntu 24.04.5 rootfs. Only one opts in.
+The existing independently owned QEMU engine serves real native Linux Docker,
+Compose and Buildx clients through the private Windows pipe. Acceptance checks
+quoted/non-ASCII paths, bidirectional bind writes, polling file changes, the
+native Windows credential vault, distro shutdown/reconnect and removal without
+changing the control distribution. No WSL driver replaces QEMU, and there is no
+WSL 1 fallback or expected-failure path. The fixture releases owned shares
+before unregistering only its own distributions.
+
+Hosted Windows ARM64 does not provide the nested virtualization needed for WSL
+2. That row verifies native HTTPS/ConPTY and architecture-matched Linux ELF
+artifacts rather than claiming a real ARM64 WSL workflow. The complete platform
+boundaries are in [Windows development integration](windows-integration.md).
 
 The `cross-build` matrix compiles `./cmd/porto` with `CGO_ENABLED=0` in six
 independent jobs, one for each release target (`linux`, `darwin`, and `windows`

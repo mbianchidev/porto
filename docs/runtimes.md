@@ -163,6 +163,19 @@ Windows clients use the named `porto` Docker context. Canonical
 `\\.\pipe\docker_engine` takeover is intentionally not automatic because
 Windows named pipes cannot be replaced with a reversible symbolic link.
 
+Selected WSL 2 distributions can use bundled native Linux Docker, Compose and
+Buildx through an owned Unix-socket bridge to the private Windows pipe.
+Selection, shares, watch behavior, native-vault credentials and removal are
+described in [Windows development integration](windows-integration.md).
+This does not change Lima/QEMU engines. Native Windows containers use a separately
+selected, owned containerd/runhcs service and `porto-windows` context, with
+distinct stores and explicit host/image/isolation checks. Switching the
+dashboard view does not stop either engine or retarget WSL tooling; see
+[native Windows setup](windows-integration.md#native-windows-setup).
+Windows-hosted Linux/VM terminals use ConPTY on Windows 10 1809 and newer.
+Native Windows-container execution uses the maintained containerd/runhcs SDK;
+its consoles use protected Windows named-pipe I/O.
+
 ### Docker resources
 
 The container inspector includes bounded Logs, shell-independent Files, recent

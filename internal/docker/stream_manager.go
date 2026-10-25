@@ -33,6 +33,16 @@ func (m *Manager) StartExec(ctx context.Context, request ExecRequest) (runtimes.
 	if len(request.Command) == 0 || strings.TrimSpace(request.Command[0]) == "" {
 		return nil, errors.New("exec command is required")
 	}
+	if err := m.validateNativeExec(request); err != nil {
+		return nil, err
+	}
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return driver.Exec(ctx, request)
+	}
 	if process, handled, err := m.startExecDirect(ctx, request); handled {
 		return process, err
 	}
@@ -63,6 +73,20 @@ func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool, consol
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
+	if m.IsNativeWindows() {
+		size := [2]uint{}
+		if len(console) > 0 {
+			size = console[0]
+		}
+		if err := runtimes.ValidatePTYSize(size); err != nil {
+			return nil, err
+		}
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return driver.Attach(ctx, id, stdin, false, size)
+	}
 	args := []string{"attach"}
 	if !stdin {
 		args = append(args, "--no-stdin")
@@ -77,6 +101,22 @@ func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool, consol
 func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin bool, console ...[2]uint) (runtimes.Process, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
+	}
+	if m.IsNativeWindows() {
+		if len(console) > 0 {
+			if err := runtimes.ValidatePTYSize(console[0]); err != nil {
+				return nil, err
+			}
+		}
+		size := [2]uint{}
+		if len(console) > 0 {
+			size = console[0]
+		}
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return driver.Attach(ctx, id, stdin, true, size)
 	}
 	if process, handled, err := m.startContainerAttachedDirect(ctx, id, stdin); handled {
 		if err == nil {
@@ -149,6 +189,9 @@ func (details containerAttachDetails) terminal() [][2]uint {
 }
 
 func (m *Manager) startTerminalProcess(ctx context.Context, action string, size [2]uint, args ...string) (runtimes.Process, error) {
+	if m.IsNativeWindows() {
+		return nil, fmt.Errorf("%w: native console I/O uses the runhcs driver, not Linux terminal helpers", ErrUnsupported)
+	}
 	backend, err := m.backend(ctx)
 	if err != nil {
 		return nil, err

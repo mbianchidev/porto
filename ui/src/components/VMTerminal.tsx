@@ -6,6 +6,7 @@ import '@xterm/xterm/css/xterm.css'
 import { usePreferences } from '../usePreferences'
 import type { VMInstance } from '../types'
 import { ActionButton } from './ActionButton'
+import { dockerModeURL } from '../dockerMode'
 
 const CONNECT_TIMEOUT_MS = 5000
 
@@ -110,7 +111,7 @@ export function InteractiveTerminal({
     let opened = false
     let disposed = false
     const encoder = new TextEncoder()
-    const socket = new WebSocket(endpoint)
+    const socket = new WebSocket(dockerModeURL(endpoint))
     socket.binaryType = 'arraybuffer'
     const sendResize = (cols = terminal.cols, rows = terminal.rows) => {
       if (socket.readyState === WebSocket.OPEN) {

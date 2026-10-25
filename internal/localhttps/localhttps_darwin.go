@@ -25,34 +25,21 @@ const (
 	launchDaemonPath  = "/Library/LaunchDaemons/" + launchDaemonLabel + ".plist"
 )
 
-type Status struct {
-	Installed bool `json:"installed"`
-	Listening bool `json:"listening"`
-	Trusted   bool `json:"trusted"`
-}
-
 func Install(certificatePath, authorityPath string) error {
 	executable, err := os.Executable()
 	if err != nil {
 		return fmt.Errorf("resolve Porto executable: %w", err)
 	}
-	if err := privilegedAction("install-root", executable); err != nil {
-		return err
-	}
-	if err := Trust(authorityPath); err != nil {
-		return fmt.Errorf("portless HTTPS installed, but trust the certificate authority: %w", err)
-	}
-	markerPath, err := config.PortlessHTTPSMarkerPath()
-	if err != nil {
-		return err
-	}
-	if err := os.WriteFile(markerPath, nil, 0o644); err != nil {
-		return fmt.Errorf("write portless HTTPS marker: %w", err)
-	}
-	if !Trusted(certificatePath) {
-		return errors.New("certificate authority was added, but macOS does not trust the Porto certificate yet")
-	}
-	return nil
+	prior := Snapshot(certificatePath)
+	return installWithRollback(installSteps{
+		installed: prior.Installed, trusted: prior.Trusted,
+		install: func() error { return privilegedAction("install-root", executable) },
+		remove:  func() error { return privilegedAction("uninstall-root") },
+		trust:   func() error { return Trust(authorityPath) },
+		untrust: func() error { return Untrust(authorityPath) },
+		verify:  func() bool { return Trusted(certificatePath) },
+		mark:    markInstalled,
+	})
 }
 
 func Uninstall() error {
@@ -80,10 +67,13 @@ func Snapshot(certificatePath string) Status {
 		_ = connection.Close()
 	}
 	_, statErr := os.Stat(launchDaemonPath)
+	trusted := Trusted(certificatePath)
 	return Status{
-		Installed: statErr == nil,
-		Listening: listening,
-		Trusted:   Trusted(certificatePath),
+		Installed:      statErr == nil,
+		Listening:      listening,
+		Trusted:        trusted,
+		Supported:      true,
+		BrowserTrusted: trusted,
 	}
 }
 
@@ -117,10 +107,26 @@ func Trusted(certificatePath string) bool {
 	return command.Run() == nil
 }
 
-func RootInstall(sourceExecutable string) error {
+func RootInstall(sourceExecutable string, _ ...string) (err error) {
 	if os.Geteuid() != 0 {
 		return errors.New("HTTPS forwarder installation must run as root")
 	}
+	fresh := false
+	if _, err := os.Lstat(launchDaemonPath); errors.Is(err, os.ErrNotExist) {
+		fresh = true
+		if err := checkPortsAvailable(); err != nil {
+			return err
+		}
+	} else if err != nil {
+		return err
+	} else if data, err := os.ReadFile(launchDaemonPath); err != nil || string(data) != launchDaemonPlist() {
+		return errors.New("the existing HTTPS launchd service is not the Porto-owned configuration; no service was replaced")
+	}
+	defer func() {
+		if fresh && err != nil {
+			err = errors.Join(err, RootUninstall())
+		}
+	}()
 	if err := ensureSecureInstallDirectory(); err != nil {
 		return err
 	}
@@ -136,12 +142,24 @@ func RootInstall(sourceExecutable string) error {
 	if output, err := exec.Command("/bin/launchctl", "bootstrap", "system", launchDaemonPath).CombinedOutput(); err != nil {
 		return fmt.Errorf("start HTTPS forwarder: %w: %s", err, output)
 	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !listenersReady() {
+		if time.Now().After(deadline) {
+			return errors.New("Porto launchd helper did not bind both loopbacks")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 	return nil
 }
 
 func RootUninstall() error {
 	if os.Geteuid() != 0 {
 		return errors.New("HTTPS forwarder removal must run as root")
+	}
+	if data, err := os.ReadFile(launchDaemonPath); err == nil && string(data) != launchDaemonPlist() {
+		return errors.New("the HTTPS launchd configuration is not owned by Porto; no service was removed")
+	} else if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
 	}
 	if err := stopLaunchDaemon(); err != nil {
 		return err

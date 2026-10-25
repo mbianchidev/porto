@@ -3,6 +3,9 @@ import { apiGet, apiSend, errorMessage } from '../api'
 import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
 import { DockerCleanupSettings } from '../components/DockerCleanupSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
+import { NetworkSettings } from '../components/NetworkSettings'
+import { WSLSettings } from '../components/WSLSettings'
+import { WindowsContainersSettings } from '../components/WindowsContainersSettings'
 import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
 import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../experiencePreferences'
 import { usePolledResource } from '../hooks'
@@ -418,6 +421,9 @@ export function SettingsPage({
         onSave={save}
       />
 
+      <NetworkSettings />
+      <WSLSettings />
+      <WindowsContainersSettings />
       <RegistrySettings />
 
       <section className="integration" aria-labelledby="sqlite-integration-title">

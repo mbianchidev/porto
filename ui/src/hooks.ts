@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DependencyList } from 'react'
 import { errorMessage, isAbortError } from './api'
+import { useDockerMode } from './dockerMode'
 
 type PolledResource<T> = {
   data: T | null
@@ -42,8 +43,10 @@ export function usePolledResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
   intervalMs: number,
   deps: DependencyList,
-  cacheKey?: string,
+  unscopedCacheKey?: string,
 ): PolledResource<T> {
+  const mode = useDockerMode()
+  const cacheKey = unscopedCacheKey?.startsWith('docker:') ? `${mode}:${unscopedCacheKey}` : unscopedCacheKey
   const initialData = cachedResource<T>(cacheKey)
   const [resource, setResource] = useState<ResourceState<T>>({ cacheKey, data: initialData })
   const [error, setError] = useState('')

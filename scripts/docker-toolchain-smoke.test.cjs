@@ -8,6 +8,7 @@ const {
   parseVersions,
   toolchainLayout,
   validateToolchainLayout,
+  validateWSLToolchain,
 } = require('./docker-toolchain-smoke.cjs')
 
 function temporaryRuntime(t) {
@@ -66,4 +67,22 @@ test('rejects Docker files on an explicitly unsupported platform', (t) => {
     () => validateToolchainLayout(root, { platform: 'win32' }),
     /unexpectedly contains/,
   )
+})
+
+test('WSL tools require native Linux ELF artifacts for each selected architecture', (t) => {
+  for (const [architecture, machine] of [['amd64', 62], ['arm64', 183]]) {
+    const root = temporaryRuntime(t)
+    for (const name of ['bin/docker', 'bin/porto-wsl', 'docker/cli-plugins/docker-compose', 'docker/cli-plugins/docker-buildx']) {
+      const file = path.join(root, 'wsl', architecture, name)
+      const header = Buffer.alloc(24)
+      header.set([0x7f, 0x45, 0x4c, 0x46, 2, 1])
+      header.writeUInt16LE(machine, 18)
+      fs.mkdirSync(path.dirname(file), { recursive: true })
+      fs.writeFileSync(file, header)
+    }
+    assert.doesNotThrow(() => validateWSLToolchain(root, architecture))
+    const helper = path.join(root, 'wsl', architecture, 'bin', 'porto-wsl')
+    fs.writeFileSync(helper, Buffer.from('MZ-Windows-is-not-a-Linux-helper'))
+    assert.throws(() => validateWSLToolchain(root, architecture), /native Linux ELF/)
+  }
 })

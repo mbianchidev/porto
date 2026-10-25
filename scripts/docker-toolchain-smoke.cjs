@@ -23,6 +23,28 @@ function toolchainLayout(runtimeRoot, platform = process.platform) {
   }
 }
 
+function validateWSLToolchain(runtimeRoot, architecture) {
+  const machine = { amd64: 62, arm64: 183 }[architecture]
+  if (!machine) throw new Error(`Unsupported native WSL architecture ${architecture}`)
+  const root = path.join(runtimeRoot, 'wsl', architecture)
+  for (const name of ['bin/docker', 'bin/porto-wsl', 'docker/cli-plugins/docker-compose', 'docker/cli-plugins/docker-buildx']) {
+    const file = path.join(root, name)
+    const header = Buffer.alloc(20)
+    let descriptor
+    try {
+      descriptor = fs.openSync(file, 'r')
+      if (fs.readSync(descriptor, header, 0, header.length, 0) !== header.length ||
+        !header.subarray(0, 4).equals(Buffer.from([0x7f, 0x45, 0x4c, 0x46])) ||
+        header[4] !== 2 || header[5] !== 1 || header.readUInt16LE(18) !== machine) {
+        throw new Error(`WSL ${name} must be a native Linux ELF for ${architecture}, never a Windows or substituted x64 executable`)
+      }
+    } finally {
+      if (descriptor !== undefined) fs.closeSync(descriptor)
+    }
+  }
+  return root
+}
+
 function validateToolchainLayout(runtimeRoot, {
   platform = process.platform,
   accessImpl = fs.accessSync,
@@ -68,6 +90,11 @@ function validateToolchainLayout(runtimeRoot, {
   ]) {
     const file = path.join(runtimeRoot, 'licenses', license)
     if (!existsImpl(file)) throw new Error(`Bundled Docker toolchain is missing ${file}`)
+  }
+  if (platform === 'win32') {
+    const wsl = versions.get('wsl') || ''
+    const architecture = wsl.startsWith('linux/') ? wsl.slice('linux/'.length) : ''
+    validateWSLToolchain(runtimeRoot, architecture)
   }
   return { supported: true, versions, layout }
 }
@@ -160,13 +187,19 @@ function smoke(runtimeRoot, options = {}) {
 }
 
 if (require.main === module) {
-  const [runtimeRoot] = process.argv.slice(2)
+  const commandArgs = process.argv.slice(2)
+  const wslOnly = commandArgs[0] === '--wsl-only'
+  const runtimeRoot = commandArgs[wslOnly ? 1 : 0]
   if (!runtimeRoot) {
     console.error('usage: docker-toolchain-smoke.cjs <runtime-directory>')
     process.exitCode = 2
   } else {
     try {
-      smoke(path.resolve(runtimeRoot))
+      if (wslOnly) {
+        validateWSLToolchain(path.resolve(runtimeRoot), commandArgs[2])
+      } else {
+        smoke(path.resolve(runtimeRoot))
+      }
     } catch (error) {
       console.error(error.message)
       process.exitCode = 1
@@ -179,4 +212,5 @@ module.exports = {
   smoke,
   toolchainLayout,
   validateToolchainLayout,
+  validateWSLToolchain,
 }

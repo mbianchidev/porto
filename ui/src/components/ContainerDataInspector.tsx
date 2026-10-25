@@ -24,7 +24,7 @@ export function ContainerLogs({ id }: { id: string }) {
     buffer.current = current
     let active = true
     let frame = 0
-    const source = new EventSource(`/api/docker/containers/${encodeURIComponent(id)}/logs/stream?tail=500`)
+    const source = new EventSource(dockerModeURL(`/api/docker/containers/${encodeURIComponent(id)}/logs/stream?tail=500`))
     function disconnect(reason: string) {
       if (!active) return
       active = false
@@ -251,3 +251,4 @@ export function ContainerInspect({ id }: { id: string }) {
     </>}
   </section>
 }
+import { dockerModeURL } from '../dockerMode'

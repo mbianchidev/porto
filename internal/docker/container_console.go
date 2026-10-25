@@ -20,6 +20,13 @@ type containerConsoleOperations interface {
 }
 
 func (m *Manager) configureContainerConsole(ctx context.Context, id string, size [2]uint) error {
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return err
+		}
+		return driver.Console(ctx, id, size, false)
+	}
 	handled, err, reason := m.attemptContainerOperation(ctx, func(operations containerOperations) error {
 		console, ok := operations.(containerConsoleOperations)
 		if !ok {
@@ -46,6 +53,14 @@ func (a *API) resizeContainer(w http.ResponseWriter, r *http.Request) {
 	height, heightErr := strconv.ParseUint(r.URL.Query().Get("h"), 10, 32)
 	if widthErr != nil || heightErr != nil || width == 0 || height == 0 {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "positive terminal width and height are required"})
+		return
+	}
+	if a.manager.IsNativeWindows() {
+		if err := a.manager.resizeWindowsConsole(r.Context(), r.PathValue("id"), uint32(width), uint32(height)); err != nil {
+			writeDockerError(w, err)
+			return
+		}
+		w.WriteHeader(http.StatusOK)
 		return
 	}
 	handled, err, reason := a.manager.attemptContainerOperation(r.Context(), func(operations containerOperations) error {

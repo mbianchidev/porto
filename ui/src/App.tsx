@@ -7,6 +7,8 @@ import { useMessages } from './useMessages'
 import { PreferencesProvider } from './preferences'
 import { RuntimeActivity } from './runtimeActivity'
 import { ActionButton } from './components/ActionButton'
+import { ContainerModeSelector } from './components/WindowsContainersSettings'
+import { useDockerMode } from './dockerMode'
 import { Rail } from './components/Rail'
 import { LocalhostIng } from './pages/LocalhostIng'
 import { Containers } from './pages/Containers'
@@ -30,7 +32,6 @@ import { Machines } from './pages/Machines'
 import { Databases } from './pages/Databases'
 import { Diagnostics } from './pages/Diagnostics'
 import { Activity } from './pages/Activity'
-import { SettingsPage } from './pages/SettingsPage'
 import type {
   IntegrationStatus,
   KillSwitchStatus,
@@ -51,6 +52,7 @@ const KNOWN_ROUTES: RouteID[] = [
 
 const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
 const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
+const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 
 function routeFromHash(): RouteID {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -59,6 +61,7 @@ function routeFromHash(): RouteID {
 
 function AppShell() {
   const { errorBanner, noticeBanner } = useMessages()
+  const dockerMode = useDockerMode()
   const [route, setRoute] = useState<RouteID>(routeFromHash)
   const [railOpen, setRailOpen] = useState(false)
   const [kubeContext, setKubeContext] = useState('')
@@ -146,18 +149,19 @@ function AppShell() {
         <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
         {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
         <main className="appMain">
-          <RuntimeActivity dockerEnabled={settings?.dockerEnabled ?? false} />
+          {['containers', 'images', 'builds', 'volumes', 'networks', 'docker-storage', 'migration'].includes(route) && <ContainerModeSelector />}
+          <RuntimeActivity key={`runtime-activity:${dockerMode}`} dockerEnabled={settings?.dockerEnabled ?? false} />
           {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
           {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
         {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={activeKubeContext} />}
-        {route === 'containers' && <Containers />}
-        {route === 'images' && <Images />}
-        {route === 'builds' && <Builds />}
-        {route === 'volumes' && <Volumes />}
-        {route === 'networks' && <Networks />}
-        {route === 'docker-storage' && <Suspense fallback={<p role="status">Loading storage tools…</p>}><DockerStorage /></Suspense>}
-        {route === 'migration' && <Suspense fallback={<p role="status">Loading migration tools…</p>}><Migration /></Suspense>}
+        {route === 'containers' && <Containers key={`containers:${dockerMode}`} />}
+        {route === 'images' && <Images key={`images:${dockerMode}`} />}
+        {route === 'builds' && (dockerMode === 'linux' ? <Builds /> : <NativeWindowsBoundary title="Windows image builds" />)}
+        {route === 'volumes' && <Volumes key={`volumes:${dockerMode}`} />}
+        {route === 'networks' && <Networks key={`networks:${dockerMode}`} />}
+        {route === 'docker-storage' && (dockerMode === 'linux' ? <Suspense fallback={<p role="status">Loading storage tools…</p>}><DockerStorage /></Suspense> : <NativeWindowsBoundary title="Windows storage automation" />)}
+        {route === 'migration' && (dockerMode === 'linux' ? <Suspense fallback={<p role="status">Loading migration tools…</p>}><Migration /></Suspense> : <NativeWindowsBoundary title="Windows store migration" />)}
         {route === 'kubernetes' && (
           <KubernetesOverview
             context={activeKubeContext}
@@ -197,6 +201,7 @@ function AppShell() {
         {route === 'diagnostics' && <Diagnostics />}
         {route === 'activity' && <Activity />}
         {route === 'settings' && (
+          <Suspense fallback={<p role="status">Loading settings...</p>}>
           <SettingsPage
             settings={settings}
             onSettingsSaved={setSettingsOverride}
@@ -205,6 +210,7 @@ function AppShell() {
             killSwitchStatus={killSwitch.data}
             onIntegrationsChanged={reloadIntegrations}
           />
+          </Suspense>
         )}
         </main>
       </div>
@@ -218,6 +224,13 @@ function App() {
       <AppShell />
     </MessagesProvider>
   )
+}
+
+function NativeWindowsBoundary({ title }: { title: string }) {
+  return <section className="empty unavailableNotice" role="status">
+    <h1>{title}</h1>
+    <p>This Linux-engine workflow is not supported by the native Windows backend. Pull compatible Windows images and use its container, network and volume controls. Switch back to the Linux view for BuildKit, backups and migration; neither store is converted or deleted.</p>
+  </section>
 }
 
 export default App

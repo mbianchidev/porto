@@ -38,6 +38,7 @@ import (
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/nativefiles"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
@@ -48,6 +49,7 @@ import (
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
 	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/mbianchidev/porto/internal/wsl"
 )
 
 const (
@@ -91,6 +93,8 @@ type Server struct {
 	tlsCertificates    *certificates.Manager
 	userHomeDir        func() (string, error)
 	docker             *portodocker.Manager
+	windowsWorker      bool
+	windowsTransport   http.RoundTripper
 	dockerAPI          *portodocker.APIServer
 	cleanupMu          sync.Mutex
 	cleanupRunner      func(context.Context) (app.DockerCleanupResult, error)
@@ -125,6 +129,14 @@ type Server struct {
 	dataUnstored       map[int64]*dataops.Operation
 	dataExecutor       func(context.Context, dataops.Operation) (dataops.Result, error)
 	nativeFiles        *nativefiles.Manager
+	networking         *networking.Manager
+	wsl                *wsl.Manager
+	platformCommand    func(context.Context, ...string) error
+	networkRoutesMu    sync.RWMutex
+	networkRoutes      map[string]containerHTTPRoute
+
+	nativeRouteSnapshot portodocker.ContainerSnapshot
+	nativeRouteUpdated  time.Time
 }
 
 var (
@@ -213,6 +225,12 @@ func New(st *store.Store, ui fs.FS) *Server {
 	}
 	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
 	server.nativeFiles = nativefiles.New(nativeRoot, runner)
+	server.networking = networking.New(filepath.Dir(dockerEngineDir))
+	server.wsl = wsl.New(filepath.Dir(dockerEngineDir), runner)
+	server.networkRoutes = map[string]containerHTTPRoute{}
+	if server.wsl.Supported() {
+		dockerManager.SetWSLIntegration(server.wsl)
+	}
 	dockerManager.SetNativeFilesGuard(server.nativeFiles.Guard)
 	dockerManager.SetNativeFilesClose(server.nativeFiles.Close)
 	dockerManager.SetRegistryAuthResolver(server.registryAuthForImage)
@@ -313,6 +331,7 @@ func (s *Server) Run(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("prepare self-signed TLS certificate: %w", err)
 	}
+	go s.watchContainerRoutes(ctx)
 	tlsAddress := config.RouterTLSAddress()
 	mux := http.NewServeMux()
 	s.routes(mux)
@@ -668,6 +687,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/integrations/sendbox", s.sendboxStatus)
 	mux.HandleFunc("GET /api/tls", s.tlsStatus)
 	mux.HandleFunc("POST /api/tls/renew", s.renewTLS)
+	s.platformRoutes(mux)
 	mux.HandleFunc("POST /api/scan", s.scan)
 	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
 	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
@@ -2366,7 +2386,10 @@ func (s *Server) proxyByHost(w http.ResponseWriter, r *http.Request) {
 	route, routeErr := s.store.GetKubernetesRouteByHostname(r.Context(), hostname)
 	if routeErr != nil {
 		if errors.Is(routeErr, sql.ErrNoRows) {
-			http.Error(w, "project or Kubernetes service route not found", http.StatusNotFound)
+			if s.proxyContainerRoute(w, r, hostname) {
+				return
+			}
+			http.Error(w, "project, container, or Kubernetes service route not found", http.StatusNotFound)
 			return
 		}
 		http.Error(w, fmt.Sprintf("lookup Kubernetes service route: %v", routeErr), http.StatusInternalServerError)
@@ -2480,6 +2503,11 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 			route.Hostname+"."+config.LocalhostDomain,
 		)
 	}
+	s.networkRoutesMu.RLock()
+	for hostname := range s.networkRoutes {
+		hostnames = append(hostnames, hostname+"."+config.LocalDomain, hostname+"."+config.LocalhostDomain)
+	}
+	s.networkRoutesMu.RUnlock()
 	return hostnames, nil
 }
 

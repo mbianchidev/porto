@@ -182,7 +182,7 @@ func buildHistoryTunnelFixture(t *testing.T, delay time.Duration) (*Manager, fun
 		}
 		for _, connection := range connections {
 			select {
-			case <-connection.done:
+			case <-connection.Done():
 			case <-time.After(3 * time.Second):
 				t.Fatal("history request leaked its tunnel subprocess")
 			}

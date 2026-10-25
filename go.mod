@@ -4,7 +4,9 @@ go 1.27.3
 
 require (
 	github.com/Microsoft/go-winio v0.6.4
+	github.com/Microsoft/hcsshim v0.15.0-rc.4
 	github.com/awslabs/operatorpkg v0.0.0-20260708223819-4da4c353c5fa
+	github.com/charmbracelet/x/xpty v0.1.4
 	github.com/coder/websocket v1.8.15
 	github.com/containerd/cgroups/v3 v3.1.3
 	github.com/containerd/containerd/api v1.12.0
@@ -28,6 +30,7 @@ require (
 	github.com/zalando/go-keyring v0.2.8
 	golang.org/x/net v0.60.0
 	golang.org/x/sys v0.49.0
+	golang.org/x/term v0.47.0
 	google.golang.org/genproto/googleapis/rpc v0.0.0-20260831171406-18b4a7587f8a
 	google.golang.org/grpc v1.86.0-dev
 	google.golang.org/protobuf v1.36.12
@@ -44,11 +47,13 @@ require (
 
 require (
 	cel.dev/expr v0.25.3 // indirect
-	github.com/Microsoft/hcsshim v0.15.0-rc.4 // indirect
 	github.com/antlr4-go/antlr/v4 v4.13.1 // indirect
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/blang/semver/v4 v4.0.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
+	github.com/charmbracelet/x/conpty v0.2.0 // indirect
+	github.com/charmbracelet/x/term v0.2.2 // indirect
+	github.com/charmbracelet/x/termios v0.1.1 // indirect
 	github.com/containerd/errdefs/pkg v0.3.0 // indirect
 	github.com/containerd/fifo v1.1.0 // indirect
 	github.com/containerd/log v0.2.0 // indirect
@@ -56,6 +61,7 @@ require (
 	github.com/containerd/plugin v1.1.0 // indirect
 	github.com/containerd/ttrpc v1.2.10 // indirect
 	github.com/containernetworking/cni v1.3.1 // indirect
+	github.com/containernetworking/plugins v1.9.1 // indirect
 	github.com/danieljoos/wincred v1.2.3 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
 	github.com/docker/go-connections v0.8.2 // indirect
@@ -96,6 +102,7 @@ require (
 	github.com/moby/locker v1.0.1 // indirect
 	github.com/moby/sys/mountinfo v0.7.2 // indirect
 	github.com/moby/sys/signal v0.7.1 // indirect
+	github.com/moby/sys/symlink v0.3.0 // indirect
 	github.com/moby/sys/user v0.4.1 // indirect
 	github.com/moby/sys/userns v0.2.1 // indirect
 	github.com/modern-go/concurrent v0.0.0-20180306012644-bacd9c7ef1dd // indirect
@@ -129,12 +136,11 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v2 v2.4.4 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
-	golang.org/x/crypto v0.57.0 // indirect
+	golang.org/x/crypto v0.58.0 // indirect
 	golang.org/x/exp v0.0.0-20260603202125-055de637280b // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
-	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/term v0.46.0 // indirect
-	golang.org/x/text v0.42.0 // indirect
+	golang.org/x/sync v0.24.0 // indirect
+	golang.org/x/text v0.43.0 // indirect
 	golang.org/x/time v0.16.0 // indirect
 	gomodules.xyz/jsonpatch/v2 v2.5.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260825221802-da73d73af1c5 // indirect

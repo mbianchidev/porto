@@ -4,6 +4,7 @@ import { useContainerSnapshots } from './containerSnapshots'
 import { cleanupRunSummary } from './dockerCleanup'
 import { usePolledResource } from './hooks'
 import { useMessages } from './useMessages'
+import { getDockerMode, useDockerMode } from './dockerMode'
 import type {
   ActivityLevel,
   DockerCleanupState,
@@ -23,7 +24,7 @@ type DockerActivityCursor = {
 
 function loadCursor(): DockerActivityCursor | null {
   try {
-    const raw = window.localStorage.getItem(DOCKER_CURSOR_KEY)
+    const raw = window.localStorage.getItem(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY)
     if (!raw) return null
     const value: unknown = JSON.parse(raw)
     if (!value || typeof value !== 'object') return null
@@ -38,7 +39,7 @@ function loadCursor(): DockerActivityCursor | null {
 
 function saveCursor(cursor: DockerActivityCursor) {
   try {
-    window.localStorage.setItem(DOCKER_CURSOR_KEY, JSON.stringify(cursor))
+    window.localStorage.setItem(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY, JSON.stringify(cursor))
   } catch (error) {
     console.error('Unable to save Docker activity cursor', error)
   }
@@ -146,6 +147,7 @@ function DockerCleanupActivity() {
 }
 
 export function RuntimeActivity({ dockerEnabled }: { dockerEnabled: boolean }) {
+  const mode = useDockerMode()
   const containers = useContainerSnapshots(dockerEnabled)
   const { recordActivity } = useMessages()
   const cursor = useRef<DockerActivityCursor | null>(loadCursor())
@@ -175,5 +177,5 @@ export function RuntimeActivity({ dockerEnabled }: { dockerEnabled: boolean }) {
     recordActivity('error', 'containers', containers.error)
   }, [containers.error, dockerEnabled, recordActivity])
 
-  return <DockerCleanupActivity />
+  return mode === 'linux' ? <DockerCleanupActivity /> : null
 }

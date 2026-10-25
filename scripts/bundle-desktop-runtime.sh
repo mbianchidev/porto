@@ -82,19 +82,28 @@ docker_plugin_patch="$script_directory/patches/docker-cli-29.7.2-bundled-plugins
   git apply "$docker_plugin_patch"
   cp vendor.mod go.mod
   cp vendor.sum go.sum
-  CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" GOWORK=off GO111MODULE=on \
+)
+build_docker_cli() {
+  local target_os="$1"
+  local target_arch="$2"
+  local output="$3"
+  (
+    cd "$docker_source_directory"
+  CGO_ENABLED=0 GOOS="$target_os" GOARCH="$target_arch" GOWORK=off GO111MODULE=on \
     go build -mod=vendor -buildvcs=false -trimpath \
       -ldflags "-s -w -X github.com/docker/cli/cli/version.PlatformName=Porto -X github.com/docker/cli/cli/version.Version=${docker_version} -X github.com/docker/cli/cli/version.GitCommit=${docker_git_commit} -X github.com/docker/cli/cli/version.BuildTime=2026-08-05T17:34:15Z" \
-      -o "$destination/bin/docker${binary_suffix}" ./cmd/docker
-)
+      -o "$output" ./cmd/docker
+  )
+}
+build_docker_cli "$goos" "$goarch" "$destination/bin/docker${binary_suffix}"
 docker_bundled=true
 docker_asset="${docker_source_asset}+porto-bundled-plugins.patch"
 
 docker_plugins_bundled=false
 compose_checksum=""
 buildx_checksum=""
-if [ "$docker_bundled" = "true" ]; then
-  case "$goos/$goarch" in
+docker_plugin_checksums() {
+  case "$1" in
     darwin/arm64)
       compose_arch="aarch64"
       compose_checksum="998735c9b6fe68a4f05895e6ea73d71ad06f9fc7046383ad89e47346781b6af5"
@@ -126,6 +135,9 @@ if [ "$docker_bundled" = "true" ]; then
       buildx_checksum="bdf356a5f2c8f3efd8a357b1f044860216e15e654a9a7105ca4e5dd5b5697ee4"
       ;;
   esac
+}
+if [ "$docker_bundled" = "true" ]; then
+  docker_plugin_checksums "$goos/$goarch"
   compose_asset="docker-compose-${goos}-${compose_arch}${binary_suffix}"
   buildx_asset="buildx-${buildx_version}.${goos}-${goarch}${binary_suffix}"
   download \
@@ -139,6 +151,33 @@ if [ "$docker_bundled" = "true" ]; then
   mv "$temporary/$compose_asset" "$destination/docker/cli-plugins/docker-compose${binary_suffix}"
   mv "$temporary/$buildx_asset" "$destination/docker/cli-plugins/docker-buildx${binary_suffix}"
   docker_plugins_bundled=true
+fi
+
+bundle_wsl_tools() {
+  local root="$destination/wsl/$goarch"
+  local compose_arch compose_checksum buildx_checksum
+  docker_plugin_checksums "linux/$goarch"
+  mkdir -p "$root/bin" "$root/docker/cli-plugins"
+  build_docker_cli linux "$goarch" "$root/bin/docker"
+  wsl_compose_asset="docker-compose-linux-${compose_arch}"
+  wsl_buildx_asset="buildx-${buildx_version}.linux-${goarch}"
+  wsl_compose_checksum="$compose_checksum"
+  wsl_buildx_checksum="$buildx_checksum"
+  download "https://github.com/docker/compose/releases/download/${compose_version}/${wsl_compose_asset}" \
+    "$root/docker/cli-plugins/docker-compose" "$compose_checksum"
+  download "https://github.com/docker/buildx/releases/download/${buildx_version}/${wsl_buildx_asset}" \
+    "$root/docker/cli-plugins/docker-buildx" "$buildx_checksum"
+  verify "$compose_checksum" "$root/docker/cli-plugins/docker-compose"
+  verify "$buildx_checksum" "$root/docker/cli-plugins/docker-buildx"
+  CGO_ENABLED=0 GOOS=linux GOARCH="$goarch" \
+    go build -trimpath -ldflags '-s -w' -o "$root/bin/porto-wsl" ./cmd/porto-wsl
+}
+
+if [ "$goos" = "windows" ]; then
+  bundle_wsl_tools
+  if [ "$goarch" = "amd64" ]; then
+    bash "$script_directory/bundle-windows-containers.sh" amd64 "$destination/windows-containers/amd64"
+  fi
 fi
 
 case "$goos/$goarch" in
@@ -380,6 +419,22 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_ver
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
+
+if [ "$goos" = "windows" ]; then
+  cat >> "$destination/VERSIONS" <<EOF
+wsl linux/${goarch}
+wsl-docker ${docker_version} (${docker_asset}, sha256:${docker_source_checksum})
+wsl-compose ${compose_version} (${wsl_compose_asset}, sha256:${wsl_compose_checksum})
+wsl-buildx ${buildx_version} (${wsl_buildx_asset}, sha256:${wsl_buildx_checksum})
+porto-wsl 1
+EOF
+  if [ "$goarch" = "amd64" ]; then
+    cat "$destination/windows-containers/amd64/VERSIONS" >> "$destination/VERSIONS"
+  else
+    printf '%s\n' 'windows-containers unavailable: native Windows images/runtime require amd64; Linux/WSL ARM64 tooling remains supported' >> "$destination/VERSIONS"
+  fi
+  node "$script_directory/docker-toolchain-smoke.cjs" --wsl-only "$destination" "$goarch"
+fi
 
 if [ "$docker_bundled" = "true" ]; then
   test -f "$destination/bin/docker${binary_suffix}"

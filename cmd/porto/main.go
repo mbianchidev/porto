@@ -32,6 +32,7 @@ import (
 	"github.com/mbianchidev/porto/internal/logging"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
 
 func main() {
@@ -75,6 +76,22 @@ func runCommand(args []string) error {
 }
 
 func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "windows-containers-worker":
+			if len(args) != 2 {
+				return errors.New("invalid native Windows service invocation")
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return daemon.RunWindowsContainerWorker(ctx, args[1])
+		case "windows-containers-elevated":
+			if len(args) != 5 {
+				return errors.New("invalid elevated native Windows invocation")
+			}
+			return windowscontainers.RootAction(context.Background(), args[1], args[2], args[3], args[4])
+		}
+	}
 	if err := configureBundledRuntimePath(); err != nil {
 		return err
 	}
@@ -89,6 +106,12 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	}
 	if args[0] == "https" {
 		return httpsAction(args[1:])
+	}
+	if args[0] == "wsl" {
+		return wslCmd(args[1:])
+	}
+	if args[0] == "networking" {
+		return networkingCmd(args[1:])
 	}
 	if args[0] == "docker" {
 		return dockerCmd(args[1:])
@@ -199,6 +222,23 @@ func httpsAction(args []string) error {
 	if len(args) == 0 {
 		return errors.New("usage: porto https install|status|uninstall")
 	}
+	switch args[0] {
+	case "install-root":
+		if len(args) < 2 || len(args) > 3 {
+			return errors.New("invalid HTTPS forwarder installation")
+		}
+		return localhttps.RootInstall(args[1], args[2:]...)
+	case "uninstall-root":
+		if len(args) != 1 {
+			return errors.New("invalid HTTPS forwarder removal")
+		}
+		return localhttps.RootUninstall()
+	case "trust-root", "untrust-root":
+		if len(args) != 2 {
+			return errors.New("invalid HTTPS authority trust operation")
+		}
+		return localhttps.RootTrust(args[1], args[0] == "untrust-root")
+	}
 	certificatePath, keyPath, err := config.CertificatePaths()
 	if err != nil {
 		return err
@@ -211,6 +251,9 @@ func httpsAction(args []string) error {
 	case "install":
 		if len(args) != 1 {
 			return errors.New("usage: porto https install")
+		}
+		if config.RouterTLSAddress() != localhttps.TargetAddress {
+			return errors.New("the owned HTTPS helper targets 127.0.0.1:37681; restore PORTO_TLS_ADDR to that loopback endpoint or manage custom forwarding explicitly")
 		}
 		if _, err := certificates.New(certificatePath, keyPath, authorityPath, authorityKeyPath).Ensure(); err != nil {
 			return err
@@ -229,16 +272,6 @@ func httpsAction(args []string) error {
 			return errors.New("usage: porto https uninstall")
 		}
 		return localhttps.Uninstall()
-	case "install-root":
-		if len(args) != 2 {
-			return errors.New("invalid HTTPS forwarder installation")
-		}
-		return localhttps.RootInstall(args[1])
-	case "uninstall-root":
-		if len(args) != 1 {
-			return errors.New("invalid HTTPS forwarder removal")
-		}
-		return localhttps.RootUninstall()
 	default:
 		return fmt.Errorf("unsupported HTTPS command %q", args[0])
 	}
@@ -699,6 +732,8 @@ Commands:
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status
   porto https install|status|uninstall
+  porto networking status|configure|ca-import|apply|inspect
+  porto wsl status|list|enable|disable|apply-mounts
   porto branch <project> <branch>
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
@@ -709,6 +744,7 @@ Commands:
   porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
+  porto docker windows status|install|start|stop|remove|context [--confirm]
   porto docker containers|builds|networks|volumes
   porto docker storage usage|prune --category <type>|--objects kind:name,... [--confirm]
   porto docker volume export|clone|import|restore|empty <args> [--confirm]

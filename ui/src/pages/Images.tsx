@@ -21,6 +21,7 @@ function imageReference(image: DockerImage) {
 }
 
 export function Images() {
+  const mode = useDockerMode()
   const { notifyError, notifyNotice } = useMessages()
   const [query, setQuery] = useState('')
   const [selectedID, setSelectedID] = useState<string | null>(null)
@@ -170,10 +171,13 @@ export function Images() {
               </>
             )}
             {imageTab === 'layers' && <DiveTerminal image={imageReference(selected)} />}
-            {imageTab === 'files' && <RuntimeFiles key={selected.id} kind="image" name={imageReference(selected)} />}
+            {imageTab === 'files' && (mode === 'linux'
+              ? <RuntimeFiles key={selected.id} kind="image" name={imageReference(selected)} />
+              : <p role="status">Linux snapshot/file helpers are not used for native Windows images. Inspect the image metadata or use a supported Windows bind mount.</p>)}
           </Inspector>
         )}
       </div>
     </>
   )
 }
+import { useDockerMode } from '../dockerMode'

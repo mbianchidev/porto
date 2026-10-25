@@ -2,6 +2,8 @@
 // failures, non-2xx responses, and aborted requests distinctly so pages can render
 // clear unavailable/error states instead of inventing data.
 
+import { dockerModeURL, isDockerModePath } from './dockerMode'
+
 export class ApiError extends Error {
   status: number
 
@@ -28,6 +30,14 @@ async function readErrorMessage(response: Response): Promise<string> {
 }
 
 async function fetchResponse(path: string, init?: RequestInit): Promise<Response> {
+  path = dockerModeURL(path)
+  const target = new URL(path, window.location.href)
+  if (target.origin === window.location.origin && isDockerModePath(target.pathname)) {
+    const headers = new Headers(init?.headers)
+    if (target.searchParams.get('containerMode') === 'windows') headers.set('X-Porto-Container-Mode', 'windows')
+    else headers.delete('X-Porto-Container-Mode')
+    init = { ...init, headers }
+  }
   let response: Response
   try {
     response = await fetch(path, init)

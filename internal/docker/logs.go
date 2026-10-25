@@ -61,10 +61,17 @@ func (m *Manager) StreamDockerContainerLogs(
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	if m.IsNativeWindows() {
+		driver, err := m.nativeWindowsDriver(ctx)
+		if err != nil {
+			return err
+		}
+		return driver.Logs(ctx, id, options, emit)
+	}
 	if handled, err := m.streamContainerLogsDirect(ctx, id, options, emit); handled {
 		return err
 	}
-	if options.Stdout != options.Stderr {
+	if options.Stdout != options.Stderr && !m.IsNativeWindows() {
 		return fmt.Errorf("%w: selecting only stdout or stderr logs requires a timestamped Porto journal", ErrUnsupported)
 	}
 	args := []string{"logs"}
@@ -83,6 +90,15 @@ func (m *Manager) StreamDockerContainerLogs(
 	timeout := m.timeout
 	if options.Follow {
 		timeout = 24 * time.Hour
+	}
+	if m.IsNativeWindows() {
+		original := emit
+		emit = func(chunk runtimes.OutputChunk) error {
+			if (chunk.Stream == "stdout" && options.Stdout) || (chunk.Stream == "stderr" && options.Stderr) {
+				return original(chunk)
+			}
+			return nil
+		}
 	}
 	return m.runStreaming(ctx, timeout, "read Porto container logs", nil, emit, args...)
 }

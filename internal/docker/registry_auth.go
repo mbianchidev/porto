@@ -29,6 +29,10 @@ type registryAuthEntry struct {
 	IdentityToken string `json:"identitytoken,omitempty"`
 }
 
+func DecodeRegistryAuthHeader(value string) (*RegistryAuth, error) {
+	return decodeRegistryAuthHeader(value)
+}
+
 func decodeRegistryAuthHeader(value string) (*RegistryAuth, error) {
 	value = strings.TrimSpace(value)
 	if value == "" {

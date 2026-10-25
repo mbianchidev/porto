@@ -8,9 +8,9 @@
 >
 > **Releases are not code-signed**, and macOS builds are not notarized. Your operating system may display security warnings or block installation or launch.
 
-Porto is an open-source local development control plane for native applications, Linux containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
+Porto is an open-source local development control plane for native applications, Linux containers, capability-supported native Windows containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
 
-Porto runs its own containerd and BuildKit backend rather than proxying another Docker engine. Supported Docker clients and Compose workflows connect through the named `porto` context.
+Porto runs its own containerd backends rather than proxying another Docker engine, with BuildKit for Linux workloads. Supported Linux Docker clients and Compose workflows use the `porto` context; explicitly selected native Windows containers use a separate `porto-windows` context and runhcs store.
 
 ![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/ed553cf3-1714-431b-83b7-f9443d8a3dab)
 
@@ -20,7 +20,9 @@ Porto runs its own containerd and BuildKit backend rather than proxying another 
 - **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup.
 - **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
 - **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).
-- **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects and managed Kubernetes Services through local HTTP hostnames, with optional trusted portless HTTPS on macOS.
+- **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects, opted-in containers and managed Kubernetes Services through local HTTP hostnames, with trusted portless HTTPS on macOS, Windows and supported systemd Linux hosts.
+- **Use selected WSL distributions.** Native Linux Docker, Compose and Buildx use Porto's private Windows pipe, selected shared roots, polling watches and native-vault credentials. Windows-hosted Linux terminals use ConPTY. The existing Lima/QEMU Linux engine remains in place; see [Windows integration](docs/windows-integration.md).
+- **Select native Windows containers explicitly.** On a supported Windows host, install the separately owned containerd/runhcs runtime and use its own context, store, Windows shells and capability checks without replacing Linux/WSL workloads. See [native Windows setup](docs/windows-integration.md#native-windows-setup).
 - **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
   Per-object migration checkpoints survive daemon interruptions; retries require a fresh dry run and never retarget recreated source names.
   Native capabilities and write consent are resource-identity-bound, with visible disconnected/failed-detach states. Windows native folders use WinFsp (explicit driver installation); unattached source volumes can use separately consented stopped, read-only helpers.
@@ -37,13 +39,13 @@ Releases target **macOS, Linux, and Windows** on **x86-64 (`amd64`) and ARM64 (`
 | --- | --- | --- |
 | macOS | DMG | Lima is bundled. Install QEMU with `brew install qemu` for snapshot-capable VMs, then restart Porto. |
 | Linux | Portable archive | The installer attempts to install missing QEMU through `apt`, `dnf`, `pacman`, or `zypper`. KVM access enables hardware acceleration. |
-| Windows | EXE installer | Lima and QEMU are bundled. kind is not bundled on Windows ARM64 because upstream has no native binary. |
+| Windows | EXE installer | Lima and QEMU are bundled. Native Windows-container tooling is separately selected on supported AMD64 hosts. Native WCOW and kind are not substituted with x64 binaries on ARM64; see the [matrix](docs/windows-integration.md#embedded-terminals-and-supported-boundaries). |
 
 Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.
 
 They also include Porto's Linux runtime helper for direct container I/O, Windows
-containerd connections, CNI, and checkpoint capability discovery. New Windows
-container engines use Ubuntu 24.04 LTS. Bundled Lima includes stale-process
+containerd connections, CNI, and checkpoint capability discovery. New Windows-hosted
+Linux engines use Ubuntu 24.04 LTS. Bundled Lima includes stale-process
 recovery and consoleless graceful/forced shutdown fixes, without requiring
 manual PID-file deletion or VM recreation. See
 [Windows guest recovery](docs/installation.md#windows-guest-recovery).
@@ -126,13 +128,17 @@ Replace `api` with a project name shown by `porto list`. Startup normally runs `
 
 Automatic port assignment starts at `41000`; Compose-published ports are also supported. Porto marks an application ready when its HTTP endpoint returns 200. Pin a port with `porto port api 8080`. Running projects are also available at `http://<project>.porto.localhost:37680` without DNS setup.
 
-On macOS, install the trusted portless HTTPS helper once to use `https://<project>.porto.localhost/`:
+On macOS, Windows, or a supported systemd Linux host, install trusted portless
+HTTPS once to use `https://<project>.porto.localhost/`:
 
 ```sh
 porto https install
 ```
 
-This requests administrator authorization for the loopback forwarder and trusts Porto's local certificate authority. See [local networking](docs/networking.md) for certificate, DNS, dotted-hostname, and custom-forwarding details.
+This authorizes only platform setup, not the daemon or workloads. Linux needs
+the documented CA/NSS prerequisites. Settings also provides trust, renewal,
+proxy, registry CA and connectivity controls. See [local networking](docs/networking.md)
+for lifecycle, browser limitations, dotted hostnames and direct-IP capabilities.
 
 For an always-available setup, follow the [daily-use guide](docs/daily-use.md) to install Porto in a stable location and start it at login or boot.
 
@@ -177,7 +183,7 @@ Use **Settings** for runtime and desktop preferences, log retention, and optiona
 ## Important limitations
 
 - **Local development only.** The dashboard/API bind to loopback, and Docker clients use a private Unix socket or Windows named pipe. Do not expose these control interfaces through an unauthenticated network proxy.
-- **Docker compatibility is bounded.** Porto supports Docker API versions **1.41 through 1.47**, not every Docker Engine feature. Swarm, generic engine plugins, and Windows containers are unsupported; mounts, checkpoints, SDKs, Dev Containers, and Testcontainers have documented capability limits. Check the [compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix) before relying on a workflow.
+- **Docker compatibility is bounded.** Porto supports Docker API versions **1.41 through 1.47**, not every Docker Engine feature. Swarm and generic engine plugins are unsupported; native Windows mode has a separate host/image/isolation matrix and does not advertise Linux-only helpers or builds. Mounts, checkpoints, SDKs, Dev Containers, and Testcontainers have documented capability limits. Check the [compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix) before relying on a workflow.
 - **Discovery and readiness are opinionated.** Detection follows file and entry-point conventions, and readiness expects HTTP 200 on the selected port. See [project management](docs/project-management.md) before using non-HTTP services or unusual monorepo layouts.
 - **Backups are not database-aware.** Local volume copies are crash-consistent, not application-consistent database backups. Native filesystem access and migration support depend on the host/backend. See [data-management safety boundaries](docs/data-management.md).
 - **Layer inspection is not vulnerability scanning.** Dive works today; local SBOM and Grype-based CVE analysis remain a [separate roadmap](docs/image-inspection.md).

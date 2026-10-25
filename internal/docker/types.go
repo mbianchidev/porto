@@ -339,6 +339,7 @@ type CreateNetworkRequest struct {
 }
 
 type CreateContainerRequest struct {
+	Isolation    string `json:"isolation,omitempty"`
 	Name         string
 	Image        string
 	Platform     string
@@ -437,6 +438,7 @@ type ContainerUpdate struct {
 }
 
 type ExecRequest struct {
+	ConsoleSize  [2]uint
 	ContainerID  string
 	Command      []string
 	Environment  []string

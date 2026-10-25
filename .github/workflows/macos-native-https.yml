@@ -1,0 +1,44 @@
+name: Approved macOS native HTTPS
+
+on:
+  workflow_dispatch:
+    inputs:
+      approve_user_trust:
+        description: Logged-in operator approves synthetic CA prompts on a disposable runner
+        type: boolean
+        required: true
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: macos-native-https-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  native-https:
+    if: inputs.approve_user_trust
+    runs-on: [self-hosted, macOS, porto-native-trust]
+    timeout-minutes: 15
+    env:
+      CGO_ENABLED: '0'
+      GOMAXPROCS: '2'
+      PORTO_TEST_NATIVE_HTTPS: '1'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-scope: approved-macos-https
+      - name: Verify launchd, login-keychain trust, browser and unprivileged daemon restart
+        run: |
+          set -euo pipefail
+          export PORTO_TEST_HTTPS_BINARY="$RUNNER_TEMP/porto-native"
+          export PORTO_TEST_HTTPS_BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          test -x "$PORTO_TEST_HTTPS_BROWSER"
+          go build -o "$PORTO_TEST_HTTPS_BINARY" ./cmd/porto
+          for native_test in TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval TestNativePortlessHTTPSRealDaemonRestartAndRenewal; do
+            go test ./internal/localhttps -run "^$native_test$" -count=1 -failfast -timeout=7m -v
+          done

@@ -32,6 +32,9 @@ jobs:
       - name: Run govulncheck
         run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
 
+      - name: Reject deprecated OpenPGP imports
+        run: node scripts/check-go-crypto.cjs
+
   npm-audit:
     name: Dashboard dependencies
     runs-on: ubuntu-latest

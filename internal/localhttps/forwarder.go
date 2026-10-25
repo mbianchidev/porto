@@ -5,9 +5,24 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
+	"net/netip"
 	"sync"
+	"time"
 )
+
+func validateLoopbackAddress(address string) error {
+	host, _, err := net.SplitHostPort(address)
+	if err != nil {
+		return fmt.Errorf("invalid HTTPS forwarder address %q: %w", address, err)
+	}
+	ip, err := netip.ParseAddr(host)
+	if err != nil || !ip.IsLoopback() {
+		return fmt.Errorf("HTTPS forwarder requires a literal loopback address, not %q", address)
+	}
+	return nil
+}
 
 const (
 	ListenAddress     = "127.0.0.1:443"
@@ -39,15 +54,24 @@ func RunForwarders(ctx context.Context, listenAddresses []string, targetAddress 
 }
 
 func RunForwarder(ctx context.Context, listenAddress, targetAddress string) error {
+	for _, address := range []string{listenAddress, targetAddress} {
+		if err := validateLoopbackAddress(address); err != nil {
+			return err
+		}
+	}
 	listener, err := net.Listen("tcp", listenAddress)
 	if err != nil {
 		return fmt.Errorf("listen on %s: %w", listenAddress, err)
 	}
 	defer listener.Close()
-	go func() {
-		<-ctx.Done()
-		_ = listener.Close()
+	ctx, cancel := context.WithCancel(ctx)
+	var connections sync.WaitGroup
+	defer func() {
+		cancel()
+		connections.Wait()
 	}()
+	stopClose := context.AfterFunc(ctx, func() { _ = listener.Close() })
+	defer stopClose()
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
@@ -56,17 +80,28 @@ func RunForwarder(ctx context.Context, listenAddress, targetAddress string) erro
 			}
 			return fmt.Errorf("accept HTTPS connection: %w", err)
 		}
-		go forwardConnection(connection, targetAddress)
+		connections.Add(1)
+		go func() {
+			defer connections.Done()
+			forwardConnection(ctx, connection, targetAddress)
+		}()
 	}
 }
 
-func forwardConnection(client net.Conn, targetAddress string) {
+func forwardConnection(ctx context.Context, client net.Conn, targetAddress string) {
 	defer client.Close()
-	target, err := net.Dial("tcp", targetAddress)
+	stopClient := context.AfterFunc(ctx, func() { _ = client.Close() })
+	defer stopClient()
+	target, err := (&net.Dialer{Timeout: 5 * time.Second}).DialContext(ctx, "tcp", targetAddress)
 	if err != nil {
+		if ctx.Err() == nil {
+			slog.Warn("HTTPS router is unavailable; start the Porto daemon", "target", targetAddress, "error", err)
+		}
 		return
 	}
 	defer target.Close()
+	stopTarget := context.AfterFunc(ctx, func() { _ = target.Close() })
+	defer stopTarget()
 
 	var wait sync.WaitGroup
 	wait.Add(2)

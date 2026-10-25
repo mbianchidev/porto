@@ -13,15 +13,24 @@ import (
 	"time"
 
 	registrydocker "github.com/containerd/containerd/v2/core/remotes/docker"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/registries"
 )
 
 const maxRegistrySearchResults = 100
 
 func registryHTTPClient() *http.Client {
+	return registryHTTPClientWithPolicy(nil)
+}
+
+func registryHTTPClientWithPolicy(policy *networking.Manager) *http.Client {
+	return registryHTTPClientWithTransport(networking.RegistryTransport{Manager: policy})
+}
+
+func registryHTTPClientWithTransport(transport http.RoundTripper) *http.Client {
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: httpsRegistryTransport{http.DefaultTransport},
+		Transport: httpsRegistryTransport{transport},
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if request.URL.Scheme != "https" || len(via) >= 5 {
 				return errors.New("registry redirect must use HTTPS and stay within five redirects")
