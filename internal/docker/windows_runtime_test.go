@@ -111,7 +111,8 @@ func TestNativeWindowsCreationValidatesBeforeMutationAndPreservesBindArguments(t
 		args := nativeCommandArguments(t, manager, command)
 		switch args[0] {
 		case "image":
-			return []byte(`[{"Id":"sha256:` + strings.Repeat("1", 64) + `","Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1000"}]`), nil
+			return []byte(`[{"Id":"sha256:` + strings.Repeat("3", 64) + `","Descriptor":{"digest":"sha256:` +
+				strings.Repeat("1", 64) + `"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1000"}]`), nil
 		case "create":
 			created = command
 			return []byte("owned-container-id\n"), nil
@@ -181,7 +182,8 @@ func TestNativeWindowsImageBuildMismatchDoesNotCreateOrPull(t *testing.T) {
 		if args[0] != "image" {
 			t.Fatalf("incompatible image mutated native state: %q", args)
 		}
-		return []byte(`[{"Id":"synthetic","Os":"windows","Architecture":"amd64","OsVersion":"10.0.20348.1"}]`), nil
+		return []byte(`[{"Id":"synthetic","Descriptor":{"digest":"sha256:` + strings.Repeat("1", 64) +
+			`"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.20348.1"}]`), nil
 	}
 	if _, err := manager.CreateContainer(context.Background(), CreateContainerRequest{Image: "synthetic", Isolation: "process"}); err == nil || !strings.Contains(err.Error(), "does not match") {
 		t.Fatalf("process build mismatch = %v", err)
@@ -271,13 +273,15 @@ func TestNativeWindowsPinnedIndexResolutionSurvivesWorkerRestart(t *testing.T) {
 		if args[0] != "image" || args[len(args)-1] != "sha256:"+strings.Repeat("2", 64) {
 			t.Fatalf("original index reference did not resolve after restart: %q", args)
 		}
-		return []byte(`[{"Id":"synthetic","Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
+		return []byte(`[{"Id":"sha256:` + strings.Repeat("3", 64) + `","Descriptor":{"digest":"sha256:` +
+			strings.Repeat("2", 64) + `"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
 	}
 	if _, err := restarted.InspectImage(context.Background(), original, "windows/amd64"); err != nil {
 		t.Fatal(err)
 	}
-	if _, _, err := restarted.localWindowsImage(context.Background(), original); err != nil {
-		t.Fatal(err)
+	if _, target, err := restarted.localWindowsImage(context.Background(), original); err != nil ||
+		target != "sha256:"+strings.Repeat("2", 64) {
+		t.Fatalf("native creation confused config ID with immutable manifest target: %s, %v", target, err)
 	}
 	data, _ := json.Marshal(map[string]string{original: "another.example.test/foreign@sha256:" + strings.Repeat("2", 64)})
 	if err := os.WriteFile(filepath.Join(manager.stateDir, "native-image-references.json"), data, 0o600); err != nil {
@@ -310,6 +314,7 @@ func TestNativeWindowsDigestInspectionUsesVerifiedOCIWindowsVersion(t *testing.T
 				}
 				if strings.Contains(strings.Join(args, " "), "--mode native") {
 					return json.Marshal([]any{map[string]any{
+						"Image":           map[string]any{"target": map[string]string{"digest": target}},
 						"ImageConfigDesc": map[string]string{"digest": config},
 						"ImageConfig":     map[string]string{"os": "windows", "architecture": architecture, "os.version": version}}})
 				}
@@ -324,14 +329,68 @@ func TestNativeWindowsDigestInspectionUsesVerifiedOCIWindowsVersion(t *testing.T
 				return
 			}
 			var inspected struct {
-				OSVersion string `json:"OsVersion"`
-				Config    struct{ Cmd []string }
+				OSVersion  string `json:"OsVersion"`
+				Config     struct{ Cmd []string }
+				Descriptor struct{ Digest string }
 			}
 			if err != nil || json.Unmarshal(document, &inspected) != nil || inspected.OSVersion != version ||
+				inspected.Descriptor.Digest != target ||
 				!reflect.DeepEqual(inspected.Config.Cmd, []string{"cmd.exe"}) {
 				t.Fatalf("native OCI metadata integration: %s, %v", document, err)
 			}
 		})
+	}
+}
+
+func TestNativeWindowsImageConfigIDsResolveToImmutableManifestTargets(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := nativeTestManager(t, runner)
+	config, target := "sha256:"+strings.Repeat("3", 64), "sha256:"+strings.Repeat("2", 64)
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		args := nativeCommandArguments(t, manager, command)
+		if args[0] == "images" {
+			return json.Marshal(map[string]string{"ID": config, "Digest": target, "Repository": "registry.example.test/synthetic", "Tag": "<none>"})
+		}
+		if args[0] == "tag" {
+			if args[1] != "registry.example.test/synthetic@"+target {
+				t.Fatalf("native image tag lost its stored source identity: %q", args)
+			}
+			return nil, nil
+		}
+		if args[0] == "image" && args[1] == "rm" && args[len(args)-1] == target {
+			return nil, nil
+		}
+		if args[0] != "image" || args[1] != "inspect" || args[len(args)-1] != target {
+			t.Fatalf("native image configuration ID was sent to the manifest-only runtime: %q", args)
+		}
+		return []byte(`[{"Id":"` + config + `","Descriptor":{"digest":"` + target +
+			`"},"Config":{"Image":"registry.example.test/synthetic@` + target +
+			`"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
+	}
+	for _, id := range []string{config, strings.Repeat("3", 12), target} {
+		if _, selected, err := manager.localWindowsImage(context.Background(), id); err != nil || selected != target {
+			t.Fatalf("native image ID resolution %s: selected=%s error=%v", id, selected, err)
+		}
+		if err := manager.TagImage(context.Background(), id, "registry.example.test/tagged:v1"); err != nil {
+			t.Fatalf("native image ID tagging %s: %v", id, err)
+		}
+		if err := manager.RemoveImage(context.Background(), id, true); err != nil {
+			t.Fatalf("native image ID removal %s: %v", id, err)
+		}
+	}
+}
+
+func TestNativeWindowsMissingImageIDCannotSucceedThroughForcedRemoval(t *testing.T) {
+	runner := &fakeRunner{}
+	manager := nativeTestManager(t, runner)
+	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if args := nativeCommandArguments(t, manager, command); args[0] != "images" {
+			t.Fatalf("missing native image ID reached a mutation: %q", args)
+		}
+		return nil, nil
+	}
+	if err := manager.RemoveImage(context.Background(), "sha256:"+strings.Repeat("9", 64), true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("missing native image ID removal: %v", err)
 	}
 }
 

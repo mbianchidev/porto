@@ -37,6 +37,11 @@ the actual feature and usable hardware/nested virtualization. Unsupported
 architectures, editions, image versions, host-process isolation and unverified
 virtualization fail before native workload mutation.
 
+Docker image configuration IDs and native runtime manifest digests are distinct.
+Porto resolves full or short image IDs before native creation, tagging and
+removal, and uses the validated immutable manifest for creation. Image inspection
+retains the actual Windows `os.version` from the matching OCI configuration.
+
 `porto docker windows context` explicitly selects the native CLI context.
 Changing **Container backend view** only changes the dashboard view: open
 inspectors/terminals disconnect, but neither engine nor its running workloads

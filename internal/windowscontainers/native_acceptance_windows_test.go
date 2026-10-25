@@ -342,6 +342,19 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 	request("POST", "/images/create?"+url.Values{"fromImage": {wrongImage}}.Encode(), nil, http.StatusBadRequest)
 	request("POST", "/images/create?"+url.Values{"fromImage": {image}, "platform": {"windows/arm64"}}.Encode(), nil, http.StatusBadRequest)
 	request("POST", "/images/create?"+url.Values{"fromImage": {image}}.Encode(), nil, http.StatusOK)
+	imageDocument := request("GET", "/images/"+url.PathEscape(image)+"/json", nil, http.StatusOK)
+	var imageIdentity struct {
+		ID         string `json:"Id"`
+		Descriptor struct{ Digest string }
+	}
+	if err := json.Unmarshal(imageDocument, &imageIdentity); err != nil || imageIdentity.ID == "" ||
+		imageIdentity.Descriptor.Digest == "" || imageIdentity.ID == imageIdentity.Descriptor.Digest {
+		t.Fatalf("native image config ID and manifest target were conflated: %s, %v", imageDocument, err)
+	}
+	alias := "registry.example.test/synthetic-native:fixture"
+	request("POST", "/images/"+url.PathEscape(imageIdentity.ID)+"/tag?repo=registry.example.test%2Fsynthetic-native&tag=fixture", nil, http.StatusCreated)
+	request("GET", "/images/"+url.PathEscape(alias)+"/json", nil, http.StatusOK)
+	request("DELETE", "/images/"+url.PathEscape(alias), nil, http.StatusOK)
 	request("POST", "/containers/create", map[string]any{"Image": image, "HostConfig": map[string]any{"Isolation": "host"}}, http.StatusBadRequest)
 	bind := filepath.Join(fixture, "quote's é directory")
 	if err := os.Mkdir(bind, 0o700); err != nil {
@@ -363,7 +376,7 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 	port := portListener.Addr().(*net.TCPAddr).Port
 	portListener.Close()
 	name := "porto-native-acceptance"
-	body := map[string]any{"Image": image, "User": "ContainerAdministrator", "Cmd": []string{`C:\fixture\native-fixture.exe`},
+	body := map[string]any{"Image": imageIdentity.ID, "User": "ContainerAdministrator", "Cmd": []string{`C:\fixture\native-fixture.exe`},
 		"Labels": map[string]string{"io.porto.test.native": "true"},
 		"HostConfig": map[string]any{"Isolation": "process",
 			"Mounts":       []map[string]any{{"Type": "bind", "Source": bind, "Target": `C:\fixture`}},
@@ -511,7 +524,7 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 		t.Fatalf("distinct native context = %s, %v", metadata, err)
 	}
 	request("DELETE", "/containers/"+container.ID, nil, http.StatusNoContent)
-	request("DELETE", "/images/"+url.PathEscape(image)+"?force=true", nil, http.StatusOK)
+	request("DELETE", "/images/"+url.PathEscape(imageIdentity.ID)+"?force=true", nil, http.StatusOK)
 	assertLinuxUnchanged()
 }
 

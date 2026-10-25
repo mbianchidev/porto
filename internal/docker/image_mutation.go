@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -22,6 +23,20 @@ func (m *Manager) TagImage(ctx context.Context, source, target string) error {
 		return err
 	}
 	defer release()
+	if m.windows != nil && windowsImageID(source) {
+		document, err := m.InspectImage(ctx, source, "windows/amd64")
+		if err != nil {
+			return err
+		}
+		var inspected struct{ Config struct{ Image string } }
+		if err := json.Unmarshal(document, &inspected); err != nil {
+			return err
+		}
+		if inspected.Config.Image == "" {
+			return errors.New("invalid native Windows image: no stored source reference for tagging")
+		}
+		source = inspected.Config.Image
+	}
 	for label, value := range map[string]string{"source": source, "target": target} {
 		if err := validateObjectID(value); err != nil {
 			return fmt.Errorf("image tag %s: %w", label, err)

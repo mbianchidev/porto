@@ -73,7 +73,8 @@ func nativeTTYManager(t *testing.T, mode string) (*Manager, *nativeTTYRunner) {
 			return []byte(`[{"Id":"native-container","State":{"Running":true,"Status":"running"},"Config":{"Tty":true,"Image":"synthetic","Labels":{"io.porto.container.console-size":"[30,90]"}}}]`), nil
 		}
 		if len(args) >= 2 && args[0] == "image" && args[1] == "inspect" {
-			return []byte(`[{"Id":"synthetic","Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
+			return []byte(`[{"Id":"synthetic","Descriptor":{"digest":"sha256:` + strings.Repeat("1", 64) +
+				`"},"Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
 		}
 		t.Fatalf("unexpected native TTY command: %q", args)
 		return nil, nil

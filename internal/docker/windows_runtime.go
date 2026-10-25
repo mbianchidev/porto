@@ -362,15 +362,18 @@ func (m *Manager) localWindowsImage(ctx context.Context, image string) (windowsc
 		return windowscontainers.ImagePlatform{}, "", err
 	}
 	var inspected struct {
-		ID           string `json:"Id"`
 		OS           string `json:"Os"`
 		Architecture string
 		OSVersion    string `json:"OsVersion"`
+		Descriptor   struct{ Digest string }
 	}
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return windowscontainers.ImagePlatform{}, "", err
 	}
-	return windowscontainers.ImagePlatform{OS: inspected.OS, Architecture: inspected.Architecture, OSVersion: inspected.OSVersion}, inspected.ID, nil
+	if !isImageDigest(inspected.Descriptor.Digest) {
+		return windowscontainers.ImagePlatform{}, "", errors.New("invalid native Windows image: no immutable manifest descriptor")
+	}
+	return windowscontainers.ImagePlatform{OS: inspected.OS, Architecture: inspected.Architecture, OSVersion: inspected.OSVersion}, inspected.Descriptor.Digest, nil
 }
 
 func (m *Manager) validateWindowsStart(ctx context.Context, id string) error {

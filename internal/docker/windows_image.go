@@ -19,6 +19,38 @@ import (
 
 const maxWindowsImageMetadata = 4 * 1024 * 1024
 
+func windowsImageID(image string) bool {
+	encoded := strings.TrimPrefix(image, "sha256:")
+	return len(encoded) >= 12 && len(encoded) <= 64 && strings.Trim(encoded, "0123456789abcdef") == ""
+}
+
+func (m *Manager) windowsImageTarget(ctx context.Context, image string) (string, error) {
+	if !windowsImageID(image) {
+		return image, nil
+	}
+	images, err := m.Images(ctx)
+	if err != nil {
+		return "", err
+	}
+	var target string
+	for _, candidate := range images {
+		if !imageMatchesIdentifier(candidate, image) {
+			continue
+		}
+		if !isImageDigest(candidate.Digest) {
+			return "", errors.New("invalid native Windows image manifest identity")
+		}
+		if target != "" && target != candidate.Digest {
+			return "", fmt.Errorf("%w: native Windows image ID %s is ambiguous", ErrConflict, image)
+		}
+		target = candidate.Digest
+	}
+	if target == "" {
+		return "", fmt.Errorf("%w: native Windows image %s", ErrNotFound, image)
+	}
+	return target, nil
+}
+
 func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform string) (json.RawMessage, error) {
 	if platform != "" && platform != "windows/amd64" {
 		return nil, errors.New("invalid native Windows image platform: inspect requires windows/amd64")
@@ -35,27 +67,40 @@ func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform strin
 		}
 		// nerdctl's compatibility inspector mismatches empty-tag digest names.
 		image = canonical.Digest().String()
+	} else {
+		var err error
+		image, err = m.windowsImageTarget(ctx, image)
+		if err != nil {
+			return nil, err
+		}
 	}
 	document, err := m.inspect(ctx, "image", image, "--platform", "windows/amd64")
 	if err != nil {
 		return nil, err
 	}
 	var inspected struct {
-		ID        string `json:"Id"`
-		OSVersion string `json:"OsVersion"`
+		ID         string              `json:"Id"`
+		OSVersion  string              `json:"OsVersion"`
+		Descriptor *ocispec.Descriptor `json:"Descriptor"`
 	}
 	if err := json.Unmarshal(document, &inspected); err != nil {
 		return nil, err
 	}
-	if inspected.OSVersion != "" {
+	if inspected.Descriptor != nil {
+		if err := inspected.Descriptor.Digest.Validate(); err != nil {
+			return nil, fmt.Errorf("invalid native Windows image target: %w", err)
+		}
+	}
+	if inspected.OSVersion != "" && inspected.Descriptor != nil {
 		return document, nil
 	}
-	// The pinned nerdctl compatibility schema omits Windows' os.version.
+	// The compatibility schema omits os.version and the manifest descriptor.
 	native, err := m.inspect(ctx, "image", image, "--mode", "native", "--platform", "windows/amd64")
 	if err != nil {
 		return nil, err
 	}
 	var metadata struct {
+		Image           struct{ Target ocispec.Descriptor }
 		ImageConfigDesc ocispec.Descriptor
 		ImageConfig     ocispec.Image
 	}
@@ -66,11 +111,21 @@ func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform strin
 		metadata.ImageConfig.OS != "windows" || metadata.ImageConfig.Architecture != "amd64" || metadata.ImageConfig.OSVersion == "" {
 		return nil, errors.New("invalid native Windows OCI image metadata: configuration identity, platform, or Windows version differs")
 	}
+	if err := metadata.Image.Target.Digest.Validate(); err != nil {
+		return nil, fmt.Errorf("invalid native Windows OCI manifest target: %w", err)
+	}
+	if isImageDigest(image) && metadata.Image.Target.Digest.String() != image {
+		return nil, errors.New("invalid native Windows OCI image metadata: manifest identity changed")
+	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(document, &fields); err != nil {
 		return nil, err
 	}
 	fields["OsVersion"], err = json.Marshal(metadata.ImageConfig.OSVersion)
+	if err != nil {
+		return nil, err
+	}
+	fields["Descriptor"], err = json.Marshal(metadata.Image.Target)
 	if err != nil {
 		return nil, err
 	}

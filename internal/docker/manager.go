@@ -1993,6 +1993,12 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 		return err
 	}
 	defer release()
+	if m.windows != nil {
+		id, err = m.windowsImageTarget(ctx, id)
+		if err != nil {
+			return err
+		}
+	}
 	if m.nativeGuard != nil && m.nativeGuard("image", "*") != nil {
 		descriptor, err := m.FileDescriptor(ctx, "image", id)
 		if err != nil {
