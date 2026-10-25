@@ -67,6 +67,9 @@ through native install, changed-binary update, repair and context changes.
 
 Networking acceptance uses loopback-only synthetic TLS registries and real
 HTTP, HTTPS and SOCKS proxies on every existing development-client backend.
+The matrix includes rootful local Linux and KVM-backed Linux Lima, plus Lima
+on macOS and Windows. The Linux Lima row fails if native KVM is unavailable;
+software emulation is not substituted for that required acceptance.
 It verifies custom CA trust and its removal, proxy transitions and local
 bypass; rootful local Linux additionally requests a real container private IP.
 Unit transport gates run on Linux, macOS and Windows and exercise changing
@@ -99,6 +102,8 @@ available to approve only its synthetic certificate. Select the revision being
 reviewed and confirm `approve_user_trust`. No success is claimed until that
 workflow actually passes. Ordinary macOS Go, desktop startup, filesystem,
 installer and development-client gates remain automatic.
+No self-hosted runner carrying the required approval label was registered when
+this blocker was recorded, so the manual workflow has not been dispatched.
 
 The native payload is built from checksum-pinned official source archives with
 Go 1.27.3 or newer and patched crypto/network/sys/logging/gRPC dependencies.

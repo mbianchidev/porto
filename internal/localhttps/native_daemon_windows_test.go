@@ -22,6 +22,132 @@ import (
 
 func prepareNativeDaemonOwner(string) error { return nil }
 
+func nativeDaemonTokenInformation(token windows.Token, class uint32) ([]byte, error) {
+	var size uint32
+	if err := windows.GetTokenInformation(token, class, nil, 0, &size); !errors.Is(err, windows.ERROR_INSUFFICIENT_BUFFER) {
+		if err == nil {
+			return nil, fmt.Errorf("daemon token information %d unexpectedly accepted an empty buffer", class)
+		}
+		return nil, fmt.Errorf("size daemon token information %d: %w", class, err)
+	}
+	if size < uint32(unsafe.Sizeof(uintptr(0))) {
+		return nil, fmt.Errorf("daemon token information %d is shorter than its SID/ACL pointer", class)
+	}
+	data := make([]byte, size)
+	if err := windows.GetTokenInformation(token, class, &data[0], size, &size); err != nil {
+		return nil, fmt.Errorf("read daemon token information %d: %w", class, err)
+	}
+	return data, nil
+}
+
+func nativeDaemonDefaultDACLHasUser(acl *windows.ACL, user *windows.SID) (bool, error) {
+	if acl == nil {
+		return true, nil
+	}
+	for index := uint32(0); index < uint32(acl.AceCount); index++ {
+		var ace *windows.ACCESS_ALLOWED_ACE
+		if err := windows.GetAce(acl, index, &ace); err != nil {
+			return false, err
+		}
+		if ace.Header.AceType == windows.ACCESS_ALLOWED_ACE_TYPE && ace.Header.AceFlags&windows.INHERIT_ONLY_ACE == 0 &&
+			ace.Mask&windows.GENERIC_ALL != 0 && (*windows.SID)(unsafe.Pointer(&ace.SidStart)).Equals(user) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+func normalizeNativeDaemonTokenDefaults(t *testing.T, token windows.Token) error {
+	user, err := token.GetTokenUser()
+	if err != nil {
+		return err
+	}
+	currentUser, err := windows.GetCurrentProcessToken().GetTokenUser()
+	if err != nil {
+		return err
+	}
+	if !user.User.Sid.Equals(currentUser.User.Sid) {
+		return errors.New("restricted daemon token changed the native current-user trust identity")
+	}
+	ownerInfo, err := nativeDaemonTokenInformation(token, windows.TokenOwner)
+	if err != nil {
+		return err
+	}
+	oldOwner := *(**windows.SID)(unsafe.Pointer(&ownerInfo[0]))
+	if oldOwner == nil {
+		return errors.New("restricted daemon token has no default owner")
+	}
+	oldOwnerWasAdmin := oldOwner.IsWellKnown(windows.WinBuiltinAdministratorsSid)
+	oldOwnerWasUser := oldOwner.Equals(user.User.Sid)
+	runtime.KeepAlive(ownerInfo)
+	daclInfo, err := nativeDaemonTokenInformation(token, windows.TokenDefaultDacl)
+	if err != nil {
+		return err
+	}
+	oldUserGrant, err := nativeDaemonDefaultDACLHasUser(*(**windows.ACL)(unsafe.Pointer(&daclInfo[0])), user.User.Sid)
+	runtime.KeepAlive(daclInfo)
+	if err != nil {
+		return err
+	}
+	groups, err := token.GetTokenGroups()
+	if err != nil {
+		return err
+	}
+	sddl := "D:P(A;;GA;;;SY)(A;;GA;;;" + user.User.Sid.String() + ")"
+	logonSIDs := 0
+	for _, group := range groups.AllGroups() {
+		if group.Attributes&windows.SE_GROUP_LOGON_ID == windows.SE_GROUP_LOGON_ID &&
+			group.Attributes&windows.SE_GROUP_ENABLED != 0 && group.Attributes&windows.SE_GROUP_USE_FOR_DENY_ONLY == 0 {
+			sddl += "(A;;GA;;;" + group.Sid.String() + ")"
+			logonSIDs++
+		}
+	}
+	descriptor, err := windows.SecurityDescriptorFromString(sddl)
+	if err != nil {
+		return err
+	}
+	dacl, _, err := descriptor.DACL()
+	if err != nil {
+		return err
+	}
+	// Filtering administrator membership does not establish usable ownership
+	// and default-object ACLs for the remaining user. USER32 also creates
+	// default-owned objects before Go main, independently of the desktop ACL.
+	owner := struct{ SID *windows.SID }{user.User.Sid}
+	if err := windows.SetTokenInformation(token, windows.TokenOwner, (*byte)(unsafe.Pointer(&owner)), uint32(unsafe.Sizeof(owner))); err != nil {
+		return fmt.Errorf("set restricted daemon default owner to current user: %w", err)
+	}
+	defaultDACL := struct{ ACL *windows.ACL }{dacl}
+	if err := windows.SetTokenInformation(token, windows.TokenDefaultDacl, (*byte)(unsafe.Pointer(&defaultDACL)), uint32(unsafe.Sizeof(defaultDACL))); err != nil {
+		return fmt.Errorf("set restricted daemon user/logon default DACL: %w", err)
+	}
+	runtime.KeepAlive(descriptor)
+	ownerInfo, err = nativeDaemonTokenInformation(token, windows.TokenOwner)
+	if err != nil {
+		return err
+	}
+	if owner := *(**windows.SID)(unsafe.Pointer(&ownerInfo[0])); owner == nil || !owner.Equals(user.User.Sid) {
+		return errors.New("restricted daemon default owner is not the current user after normalization")
+	}
+	runtime.KeepAlive(ownerInfo)
+	daclInfo, err = nativeDaemonTokenInformation(token, windows.TokenDefaultDacl)
+	if err != nil {
+		return err
+	}
+	verifiedDACL := *(**windows.ACL)(unsafe.Pointer(&daclInfo[0]))
+	if verifiedDACL == nil {
+		return errors.New("restricted daemon default DACL is unrestricted after normalization")
+	}
+	userGrant, err := nativeDaemonDefaultDACLHasUser(verifiedDACL, user.User.Sid)
+	runtime.KeepAlive(daclInfo)
+	if err != nil || !userGrant {
+		return fmt.Errorf("restricted daemon default DACL does not grant its current user full access: present=%v, error=%v", userGrant, err)
+	}
+	t.Logf("restricted daemon token defaults: previousOwnerWasAdministrators=%v previousOwnerWasUser=%v previousUserGenericAllOrNullDACL=%v; verified current-user owner/DACL, enabled logon SID grants=%d",
+		oldOwnerWasAdmin, oldOwnerWasUser, oldUserGrant, logonSIDs)
+	return nil
+}
+
 func nativeUnprivilegedDaemon(t *testing.T, ctx context.Context, binary, home, ui string) (*exec.Cmd, error) {
 	command := process.NewCommand(ctx, "", binary, "daemon", "start")
 	command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+home, "PORTO_UI_DIR="+ui)
@@ -44,6 +170,10 @@ func nativeUnprivilegedDaemon(t *testing.T, ctx context.Context, binary, home, u
 	result, _, callErr := create.Call(uintptr(source), 1, 1, uintptr(unsafe.Pointer(&disabled)), 0, 0, 0, 0, uintptr(unsafe.Pointer(&token)))
 	if result == 0 {
 		return nil, errors.Join(errors.New("CI cannot create a non-administrator daemon token"), callErr)
+	}
+	if err := normalizeNativeDaemonTokenDefaults(t, token); err != nil {
+		token.Close()
+		return nil, err
 	}
 	medium, err := windows.StringToSid("S-1-16-8192")
 	if err != nil {
