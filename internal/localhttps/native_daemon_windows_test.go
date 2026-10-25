@@ -9,9 +9,11 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf16"
 	"unsafe"
 
 	"github.com/mbianchidev/porto/internal/process"
@@ -70,7 +72,7 @@ func nativeUnprivilegedDaemon(t *testing.T, ctx context.Context, binary, home, u
 	return command, nil
 }
 
-func startNativeDaemon(t *testing.T, command *exec.Cmd) (err error) {
+func startNativeDaemon(t *testing.T, ctx context.Context, command *exec.Cmd) (err error) {
 	if command.SysProcAttr.Token == 0 {
 		return command.Start()
 	}
@@ -92,19 +94,14 @@ func startNativeDaemon(t *testing.T, command *exec.Cmd) (err error) {
 	setStation := user32.NewProc("SetProcessWindowStation")
 	createStation := user32.NewProc("CreateWindowStationW")
 	closeStation := user32.NewProc("CloseWindowStation")
-	getDesktop := user32.NewProc("GetThreadDesktop")
-	setDesktop := user32.NewProc("SetThreadDesktop")
 	createDesktop := user32.NewProc("CreateDesktopW")
 	closeDesktop := user32.NewProc("CloseDesktop")
 	oldStation, _, callErr := getStation.Call()
 	if oldStation == 0 {
 		return fmt.Errorf("read daemon test window station: %w", callErr)
 	}
-	oldDesktop, _, callErr := getDesktop.Call(uintptr(windows.GetCurrentThreadId()))
-	if oldDesktop == 0 {
-		return fmt.Errorf("read daemon test desktop: %w", callErr)
-	}
-	name, err := windows.UTF16PtrFromString(fmt.Sprintf("PortoHTTPS-%d-%d", os.Getpid(), time.Now().UnixNano()))
+	stationName := fmt.Sprintf("PortoHTTPS-%d-%d", os.Getpid(), time.Now().UnixNano())
+	name, err := windows.UTF16PtrFromString(stationName)
 	if err != nil {
 		return err
 	}
@@ -120,9 +117,6 @@ func startNativeDaemon(t *testing.T, command *exec.Cmd) (err error) {
 		if result, _, restoreErr := setStation.Call(oldStation); result == 0 {
 			err = errors.Join(err, fmt.Errorf("restore test process station: %w", restoreErr))
 		}
-		if result, _, restoreErr := setDesktop.Call(oldDesktop); result == 0 {
-			err = errors.Join(err, fmt.Errorf("restore test thread desktop: %w", restoreErr))
-		}
 	}()
 	desktopName, _ := windows.UTF16PtrFromString("Default")
 	desktop, _, callErr := createDesktop.Call(uintptr(unsafe.Pointer(desktopName)), 0, 0, 0, 0xf01ff, uintptr(unsafe.Pointer(&attributes)))
@@ -130,10 +124,63 @@ func startNativeDaemon(t *testing.T, command *exec.Cmd) (err error) {
 		return fmt.Errorf("create isolated daemon test desktop: %w", callErr)
 	}
 	t.Cleanup(func() { closeDesktop.Call(desktop) })
-	if result, _, callErr := setDesktop.Call(desktop); result == 0 {
-		return fmt.Errorf("select isolated daemon test desktop: %w", callErr)
-	}
 	// The restricted child cannot use the hosted administrator's desktop ACL.
-	// Give it a private, medium-integrity desktop without changing that ACL.
-	return command.Start()
+	// exec.Cmd cannot set STARTUPINFO.lpDesktop, so start it explicitly on the
+	// private medium-integrity desktop without changing any interactive ACL.
+	privateDesktop, _ := windows.UTF16PtrFromString(stationName + `\Default`)
+	executable, err := windows.UTF16PtrFromString(command.Path)
+	if err != nil {
+		return err
+	}
+	arguments := make([]string, len(command.Args))
+	for n, argument := range command.Args {
+		arguments[n] = syscall.EscapeArg(argument)
+	}
+	line, err := windows.UTF16PtrFromString(strings.Join(arguments, " "))
+	if err != nil {
+		return err
+	}
+	environment := utf16.Encode([]rune(strings.Join(command.Env, "\x00") + "\x00\x00"))
+	input, err := os.Open(os.DevNull)
+	if err != nil {
+		return err
+	}
+	defer input.Close()
+	output, ok := command.Stdout.(*os.File)
+	if !ok || command.Stderr != command.Stdout {
+		return errors.New("native daemon fixture requires one owned log file for both streams")
+	}
+	duplicate := func(file *os.File) (windows.Handle, error) {
+		var handle windows.Handle
+		err := windows.DuplicateHandle(windows.CurrentProcess(), windows.Handle(file.Fd()), windows.CurrentProcess(),
+			&handle, 0, true, windows.DUPLICATE_SAME_ACCESS)
+		return handle, err
+	}
+	inputHandle, err := duplicate(input)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(inputHandle)
+	outputHandle, err := duplicate(output)
+	if err != nil {
+		return err
+	}
+	defer windows.CloseHandle(outputHandle)
+	startup := windows.StartupInfo{Cb: uint32(unsafe.Sizeof(windows.StartupInfo{})), Desktop: privateDesktop,
+		Flags:      windows.STARTF_USESTDHANDLES | windows.STARTF_USESHOWWINDOW,
+		ShowWindow: windows.SW_HIDE, StdInput: inputHandle, StdOutput: outputHandle, StdErr: outputHandle}
+	var information windows.ProcessInformation
+	if err := windows.CreateProcessAsUser(windows.Token(command.SysProcAttr.Token), executable, line, nil, nil,
+		true, command.SysProcAttr.CreationFlags|windows.CREATE_UNICODE_ENVIRONMENT, &environment[0], nil, &startup, &information); err != nil {
+		return fmt.Errorf("start restricted daemon on explicit private desktop: %w", err)
+	}
+	windows.CloseHandle(information.Thread)
+	defer windows.CloseHandle(information.Process)
+	command.Process, err = os.FindProcess(int(information.ProcessId))
+	if err != nil {
+		_ = windows.TerminateProcess(information.Process, 1)
+		return err
+	}
+	go func(process *os.Process) { <-ctx.Done(); _ = process.Kill() }(command.Process)
+	return nil
 }

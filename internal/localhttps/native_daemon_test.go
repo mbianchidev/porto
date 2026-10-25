@@ -140,7 +140,7 @@ func TestNativePortlessHTTPSRealDaemonRestartAndRenewal(t *testing.T) {
 			t.Fatal(err)
 		}
 		process.Stdout, process.Stderr = log, log
-		if err := startNativeDaemon(t, process); err != nil {
+		if err := startNativeDaemon(t, ctx, process); err != nil {
 			log.Close()
 			t.Fatal(err)
 		}
