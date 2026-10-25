@@ -184,7 +184,7 @@ Use **Settings** for runtime and desktop preferences, log retention, and optiona
 
 ## Build from source
 
-Build with a security-patched **Go 1.27.3 or newer** release and **Node.js 22.12 or newer with npm** for the dashboard. Release packages do not need these build tools.
+Build with a security-patched **Go 1.27.3 or newer** release and **Node.js 26 with npm** for the dashboard. Node.js 22.12 remains the compatibility minimum. Release packages do not need these build tools.
 
 ```sh
 git clone https://github.com/mbianchidev/porto.git
