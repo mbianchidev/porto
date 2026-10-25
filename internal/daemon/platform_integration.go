@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"runtime"
 	"strings"
@@ -47,7 +48,7 @@ func integrationJSON(w http.ResponseWriter, r *http.Request, value any) bool {
 	return true
 }
 
-func (s *Server) getNetworking(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) getNetworking(w http.ResponseWriter, r *http.Request) {
 	certificatePath, _, err := config.CertificatePaths()
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -59,10 +60,20 @@ func (s *Server) getNetworking(w http.ResponseWriter, _ *http.Request) {
 		proxy.Message = err.Error()
 	}
 	engineNetwork, engineErr := s.docker.NetworkConfigurationStatus()
+	if windowsContainerMode(r) {
+		var status struct {
+			Configured bool   `json:"configured"`
+			Generation string `json:"generation"`
+		}
+		engineErr = s.windowsJSON(r.Context(), "/api/worker/networking", &status)
+		generation, generationErr := s.networking.Generation()
+		engineErr = errors.Join(engineErr, generationErr)
+		engineNetwork = map[string]any{"configured": status.Configured, "needsApply": !status.Configured || status.Generation != generation, "backend": "windows"}
+	}
 	if engineErr != nil {
 		slog.Warn("Engine networking state is unavailable", "error", engineErr)
 	}
-	routes, warnings := containerHTTPRoutes(s.docker.ContainerSnapshot())
+	routes, warnings := backendHTTPRoutes(s.docker.ContainerSnapshot(), s.nativeContainerSnapshot(r.Context(), false))
 	routeList := make([]containerHTTPRoute, 0, len(routes))
 	for _, route := range routes {
 		routeList = append(routeList, route)
@@ -105,6 +116,10 @@ func (s *Server) setNetworkProxy(w http.ResponseWriter, r *http.Request) {
 		writeRuntimeError(w, err)
 		return
 	}
+	if _, err := s.syncNativeNetworking(r.Context()); err != nil {
+		http.Error(w, "Settings saved, but native networking needs applying: "+networking.Redact(err.Error()), http.StatusServiceUnavailable)
+		return
+	}
 	status, err := s.networking.Snapshot()
 	if err != nil {
 		writeRuntimeError(w, err)
@@ -116,13 +131,31 @@ func (s *Server) setNetworkProxy(w http.ResponseWriter, r *http.Request) {
 func (s *Server) networkConnectivity(w http.ResponseWriter, r *http.Request) {
 	host := networking.InspectHost(r.Context())
 	snapshot := s.docker.ContainerSnapshot()
+	native := windowsContainerMode(r)
+	listNetworks := s.docker.Networks
+	inspectNetwork := s.docker.InspectNetwork
+	if native {
+		snapshot = s.nativeContainerSnapshot(r.Context(), true)
+		listNetworks = func(ctx context.Context) ([]portodocker.Network, error) {
+			var networks []portodocker.Network
+			err := s.windowsJSON(ctx, "/api/docker/networks", &networks)
+			return networks, err
+		}
+		inspectNetwork = func(ctx context.Context, id string) (json.RawMessage, error) {
+			var document json.RawMessage
+			err := s.windowsJSON(ctx, "/api/docker/networks/"+url.PathEscape(id), &document)
+			return document, err
+		}
+	}
 	capability := networking.Capability{Message: snapshot.Message}
 	if snapshot.Available && !snapshot.Stale {
 		backend := "local"
 		if strings.Contains(strings.ToLower(snapshot.Backend), "lima") {
 			backend = "lima"
 		}
-		if backend == "lima" {
+		if native {
+			capability = networking.DirectIPCapability(runtime.GOOS, "windows", false)
+		} else if backend == "lima" {
 			capability = networking.DirectIPCapability(runtime.GOOS, backend, true)
 		} else {
 			info, err := s.docker.BackendInfo(r.Context())
@@ -139,12 +172,12 @@ func (s *Server) networkConnectivity(w http.ResponseWriter, r *http.Request) {
 	}
 	networks := []map[string]any{}
 	if snapshot.Available && !snapshot.Stale {
-		listed, err := s.docker.Networks(r.Context())
+		listed, err := listNetworks(r.Context())
 		if err != nil {
 			host.Warnings = append(host.Warnings, "List workload subnets: "+err.Error())
 		} else {
 			for _, network := range listed {
-				document, err := s.docker.InspectNetwork(r.Context(), network.ID)
+				document, err := inspectNetwork(r.Context(), network.ID)
 				if err != nil {
 					host.Warnings = append(host.Warnings, "Inspect network "+network.Name+": "+err.Error())
 					continue
@@ -279,6 +312,19 @@ func (s *Server) applyEngineNetworking(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.endRuntimeOperation()
+	if windowsContainerMode(r) {
+		applied, err := s.syncNativeNetworking(r.Context())
+		if err != nil {
+			writeRuntimeError(w, err)
+			return
+		}
+		if !applied {
+			http.Error(w, "Start the explicitly selected native Windows runtime before applying its networking", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, map[string]string{"message": "Applied native Windows proxy and registry trust through the owned pipe; workload trust was not changed"})
+		return
+	}
 	if err := s.docker.ApplyNetworking(r.Context()); err != nil {
 		writeRuntimeError(w, err)
 		return

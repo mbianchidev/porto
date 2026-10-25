@@ -134,6 +134,9 @@ type Server struct {
 	platformCommand    func(context.Context, ...string) error
 	networkRoutesMu    sync.RWMutex
 	networkRoutes      map[string]containerHTTPRoute
+
+	nativeRouteSnapshot portodocker.ContainerSnapshot
+	nativeRouteUpdated  time.Time
 }
 
 var (

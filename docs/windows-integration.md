@@ -47,6 +47,9 @@ maintained containerd/runhcs SDK, without executing the workload. Only an
 explicit start allocates its owned network endpoint and starts the task. Native
 logs, exec and TTY streams use protected Windows named pipes and the runhcs
 console, not the experimental Windows `nerdctl create` implementation.
+The dashboard WebSocket terminal uses the same maintained SDK exec path,
+including console resize, actual exec exit codes and disconnect reaping.
+Closing it does not stop container init or a different interactive exec.
 
 `porto docker windows context` explicitly selects the native CLI context.
 Changing **Container backend view** only changes the dashboard view: open
@@ -76,6 +79,16 @@ Active native workloads prevent unsafe stop/update/removal. Removal keeps
 native images, containers and volume data, and does not delete or interrupt the
 Linux engine, WSL distributions or unrelated services/networks. A conflicting
 service identity or ownership marker is an error, not permission to adopt it.
+The disposable Windows development-client gate keeps an actual Linux workload
+and binary volume dataset alive during native installation, an independently
+built changed-binary update, repair, context changes and removal. It checks
+unchanged Linux PID/start identity and new workload reads/writes, not only an
+engine metadata sentinel.
+
+Native registry proxy and CA settings cross the owned pipe from the owning
+user and are DPAPI-encrypted at rest. See
+[native Windows registry networking](networking.md#native-windows-registry-networking)
+for explicit apply and repair commands.
 
 The Windows AMD64 package includes checksum-pinned source builds of containerd,
 the maintained runhcs shim, nerdctl and Windows CNI plugins. They use a patched

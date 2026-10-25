@@ -23,6 +23,7 @@ import (
 	"unsafe"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/process"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
@@ -267,7 +268,10 @@ func Action(ctx context.Context, action string) error {
 	}
 	arguments := []string{"windows-containers-elevated", action, i.OwnerSID, source, bundle}
 	if windows.GetCurrentProcessToken().IsElevated() {
-		return RootAction(ctx, action, i.OwnerSID, source, bundle)
+		if err := RootAction(ctx, action, i.OwnerSID, source, bundle); err != nil {
+			return err
+		}
+		return synchronizeNetworking(ctx, action)
 	}
 	system, err := windows.GetSystemDirectory()
 	if err != nil {
@@ -286,6 +290,28 @@ func Action(ctx context.Context, action string) error {
 	command.Env = systemEnvironment(i)
 	if output, err := command.CombinedOutput(); err != nil {
 		return fmt.Errorf("explicitly elevated native Windows %s: %w: %s", action, err, output)
+	}
+	return synchronizeNetworking(ctx, action)
+}
+
+func synchronizeNetworking(ctx context.Context, action string) error {
+	if action != "install" && action != "start" {
+		return nil
+	}
+	manager, err := networking.Default()
+	if err != nil {
+		return err
+	}
+	configuration, err := manager.ExportRuntime()
+	if err != nil {
+		return fmt.Errorf("native runtime started, but owner networking could not be resolved: %w", err)
+	}
+	applied, err := ConfigureNetworking(ctx, configuration)
+	if err != nil {
+		return err
+	}
+	if !applied {
+		return errors.New("native runtime started but its networking configuration was not acknowledged; retry start")
 	}
 	return nil
 }

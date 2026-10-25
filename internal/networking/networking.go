@@ -65,6 +65,7 @@ type Manager struct {
 	root    string
 	secrets secretStore
 	system  func() (Config, string, error)
+	runtime *RuntimeConfiguration
 }
 
 func New(root string) *Manager {
@@ -214,6 +215,9 @@ func parseProxy(value string) (*url.URL, error) {
 }
 
 func (m *Manager) resolved() (Config, string, error) {
+	if m.runtime != nil {
+		return m.runtime.Config, "native owner configuration", nil
+	}
 	stored, err := m.load()
 	if err != nil {
 		return Config{}, "", err
@@ -349,23 +353,17 @@ func (m *Manager) Transport() (*http.Transport, error) {
 	}
 	transport := base.Clone()
 	transport.Proxy = func(request *http.Request) (*url.URL, error) { return m.ProxyForURL(request.URL) }
-	stored, err := m.load()
+	bundle, err := m.registryBundle()
 	if err != nil {
 		return nil, err
 	}
-	if len(stored.RegistryCAs) > 0 {
+	if len(bundle) > 0 {
 		roots, err := x509.SystemCertPool()
 		if err != nil {
 			return nil, fmt.Errorf("read system certificate trust: %w", err)
 		}
-		for _, reference := range stored.RegistryCAs {
-			data, err := m.readRegistryCA(reference)
-			if err != nil {
-				return nil, err
-			}
-			if !roots.AppendCertsFromPEM(data) {
-				return nil, errors.New("registry CA bundle does not contain certificates")
-			}
+		if !roots.AppendCertsFromPEM(bundle) {
+			return nil, errors.New("registry CA bundle does not contain certificates")
 		}
 		transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: roots}
 	}
@@ -409,20 +407,39 @@ func Redact(value string) string {
 	return credentialURL.ReplaceAllString(value, "$1://[redacted]@")
 }
 
-type RegistryTransport struct{}
+type RegistryTransport struct {
+	Manager *Manager
+	Policy  func() *Manager
+}
 
-func (RegistryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	manager, err := Default()
-	if err != nil {
-		return nil, err
+func (registry RegistryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
+	manager := registry.Manager
+	if registry.Policy != nil {
+		manager = registry.Policy()
+	}
+	if manager == nil {
+		var err error
+		manager, err = Default()
+		if err != nil {
+			return nil, err
+		}
 	}
 	transport, err := manager.Transport()
 	if err != nil {
 		return nil, err
 	}
 	transport.DisableKeepAlives = true
-	return transport.RoundTrip(request)
+	response, err := transport.RoundTrip(request)
+	if err != nil {
+		return response, registryTransportError{err}
+	}
+	return response, nil
 }
+
+type registryTransportError struct{ cause error }
+
+func (err registryTransportError) Error() string { return Redact(err.cause.Error()) }
+func (err registryTransportError) Unwrap() error { return err.cause }
 
 func errorsPAC() error {
 	return errors.New("automatic PAC/WPAD proxies require a compatible external resolver; configure explicit HTTP/HTTPS/SOCKS proxies and bypass rules in Porto, or explicitly choose proxy off")

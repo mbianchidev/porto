@@ -10,6 +10,7 @@ import (
 	"net/http/httputil"
 	"net/url"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -21,6 +22,7 @@ import (
 var routeDNSLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
 
 type containerHTTPRoute struct {
+	Backend     string `json:"backend"`
 	ContainerID string `json:"containerId"`
 	Name        string `json:"name"`
 	Hostname    string `json:"hostname"`
@@ -93,12 +95,56 @@ func containerHTTPRoutes(snapshot portodocker.ContainerSnapshot) (map[string]con
 	return routes, warnings
 }
 
+func backendHTTPRoutes(linux, native portodocker.ContainerSnapshot) (map[string]containerHTTPRoute, []string) {
+	result, warnings := map[string]containerHTTPRoute{}, []string{}
+	conflicts := map[string]bool{}
+	for _, source := range []struct {
+		name     string
+		snapshot portodocker.ContainerSnapshot
+	}{{"linux", linux}, {"windows", native}} {
+		routes, messages := containerHTTPRoutes(source.snapshot)
+		warnings = append(warnings, messages...)
+		for hostname, route := range routes {
+			if _, exists := result[hostname]; exists {
+				delete(result, hostname)
+				conflicts[hostname] = true
+				warnings = append(warnings, "Both Linux and Windows claim "+hostname+"; choose distinct dev.porto.hostname labels")
+			}
+			if !conflicts[hostname] {
+				route.Backend = source.name
+				result[hostname] = route
+			}
+		}
+	}
+	return result, warnings
+}
+
+func (s *Server) nativeContainerSnapshot(ctx context.Context, fresh bool) portodocker.ContainerSnapshot {
+	if runtime.GOOS != "windows" && s.windowsTransport == nil {
+		return portodocker.ContainerSnapshot{Message: "Native Windows containers are unavailable on this host"}
+	}
+	s.networkRoutesMu.RLock()
+	cached, updated := s.nativeRouteSnapshot, s.nativeRouteUpdated
+	s.networkRoutesMu.RUnlock()
+	if !fresh && time.Since(updated) < 5*time.Second {
+		return cached
+	}
+	var snapshot portodocker.ContainerSnapshot
+	if err := s.windowsJSON(ctx, "/api/docker/containers/snapshot", &snapshot); err != nil {
+		snapshot = portodocker.ContainerSnapshot{Message: err.Error()}
+	}
+	s.networkRoutesMu.Lock()
+	s.nativeRouteSnapshot, s.nativeRouteUpdated = snapshot, time.Now()
+	s.networkRoutesMu.Unlock()
+	return snapshot
+}
+
 func (s *Server) watchContainerRoutes(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
 		snapshot := s.docker.ContainerSnapshot()
-		routes, warnings := containerHTTPRoutes(snapshot)
+		routes, warnings := backendHTTPRoutes(snapshot, s.nativeContainerSnapshot(ctx, false))
 		s.networkRoutesMu.Lock()
 		changed := !maps.Equal(s.networkRoutes, routes)
 		s.networkRoutes = routes
@@ -126,9 +172,13 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 	if !exists {
 		return false
 	}
-	current, _ := containerHTTPRoutes(s.docker.ContainerSnapshot())
+	current, _ := backendHTTPRoutes(s.docker.ContainerSnapshot(), s.nativeContainerSnapshot(r.Context(), true))
 	live, exists := current[hostname]
-	if !exists || live.ContainerID != route.ContainerID || live.Host != route.Host || live.Port != route.Port {
+	backend := route.Backend
+	if backend == "" {
+		backend = "linux"
+	}
+	if !exists || live.Backend != backend || live.ContainerID != route.ContainerID || live.Host != route.Host || live.Port != route.Port {
 		http.Error(w, "container route ownership changed or the engine is unavailable; wait for a fresh inventory", http.StatusServiceUnavailable)
 		return true
 	}

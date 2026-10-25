@@ -30,6 +30,9 @@ func (m *Manager) Generation() (string, error) {
 }
 
 func (m *Manager) registryBundle() ([]byte, error) {
+	if m.runtime != nil {
+		return append([]byte(nil), m.runtime.CAPEM...), nil
+	}
 	stored, err := m.load()
 	if err != nil {
 		return nil, err
@@ -95,6 +98,9 @@ func (m *Manager) hostRegistryEnvironment() ([]string, error) {
 		return nil, err
 	}
 	path := filepath.Join(m.root, "network-certificates", "runtime-roots.pem")
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return nil, err
+	}
 	if inherited := os.Getenv("SSL_CERT_FILE"); inherited != "" && inherited != path {
 		existing, err := os.ReadFile(inherited)
 		if err != nil {

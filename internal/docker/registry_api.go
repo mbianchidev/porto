@@ -20,9 +20,17 @@ import (
 const maxRegistrySearchResults = 100
 
 func registryHTTPClient() *http.Client {
+	return registryHTTPClientWithPolicy(nil)
+}
+
+func registryHTTPClientWithPolicy(policy *networking.Manager) *http.Client {
+	return registryHTTPClientWithTransport(networking.RegistryTransport{Manager: policy})
+}
+
+func registryHTTPClientWithTransport(transport http.RoundTripper) *http.Client {
 	return &http.Client{
 		Timeout:   30 * time.Second,
-		Transport: httpsRegistryTransport{networking.RegistryTransport{}},
+		Transport: httpsRegistryTransport{transport},
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if request.URL.Scheme != "https" || len(via) >= 5 {
 				return errors.New("registry redirect must use HTTPS and stay within five redirects")

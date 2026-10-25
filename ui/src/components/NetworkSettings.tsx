@@ -4,6 +4,7 @@ import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import type { CertificateImport, ConnectivityReport, NetworkStatus, ProxyConfig, ProxyStatus } from '../platformTypes'
 import { useMessages } from '../useMessages'
+import { useDockerMode } from '../dockerMode'
 
 function editableProxy(proxy: ProxyStatus): ProxyConfig {
   return {
@@ -13,6 +14,7 @@ function editableProxy(proxy: ProxyStatus): ProxyConfig {
 }
 
 export function NetworkSettings() {
+  const mode = useDockerMode()
   const { notifyError, notifyNotice } = useMessages()
   const network = usePolledResource(async (signal) => {
     const status = await apiGet<NetworkStatus>('/api/networking', signal)
@@ -20,7 +22,7 @@ export function NetworkSettings() {
       throw new Error('Networking state is unavailable. Restart the matching Porto daemon, then refresh.')
     }
     return status
-  }, 15000, [], 'platform:networking')
+  }, 15000, [mode], `platform:networking:${mode}`)
   const [prior, setPrior] = useState<NetworkStatus | null>(null)
   const [draft, setDraft] = useState<ProxyConfig | null>(null)
   const [dirty, setDirty] = useState(false)
@@ -88,7 +90,9 @@ export function NetworkSettings() {
   }
 
   function apply() {
-    if (!window.confirm('Apply proxy and registry CA settings to Porto\'s owned engine? This restarts only its idle BuildKit service. Active builds block the change. Workload trust stores are not modified.')) return
+    if (!window.confirm(mode === 'windows'
+      ? 'Apply proxy and registry CA settings to the native Windows runtime through its owned pipe? Proxy credentials remain encrypted at rest; workloads and Linux engines are not restarted.'
+      : 'Apply proxy and registry CA settings to Porto\'s owned engine? This restarts only its idle BuildKit service. Active builds block the change. Workload trust stores are not modified.')) return
     void perform(async () => {
       await apiSend('/api/networking/apply', 'POST')
       network.reload()
@@ -191,7 +195,9 @@ export function NetworkSettings() {
                 </label>
                 <div className="platformActions">
                   <button type="submit" disabled={busy}>Save network settings</button>
-                  <button type="button" disabled={busy || dirty || !status.engine?.configured} onClick={apply}>Apply to owned engine</button>
+                  <button type="button" disabled={busy || dirty || (mode !== 'windows' && !status.engine?.configured)} onClick={apply}>
+                    {mode === 'windows' ? 'Apply to native Windows' : 'Apply to owned engine'}
+                  </button>
                 </div>
               </form>
             )}

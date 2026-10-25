@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/windowscontainers"
 	"github.com/mbianchidev/porto/internal/wsl"
@@ -46,7 +47,7 @@ func NewAPI(manager *Manager, socketPath string) *API {
 		manager: manager, socketPath: socketPath, mux: http.NewServeMux(),
 		attaches:       make(map[string]*containerAttachSession),
 		execs:          make(map[string]*execInstance),
-		registryClient: registryHTTPClient(),
+		registryClient: registryHTTPClientWithTransport(networking.RegistryTransport{Policy: manager.NetworkPolicy}),
 	}
 	api.routes()
 	return api

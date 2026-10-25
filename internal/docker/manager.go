@@ -19,6 +19,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -92,6 +93,7 @@ type Manager struct {
 	containerNameMu           *sync.Mutex
 	registryAuthMu            sync.RWMutex
 	registryAuth              RegistryAuthResolver
+	networkPolicy             *networking.Manager
 	fileDescriptorReader      func(context.Context, string, string) (runtimefiles.Descriptor, error)
 	metricHistoryMu           sync.Mutex
 	metricHistory             map[string][]InspectorStatsPoint
@@ -2162,6 +2164,13 @@ func (m *Manager) PullImageWithAuth(
 			return fmt.Errorf("resolve registry credentials for %q: %w", normalized, err)
 		}
 	}
+	configured, err := m.configuredRegistryTransport()
+	if err != nil {
+		return err
+	}
+	if configured {
+		return m.pullConfiguredImage(ctx, normalized, platform, registryAuth)
+	}
 	config, authenticated, err := registryDockerConfig(normalized, registryAuth)
 	if err != nil {
 		return err
@@ -2427,6 +2436,10 @@ DOCKER_CONFIG="$config_dir" "$@"
 		return nil, fmt.Errorf("protect temporary registry auth config: %w", err)
 	}
 	commandArgs := append(append([]string(nil), backend.prefix...), args...)
+	commandArgs, err = m.networkCommandArgs(backend, commandArgs)
+	if err != nil {
+		return nil, err
+	}
 	return m.runCommandWithEnv(
 		ctx,
 		timeout,
@@ -2513,6 +2526,7 @@ func (m *Manager) runStreamingCommand(
 	command runtimes.Command,
 	emit func(runtimes.OutputChunk) error,
 ) error {
+	command.NetworkPolicy = m.NetworkPolicy()
 	runner, ok := m.runner.(streamingRunner)
 	if !ok {
 		return fmt.Errorf("%w: streaming stdout and stderr capture", ErrUnsupported)
@@ -2567,10 +2581,11 @@ func (m *Manager) runCommandWithEnv(
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	output, err := m.runner.Run(commandContext, runtimes.Command{
-		Name:  name,
-		Args:  args,
-		Env:   environment,
-		Stdin: stdin,
+		Name:          name,
+		Args:          args,
+		Env:           environment,
+		Stdin:         stdin,
+		NetworkPolicy: m.NetworkPolicy(),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, runtimes.CommandError(

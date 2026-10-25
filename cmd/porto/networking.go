@@ -10,14 +10,16 @@ import (
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/localhttps"
 	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
 
 func networkingCmd(args []string) error {
 	if len(args) == 0 {
 		args = []string{"status"}
 	}
-	if len(args) != 1 {
-		return errors.New("usage: porto networking status|configure|ca-import|apply|inspect")
+	native := len(args) == 2 && args[1] == "--windows" && (args[0] == "apply" || args[0] == "inspect" || args[0] == "status")
+	if len(args) != 1 && !native {
+		return errors.New("usage: porto networking status|configure|ca-import|apply|inspect [--windows]")
 	}
 	manager, err := networking.Default()
 	if err != nil {
@@ -36,6 +38,9 @@ func networkingCmd(args []string) error {
 		return writeOutput(certificate)
 	case "status":
 		if daemonUp() {
+			if native {
+				return runtimeGET("/api/networking?containerMode=windows")
+			}
 			return runtimeGET("/api/networking")
 		}
 		proxy, err := manager.Snapshot()
@@ -60,15 +65,28 @@ func networkingCmd(args []string) error {
 		if err := manager.Save(configuration); err != nil {
 			return err
 		}
+		resolved, err := manager.ExportRuntime()
+		if err != nil {
+			return err
+		}
+		if _, err := windowscontainers.ConfigureNetworking(context.Background(), resolved); err != nil {
+			return err
+		}
 		status, err := manager.Snapshot()
 		if err != nil {
 			return err
 		}
 		return writeOutput(status)
 	case "apply":
+		if native {
+			return runtimePOST("/api/networking/apply?containerMode=windows", nil)
+		}
 		return runtimePOST("/api/networking/apply", nil)
 	case "inspect":
 		if daemonUp() {
+			if native {
+				return runtimeGET("/api/networking/connectivity?containerMode=windows")
+			}
 			return runtimeGET("/api/networking/connectivity")
 		}
 		return writeOutput(networking.InspectHost(context.Background()))

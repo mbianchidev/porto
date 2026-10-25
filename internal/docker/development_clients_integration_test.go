@@ -80,6 +80,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		case <-time.After(50 * time.Millisecond):
 		}
 	}
+	testDevelopmentNetworking(t, ctx, manager)
 	host := startDockerTestAPI(t, manager)
 	client := dockerSDKClient(t, host)
 	root, err := filepath.Abs(filepath.Join("..", ".."))
@@ -262,6 +263,7 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+	assertDevelopmentPrivateIPHTTP(t, ctx, manager, client, backend, registryName)
 	registryTag = "127.0.0.1:" + port + "/" + suite + ":v1"
 	runDocker("tag", image, registryTag)
 	runDocker("push", registryTag)
@@ -276,10 +278,81 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatalf("Dev Containers/Testcontainers workflows: %v", err)
 	}
 	t.Log("real Testcontainers and Dev Containers workflows completed")
+	if os.Getenv("PORTO_TEST_WINDOWS_COEXISTENCE") == "1" {
+		t.Run("native-Windows-live-Linux-coexistence", func(t *testing.T) {
+			testWindowsLinuxCoexistence(t, ctx, manager, host, image, suite, workspace)
+		})
+	}
 	if os.Getenv("PORTO_TEST_WSL_ROOTFS") != "" {
 		t.Run("selected-distribution-WSL", func(t *testing.T) {
 			testWSLDevelopmentWorkflow(t, ctx, manager, image, suite)
 		})
+	}
+}
+
+func assertDevelopmentPrivateIPHTTP(t *testing.T, parent context.Context, manager *Manager, client *dockerclient.Client, backend, registryName string) {
+	t.Helper()
+	if backend != "local" {
+		t.Log("direct host-to-container private-IP HTTP is unsupported for Lima guests; published-port reachability is tested separately")
+		return
+	}
+	ctx, cancel := context.WithTimeout(parent, 30*time.Second)
+	defer cancel()
+	info, err := manager.BackendInfo(ctx)
+	if err != nil || info.SecurityOptions == nil {
+		t.Fatalf("cannot verify the actual local backend's rootful/rootless security mode: %+v, %v", info.SecurityOptions, err)
+	}
+	for _, option := range info.SecurityOptions {
+		if strings.Contains(strings.ToLower(option), "rootless") {
+			t.Log("direct host-to-container private-IP HTTP is unsupported for the verified rootless backend; no host routes are added")
+			return
+		}
+	}
+	inspected, err := client.ContainerInspect(ctx, registryName, dockerclient.ContainerInspectOptions{})
+	if err != nil || inspected.Container.State == nil || !inspected.Container.State.Running || inspected.Container.NetworkSettings == nil {
+		t.Fatalf("rootful private-IP target is not the already-running synthetic registry: %+v, %v", inspected, err)
+	}
+	var privateIP string
+	for _, endpoint := range inspected.Container.NetworkSettings.Networks {
+		if endpoint != nil && endpoint.IPAddress.Is4() && endpoint.IPAddress.IsPrivate() {
+			privateIP = endpoint.IPAddress.String()
+			break
+		}
+	}
+	if privateIP == "" {
+		t.Fatalf("rootful synthetic registry has no real private IPv4 address: %+v", inspected.Container.NetworkSettings.Networks)
+	}
+	address := "http://" + net.JoinHostPort(privateIP, "5000") + "/v2/"
+	direct := &http.Client{Timeout: 2 * time.Second, Transport: &http.Transport{Proxy: nil}}
+	defer direct.CloseIdleConnections()
+	var last error
+	for {
+		request, err := http.NewRequestWithContext(ctx, http.MethodGet, address, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response, err := direct.Do(request)
+		if err == nil {
+			data, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+			response.Body.Close()
+			if readErr == nil && response.StatusCode == http.StatusOK &&
+				response.Header.Get("Docker-Distribution-Api-Version") == "registry/2.0" && strings.TrimSpace(string(data)) == "{}" {
+				t.Logf("real rootful Linux host reached synthetic registry %s directly at container private IP %s:5000, without host-port forwarding or proxying",
+					inspected.Container.ID, privateIP)
+				return
+			}
+			last = errors.New("private-IP registry response: " + response.Status + ", body=" + string(data))
+			if readErr != nil {
+				last = readErr
+			}
+		} else {
+			last = err
+		}
+		select {
+		case <-ctx.Done():
+			t.Fatalf("supported rootful Linux direct private-IP HTTP did not work at %s: %v", address, last)
+		case <-time.After(200 * time.Millisecond):
+		}
 	}
 }
 

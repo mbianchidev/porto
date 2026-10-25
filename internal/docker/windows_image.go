@@ -2,17 +2,15 @@ package docker
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"strings"
+	"time"
 
 	"github.com/containerd/containerd/v2/core/remotes"
-	registrydocker "github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/registries"
 	"github.com/mbianchidev/porto/internal/windowscontainers"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
@@ -171,57 +169,17 @@ func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform strin
 }
 
 func (m *Manager) resolveWindowsImage(ctx context.Context, image string, auth *RegistryAuth) (windowscontainers.ImagePlatform, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	name, err := reference.ParseNormalizedNamed(image)
 	if err != nil {
 		return windowscontainers.ImagePlatform{}, "", err
 	}
 	name = reference.TagNameOnly(name)
-	username, secret := "", ""
-	if auth != nil {
-		if auth.RegistryToken != "" {
-			return windowscontainers.ImagePlatform{}, "", fmt.Errorf("%w: raw registry tokens for native image preflight", ErrUnsupported)
-		}
-		username, secret = auth.Username, auth.Password
-		if auth.Auth != "" {
-			decoded, err := base64.StdEncoding.DecodeString(auth.Auth)
-			if err != nil {
-				return windowscontainers.ImagePlatform{}, "", err
-			}
-			var ok bool
-			username, secret, ok = strings.Cut(string(decoded), ":")
-			if !ok {
-				return windowscontainers.ImagePlatform{}, "", errors.New("invalid registry authentication")
-			}
-		}
-		if auth.IdentityToken != "" {
-			username, secret = "", auth.IdentityToken
-		}
-	}
-	registry, err := registries.ServerForImage(image)
+	resolver, err := m.ownerRegistryResolver(image, auth)
 	if err != nil {
 		return windowscontainers.ImagePlatform{}, "", err
 	}
-	if auth != nil && auth.ServerAddress != "" {
-		server, err := registries.NormalizeServer(auth.ServerAddress)
-		if err != nil || server != registry {
-			return windowscontainers.ImagePlatform{}, "", errors.New("image preflight credentials do not belong to this registry")
-		}
-	}
-	allowedHost := reference.Domain(name)
-	if allowedHost == "docker.io" {
-		allowedHost = "registry-1.docker.io"
-	}
-	client := registryHTTPClient()
-	defer client.CloseIdleConnections()
-	resolver := registrydocker.NewResolver(registrydocker.ResolverOptions{
-		Client: client,
-		Credentials: func(host string) (string, string, error) {
-			if host != allowedHost {
-				return "", "", errors.New("image preflight requested credentials for another registry")
-			}
-			return username, secret, nil
-		},
-	})
 	resolved, descriptor, err := resolver.Resolve(ctx, name.String())
 	if err != nil {
 		return windowscontainers.ImagePlatform{}, "", err

@@ -407,26 +407,30 @@ func (m *Manager) validateWindowsStart(ctx context.Context, id string) error {
 	return m.windows.installation.Host.ValidateImage(image, isolation)
 }
 
-func (m *Manager) windowsTerminalCommand(ctx context.Context, id, shell string, debug bool) (*exec.Cmd, error) {
+func (m *Manager) StartWindowsContainerTerminal(ctx context.Context, id, shell string, debug bool) (runtimes.Process, error) {
+	if !m.IsNativeWindows() {
+		return nil, fmt.Errorf("%w: this terminal factory requires the native Windows manager", ErrUnsupported)
+	}
 	if debug {
 		return nil, fmt.Errorf("%w: Linux debug sidecars on native Windows", ErrUnsupported)
 	}
-	if shell == "" {
-		shell = "cmd.exe"
-	}
 	switch strings.ToLower(shell) {
-	case "cmd", "cmd.exe", "powershell", "powershell.exe":
+	case "", "cmd", "cmd.exe":
+		shell = "cmd.exe"
+	case "powershell", "powershell.exe":
+		shell = "powershell.exe"
 	default:
 		return nil, errors.New("native Windows container shell must be cmd.exe or powershell.exe")
 	}
-	backend, err := m.backend(ctx)
-	if err != nil {
-		return nil, err
-	}
-	args := append(append([]string(nil), backend.prefix...), "exec", "--interactive", "--tty", id, shell)
-	command := exec.CommandContext(ctx, backend.name, args...)
-	command.Env = os.Environ()
-	return command, nil
+	return m.StartExec(ctx, ExecRequest{
+		ContainerID: id, Command: []string{shell}, TTY: true,
+		AttachStdin: true, AttachStdout: true, AttachStderr: true,
+		ConsoleSize: [2]uint{32, 120},
+	})
+}
+
+func (m *Manager) windowsTerminalCommand(context.Context, string, string, bool) (*exec.Cmd, error) {
+	return nil, fmt.Errorf("%w: native Windows terminals require SDK exec, not a host PTY command", ErrUnsupported)
 }
 
 func nativeWindowsUnsupported(path, method string) bool {
@@ -479,7 +483,9 @@ func (m *Manager) pullWindowsImage(ctx context.Context, reference, platform stri
 		return err
 	}
 	args := []string{"pull", "--platform", "windows/amd64", pinned}
-	if authenticated {
+	if m.NetworkPolicy() != nil {
+		err = m.pullConfiguredImage(ctx, pinned, "windows/amd64", auth)
+	} else if authenticated {
 		_, err = m.runBackendWithDockerConfig(ctx, backend, 30*time.Minute, "pull native Windows image", config, args...)
 	} else {
 		_, err = m.runBackend(ctx, backend, 30*time.Minute, "pull native Windows image", nil, args...)

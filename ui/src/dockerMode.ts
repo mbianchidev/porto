@@ -49,7 +49,8 @@ if (typeof window !== 'undefined') {
 }
 
 export function isDockerModePath(pathname: string) {
-  return pathname === '/api/runtime' || pathname === '/api/docker' || pathname.startsWith('/api/docker/')
+  return pathname === '/api/runtime' || pathname === '/api/docker' || pathname.startsWith('/api/docker/') ||
+    pathname === '/api/networking' || pathname.startsWith('/api/networking/')
 }
 
 export function dockerModeURL(input: string, selected?: DockerMode): string {

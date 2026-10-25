@@ -345,6 +345,7 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 	}
 	anonymousPipeDenied(t, installed.Pipe())
 	anonymousPipeDenied(t, installed.ContainerdPipe())
+	testNativeWindowsNetworking(t, ctx, installed)
 	createdNetwork := request("POST", "/networks/create", map[string]any{
 		"Name": "synthetic-native-network", "Driver": "nat",
 		"IPAM": map[string]any{"Config": []map[string]string{{"Subnet": "10.252.239.0/24"}}}}, http.StatusCreated)
@@ -479,6 +480,9 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 		t.Fatalf("native exec lost nonzero exit code: %+v, %v, %v", failState, err, failCopyErr)
 	}
 	runNativeTTYExec(t, ctx, docker, container.ID)
+	t.Run("dashboard-WebSocket", func(t *testing.T) {
+		runNativeDashboardWebSocket(t, ctx, installed, docker, container.ID)
+	})
 	content, err = os.ReadFile(filepath.Join(bind, "exec.txt"))
 	if err != nil || string(content) != "native-exec-write" {
 		t.Fatalf("native exec bind write = %s, %v", content, err)

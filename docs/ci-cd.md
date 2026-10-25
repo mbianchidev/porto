@@ -58,6 +58,29 @@ configuration IDs remain distinct from manifest targets across listing,
 inspection, tagging and creation. Unsupported hosts/architectures have
 unit and capability gates, not an x64 binary fallback.
 
+The native fixture also exercises the actual dashboard WebSocket against SDK
+execs, including exact nonzero exit, resize, process/exec-metadata reaping and an
+unrelated interactive exec that must survive. The Windows development-client
+row enables `PORTO_TEST_WINDOWS_COEXISTENCE=1` against its already running owned
+Linux engine, preserving live PID/start identity and exact binary volume data
+through native install, changed-binary update, repair and context changes.
+
+Networking acceptance uses loopback-only synthetic TLS registries and real
+HTTP, HTTPS and SOCKS proxies on every existing development-client backend.
+It verifies custom CA trust and its removal, proxy transitions and local
+bypass; rootful local Linux additionally requests a real container private IP.
+Unit transport gates run on Linux, macOS and Windows and exercise changing
+resolver answers without modifying host DNS. Expired/near-expiry leaf fixtures
+verify recovery without replacing the trusted CA.
+
+Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
+not only a substitute TLS server. Only its helper installation is elevated;
+the daemon runs under the original Unix user or a restricted Windows token.
+The macOS row uses the existing launchd/login-keychain integration and installed
+Chrome, with noninteractive sudo only for the existing root install/uninstall
+entry points. Required native cases fail on unavailable trust/authorization
+instead of disabling TLS checks or silently passing.
+
 The native payload is built from checksum-pinned official source archives with
 Go 1.27.3 or newer and patched crypto/network/sys/logging/gRPC dependencies.
 This avoids newly shipping old upstream executable toolchains or the CNI

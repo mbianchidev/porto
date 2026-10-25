@@ -101,7 +101,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-2025, windows-11-arm]
+        os: [ubuntu-latest, macos-latest, windows-2025, windows-11-arm]
     env:
       CGO_ENABLED: '0'
     steps:
@@ -153,6 +153,17 @@ jobs:
           if ($LASTEXITCODE -ne 0) { throw 'Native CLI build failed.' }
           go test ./internal/localhttps ./internal/daemon -run 'TestNativePortlessHTTPS|TestHostPTY|TestPTYBridge|TestApplyTerminal' -count=1 -failfast -timeout=5m -v
           if ($LASTEXITCODE -ne 0) { throw 'Native HTTPS/ConPTY acceptance failed.' }
+      - name: Exercise real macOS launchd, login-keychain trust and daemon restart
+        if: runner.os == 'macOS'
+        env:
+          PORTO_TEST_NATIVE_HTTPS: '1'
+        run: |
+          set -euo pipefail
+          export PORTO_TEST_HTTPS_BINARY="$RUNNER_TEMP/porto-native"
+          export PORTO_TEST_HTTPS_BROWSER="/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
+          test -x "$PORTO_TEST_HTTPS_BROWSER"
+          go build -o "$PORTO_TEST_HTTPS_BINARY" ./cmd/porto
+          go test ./internal/localhttps -run '^TestNativePortlessHTTPS' -count=1 -failfast -timeout=7m -v
 
   native-windows-containers:
     name: Native Windows containers (windows-2025/amd64)

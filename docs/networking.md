@@ -155,7 +155,13 @@ interfaces, split routes and IPv4/IPv6 subnet overlap candidates.
 | Rootful local Linux containerd | Supported through its existing CNI bridge routes, subject to firewall/VPN policy | Container IP or published loopback port |
 | Rootless local Linux containerd | Not host-routed | Published ports and opted-in HTTP routes |
 | Lima/QEMU container engine on Windows, macOS or Linux | Guest container IPs remain private to the guest | Existing published loopback ports, HTTP routes and TCP forwards |
+| Native Windows containerd/runhcs | Direct HNS-IP reachability is not advertised across host/VPN policies | Owned loopback NAT ports and opted-in HTTP/HTTPS names |
 | Standalone Lima VM | Reported guest addresses do not imply a host route | Reported loopback SSH port and explicitly configured forwards |
+
+Container HTTP names include both running Linux and native Windows inventories.
+Use distinct names when both engines run: a hostname claimed by both backends is
+disabled, not resolved by priority. Each request rechecks the selected backend's
+current container identity, published port and inventory freshness.
 
 An owned Linux bridge can overlap an inspected subnet intentionally. VPN
 routes, especially broader split routes, can also overlap. Review the actual
@@ -203,6 +209,10 @@ porto networking apply
 ```
 
 Host registry clients and outbound runtime commands read the saved settings.
+Explicitly configured registry pulls and pushes use Porto's maintained
+containerd client and owner-side resolver. Containerd's server-side transfer
+service cannot inherit a client's proxy credentials; Porto does not restart or
+reconfigure an external containerd service to work around that boundary.
 Ownership inspection, local cleanup and private transport do not depend on
 proxy credential lookup. Applying to the existing, identity-verified Lima
 engine requires idle BuildKit and restarts only its owned user service.
@@ -228,3 +238,30 @@ or owned-builder trust only. They are not injected into containers, Kubernetes
 pods or standalone VMs. Even Porto's development CA requires an explicit
 selection. Remove the selected references, save and apply again to reverse that
 owned trust change. Workload trust propagation remains a separate user action.
+
+### Native Windows registry networking
+
+Saving settings also applies them to a running, verified native worker.
+Native install/start resolves credentials as the owning user and sends the
+resolved settings and public CA bytes over its verified private pipe. The
+LocalSystem worker never reads the user's vault or project configuration.
+Its recoverable copy is Windows DPAPI-encrypted, bound to its owner identity,
+and protected by the runtime's administrator/System ACL. It is not a plaintext
+proxy file or command-line argument.
+
+Select the Windows dashboard view to inspect or apply native networking.
+Equivalent commands are:
+
+```powershell
+porto networking status --windows
+porto networking inspect --windows
+porto networking apply --windows
+```
+
+Apply again after an OS proxy change when using the native CLI without the
+dashboard. Registry operations are blocked with repair guidance if the worker's
+saved networking cannot be decrypted or validated; existing workloads remain
+available. Removing selected CAs and applying again revokes their registry trust.
+Linux settings and native settings do not change a workload's own trust store.
+Raw bearer-token registry overrides remain unsupported for configured registry
+preflight; use the owning user's supported registry credential flow.

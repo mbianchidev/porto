@@ -263,6 +263,17 @@ func (m *Manager) applyGuestNetworking(ctx context.Context, backend commandBacke
 
 func (m *Manager) networkCommandArgs(backend commandBackend, args []string) ([]string, error) {
 	if backend.limaInstance == "" {
+		if m.IsNativeWindows() && runtimes.RegistryOperation(args) {
+			if policy := m.NetworkPolicy(); policy != nil {
+				directory, err := policy.RegistryHostsDirectory()
+				if err != nil {
+					return nil, err
+				}
+				if directory != "" {
+					return append([]string{"--hosts-dir", directory}, args...), nil
+				}
+			}
+		}
 		return args, nil
 	}
 	outbound := false

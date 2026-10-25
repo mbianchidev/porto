@@ -1,4 +1,4 @@
-//go:build linux || windows
+//go:build linux || windows || darwin
 
 package localhttps
 
@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -36,7 +37,9 @@ func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {
 	defer cancel()
 	home := t.TempDir()
 	t.Setenv("PORTO_HOME", home)
-	t.Setenv("HOME", t.TempDir())
+	if runtime.GOOS != "darwin" {
+		t.Setenv("HOME", t.TempDir())
+	}
 	t.Setenv("PORTO_TLS_ADDR", TargetAddress)
 	t.Setenv("PORTO_TLS_PUBLIC_PORT", "")
 	certificatePath := filepath.Join(home, "certificates", "porto.local.pem")
@@ -226,6 +229,9 @@ func runNativeHTTPSCommand(t *testing.T, ctx context.Context, binary, configurat
 	t.Helper()
 	if os.Getenv("GITHUB_ACTIONS") != "true" || os.Getenv("PORTO_TEST_NATIVE_HTTPS") != "1" {
 		return nil, errors.New("native HTTPS command fixtures are restricted to disposable CI hosts")
+	}
+	if output, handled, err := nativeHeadlessHTTPSCommand(t, ctx, binary, configuration, args...); handled {
+		return output, err
 	}
 	command := process.NewCommand(ctx, "", binary, args...)
 	command.Env = process.WithEnvironment(os.Environ(), "PORTO_HOME="+configuration)

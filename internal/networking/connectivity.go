@@ -39,6 +39,9 @@ type Capability struct {
 }
 
 func DirectIPCapability(goos, backend string, rootless bool) Capability {
+	if backend == "windows" {
+		return Capability{Message: "Native Windows HNS direct-IP reachability is not advertised across host/VPN policies; use the reported loopback NAT ports or opted-in HTTPS names. No host routes or LAN bindings are added"}
+	}
 	if goos == "linux" && backend == "local" && !rootless {
 		return Capability{Supported: true, Message: "Rootful local Linux bridge addresses use existing host routes; firewall and VPN policy still apply"}
 	}
@@ -111,23 +114,29 @@ func InspectHost(ctx context.Context) HostStatus {
 			add(route)
 		}
 	}
-	resolveContext, cancel := context.WithTimeout(ctx, 2*time.Second)
-	defer cancel()
-	addresses, err := net.DefaultResolver.LookupIPAddr(resolveContext, "probe.porto.localhost")
-	if err != nil {
-		status.Warnings = append(status.Warnings, "The host resolver did not resolve *.porto.localhost. Browsers may resolve .localhost internally; use curl --resolve for command-line clients or exact local DNS records. Split DNS settings are not overwritten")
-	} else {
-		for _, address := range addresses {
-			if !address.IP.IsLoopback() {
-				status.Warnings = append(status.Warnings, "System DNS returned a non-loopback .localhost address; check VPN/split-DNS policy before using local routes")
-			}
-			status.LocalhostAddresses = append(status.LocalhostAddresses, address.String())
-		}
-	}
+	status.LocalhostAddresses, status.Warnings = inspectLocalhost(ctx, net.DefaultResolver, status.Warnings)
 	sort.Slice(status.Subnets, func(i, j int) bool {
 		return status.Subnets[i].Interface+status.Subnets[i].CIDR < status.Subnets[j].Interface+status.Subnets[j].CIDR
 	})
 	return status
+}
+
+func inspectLocalhost(ctx context.Context, resolver *net.Resolver, warnings []string) ([]string, []string) {
+	resolveContext, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	addresses, err := resolver.LookupIPAddr(resolveContext, "probe.porto.localhost")
+	resolved := []string{}
+	if err != nil {
+		warnings = append(warnings, "The host resolver did not resolve *.porto.localhost. Browsers may resolve .localhost internally; use curl --resolve for command-line clients or exact local DNS records. Split DNS settings are not overwritten")
+	} else {
+		for _, address := range addresses {
+			if !address.IP.IsLoopback() {
+				warnings = append(warnings, "System DNS returned a non-loopback .localhost address; check VPN/split-DNS policy before using local routes")
+			}
+			resolved = append(resolved, address.String())
+		}
+	}
+	return resolved, warnings
 }
 
 func hostRoutes(ctx context.Context) ([]HostSubnet, error) {

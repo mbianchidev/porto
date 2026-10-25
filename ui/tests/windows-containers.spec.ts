@@ -139,3 +139,27 @@ test('native volumes never enter Linux data or native-file workflows', async ({ 
   expect(fixture.requests.some(request => request.path.startsWith('/api/data/') || request.path.startsWith('/api/native-files'))).toBe(false)
   expect(fixture.mutations).toHaveLength(0)
 })
+
+test('native networking applies and inspects the selected Windows backend', async ({ page }) => {
+  await page.addInitScript(() => window.localStorage.setItem('porto.container-view.v1', 'windows'))
+  await mockWindows(page, true, true)
+  const calls: Array<{ path: string; mode: string | undefined }> = []
+  await page.route('**/api/networking**', route => {
+    const path = new URL(route.request().url()).pathname
+    calls.push({ path, mode: route.request().headers()['x-porto-container-mode'] })
+    const body = path.endsWith('/connectivity')
+      ? { host: { warnings: [] }, containerDirectIP: { supported: false, message: 'Native Windows uses owned loopback NAT and HTTPS names.' },
+        vmDirectIP: { supported: false, message: 'VM routes stay explicit.' }, networks: [], virtualMachines: [] }
+      : { platform: 'windows', https: { supported: true, installed: true, listening: true, trusted: true },
+        proxyAvailable: true, proxy: { mode: 'manual', httpProxy: '', httpsProxy: '', socksProxy: '', noProxy: '', registryCAs: [], source: 'manual', credentialsStored: {} },
+        routes: [], warnings: [], engine: { configured: true, needsApply: false, backend: 'windows' }, engineError: '' }
+    return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) })
+  })
+  await page.reload()
+  page.once('dialog', dialog => dialog.accept())
+  await page.getByRole('button', { name: 'Apply to native Windows', exact: true }).click()
+  await page.getByRole('button', { name: 'Inspect connectivity', exact: true }).click()
+  await expect(page.getByText('Native Windows uses owned loopback NAT and HTTPS names.')).toBeVisible()
+  expect(calls.some(call => call.path === '/api/networking/apply')).toBe(true)
+  expect(calls.every(call => call.mode === 'windows')).toBe(true)
+})

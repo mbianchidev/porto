@@ -114,6 +114,16 @@ func (m *Manager) StreamPushImageWithAuth(
 			return fmt.Errorf("resolve registry credentials for %q: %w", normalized, err)
 		}
 	}
+	configured, err := m.configuredRegistryTransport()
+	if err != nil {
+		return err
+	}
+	if configured {
+		if err := m.pushConfiguredImage(ctx, normalized, platform, registryAuth); err != nil {
+			return err
+		}
+		return emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("{\"status\":\"Image pushed through verified owner registry transport\"}\n")})
+	}
 	args := []string{"push"}
 	args = appendStringFlag(args, "--platform", platform)
 	args = append(args, normalized)
@@ -186,9 +196,13 @@ DOCKER_CONFIG="$config_dir" "$@"
 	if err := os.Chmod(configPath, 0o600); err != nil {
 		return fmt.Errorf("protect temporary registry auth config: %w", err)
 	}
+	commandArgs, err := m.networkCommandArgs(backend, append(append([]string(nil), backend.prefix...), args...))
+	if err != nil {
+		return err
+	}
 	return m.runStreamingCommand(ctx, timeout, action, runtimes.Command{
 		Name: backend.name,
-		Args: append(append([]string(nil), backend.prefix...), args...),
+		Args: commandArgs,
 		Env:  []string{"DOCKER_CONFIG=" + configDir},
 	}, emit)
 }

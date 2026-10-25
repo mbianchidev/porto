@@ -295,6 +295,8 @@ if [ "$suite/$goos/$goarch" = clients/windows/amd64 ]; then
   export PORTO_TEST_WSL_ROOTFS="$(cygpath -w "$wsl_rootfs")"
   export PORTO_TEST_PORTO_BINARY="$(cygpath -w "$porto")"
   export PORTO_TEST_WSL_RUNTIME="$(cygpath -w "$runtime/wsl")"
+  export PORTO_TEST_WINDOWS_COEXISTENCE=1
+  export PORTO_WINDOWS_RUNTIME_DIR="$(cygpath -w "$runtime/windows-containers/amd64/bin")"
 fi
 
 run_as_runner go test -c -o "$client_tests" ./internal/docker

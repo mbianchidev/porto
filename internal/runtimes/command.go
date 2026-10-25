@@ -26,7 +26,8 @@ type Command struct {
 	Stdin       []byte
 	StdinReader io.Reader
 	// Local ownership and cleanup must not depend on proxy-vault availability.
-	Network bool
+	Network       bool
+	NetworkPolicy *networking.Manager
 }
 
 type Runner interface {
@@ -92,9 +93,13 @@ func withNetworkEnvironment(command Command) (Command, error) {
 	if !required {
 		return command, nil
 	}
-	manager, err := networking.Default()
-	if err != nil {
-		return command, err
+	manager := command.NetworkPolicy
+	if manager == nil {
+		var err error
+		manager, err = networking.Default()
+		if err != nil {
+			return command, err
+		}
 	}
 	environment, err := manager.Environment()
 	if err != nil {
@@ -105,6 +110,28 @@ func withNetworkEnvironment(command Command) (Command, error) {
 }
 
 func RegistryOperation(arguments []string) bool {
+	for len(arguments) > 0 && strings.HasPrefix(arguments[0], "-") {
+		flag, _, inline := strings.Cut(arguments[0], "=")
+		switch flag {
+		case "--debug", "-D", "--debug-full", "--experimental", "--insecure-registry",
+			"--kube-hide-dupe", "--selinux-enabled", "--tls", "--tlsverify":
+			arguments = arguments[1:]
+		case "--address", "-a", "-H", "--host", "--namespace", "-n", "--snapshotter", "--storage-driver",
+			"--cni-path", "--cni-netconfpath", "--data-root", "--cgroup-manager", "--hosts-dir", "--log-file",
+			"--host-gateway-ip", "--bridge-ip", "--cdi-spec-dirs", "--userns-remap",
+			"--global-dns", "--global-dns-opts", "--global-dns-search",
+			"--context", "-c", "--config", "--tlscacert", "--tlscert", "--tlskey", "--log-level", "-l":
+			if !inline {
+				if len(arguments) < 2 {
+					return false
+				}
+				arguments = arguments[1:]
+			}
+			arguments = arguments[1:]
+		default:
+			return false
+		}
+	}
 	if len(arguments) == 0 {
 		return false
 	}

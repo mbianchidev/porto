@@ -11,11 +11,14 @@ import (
 	"net"
 	"net/http"
 	"net/http/httputil"
+	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
 
@@ -74,6 +77,13 @@ func (s *Server) windowsClient() (*http.Client, error) {
 }
 
 func (s *Server) proxyWindowsContainerResource(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && r.URL.Path == "/api/docker/images/pull" && s.networking != nil {
+		applied, err := s.syncNativeNetworking(r.Context())
+		if err != nil || !applied {
+			http.Error(w, "Native registry networking could not be applied; retry native start or apply networking: "+errorText(err), http.StatusServiceUnavailable)
+			return
+		}
+	}
 	if r.Method == http.MethodPost && r.URL.Path == "/api/docker/images/pull" && s.registryVault != nil && r.Header.Get("X-Registry-Auth") == "" {
 		body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxRuntimeRequestBytes))
 		if err != nil {
@@ -181,6 +191,36 @@ func serveWindowsContainerWorker(ctx context.Context, installation windowscontai
 	if err != nil {
 		return err
 	}
+	var networkMu sync.Mutex
+	var networkGeneration string
+	var networkProblem error
+	var networkConfigured atomic.Bool
+	applyNetwork := func(configuration networking.RuntimeConfiguration, persist bool) error {
+		policy, err := networking.NewRuntime(filepath.Join(installation.Data(), "worker"), configuration)
+		if err != nil {
+			return err
+		}
+		if _, err := policy.RegistryHostsDirectory(); err != nil {
+			return err
+		}
+		if persist {
+			if err := windowscontainers.SaveNetworking(installation, configuration); err != nil {
+				return err
+			}
+		}
+		manager.SetNetworkPolicy(policy)
+		networkGeneration = configuration.Generation
+		networkProblem = nil
+		networkConfigured.Store(true)
+		return nil
+	}
+	if configuration, err := windowscontainers.LoadNetworking(installation); err != nil {
+		networkProblem = fmt.Errorf("restore protected native networking: %w", err)
+	} else if configuration != nil {
+		if err := applyNetwork(*configuration, false); err != nil {
+			networkProblem = err
+		}
+	}
 	if err := manager.StartContainerInventory(ctx); err != nil {
 		return err
 	}
@@ -192,6 +232,35 @@ func serveWindowsContainerWorker(ctx context.Context, installation windowscontai
 	worker := &Server{docker: manager, dockerSocket: installation.Pipe(), windowsWorker: true, runtimeContext: ctx}
 	mux := http.NewServeMux()
 	worker.dockerResourceRoutes(mux)
+	mux.HandleFunc("POST /api/worker/networking", func(w http.ResponseWriter, r *http.Request) {
+		var configuration networking.RuntimeConfiguration
+		decoder := json.NewDecoder(http.MaxBytesReader(w, r.Body, 2*networking.MaxRegistryCABytes))
+		decoder.DisallowUnknownFields()
+		if err := decoder.Decode(&configuration); err != nil {
+			http.Error(w, "Invalid native networking configuration", http.StatusBadRequest)
+			return
+		}
+		if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+			http.Error(w, "Native networking requires exactly one configuration", http.StatusBadRequest)
+			return
+		}
+		networkMu.Lock()
+		defer networkMu.Unlock()
+		if err := applyNetwork(configuration, true); err != nil {
+			http.Error(w, networking.Redact(err.Error()), http.StatusBadRequest)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("GET /api/worker/networking", func(w http.ResponseWriter, r *http.Request) {
+		networkMu.Lock()
+		defer networkMu.Unlock()
+		if networkProblem != nil {
+			http.Error(w, "Native registry operations are blocked until owner networking is repaired: "+networking.Redact(networkProblem.Error()), http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, map[string]any{"configured": networkConfigured.Load(), "generation": networkGeneration, "backend": "windows"})
+	})
 	mux.HandleFunc("GET /api/docker/containers/{id}/logs/stream", worker.dockerLogStream)
 	mux.HandleFunc("GET /api/docker/containers/{id}/stats", worker.dockerInspectorStats)
 	mux.HandleFunc("GET /api/worker/status", func(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +274,11 @@ func serveWindowsContainerWorker(ctx context.Context, installation windowscontai
 			return value
 		}
 		status := manager.Status(r.Context(), installation.Pipe())
+		networkMu.Lock()
+		if networkProblem != nil {
+			status.Message = "Native registry networking requires repair: " + networking.Redact(networkProblem.Error())
+		}
+		networkMu.Unlock()
 		writeJSON(w, windowscontainers.Status{Supported: host.PotentiallySupported(), Installed: true, Running: status.Available,
 			Owned: true, Context: windowscontainers.ContextName, Endpoint: installation.Endpoint(), Host: host,
 			Capabilities: windowscontainers.Capabilities{Process: capability("process"), HyperV: capability("hyperv")}, Message: status.Message})
@@ -213,12 +287,18 @@ func serveWindowsContainerWorker(ctx context.Context, installation windowscontai
 	api.SetLifecycleContext(ctx)
 	var admitted atomic.Bool
 	handler := windowscontainers.Gate(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/api/worker/status" {
+		if r.URL.Path == "/api/worker/status" || r.URL.Path == "/api/worker/networking" {
 			mux.ServeHTTP(w, r)
 			return
 		}
 		if !admitted.Load() {
 			http.Error(w, "The native worker is validating its owned runtime; no resource mutations are admitted yet", http.StatusServiceUnavailable)
+			return
+		}
+		if !networkConfigured.Load() &&
+			(r.URL.Path == "/images/create" || r.URL.Path == "/api/docker/images/pull" || strings.HasSuffix(r.URL.Path, "/push") ||
+				r.URL.Path == "/auth" || r.URL.Path == "/images/search" || strings.HasPrefix(r.URL.Path, "/distribution/")) {
+			http.Error(w, "Apply networking from the owning user with 'porto networking apply' or retry native start before registry operations", http.StatusServiceUnavailable)
 			return
 		}
 		if strings.HasPrefix(r.URL.Path, "/api/") {
