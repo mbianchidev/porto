@@ -357,8 +357,7 @@ func (m *Manager) validateWindowsContainer(ctx context.Context, request *CreateC
 }
 
 func (m *Manager) localWindowsImage(ctx context.Context, image string) (windowscontainers.ImagePlatform, string, error) {
-	image = m.windowsImageReference(image)
-	document, err := m.inspect(ctx, "image", normalizeNerdctlReference(image), "--platform", "windows/amd64")
+	document, err := m.InspectImage(ctx, image, "windows/amd64")
 	if err != nil {
 		return windowscontainers.ImagePlatform{}, "", err
 	}

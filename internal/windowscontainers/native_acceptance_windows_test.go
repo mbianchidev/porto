@@ -24,6 +24,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/Microsoft/hcsshim"
 	"github.com/Microsoft/hcsshim/hcn"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/process"
@@ -247,6 +248,26 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 		}
 		if err := protectedTree(expected.Root); err != nil {
 			t.Errorf("refuse changed fixture root: %v", err)
+			return
+		}
+		layers := filepath.Join(installed.Data(), "containerd", "io.containerd.snapshotter.v1.windows", "snapshots")
+		entries, err := os.ReadDir(layers)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("inspect owned fixture Windows layers: %v", err)
+			return
+		}
+		if err := winio.RunWithPrivileges([]string{winio.SeBackupPrivilege, winio.SeRestorePrivilege}, func() error {
+			for _, entry := range entries {
+				if !entry.IsDir() || entry.Type()&os.ModeSymlink != 0 {
+					return fmt.Errorf("refuse unexpected fixture layer entry %s", entry.Name())
+				}
+				if err := hcsshim.DestroyLayer(hcsshim.DriverInfo{HomeDir: layers}, entry.Name()); err != nil {
+					return fmt.Errorf("destroy owned fixture Windows layer %s: %w", entry.Name(), err)
+				}
+			}
+			return nil
+		}); err != nil {
+			t.Errorf("remove owned fixture Windows layers through HCS: %v", err)
 			return
 		}
 		if err := os.RemoveAll(expected.Root); err != nil {

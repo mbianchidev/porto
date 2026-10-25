@@ -19,6 +19,64 @@ import (
 
 const maxWindowsImageMetadata = 4 * 1024 * 1024
 
+func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform string) (json.RawMessage, error) {
+	if platform != "" && platform != "windows/amd64" {
+		return nil, errors.New("invalid native Windows image platform: inspect requires windows/amd64")
+	}
+	image = normalizeNerdctlReference(m.windowsImageReference(image))
+	if strings.Contains(image, "@") {
+		named, err := reference.ParseNormalizedNamed(image)
+		if err != nil {
+			return nil, fmt.Errorf("invalid native Windows image reference: %w", err)
+		}
+		canonical, ok := named.(reference.Canonical)
+		if !ok {
+			return nil, errors.New("invalid native Windows image digest reference")
+		}
+		// nerdctl's compatibility inspector mismatches empty-tag digest names.
+		image = canonical.Digest().String()
+	}
+	document, err := m.inspect(ctx, "image", image, "--platform", "windows/amd64")
+	if err != nil {
+		return nil, err
+	}
+	var inspected struct {
+		ID        string `json:"Id"`
+		OSVersion string `json:"OsVersion"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return nil, err
+	}
+	if inspected.OSVersion != "" {
+		return document, nil
+	}
+	// The pinned nerdctl compatibility schema omits Windows' os.version.
+	native, err := m.inspect(ctx, "image", image, "--mode", "native", "--platform", "windows/amd64")
+	if err != nil {
+		return nil, err
+	}
+	var metadata struct {
+		ImageConfigDesc ocispec.Descriptor
+		ImageConfig     ocispec.Image
+	}
+	if err := json.Unmarshal(native, &metadata); err != nil {
+		return nil, err
+	}
+	if metadata.ImageConfigDesc.Digest.String() != inspected.ID || inspected.ID == "" ||
+		metadata.ImageConfig.OS != "windows" || metadata.ImageConfig.Architecture != "amd64" || metadata.ImageConfig.OSVersion == "" {
+		return nil, errors.New("invalid native Windows OCI image metadata: configuration identity, platform, or Windows version differs")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		return nil, err
+	}
+	fields["OsVersion"], err = json.Marshal(metadata.ImageConfig.OSVersion)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(fields)
+}
+
 func (m *Manager) resolveWindowsImage(ctx context.Context, image string, auth *RegistryAuth) (windowscontainers.ImagePlatform, string, error) {
 	name, err := reference.ParseNormalizedNamed(image)
 	if err != nil {

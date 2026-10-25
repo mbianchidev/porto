@@ -268,12 +268,15 @@ func TestNativeWindowsPinnedIndexResolutionSurvivesWorkerRestart(t *testing.T) {
 	restarted.windows.checkNetworks = func(windowscontainers.Installation) error { return nil }
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		args := nativeCommandArguments(t, restarted, command)
-		if args[0] != "image" || args[len(args)-1] != selected {
+		if args[0] != "image" || args[len(args)-1] != "sha256:"+strings.Repeat("2", 64) {
 			t.Fatalf("original index reference did not resolve after restart: %q", args)
 		}
 		return []byte(`[{"Id":"synthetic","Os":"windows","Architecture":"amd64","OsVersion":"10.0.26100.1"}]`), nil
 	}
 	if _, err := restarted.InspectImage(context.Background(), original, "windows/amd64"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := restarted.localWindowsImage(context.Background(), original); err != nil {
 		t.Fatal(err)
 	}
 	data, _ := json.Marshal(map[string]string{original: "another.example.test/foreign@sha256:" + strings.Repeat("2", 64)})
@@ -282,6 +285,53 @@ func TestNativeWindowsPinnedIndexResolutionSurvivesWorkerRestart(t *testing.T) {
 	}
 	if _, err := newWindowsManager(runner, manager.windows.installation); !errors.Is(err, windowscontainers.ErrOwnership) {
 		t.Fatalf("cross-repository native reference was adopted: %v", err)
+	}
+}
+
+func TestNativeWindowsDigestInspectionUsesVerifiedOCIWindowsVersion(t *testing.T) {
+	for _, failure := range []string{"", "missing-version", "changed-config", "wrong-platform"} {
+		t.Run(failure, func(t *testing.T) {
+			runner := &fakeRunner{}
+			manager := nativeTestManager(t, runner)
+			target := "sha256:" + strings.Repeat("2", 64)
+			config := "sha256:" + strings.Repeat("3", 64)
+			version, architecture := "10.0.26100.1234", "amd64"
+			if failure == "missing-version" {
+				version = ""
+			} else if failure == "changed-config" {
+				config = "sha256:" + strings.Repeat("4", 64)
+			} else if failure == "wrong-platform" {
+				architecture = "arm64"
+			}
+			runner.handler = func(command runtimes.Command) ([]byte, error) {
+				args := nativeCommandArguments(t, manager, command)
+				if args[0] != "image" || args[1] != "inspect" || args[len(args)-1] != target {
+					t.Fatalf("native digest inspection changed immutable identity: %q", args)
+				}
+				if strings.Contains(strings.Join(args, " "), "--mode native") {
+					return json.Marshal([]any{map[string]any{
+						"ImageConfigDesc": map[string]string{"digest": config},
+						"ImageConfig":     map[string]string{"os": "windows", "architecture": architecture, "os.version": version}}})
+				}
+				return []byte(`[{"Id":"sha256:` + strings.Repeat("3", 64) +
+					`","Os":"windows","Architecture":"amd64","Config":{"Cmd":["cmd.exe"]}}]`), nil
+			}
+			document, err := manager.InspectImage(context.Background(), "registry.example.test/synthetic@"+target, "windows/amd64")
+			if failure != "" {
+				if err == nil {
+					t.Fatalf("unverified Windows image metadata was accepted: %s", document)
+				}
+				return
+			}
+			var inspected struct {
+				OSVersion string `json:"OsVersion"`
+				Config    struct{ Cmd []string }
+			}
+			if err != nil || json.Unmarshal(document, &inspected) != nil || inspected.OSVersion != version ||
+				!reflect.DeepEqual(inspected.Config.Cmd, []string{"cmd.exe"}) {
+				t.Fatalf("native OCI metadata integration: %s, %v", document, err)
+			}
+		})
 	}
 }
 

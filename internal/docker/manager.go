@@ -1906,7 +1906,9 @@ func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample Co
 }
 
 func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
-	id = m.windowsImageReference(id)
+	if m.windows != nil {
+		return m.inspectWindowsImage(ctx, id, platform)
+	}
 	normalized := normalizeNerdctlReference(id)
 	if platform == "" {
 		var err error
