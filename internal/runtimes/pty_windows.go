@@ -1,6 +1,6 @@
 //go:build windows
 
-package daemon
+package runtimes
 
 import (
 	"errors"
@@ -12,9 +12,7 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-func hostPTYSupported() bool {
-	return windows.RtlGetVersion().BuildNumber >= 17763
-}
+func PTYSupported() bool { return windows.RtlGetVersion().BuildNumber >= 17763 }
 
 func startPTYCommand(terminal xpty.Pty, command *exec.Cmd) error {
 	console, ok := terminal.(*xpty.ConPty)
@@ -25,7 +23,7 @@ func startPTYCommand(terminal xpty.Pty, command *exec.Cmd) error {
 	if err != nil {
 		return err
 	}
-	// Spawn owns one handle; os.FindProcess creates the separate handle used by Wait.
+	// ConPTY's creation handle and os.FindProcess's wait handle have different owners.
 	command.Process, err = os.FindProcess(pid)
 	if err != nil {
 		return errors.Join(err, windows.TerminateProcess(windows.Handle(handle), 1), windows.CloseHandle(windows.Handle(handle)))

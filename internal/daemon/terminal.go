@@ -46,9 +46,13 @@ func (s *Server) dockerContainerTerminal(w http.ResponseWriter, r *http.Request)
 	id := strings.TrimSpace(r.PathValue("id"))
 	shell := strings.TrimSpace(r.URL.Query().Get("shell"))
 	if shell == "" {
-		shell = "sh"
+		if s.docker.IsNativeWindows() {
+			shell = "cmd.exe"
+		} else {
+			shell = "sh"
+		}
 	}
-	if !allowedShell(shell) {
+	if !allowedShell(shell) && (!s.docker.IsNativeWindows() || (shell != "cmd.exe" && shell != "powershell.exe")) {
 		http.Error(w, "shell must be sh, bash, ash, or an equivalent /bin path", http.StatusBadRequest)
 		return
 	}

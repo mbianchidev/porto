@@ -16,6 +16,7 @@ import (
 const imageTransferTimeout = 30 * time.Minute
 
 func (m *Manager) TagImage(ctx context.Context, source, target string) error {
+	source = m.windowsImageReference(source)
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err

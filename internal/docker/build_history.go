@@ -12,6 +12,9 @@ import (
 )
 
 func (m *Manager) Builds(ctx context.Context) ([]Build, error) {
+	if m.IsNativeWindows() {
+		return nil, fmt.Errorf("%w: native Windows BuildKit history", ErrUnsupported)
+	}
 	connection, err := newBuildKitControlConnection(m.DialBuildKit)
 	if err != nil {
 		return nil, fmt.Errorf("create BuildKit history client: %w", err)

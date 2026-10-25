@@ -62,6 +62,40 @@ func (m *Manager) StreamInspectorLogs(ctx context.Context, id string, tail int, 
 	if tail < 0 || tail > 5000 {
 		return fmt.Errorf("%w: log tail must be between 0 and 5000", ErrUnsupported)
 	}
+	if m.IsNativeWindows() {
+		if err := metadata(LogCapabilities{Streams: true, Message: "Native nerdctl preserves stdout/stderr; capture timestamps are not inferred"}); err != nil {
+			return err
+		}
+		pending := make(map[string][]byte)
+		err := m.StreamDockerContainerLogs(ctx, id, LogOptions{Stdout: true, Stderr: true, Tail: fmt.Sprint(tail), Follow: follow},
+			func(chunk runtimes.OutputChunk) error {
+				data := append(pending[chunk.Stream], chunk.Data...)
+				for len(data) > 0 {
+					take := min(len(data), containerlogs.MaxLineBytes)
+					if newline := bytes.IndexByte(data[:take], '\n'); newline >= 0 {
+						take = newline + 1
+					} else if len(data) < containerlogs.MaxLineBytes {
+						break
+					}
+					if err := emit(containerlogs.Record{ReceivedAt: time.Now().UTC(), Stream: chunk.Stream, Text: strings.ToValidUTF8(string(data[:take]), "\uFFFD")}); err != nil {
+						return err
+					}
+					data = data[take:]
+				}
+				pending[chunk.Stream] = data
+				return nil
+			})
+		if err == nil {
+			for stream, data := range pending {
+				if len(data) > 0 {
+					if err := emit(containerlogs.Record{ReceivedAt: time.Now().UTC(), Stream: stream, Text: strings.ToValidUTF8(string(data), "\uFFFD"), Partial: true}); err != nil {
+						return err
+					}
+				}
+			}
+		}
+		return err
+	}
 	client, err := m.runtimeConnector(ctx)
 	if err != nil {
 		return err

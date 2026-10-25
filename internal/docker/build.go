@@ -28,6 +28,9 @@ func (m *Manager) StreamBuild(
 	request BuildRequest,
 	emit func(runtimes.OutputChunk) error,
 ) error {
+	if m.IsNativeWindows() {
+		return fmt.Errorf("%w: native Windows BuildKit builds are not supported; the Linux builder is unchanged", ErrUnsupported)
+	}
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err

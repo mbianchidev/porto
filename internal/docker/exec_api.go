@@ -79,6 +79,7 @@ func (a *API) createExec(w http.ResponseWriter, r *http.Request) {
 		AttachStderr bool     `json:"AttachStderr"`
 		DetachKeys   string   `json:"DetachKeys"`
 		TTY          bool     `json:"Tty"`
+		ConsoleSize  [2]uint  `json:"ConsoleSize"`
 		Privileged   bool     `json:"Privileged"`
 		User         string   `json:"User"`
 		WorkingDir   string   `json:"WorkingDir"`
@@ -94,6 +95,16 @@ func (a *API) createExec(w http.ResponseWriter, r *http.Request) {
 	}
 	if request.Privileged && !container.HostConfig.Privileged {
 		writeDockerUnsupported(w, "privileged exec in a non-privileged container")
+		return
+	}
+	nativeRequest := ExecRequest{Command: request.Cmd, Environment: request.Env, User: request.User, WorkingDir: request.WorkingDir,
+		Privileged: request.Privileged, TTY: request.TTY, ConsoleSize: request.ConsoleSize}
+	if err := a.manager.validateNativeExec(nativeRequest); err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	if a.manager.IsNativeWindows() && request.DetachKeys != "" && request.DetachKeys != "ctrl-p,ctrl-q" {
+		writeDockerUnsupported(w, "custom native Windows exec detach keys")
 		return
 	}
 	id, err := randomResourceName()
@@ -114,6 +125,7 @@ func (a *API) createExec(w http.ResponseWriter, r *http.Request) {
 			AttachStdout: request.AttachStdout,
 			AttachStderr: request.AttachStderr,
 			TTY:          request.TTY,
+			ConsoleSize:  request.ConsoleSize,
 		},
 	}
 	a.execMu.Lock()
@@ -232,6 +244,10 @@ func (a *API) resizeExec(w http.ResponseWriter, r *http.Request) {
 	height, err := strconv.ParseUint(r.URL.Query().Get("h"), 10, 32)
 	if err != nil || height == 0 {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "valid terminal height is required"})
+		return
+	}
+	if a.manager.IsNativeWindows() && (width > runtimes.MaxPTYDimension || height > runtimes.MaxPTYDimension) {
+		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "invalid terminal dimensions: width and height must not exceed 32767"})
 		return
 	}
 	instance.mu.Lock()
@@ -806,6 +822,9 @@ func serveProcessStreamResult(
 	attachStdout bool,
 	attachStderr bool,
 ) processStreamResult {
+	if tty && attachStderr {
+		attachStdout = true
+	}
 	var writeMu sync.Mutex
 	var interrupted atomic.Bool
 	var streamBrokenOnce sync.Once
@@ -837,9 +856,15 @@ func serveProcessStreamResult(
 		go func() {
 			_, _ = io.Copy(process.Stdin(), connection)
 			_ = process.Stdin().Close()
+			if notify, ok := process.(interface{ InputEOF() }); ok {
+				notify.InputEOF()
+			}
 		}()
 	} else {
 		_ = process.Stdin().Close()
+		if notify, ok := process.(interface{ InputEOF() }); ok {
+			go func() { _, _ = io.Copy(io.Discard, connection); notify.InputEOF() }()
+		}
 	}
 	remainingOutputs := 2
 	contextDone := ctx.Done()

@@ -2,14 +2,39 @@ package docker
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
 
 func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkRequest) (string, error) {
 	if err := validateObjectID(request.Name); err != nil {
 		return "", err
+	}
+	if m.windows != nil {
+		name, err := m.ownedWindowsNetworkName(request.Name)
+		if err != nil {
+			return "", err
+		}
+		request.Name = name
+		if err := windowscontainers.ValidateNetworkName(m.windows.installation, request.Name); err != nil {
+			return "", err
+		}
+		if (request.Driver != "" && request.Driver != "nat") || request.Internal || request.EnableIPv6 ||
+			len(request.Subnets) > 1 || len(request.Gateways)+len(request.Options) != 0 {
+			return "", fmt.Errorf("%w: native Windows networks require the nat driver, one explicit IPv4 subnet and default gateway/options", ErrUnsupported)
+		}
+		if len(request.Subnets) == 0 {
+			sum := sha256.Sum256([]byte(request.Name))
+			request.Subnets = []string{fmt.Sprintf("10.254.%d.0/24", sum[0])}
+		}
+		request.Driver = "nat"
+		if _, err := m.windows.ensureNetwork(m.windows.installation, request.Name, request.Subnets[0]); err != nil {
+			return "", err
+		}
 	}
 	args := []string{"network", "create"}
 	args = appendStringFlag(args, "--driver", request.Driver)
@@ -48,11 +73,30 @@ func (m *Manager) RemoveNetwork(ctx context.Context, name string) error {
 	if err := validateObjectID(name); err != nil {
 		return err
 	}
+	if m.windows != nil {
+		resolved, err := m.windowsNetworkIdentifier(ctx, name)
+		if err != nil {
+			return err
+		}
+		name = resolved
+		if err := windowscontainers.ValidateNetworkName(m.windows.installation, name); err != nil {
+			return err
+		}
+		if name == m.windows.installation.DefaultNetwork() {
+			return fmt.Errorf("%w: the default native NAT network is preserved with engine data", ErrConflict)
+		}
+	}
 	_, err = m.run(ctx, "remove Porto network", "network", "rm", name)
+	if err == nil && m.windows != nil {
+		return m.windows.removeNetwork(m.windows.installation, name)
+	}
 	return err
 }
 
 func (m *Manager) ConnectNetwork(ctx context.Context, network, container string, aliases []string) error {
+	if m.windows != nil {
+		return fmt.Errorf("%w: native Windows live network connect; choose the owned NAT network at container creation", ErrUnsupported)
+	}
 	if err := validateObjectID(network); err != nil {
 		return fmt.Errorf("network: %w", err)
 	}
@@ -83,6 +127,9 @@ func (m *Manager) ConnectNetwork(ctx context.Context, network, container string,
 }
 
 func (m *Manager) DisconnectNetwork(ctx context.Context, network, container string, force bool) error {
+	if m.windows != nil {
+		return fmt.Errorf("%w: native Windows live network disconnect; stop/remove only the selected container explicitly", ErrUnsupported)
+	}
 	if err := validateObjectID(network); err != nil {
 		return fmt.Errorf("network: %w", err)
 	}

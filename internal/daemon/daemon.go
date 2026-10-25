@@ -93,6 +93,8 @@ type Server struct {
 	tlsCertificates    *certificates.Manager
 	userHomeDir        func() (string, error)
 	docker             *portodocker.Manager
+	windowsWorker      bool
+	windowsTransport   http.RoundTripper
 	dockerAPI          *portodocker.APIServer
 	cleanupMu          sync.Mutex
 	cleanupRunner      func(context.Context) (app.DockerCleanupResult, error)

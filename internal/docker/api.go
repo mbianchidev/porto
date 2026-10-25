@@ -20,6 +20,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 	"github.com/mbianchidev/porto/internal/wsl"
 )
 
@@ -29,14 +30,15 @@ const (
 )
 
 type API struct {
-	manager        *Manager
-	socketPath     string
-	mux            *http.ServeMux
-	attachMu       sync.Mutex
-	attaches       map[string]*containerAttachSession
-	execMu         sync.Mutex
-	execs          map[string]*execInstance
-	registryClient *http.Client
+	lifecycleContext context.Context
+	manager          *Manager
+	socketPath       string
+	mux              *http.ServeMux
+	attachMu         sync.Mutex
+	attaches         map[string]*containerAttachSession
+	execMu           sync.Mutex
+	execs            map[string]*execInstance
+	registryClient   *http.Client
 }
 
 func NewAPI(manager *Manager, socketPath string) *API {
@@ -51,18 +53,27 @@ func NewAPI(manager *Manager, socketPath string) *API {
 }
 
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if a.lifecycleContext != nil {
+		r = r.Clone(context.WithValue(r.Context(), dockerServerContextKey{}, a.lifecycleContext))
+	}
 	w.Header().Set("Api-Version", dockerAPIVersion)
 	w.Header().Set("Docker-Experimental", "true")
-	w.Header().Set("Ostype", "linux")
+	w.Header().Set("Ostype", a.manager.RuntimeOS())
 	w.Header().Set("Server", "Porto/"+config.Version)
 	requestContext, err := a.manager.wslRequestContext(r)
 	if err != nil {
 		writeDockerJSON(w, http.StatusForbidden, map[string]string{"message": err.Error()})
 		return
 	}
+
 	path, version, err := dockerVersionedPath(r.URL.Path)
 	if err != nil {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
+		return
+	}
+	if a.manager.IsNativeWindows() && (nativeWindowsUnsupported(path, r.Method) ||
+		(path == "/images/create" && r.URL.Query().Get("fromSrc") != "")) {
+		writeDockerUnsupported(w, "native Windows build, checkpoint, archive, data, or Linux helper surface: "+path)
 		return
 	}
 	request := r.Clone(dockerVersionedContext(requestContext, version))
@@ -76,6 +87,10 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	a.mux.ServeHTTP(w, request)
 }
+
+// SetLifecycleContext binds hijacked exec/attach streams to a worker lifetime,
+// rather than to an ordinary HTTP request or an unrelated desktop daemon.
+func (a *API) SetLifecycleContext(ctx context.Context) { a.lifecycleContext = ctx }
 
 func (a *API) routes() {
 	a.mux.HandleFunc("GET /_ping", a.ping)
@@ -169,7 +184,7 @@ func (a *API) version(w http.ResponseWriter, _ *http.Request) {
 			"Details": map[string]string{
 				"ApiVersion":    dockerAPIVersion,
 				"MinAPIVersion": dockerMinAPIVersion,
-				"Os":            "linux",
+				"Os":            a.manager.RuntimeOS(),
 				"Arch":          runtime.GOARCH,
 			},
 		}},
@@ -178,7 +193,7 @@ func (a *API) version(w http.ResponseWriter, _ *http.Request) {
 		"MinAPIVersion": dockerMinAPIVersion,
 		"GitCommit":     "porto",
 		"GoVersion":     runtime.Version(),
-		"Os":            "linux",
+		"Os":            a.manager.RuntimeOS(),
 		"Arch":          runtime.GOARCH,
 		"KernelVersion": "",
 		"BuildTime":     time.Now().UTC().Format(time.RFC3339),
@@ -239,8 +254,14 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 	if backendInfo.Driver == "" {
 		warnings = append(warnings, "Backend snapshotter name is unavailable.")
 	}
+	networkDrivers := []string{"bridge", "host", "none"}
+	engineID := "porto"
+	if a.manager.IsNativeWindows() {
+		networkDrivers = []string{"nat", "none"}
+		engineID = "porto-windows-" + windowscontainers.OwnerKey(a.manager.windows.installation.OwnerSID)
+	}
 	writeDockerJSON(w, http.StatusOK, map[string]any{
-		"ID":                "porto",
+		"ID":                engineID,
 		"Containers":        len(containers),
 		"ContainersRunning": running,
 		"ContainersPaused":  paused,
@@ -250,7 +271,7 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		"DriverStatus":      driverStatus,
 		"Plugins": map[string]any{
 			"Volume":        []string{"local"},
-			"Network":       []string{"bridge", "host", "none"},
+			"Network":       networkDrivers,
 			"Authorization": nil,
 			"Log":           []string{"json-file"},
 		},
@@ -292,6 +313,7 @@ func (a *API) info(w http.ResponseWriter, r *http.Request) {
 		},
 		"LiveRestoreEnabled": false,
 		"ExperimentalBuild":  true,
+		"DefaultRuntime":     a.manager.defaultRuntimeName(),
 		"Warnings":           warnings,
 	})
 }
@@ -519,13 +541,14 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 	if request.HostConfig.IOMaximumIOps != 0 || request.HostConfig.IOMaximumBandwidth != 0 {
 		unsupported = append(unsupported, "I/O constraints")
 	}
-	if request.HostConfig.Runtime != "" && request.HostConfig.Runtime != "runc" && request.HostConfig.Runtime != "io.containerd.runc.v2" {
+	if request.HostConfig.Runtime != "" && ((!a.manager.IsNativeWindows() && request.HostConfig.Runtime != "runc" && request.HostConfig.Runtime != "io.containerd.runc.v2") ||
+		(a.manager.IsNativeWindows() && request.HostConfig.Runtime != "io.containerd.runhcs.v1")) {
 		unsupported = append(unsupported, "Runtime")
 	}
 	if request.HostConfig.UsernsMode != "" && request.HostConfig.UsernsMode != "host" {
 		unsupported = append(unsupported, "UsernsMode")
 	}
-	if request.HostConfig.Isolation != "" && request.HostConfig.Isolation != "default" {
+	if !a.manager.IsNativeWindows() && request.HostConfig.Isolation != "" && request.HostConfig.Isolation != "default" {
 		unsupported = append(unsupported, "Isolation")
 	}
 	if request.HostConfig.Cgroup != "" {
@@ -610,10 +633,11 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerUnsupported(w, "passing WSL distribution devices into a separate Lima engine")
 		return
 	}
-	structuredVolumes, structuredMounts, tmpfs, err := structuredMountArguments(
-		request.HostConfig.Mounts,
-		request.HostConfig.Tmpfs,
-	)
+	mountArguments := structuredMountArguments
+	if a.manager.IsNativeWindows() {
+		mountArguments = windowsStructuredMountArguments
+	}
+	structuredVolumes, structuredMounts, tmpfs, err := mountArguments(request.HostConfig.Mounts, request.HostConfig.Tmpfs)
 	if err != nil {
 		writeDockerError(w, err)
 		return
@@ -666,6 +690,7 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		containerName = composeContainerName(request.Labels, networks)
 	}
 	id, err := a.manager.CreateContainer(r.Context(), CreateContainerRequest{
+		Isolation:   request.HostConfig.Isolation,
 		Name:        containerName,
 		Image:       request.Image,
 		Platform:    r.URL.Query().Get("platform"),
@@ -1157,6 +1182,10 @@ func writeDockerError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
+	case errors.Is(err, windowscontainers.ErrOwnership):
+		status = http.StatusForbidden
+	case errors.Is(err, windowscontainers.ErrActive):
+		status = http.StatusConflict
 	case errors.Is(err, ErrUnsupported), strings.Contains(message, "unsupported"):
 		status = http.StatusNotImplemented
 	case errors.Is(err, ErrUnavailable), strings.Contains(message, "unavailable"):

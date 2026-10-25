@@ -32,6 +32,7 @@ import (
 	"github.com/mbianchidev/porto/internal/logging"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
 
 func main() {
@@ -75,6 +76,22 @@ func runCommand(args []string) error {
 }
 
 func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) error {
+	if len(args) > 0 {
+		switch args[0] {
+		case "windows-containers-worker":
+			if len(args) != 2 {
+				return errors.New("invalid native Windows service invocation")
+			}
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			return daemon.RunWindowsContainerWorker(ctx, args[1])
+		case "windows-containers-elevated":
+			if len(args) != 5 {
+				return errors.New("invalid elevated native Windows invocation")
+			}
+			return windowscontainers.RootAction(context.Background(), args[1], args[2], args[3], args[4])
+		}
+	}
 	if err := configureBundledRuntimePath(); err != nil {
 		return err
 	}
@@ -727,6 +744,7 @@ Commands:
   porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
+  porto docker windows status|install|start|stop|remove|context [--confirm]
   porto docker containers|builds|networks|volumes
   porto docker storage usage|prune --category <type>|--objects kind:name,... [--confirm]
   porto docker volume export|clone|import|restore|empty <args> [--confirm]

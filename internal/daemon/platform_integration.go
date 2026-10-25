@@ -20,6 +20,7 @@ import (
 )
 
 func (s *Server) platformRoutes(mux *http.ServeMux) {
+	s.windowsContainerRoutes(mux)
 	mux.HandleFunc("GET /api/networking", s.getNetworking)
 	mux.HandleFunc("PUT /api/networking/proxy", s.setNetworkProxy)
 	mux.HandleFunc("POST /api/networking/certificates", s.importNetworkCertificate)

@@ -4,27 +4,13 @@ import (
 	"context"
 	"os/exec"
 
-	"github.com/charmbracelet/x/xpty"
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
-type hostPTY struct {
-	xpty.Pty
-	ctx     context.Context
-	command *exec.Cmd
-}
+type hostPTY = runtimes.PTY
 
 func startHostPTY(ctx context.Context, command *exec.Cmd) (*hostPTY, error) {
-	terminal, err := xpty.NewPty(120, 32)
-	if err != nil {
-		return nil, err
-	}
-	if err := startPTYCommand(terminal, command); err != nil {
-		_ = terminal.Close()
-		return nil, err
-	}
-	return &hostPTY{Pty: terminal, ctx: ctx, command: command}, nil
+	return runtimes.StartPTY(ctx, command, 120, 32)
 }
 
-func (p *hostPTY) Wait() error {
-	return xpty.WaitProcess(p.ctx, p.command)
-}
+func hostPTYSupported() bool { return runtimes.PTYSupported() }

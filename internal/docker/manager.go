@@ -22,6 +22,7 @@ import (
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 	"github.com/mbianchidev/porto/internal/wsl"
 	"github.com/moby/moby/api/types/network"
 )
@@ -65,6 +66,7 @@ var (
 )
 
 type Manager struct {
+	windows                   *windowsRuntime
 	runner                    runtimes.Runner
 	timeout                   time.Duration
 	stateDir                  string
@@ -188,6 +190,9 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 		ServerVersion: config.Version,
 		ProxySocket:   socketPath,
 	}
+	if m.windows != nil {
+		status.Context = windowscontainers.ContextName
+	}
 	if inventory := m.activeContainerInventory(); inventory != nil {
 		snapshot := inventory.snapshotValue()
 		status.Available = snapshot.Available
@@ -228,6 +233,15 @@ func (m *Manager) BackendInfo(ctx context.Context) (BackendInfo, error) {
 	var info BackendInfo
 	if err := json.Unmarshal(output, &info); err != nil {
 		return BackendInfo{}, fmt.Errorf("decode Porto container runtime information: %w", err)
+	}
+	if m.windows != nil {
+		info.OSType = "windows"
+		info.Architecture = m.windows.installation.Host.Architecture
+		info.OSVersion = fmt.Sprintf("10.0.%d", m.windows.installation.Host.Build)
+		info.OperatingSystem = m.windows.installation.Host.Edition
+		info.Driver = windowscontainers.Snapshotter
+		info.DockerRootDir = m.windows.installation.Data()
+		info.CgroupDriver, info.CgroupVersion = "", ""
 	}
 	return info, nil
 }
@@ -294,6 +308,9 @@ func (m *Manager) EngineOwnershipStatus(ctx context.Context) EngineOwnershipStat
 }
 
 func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) {
+	if m.IsNativeWindows() {
+		return Status{}, fmt.Errorf("%w: use 'porto docker windows install' for the separate native service", ErrUnsupported)
+	}
 	m.installMu.Lock()
 	defer m.installMu.Unlock()
 	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
@@ -506,6 +523,9 @@ func limaEngineTemplate(goos string) string {
 }
 
 func (m *Manager) runtimeHelperPath() (string, error) {
+	if m.IsNativeWindows() {
+		return "", fmt.Errorf("%w: Linux runtime helpers on native Windows", ErrUnsupported)
+	}
 	executable, _ := os.Executable()
 	return resolveRuntimeHelperPath(executable, m.lookPath)
 }
@@ -515,6 +535,9 @@ func resolveRuntimeHelperPath(executable string, lookPath func(string) (string, 
 }
 
 func (m *Manager) StartEngine(ctx context.Context) (err error) {
+	if m.IsNativeWindows() {
+		return fmt.Errorf("%w: use 'porto docker windows start' for the separate native service", ErrUnsupported)
+	}
 	m.installMu.Lock()
 	defer m.installMu.Unlock()
 	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
@@ -575,6 +598,9 @@ func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
 }
 
 func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bool, err error) {
+	if m.IsNativeWindows() {
+		return false, fmt.Errorf("%w: use the explicit native Windows service stop/update action", ErrUnsupported)
+	}
 	if m.nativeClose != nil {
 		if err := m.nativeClose(ctx); err != nil {
 			return false, fmt.Errorf("detach native files before engine shutdown: %w", err)
@@ -629,6 +655,9 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 }
 
 func (m *Manager) RemoveEngine(ctx context.Context) (err error) {
+	if m.IsNativeWindows() {
+		return fmt.Errorf("%w: use 'porto docker windows remove --confirm'; native stores are preserved", ErrUnsupported)
+	}
 	m.installMu.Lock()
 	defer m.installMu.Unlock()
 	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
@@ -751,6 +780,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
+	if m.windows == nil && request.Isolation != "" && request.Isolation != "default" {
+		return "", fmt.Errorf("%w: Windows isolation on the Linux endpoint", ErrUnsupported)
+	}
 	if err := request.Limits.validate(); err != nil {
 		return "", err
 	}
@@ -762,6 +794,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	}
 	if request.Limits.MemorySwappiness != nil && *request.Limits.MemorySwappiness == -1 {
 		request.Limits.MemorySwappiness = nil
+	}
+	if m.windows != nil {
+		if err := m.validateWindowsContainer(ctx, &request); err != nil {
+			return "", err
+		}
 	}
 	for _, limit := range request.Ulimits {
 		if limit.Name == "" || strings.ContainsAny(limit.Name, "=:\r\n\x00") ||
@@ -791,6 +828,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", err
 	}
 	args := []string{"create"}
+	if m.windows != nil {
+		args = append(args, "--isolation", request.Isolation, "--pull=never")
+	}
 	args = request.Limits.arguments(args)
 	if request.ReadOnly {
 		args = append(args, "--read-only")
@@ -1179,7 +1219,7 @@ func (m *Manager) Networks(ctx context.Context) ([]Network, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeLines(output, func(item map[string]string) Network {
+	networks, err := decodeLines(output, func(item map[string]string) Network {
 		return Network{
 			ID:       first(item, "ID", "Id"),
 			Name:     item["Name"],
@@ -1191,6 +1231,16 @@ func (m *Manager) Networks(ctx context.Context) ([]Network, error) {
 			Labels:   parseLabels(item["Labels"]),
 		}
 	})
+	if err != nil || m.windows == nil {
+		return networks, err
+	}
+	owned := make([]Network, 0, len(networks))
+	for _, network := range networks {
+		if windowscontainers.ValidateNetworkName(m.windows.installation, network.Name) == nil {
+			owned = append(owned, network)
+		}
+	}
+	return owned, nil
 }
 
 func (m *Manager) Volumes(ctx context.Context) ([]Volume, error) {
@@ -1241,6 +1291,11 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	}
 	if err := validateObjectID(id); err != nil {
 		return err
+	}
+	if m.windows != nil && (action == "start" || action == "restart") {
+		if err := m.validateWindowsStart(ctx, id); err != nil {
+			return err
+		}
 	}
 	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
 	if handled {
@@ -1730,6 +1785,9 @@ func (m *Manager) ContainerTerminalCommand(ctx context.Context, id, shell string
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
+	if m.windows != nil {
+		return m.windowsTerminalCommand(ctx, id, shell, debug)
+	}
 	if !allowedContainerShell(shell) {
 		return nil, errors.New("container shell must be sh, bash, ash, or an equivalent /bin path")
 	}
@@ -1848,6 +1906,7 @@ func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample Co
 }
 
 func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
+	id = m.windowsImageReference(id)
 	normalized := normalizeNerdctlReference(id)
 	if platform == "" {
 		var err error
@@ -1911,6 +1970,13 @@ func imageMatchesIdentifier(image Image, id string) bool {
 }
 
 func (m *Manager) InspectNetwork(ctx context.Context, id string) (json.RawMessage, error) {
+	if m.windows != nil {
+		resolved, err := m.windowsNetworkIdentifier(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		id = resolved
+	}
 	return m.inspect(ctx, "network", id)
 }
 
@@ -1919,6 +1985,7 @@ func (m *Manager) InspectVolume(ctx context.Context, id string) (json.RawMessage
 }
 
 func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error {
+	id = m.windowsImageReference(id)
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err
@@ -1962,6 +2029,9 @@ func (m *Manager) PullImageWithAuth(
 	defer release()
 	if err := validateObjectID(reference); err != nil {
 		return err
+	}
+	if m.windows != nil {
+		return m.pullWindowsImage(ctx, reference, platform, registryAuth)
 	}
 	args := []string{"pull"}
 	args = appendStringFlag(args, "--platform", platform)
@@ -2078,6 +2148,19 @@ type commandBackend struct {
 }
 
 func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
+	if m.windows != nil {
+		if err := m.windows.installation.Host.Validate(); err != nil {
+			return commandBackend{}, err
+		}
+		if err := m.windows.checkNetworks(m.windows.installation); err != nil {
+			return commandBackend{}, err
+		}
+		return commandBackend{
+			name:        filepath.Join(m.windows.installation.Bin(), "nerdctl.exe"),
+			prefix:      m.windows.installation.NerdctlArgs(),
+			description: "Porto-owned native Windows containerd/runhcs",
+		}, nil
+	}
 	if m.directCLI {
 		return commandBackend{name: "nerdctl", description: "nerdctl"}, nil
 	}

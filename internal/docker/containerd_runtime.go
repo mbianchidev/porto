@@ -27,6 +27,7 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/defaults"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/mbianchidev/porto/internal/windowscontainers"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -162,6 +163,19 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 	backend, err := m.backend(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if m.windows != nil {
+		client, err := newGRPCContainerRuntime(ctx, windowscontainers.Namespace, backend.description,
+			func(ctx context.Context, _ string) (net.Conn, error) {
+				return dialLocalContainerd(ctx, m.windows.installation.ContainerdPipe())
+			}, m.containerInventoryEnricher(backend), m.stateDir, m.runner, "", "", m.networkLocks, m.containerNameMu)
+		if err != nil {
+			return nil, err
+		}
+		client.address = m.windows.installation.ContainerdPipe()
+		client.snapshotter = windowscontainers.Snapshotter
+		client.commandSource = backend
+		return windowsInventory{containerRuntime: client}, nil
 	}
 	namespace := configuredContainerdNamespace()
 	if backend.name == "limactl" {

@@ -88,6 +88,8 @@ func dockerCmd(args []string) error {
 		return runDockerCLI(nil)
 	}
 	switch args[0] {
+	case "windows":
+		return windowsContainersCmd(args[1:])
 	case "data":
 		return dockerDataCmd(args[1:])
 	case "storage", "backups", "operations":
