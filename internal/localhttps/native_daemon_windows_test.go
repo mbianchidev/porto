@@ -29,9 +29,16 @@ func nativeUnprivilegedDaemon(t *testing.T, ctx context.Context, binary, home, u
 		return nil, fmt.Errorf("open source token for restricted daemon: %w", err)
 	}
 	defer source.Close()
+	administrators, err := windows.CreateWellKnownSid(windows.WinBuiltinAdministratorsSid)
+	if err != nil {
+		return nil, err
+	}
+	disabled := windows.SIDAndAttributes{Sid: administrators}
 	var token windows.Token
 	create := windows.NewLazySystemDLL("advapi32.dll").NewProc("CreateRestrictedToken")
-	result, _, callErr := create.Call(uintptr(source), 5, 0, 0, 0, 0, 0, 0, uintptr(unsafe.Pointer(&token)))
+	// Disable administrator membership and privileges without LUA's additional
+	// logon/desktop restrictions, which prevent DLL initialization on hosted CI.
+	result, _, callErr := create.Call(uintptr(source), 1, 1, uintptr(unsafe.Pointer(&disabled)), 0, 0, 0, 0, uintptr(unsafe.Pointer(&token)))
 	if result == 0 {
 		return nil, errors.Join(errors.New("CI cannot create a non-administrator daemon token"), callErr)
 	}
