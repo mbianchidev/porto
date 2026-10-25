@@ -52,29 +52,10 @@ func Probe(ctx context.Context) (Host, error) {
 	// module, whose initialization can block on headless Windows hosts.
 	command := process.NewCommand(ctx, "", filepath.Join(system, "dism.exe"),
 		"/Online", "/Get-FeatureInfo", "/FeatureName:Containers", "/English")
+	temporary := filepath.Join(filepath.Dir(system), "Temp")
 	command.Env = []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system),
 		"SystemDrive=" + filepath.VolumeName(system), "ComSpec=" + filepath.Join(system, "cmd.exe"),
-		"PATH=" + system + ";" + filepath.Dir(system)}
-	for _, folder := range []struct {
-		name string
-		id   *windows.KNOWNFOLDERID
-	}{
-		{"USERPROFILE", windows.FOLDERID_Profile},
-		{"LOCALAPPDATA", windows.FOLDERID_LocalAppData},
-		{"APPDATA", windows.FOLDERID_RoamingAppData},
-		{"ProgramData", windows.FOLDERID_ProgramData},
-	} {
-		value, err := windows.KnownFolderPath(folder.id, 0)
-		if err != nil {
-			return host, fmt.Errorf("resolve native probe environment %s: %w", folder.name, err)
-		}
-		command.Env = append(command.Env, folder.name+"="+value)
-		if folder.name == "LOCALAPPDATA" {
-			command.Env = append(command.Env, "TEMP="+filepath.Join(value, "Temp"), "TMP="+filepath.Join(value, "Temp"))
-		} else if folder.name == "ProgramData" {
-			command.Env = append(command.Env, "ALLUSERSPROFILE="+value)
-		}
-	}
+		"PATH=" + system + ";" + filepath.Dir(system), "TEMP=" + temporary, "TMP=" + temporary}
 	var diagnostics bytes.Buffer
 	command.Stderr = &diagnostics
 	output, err := command.Output()
