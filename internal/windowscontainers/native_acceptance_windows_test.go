@@ -351,6 +351,9 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 		imageIdentity.Descriptor.Digest == "" || imageIdentity.ID == imageIdentity.Descriptor.Digest {
 		t.Fatalf("native image config ID and manifest target were conflated: %s, %v", imageDocument, err)
 	}
+	if listed := request("GET", "/images/json", nil, http.StatusOK); !bytes.Contains(listed, []byte(imageIdentity.ID)) {
+		t.Fatalf("native image listing lost Docker configuration identity: %s", listed)
+	}
 	alias := "registry.example.test/synthetic-native:fixture"
 	request("POST", "/images/"+url.PathEscape(imageIdentity.ID)+"/tag?repo=registry.example.test%2Fsynthetic-native&tag=fixture", nil, http.StatusCreated)
 	request("GET", "/images/"+url.PathEscape(alias)+"/json", nil, http.StatusOK)

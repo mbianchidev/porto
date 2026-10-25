@@ -19,6 +19,59 @@ import (
 
 const maxWindowsImageMetadata = 4 * 1024 * 1024
 
+type windowsImageMetadata struct {
+	Image           struct{ Target ocispec.Descriptor }
+	ImageConfigDesc ocispec.Descriptor
+	ImageConfig     ocispec.Image
+}
+
+func (m *Manager) readWindowsImageMetadata(ctx context.Context, image string) (windowsImageMetadata, error) {
+	var metadata windowsImageMetadata
+	document, err := m.inspect(ctx, "image", image, "--mode", "native", "--platform", "windows/amd64")
+	if err != nil {
+		return metadata, err
+	}
+	if err := json.Unmarshal(document, &metadata); err != nil {
+		return metadata, err
+	}
+	if err := metadata.ImageConfigDesc.Digest.Validate(); err != nil {
+		return metadata, fmt.Errorf("invalid native Windows OCI configuration identity: %w", err)
+	}
+	if metadata.ImageConfig.OS != "windows" || metadata.ImageConfig.Architecture != "amd64" || metadata.ImageConfig.OSVersion == "" {
+		return metadata, errors.New("invalid native Windows OCI image platform or Windows version")
+	}
+	if err := metadata.Image.Target.Digest.Validate(); err != nil {
+		return metadata, fmt.Errorf("invalid native Windows OCI manifest target: %w", err)
+	}
+	if isImageDigest(image) && metadata.Image.Target.Digest.String() != image {
+		return metadata, errors.New("invalid native Windows OCI image metadata: manifest identity changed")
+	}
+	return metadata, nil
+}
+
+func (m *Manager) nativeWindowsImages(ctx context.Context, images []Image) ([]Image, error) {
+	metadataByTarget := make(map[string]windowsImageMetadata)
+	for n := range images {
+		target := images[n].Digest
+		if !isImageDigest(target) {
+			return nil, errors.New("invalid native Windows image listing: missing manifest identity")
+		}
+		metadata, ok := metadataByTarget[target]
+		if !ok {
+			var err error
+			metadata, err = m.readWindowsImageMetadata(ctx, target)
+			if err != nil {
+				return nil, fmt.Errorf("read native Windows image listing metadata: %w", err)
+			}
+			metadataByTarget[target] = metadata
+		}
+		// nerdctl lists manifest IDs, whereas Docker exposes configuration IDs.
+		images[n].ID = metadata.ImageConfigDesc.Digest.String()
+		images[n].Platform = metadata.ImageConfig.OS + "/" + metadata.ImageConfig.Architecture
+	}
+	return images, nil
+}
+
 func windowsImageID(image string) bool {
 	encoded := strings.TrimPrefix(image, "sha256:")
 	return len(encoded) >= 12 && len(encoded) <= 64 && strings.Trim(encoded, "0123456789abcdef") == ""
@@ -95,27 +148,12 @@ func (m *Manager) inspectWindowsImage(ctx context.Context, image, platform strin
 		return document, nil
 	}
 	// The compatibility schema omits os.version and the manifest descriptor.
-	native, err := m.inspect(ctx, "image", image, "--mode", "native", "--platform", "windows/amd64")
+	metadata, err := m.readWindowsImageMetadata(ctx, image)
 	if err != nil {
 		return nil, err
 	}
-	var metadata struct {
-		Image           struct{ Target ocispec.Descriptor }
-		ImageConfigDesc ocispec.Descriptor
-		ImageConfig     ocispec.Image
-	}
-	if err := json.Unmarshal(native, &metadata); err != nil {
-		return nil, err
-	}
-	if metadata.ImageConfigDesc.Digest.String() != inspected.ID || inspected.ID == "" ||
-		metadata.ImageConfig.OS != "windows" || metadata.ImageConfig.Architecture != "amd64" || metadata.ImageConfig.OSVersion == "" {
-		return nil, errors.New("invalid native Windows OCI image metadata: configuration identity, platform, or Windows version differs")
-	}
-	if err := metadata.Image.Target.Digest.Validate(); err != nil {
-		return nil, fmt.Errorf("invalid native Windows OCI manifest target: %w", err)
-	}
-	if isImageDigest(image) && metadata.Image.Target.Digest.String() != image {
-		return nil, errors.New("invalid native Windows OCI image metadata: manifest identity changed")
+	if metadata.ImageConfigDesc.Digest.String() != inspected.ID {
+		return nil, errors.New("invalid native Windows OCI image metadata: configuration identity changed")
 	}
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(document, &fields); err != nil {

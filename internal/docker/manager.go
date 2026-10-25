@@ -1194,7 +1194,7 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 	if err != nil {
 		return nil, err
 	}
-	return decodeLines(output, func(item map[string]string) Image {
+	images, err := decodeLines(output, func(item map[string]string) Image {
 		sizeBytes, err := resources.ParseBytes(item["Size"])
 		if err != nil {
 			sizeBytes = -1
@@ -1212,6 +1212,10 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 			Labels:     parseLabels(item["Labels"]),
 		}
 	})
+	if err != nil || m.windows == nil {
+		return images, err
+	}
+	return m.nativeWindowsImages(ctx, images)
 }
 
 func (m *Manager) Networks(ctx context.Context) ([]Network, error) {

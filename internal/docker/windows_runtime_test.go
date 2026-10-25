@@ -349,7 +349,13 @@ func TestNativeWindowsImageConfigIDsResolveToImmutableManifestTargets(t *testing
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		args := nativeCommandArguments(t, manager, command)
 		if args[0] == "images" {
-			return json.Marshal(map[string]string{"ID": config, "Digest": target, "Repository": "registry.example.test/synthetic", "Tag": "<none>"})
+			return json.Marshal(map[string]string{"ID": target, "Digest": target, "Repository": "registry.example.test/synthetic", "Tag": "<none>"})
+		}
+		if args[0] == "image" && strings.Contains(strings.Join(args, " "), "--mode native") {
+			return json.Marshal([]any{map[string]any{
+				"Image":           map[string]any{"target": map[string]string{"digest": target}},
+				"ImageConfigDesc": map[string]string{"digest": config},
+				"ImageConfig":     map[string]string{"os": "windows", "architecture": "amd64", "os.version": "10.0.26100.1"}}})
 		}
 		if args[0] == "tag" {
 			if args[1] != "registry.example.test/synthetic@"+target {
@@ -377,6 +383,10 @@ func TestNativeWindowsImageConfigIDsResolveToImmutableManifestTargets(t *testing
 		if err := manager.RemoveImage(context.Background(), id, true); err != nil {
 			t.Fatalf("native image ID removal %s: %v", id, err)
 		}
+	}
+	if images, err := manager.Images(context.Background()); err != nil || len(images) != 1 ||
+		images[0].ID != config || images[0].Digest != target {
+		t.Fatalf("native image listing did not preserve Docker config identity: %+v, %v", images, err)
 	}
 }
 
