@@ -290,14 +290,27 @@ func Supervise(ctx context.Context, i Installation, ready chan<- struct{}, serve
 	}
 	keyBytes, _ := hexKey(i.OwnerSID)
 	subnet := fmt.Sprintf("10.253.%d.0/24", keyBytes)
-	if _, err := EnsureNetwork(i, i.DefaultNetwork(), subnet); err != nil {
-		return err
-	}
+	var newCNI string
 	if _, err := runNerdctl(startContext, i, "network", "inspect", i.DefaultNetwork()); err != nil {
-		if _, err := runNerdctl(startContext, i, "network", "create", "--driver", "nat",
-			"--subnet", subnet, "--label", "io.porto.windows.owner="+i.OwnerSID, i.DefaultNetwork()); err != nil {
+		if !strings.Contains(err.Error(), "no network found matching: "+i.DefaultNetwork()) {
 			return err
 		}
+		output, err := runNerdctl(startContext, i, "network", "create", "--driver", "nat",
+			"--subnet", subnet, "--label", "io.porto.windows.owner="+i.OwnerSID, i.DefaultNetwork())
+		if err != nil {
+			return err
+		}
+		newCNI = strings.TrimSpace(string(output))
+	}
+	// Allocate CNI before HNS so nerdctl does not reject our own live subnet.
+	if _, err := EnsureNetwork(i, i.DefaultNetwork(), subnet); err != nil {
+		if newCNI == "" {
+			return err
+		}
+		rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		_, rollbackErr := runNerdctl(rollbackContext, i, "network", "rm", newCNI)
+		return errors.Join(err, rollbackErr)
 	}
 	serveDone := make(chan error, 1)
 	go func() { serveDone <- serve(workerContext, i, ready) }()

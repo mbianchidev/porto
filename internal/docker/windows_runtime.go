@@ -19,6 +19,7 @@ import (
 )
 
 type windowsRuntime struct {
+	networkMu       sync.Mutex
 	attachMu        sync.Mutex
 	attachProcesses map[string]map[runtimes.Process]struct{}
 	imageReferences *windowsImageReferences

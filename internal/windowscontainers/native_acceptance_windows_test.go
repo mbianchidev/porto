@@ -307,6 +307,17 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 	}
 	anonymousPipeDenied(t, installed.Pipe())
 	anonymousPipeDenied(t, installed.ContainerdPipe())
+	createdNetwork := request("POST", "/networks/create", map[string]any{
+		"Name": "synthetic-native-network", "Driver": "nat",
+		"IPAM": map[string]any{"Config": []map[string]string{{"Subnet": "10.252.239.0/24"}}}}, http.StatusCreated)
+	var network struct {
+		ID string `json:"Id"`
+	}
+	if err := json.Unmarshal(createdNetwork, &network); err != nil || network.ID == "" {
+		t.Fatalf("native network identity: %s, %v", createdNetwork, err)
+	}
+	request("GET", "/networks/"+network.ID, nil, http.StatusOK)
+	request("DELETE", "/networks/"+network.ID, nil, http.StatusNoContent)
 	request("POST", "/images/create?"+url.Values{"fromImage": {wrongImage}}.Encode(), nil, http.StatusBadRequest)
 	request("POST", "/images/create?"+url.Values{"fromImage": {image}, "platform": {"windows/arm64"}}.Encode(), nil, http.StatusBadRequest)
 	request("POST", "/images/create?"+url.Values{"fromImage": {image}}.Encode(), nil, http.StatusOK)

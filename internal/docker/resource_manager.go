@@ -4,8 +4,10 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/windowscontainers"
 )
@@ -15,6 +17,8 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 		return "", err
 	}
 	if m.windows != nil {
+		m.windows.networkMu.Lock()
+		defer m.windows.networkMu.Unlock()
 		name, err := m.ownedWindowsNetworkName(request.Name)
 		if err != nil {
 			return "", err
@@ -32,9 +36,6 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 			request.Subnets = []string{fmt.Sprintf("10.254.%d.0/24", sum[0])}
 		}
 		request.Driver = "nat"
-		if _, err := m.windows.ensureNetwork(m.windows.installation, request.Name, request.Subnets[0]); err != nil {
-			return "", err
-		}
 	}
 	args := []string{"network", "create"}
 	args = appendStringFlag(args, "--driver", request.Driver)
@@ -56,12 +57,25 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 	for key, value := range request.Labels {
 		args = append(args, "--label", key+"="+value)
 	}
+	if m.windows != nil {
+		args = append(args, "--label", "io.porto.windows.owner="+m.windows.installation.OwnerSID)
+	}
 	args = append(args, request.Name)
 	output, err := m.run(ctx, "create Porto network", args...)
 	if err != nil {
 		return "", err
 	}
-	return strings.TrimSpace(string(output)), nil
+	id := strings.TrimSpace(string(output))
+	if m.windows != nil {
+		// nerdctl rejects a subnet already allocated by HNS, including our own.
+		if _, err := m.windows.ensureNetwork(m.windows.installation, request.Name, request.Subnets[0]); err != nil {
+			rollbackContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+			defer cancel()
+			_, rollbackErr := m.run(rollbackContext, "roll back new native CNI network", "network", "rm", id)
+			return "", errors.Join(err, rollbackErr)
+		}
+	}
+	return id, nil
 }
 
 func (m *Manager) RemoveNetwork(ctx context.Context, name string) error {
@@ -74,6 +88,8 @@ func (m *Manager) RemoveNetwork(ctx context.Context, name string) error {
 		return err
 	}
 	if m.windows != nil {
+		m.windows.networkMu.Lock()
+		defer m.windows.networkMu.Unlock()
 		resolved, err := m.windowsNetworkIdentifier(ctx, name)
 		if err != nil {
 			return err

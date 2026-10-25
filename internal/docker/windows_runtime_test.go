@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -287,7 +288,11 @@ func TestNativeWindowsPinnedIndexResolutionSurvivesWorkerRestart(t *testing.T) {
 func TestNativeWindowsLogicalNetworksNeverAdoptAnUnownedHNSName(t *testing.T) {
 	runner := &fakeRunner{}
 	manager := nativeTestManager(t, runner)
-	var ownedName string
+	ownedName, err := manager.ownedWindowsNetworkName("developer-network")
+	if err != nil {
+		t.Fatal(err)
+	}
+	cniCreated := false
 	manager.windows.ensureNetwork = func(i windowscontainers.Installation, name, subnet string) (windowscontainers.Network, error) {
 		if err := windowscontainers.ValidateNetworkName(i, name); err != nil {
 			t.Fatal(err)
@@ -295,7 +300,9 @@ func TestNativeWindowsLogicalNetworksNeverAdoptAnUnownedHNSName(t *testing.T) {
 		if name == "developer-network" || subnet == "" {
 			t.Fatalf("native network escaped private naming/subnet: %s, %s", name, subnet)
 		}
-		ownedName = name
+		if !cniCreated {
+			t.Fatal("HNS was allocated before nerdctl could validate and create its CNI subnet")
+		}
 		return windowscontainers.Network{Name: name, ID: "owned-hns-id", Subnet: subnet}, nil
 	}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
@@ -303,6 +310,7 @@ func TestNativeWindowsLogicalNetworksNeverAdoptAnUnownedHNSName(t *testing.T) {
 		if args[0] != "network" || args[1] != "create" || args[len(args)-1] != ownedName {
 			t.Fatalf("unexpected native network mutation %q", args)
 		}
+		cniCreated = true
 		return []byte("owned-network-id\n"), nil
 	}
 	if _, err := manager.CreateNetwork(context.Background(), CreateNetworkRequest{Name: "developer-network"}); err != nil {
@@ -316,6 +324,43 @@ func TestNativeWindowsLogicalNetworksNeverAdoptAnUnownedHNSName(t *testing.T) {
 		if _, err := manager.ownedWindowsNetworkName(bad); err == nil {
 			t.Fatalf("unowned native network accepted: %s", bad)
 		}
+	}
+}
+
+func TestNativeWindowsNetworkHNSFailureRollsBackOnlyNewCNIConfiguration(t *testing.T) {
+	for _, rollbackFails := range []bool{false, true} {
+		t.Run(fmt.Sprint(rollbackFails), func(t *testing.T) {
+			runner := &fakeRunner{}
+			manager := nativeTestManager(t, runner)
+			hnsError := errors.New("synthetic HNS failure")
+			rollbackError := errors.New("synthetic CNI rollback failure")
+			manager.windows.ensureNetwork = func(windowscontainers.Installation, string, string) (windowscontainers.Network, error) {
+				return windowscontainers.Network{}, hnsError
+			}
+			var mutations []string
+			runner.handler = func(command runtimes.Command) ([]byte, error) {
+				args := nativeCommandArguments(t, manager, command)
+				if len(args) < 3 || args[0] != "network" {
+					t.Fatalf("unexpected native network command: %q", args)
+				}
+				mutations = append(mutations, args[1])
+				if args[1] == "create" {
+					return []byte("new-cni-network-id\n"), nil
+				}
+				if args[1] != "rm" || args[2] != "new-cni-network-id" {
+					t.Fatalf("rollback escaped the newly created CNI identity: %q", args)
+				}
+				if rollbackFails {
+					return nil, rollbackError
+				}
+				return nil, nil
+			}
+			id, err := manager.CreateNetwork(context.Background(), CreateNetworkRequest{Name: "synthetic-network"})
+			if id != "" || !errors.Is(err, hnsError) || (rollbackFails && !errors.Is(err, rollbackError)) ||
+				!reflect.DeepEqual(mutations, []string{"create", "rm"}) {
+				t.Fatalf("native network rollback: id=%q mutations=%q error=%v", id, mutations, err)
+			}
+		})
 	}
 }
 
