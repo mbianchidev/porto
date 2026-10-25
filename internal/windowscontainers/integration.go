@@ -83,9 +83,8 @@ func (i Installation) DefaultNetwork() string {
 }
 
 func (i Installation) NerdctlArgs() []string {
-	return []string{"--config", filepath.Join(i.Deployment(), "nerdctl.toml"),
-		"--address", i.ContainerdPipe(), "--namespace", Namespace, "--snapshotter", Snapshotter,
-		"--runtime", RuntimeName, "--data-root", filepath.Join(i.Data(), "nerdctl"),
+	return []string{"--address", i.ContainerdPipe(), "--namespace", Namespace, "--snapshotter", Snapshotter,
+		"--data-root", filepath.Join(i.Data(), "nerdctl"),
 		"--cni-path", i.Bin(), "--cni-netconfpath", filepath.Join(i.Data(), "cni")}
 }
 

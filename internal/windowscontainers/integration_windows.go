@@ -927,7 +927,8 @@ func systemEnvironment(i Installation) []string {
 		"SystemDrive=" + filepath.VolumeName(system), "COMSPEC=" + filepath.Join(system, "cmd.exe"), "PATHEXT=.COM;.EXE;.BAT;.CMD",
 		"ProgramData=" + filepath.Dir(i.Root), "ProgramFiles=" + filepath.Join(filepath.VolumeName(system)+`\`, "Program Files"),
 		"USERPROFILE=" + i.Data(), "APPDATA=" + i.Data(), "LOCALAPPDATA=" + i.Data(),
-		"TEMP=" + i.Data(), "TMP=" + i.Data(), "PSModulePath=" + filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules")}
+		"TEMP=" + i.Data(), "TMP=" + i.Data(), "PSModulePath=" + filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules"),
+		"NERDCTL_TOML=" + filepath.Join(i.Deployment(), "nerdctl.toml")}
 }
 
 func runNerdctl(ctx context.Context, i Installation, args ...string) ([]byte, error) {

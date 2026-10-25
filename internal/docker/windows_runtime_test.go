@@ -63,6 +63,11 @@ func TestNativeWindowsNeverDiscoversAnExternalRuntimeOrLinuxHelpers(t *testing.T
 		strings.Contains(strings.Join(backend.prefix, " "), "foreign") {
 		t.Fatalf("backend = %+v", backend)
 	}
+	for _, argument := range backend.prefix {
+		if argument == "--config" || argument == "--runtime" {
+			t.Fatalf("unsupported nerdctl global flag: %s", argument)
+		}
+	}
 	if manager.creationConnector != nil || manager.operationsConnector != nil || manager.execConnector != nil ||
 		manager.networkConnector != nil || manager.metricReader != nil {
 		t.Fatal("native manager retained a Linux operation connector")
@@ -125,7 +130,7 @@ func TestNativeWindowsCreationValidatesBeforeMutationAndPreservesBindArguments(t
 		t.Fatalf("create = %q, %v", id, err)
 	}
 	args := nativeCommandArguments(t, manager, created)
-	for _, value := range []string{"--isolation", "process", "--pull=never", mount, manager.windows.installation.DefaultNetwork(),
+	for _, value := range []string{"--runtime", windowscontainers.RuntimeName, "--isolation", "process", "--pull=never", mount, manager.windows.installation.DefaultNetwork(),
 		"sha256:" + strings.Repeat("1", 64), "echo synthetic"} {
 		found := false
 		for _, argument := range args {

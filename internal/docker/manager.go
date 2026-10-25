@@ -829,7 +829,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	}
 	args := []string{"create"}
 	if m.windows != nil {
-		args = append(args, "--isolation", request.Isolation, "--pull=never")
+		args = append(args, "--runtime", windowscontainers.RuntimeName, "--isolation", request.Isolation, "--pull=never")
 	}
 	args = request.Limits.arguments(args)
 	if request.ReadOnly {

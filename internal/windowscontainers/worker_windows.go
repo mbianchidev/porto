@@ -45,7 +45,7 @@ func runtimeConfiguration(i Installation) map[string]string {
 		"\ndisabled_plugins = ['io.containerd.cri.v1.images', 'io.containerd.cri.v1.runtime', 'io.containerd.grpc.v1.cri']\n" +
 		"[grpc]\naddress = " + quote(i.ContainerdPipe()) + "\n"
 	nerdctl := "address = " + quote(i.ContainerdPipe()) +
-		"\nnamespace = " + quote(Namespace) + "\nsnapshotter = 'windows'\nruntime = " + quote(RuntimeName) +
+		"\nnamespace = " + quote(Namespace) + "\nsnapshotter = 'windows'" +
 		"\ndata_root = " + quote(filepath.Join(i.Data(), "nerdctl")) +
 		"\ncni_path = " + quote(i.Bin()) +
 		"\ncni_netconfpath = " + quote(filepath.Join(i.Data(), "cni")) +

@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -106,7 +108,8 @@ func TestNativeWindowsConfigurationUsesOnlyOwnedPaths(t *testing.T) {
 			t.Fatalf("native runtime points to a foreign/default pipe: %s", data)
 		}
 	}
-	if !strings.Contains(string(nerdctl), RuntimeName) || !strings.Contains(string(nerdctl), "snapshotter = 'windows'") ||
+	if strings.Contains(string(nerdctl), "\nruntime =") || !strings.Contains(string(nerdctl), "snapshotter = 'windows'") ||
+		!slices.Contains(systemEnvironment(i), "NERDCTL_TOML="+filepath.Join(i.Deployment(), "nerdctl.toml")) ||
 		!strings.Contains(serviceCommand(i), " windows-containers-worker "+i.OwnerSID) {
 		t.Fatalf("native runtime configuration lost its identity: %s, %s", nerdctl, serviceCommand(i))
 	}
