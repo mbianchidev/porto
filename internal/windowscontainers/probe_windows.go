@@ -5,7 +5,6 @@ package windowscontainers
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
@@ -15,6 +14,8 @@ import (
 	"github.com/mbianchidev/porto/internal/process"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/registry"
+	"golang.org/x/sys/windows/svc"
+	"golang.org/x/sys/windows/svc/mgr"
 )
 
 func Probe(ctx context.Context) (Host, error) {
@@ -47,23 +48,13 @@ func Probe(ctx context.Context) (Host, error) {
 	if err != nil {
 		return host, err
 	}
-	powershell := filepath.Join(system, "WindowsPowerShell", "v1.0", "powershell.exe")
-	modules := filepath.Join(system, "WindowsPowerShell", "v1.0", "Modules")
-	script := `$ErrorActionPreference='Stop'
-[Console]::Error.WriteLine('Inspecting Windows Containers feature')
-$containers=(Get-WindowsOptionalFeature -Online -FeatureName Containers).State -eq 'Enabled'
-[Console]::Error.WriteLine('Inspecting Hyper-V management service')
-$hyperv=@(Get-Service -Name vmms -ErrorAction SilentlyContinue | Where-Object {$_.Status -eq 'Running'}).Count -gt 0
-[Console]::Error.WriteLine('Inspecting processor virtualization capability')
-$processors=@(Get-CimInstance -ClassName Win32_Processor)
-$ready=$processors.Count -gt 0 -and @($processors | Where-Object {
-  -not $_.VirtualizationFirmwareEnabled -or -not $_.SecondLevelAddressTranslationExtensions
-}).Count -eq 0
-@{Containers=$containers; HyperV=$hyperv; Virtualization=$ready} | ConvertTo-Json -Compress`
-	command := process.NewCommand(ctx, "", powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", script)
+	// Use the native servicing executable rather than the PowerShell DISM
+	// module, whose initialization can block on headless Windows hosts.
+	command := process.NewCommand(ctx, "", filepath.Join(system, "dism.exe"),
+		"/Online", "/Get-FeatureInfo", "/FeatureName:Containers", "/English")
 	command.Env = []string{"SystemRoot=" + filepath.Dir(system), "WINDIR=" + filepath.Dir(system),
 		"SystemDrive=" + filepath.VolumeName(system), "ComSpec=" + filepath.Join(system, "cmd.exe"),
-		"PATH=" + system + ";" + filepath.Dir(system) + ";" + filepath.Dir(powershell), "PSModulePath=" + modules}
+		"PATH=" + system + ";" + filepath.Dir(system)}
 	for _, folder := range []struct {
 		name string
 		id   *windows.KNOWNFOLDERID
@@ -88,14 +79,44 @@ $ready=$processors.Count -gt 0 -and @($processors | Where-Object {
 	command.Stderr = &diagnostics
 	output, err := command.Output()
 	if err != nil {
-		return host, fmt.Errorf("inspect native Windows features without changing them: %w: %s", errors.Join(err, ctx.Err()), diagnostics.String())
+		return host, fmt.Errorf("inspect native Windows Containers feature without changing it: %w: %s %s",
+			errors.Join(err, ctx.Err()), diagnostics.String(), output)
 	}
-	var features struct {
-		Containers, HyperV, Virtualization bool
+	host.Containers, err = windowsFeatureEnabled(output)
+	if err != nil {
+		return host, err
 	}
-	if err := json.Unmarshal(output, &features); err != nil {
-		return host, fmt.Errorf("decode Windows host feature inspection: %w", err)
+	host.HyperV, err = hyperVManagementRunning()
+	if err != nil {
+		return host, err
 	}
-	host.Containers, host.HyperV, host.Virtualization = features.Containers, features.HyperV, features.Virtualization
+	host.Virtualization = windows.IsProcessorFeaturePresent(windows.PF_VIRT_FIRMWARE_ENABLED) &&
+		windows.IsProcessorFeaturePresent(windows.PF_SECOND_LEVEL_ADDRESS_TRANSLATION)
 	return host, nil
+}
+
+func hyperVManagementRunning() (running bool, err error) {
+	manager, err := windows.OpenSCManager(nil, nil, windows.SC_MANAGER_CONNECT)
+	if err != nil {
+		return false, fmt.Errorf("inspect native Hyper-V management: %w", err)
+	}
+	defer func() { err = errors.Join(err, windows.CloseServiceHandle(manager)) }()
+	name, err := windows.UTF16PtrFromString("vmms")
+	if err != nil {
+		return false, err
+	}
+	handle, err := windows.OpenService(manager, name, windows.SERVICE_QUERY_STATUS)
+	if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect Hyper-V management service: %w", err)
+	}
+	service := &mgr.Service{Name: "vmms", Handle: handle}
+	defer func() { err = errors.Join(err, service.Close()) }()
+	status, err := service.Query()
+	if err != nil {
+		return false, fmt.Errorf("inspect Hyper-V management state: %w", err)
+	}
+	return status.State == svc.Running, nil
 }
