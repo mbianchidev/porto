@@ -32,7 +32,10 @@ import (
 	"golang.org/x/net/websocket"
 )
 
-type isolatedPolicyRunner struct{ runtimes.ExecRunner }
+type isolatedPolicyRunner struct {
+	runtimes.ExecRunner
+	projectRoot string
+}
 
 func (runner isolatedPolicyRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
 	if filepath.Base(command.Name) == "limactl" && len(command.Args) > 0 && command.Args[0] == "start" &&
@@ -43,12 +46,17 @@ func (runner isolatedPolicyRunner) Run(ctx context.Context, command runtimes.Com
 				arguments = append(arguments, argument)
 			}
 		}
-		command.Args = append(arguments, "--mount-none", command.Args[len(command.Args)-1])
+		mount := "--mount-none"
+		if runner.projectRoot != "" {
+			mount = "--mount-only=" + runner.projectRoot + ":w"
+		}
+		command.Args = append(arguments, mount, command.Args[len(command.Args)-1])
 	}
 	return runner.ExecRunner.Run(ctx, command)
 }
 
-func TestNativeAppleSiliconRuntimePolicies(t *testing.T) {
+func nativePolicyEngine(t *testing.T) (context.Context, *portodocker.Manager, *acceleration.Manager) {
+	t.Helper()
 	if os.Getenv("PORTO_TEST_NATIVE_RUNTIME_POLICIES") != "1" {
 		t.Skip("set PORTO_TEST_NATIVE_RUNTIME_POLICIES=1 only after authorizing an isolated 2 GiB VZ acceptance VM")
 	}
@@ -59,10 +67,14 @@ func TestNativeAppleSiliconRuntimePolicies(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	root, err = filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Setenv("PORTO_HOME", filepath.Join(root, "porto"))
 	t.Setenv("LIMA_HOME", filepath.Join(root, "lima"))
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 	tools := filepath.Join(root, "tools")
 	if err := os.MkdirAll(tools, 0o700); err != nil {
 		t.Fatal(err)
@@ -77,7 +89,11 @@ func TestNativeAppleSiliconRuntimePolicies(t *testing.T) {
 		t.Fatalf("build the required guest transport helper before creating the isolated VM: %v: %s", err, output)
 	}
 	t.Setenv("PATH", tools+string(os.PathListSeparator)+os.Getenv("PATH"))
-	runner := isolatedPolicyRunner{}
+	projectRoot := filepath.Join(root, "projects")
+	if err := os.Mkdir(projectRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	runner := isolatedPolicyRunner{projectRoot: projectRoot}
 	architecture := acceleration.New(filepath.Join(root, "porto"), runner)
 	host := architecture.ProbeHost(ctx)
 	if !host.Virtualization.Supported || !host.Rosetta.Supported {
@@ -122,7 +138,70 @@ func TestNativeAppleSiliconRuntimePolicies(t *testing.T) {
 	}
 	t.Logf("native acceptance host=%s/%s Lima=%s VZ=true guest=arm64 amd64=%s CPUs=2 memoryMiB=2048 diskGiB=20",
 		host.HostOS, host.HostArchitecture, host.LimaVersion, capabilities.AMD64Handler)
+	return ctx, manager, architecture
+}
+
+func TestNativeAppleSiliconRuntimePolicies(t *testing.T) {
+	ctx, manager, architecture := nativePolicyEngine(t)
 	runOwnedRuntimePolicyAcceptance(t, ctx, manager, "amd64", architecture)
+}
+
+func nativePolicyWorkload(t *testing.T) (context.Context, *portodocker.Manager, string) {
+	t.Helper()
+	ctx, manager, _ := nativePolicyEngine(t)
+	if err := manager.StartContainerInventory(ctx); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := manager.StopContainerInventory(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	waitPolicy(t, ctx, func() bool { return manager.ContainerSnapshot().Available }, "native lifecycle inventory")
+	image := fmt.Sprintf("porto-native-lifecycle:%d", time.Now().UnixNano())
+	if output, err := manager.Build(ctx, portodocker.BuildRequest{
+		ContextReader: bytes.NewReader(syntheticPolicyImage(t, ctx, "amd64")), Tags: []string{image}, Platform: "linux/amd64", NoCache: true,
+	}); err != nil {
+		t.Fatalf("prepare actual synthetic lifecycle image: %v: %s", err, output)
+	}
+	t.Cleanup(func() {
+		if err := manager.RemoveImage(context.Background(), image, true); err != nil {
+			t.Error(err)
+		}
+	})
+	return ctx, manager, image
+}
+
+func TestNativeResourceSaverLifecycle(t *testing.T) {
+	ctx, manager, image := nativePolicyWorkload(t)
+	testComposeResourceSaverProcessRecovery(t, ctx, manager, image, "amd64", true)
+}
+
+func TestNativeSynchronizedShareResilience(t *testing.T) {
+	ctx, manager, image := nativePolicyWorkload(t)
+	root, err := config.Dir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	st, err := store.Open(filepath.Join(root, "sharing-policy.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := st.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	server := New(st, nil)
+	server.docker = manager
+	server.syncShares = syncshares.New(st.Directory(), nil, manager.SynchronizedShareProvider())
+	manager.SetSynchronizedShareResolver(server.syncShares.Resolve)
+	t.Cleanup(func() {
+		if err := server.syncShares.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	testOwnedGuestSynchronizedShare(t, ctx, server, manager, image, "amd64")
 }
 
 func TestResourceSaverOwnedRuntimeAcceptance(t *testing.T) {
@@ -418,6 +497,9 @@ func runOwnedRuntimePolicyAcceptance(t *testing.T, ctx context.Context, manager 
 				100*(cpuAfter-cpuBefore)/time.Since(sampleStarted).Seconds())
 		}
 		configuration.SuspendEngine = true
+		if runtime.GOOS == "windows" && os.Getenv("GITHUB_ACTIONS") == "true" {
+			configuration.WakeSeconds = 180
+		}
 		if err := server.resourceSaver.Configure(configuration); err != nil {
 			t.Fatal(err)
 		}
@@ -518,6 +600,12 @@ func runOwnedRuntimePolicyAcceptance(t *testing.T, ctx context.Context, manager 
 		if err := server.resourceSaver.Configure(configuration); err != nil {
 			t.Fatal(err)
 		}
+		if err := manager.ContainerAction(ctx, id, "stop"); err != nil {
+			t.Fatal(err)
+		}
+		if architecture != nil || runtime.GOOS == "linux" {
+			testComposeResourceSaverProcessRecovery(t, ctx, manager, image, target, architecture != nil)
+		}
 		testOwnedGuestSynchronizedShare(t, ctx, server, manager, image, target)
 	}
 }
@@ -596,13 +684,31 @@ func waitPolicy(t *testing.T, ctx context.Context, predicate func() bool, descri
 func syntheticPolicyImage(t *testing.T, ctx context.Context, architecture string) []byte {
 	t.Helper()
 	const source = `package main
-import ("crypto/sha256"; "fmt"; "io"; "net/http"; "os"; "runtime"; "syscall"; "golang.org/x/net/websocket")
+import ("crypto/sha256"; "encoding/json"; "fmt"; "io"; "net/http"; "os"; "path/filepath"; "runtime"; "strings"; "sync/atomic"; "syscall"; "time"; "golang.org/x/net/websocket")
 func main() {
  if len(os.Args)>1 && os.Args[1]=="--selftest" { fmt.Print(runtime.GOARCH); return }
+ if len(os.Args)>1 && os.Args[1]=="--hold" { fmt.Println("synthetic-exec-active"); time.Sleep(time.Hour);return }
+ if len(os.Args)>1 && os.Args[1]=="--bench" {
+  started:=time.Now(); var files,bytes int64; hash:=sha256.New()
+  err:=filepath.WalkDir("/workspace",func(path string,entry os.DirEntry,err error)error {
+   if err!=nil{return err};if entry.IsDir(){return nil};files++
+   if strings.HasSuffix(path,".bin"){file,err:=os.Open(path);if err!=nil{return err};n,copyErr:=io.Copy(hash,file);closeErr:=file.Close();bytes+=n;if copyErr!=nil{return copyErr};return closeErr}
+   _,err=entry.Info();return err
+  });if err!=nil{panic(err)}
+  if err=json.NewEncoder(os.Stdout).Encode(struct{Files,Bytes,Nanoseconds int64;SHA256 string}{files,bytes,time.Since(started).Nanoseconds(),fmt.Sprintf("%x",hash.Sum(nil))});err!=nil{panic(err)};return
+ }
+ if os.Getenv("PORTO_TEST_IDLE_TIMER")=="1" {go func(){ticker:=time.NewTicker(100*time.Millisecond);defer ticker.Stop();var ticks atomic.Uint64;for range ticker.C {ticks.Add(1)}}()}
+ dependencyClient:=&http.Client{Timeout:time.Second,Transport:&http.Transport{DisableKeepAlives:true,Proxy:nil}}
  http.Handle("/socket", websocket.Handler(func(connection *websocket.Conn) { _, _ = io.Copy(connection, connection) }))
  http.HandleFunc("/", func(w http.ResponseWriter,r *http.Request) {
   data,err:=io.ReadAll(io.LimitReader(r.Body,32<<20)); if err!=nil { http.Error(w,err.Error(),400); return }
   w.Header().Set("X-Synthetic-Arch",runtime.GOARCH)
+  if r.URL.Path=="/hold" {if err=os.WriteFile("/readiness-blocked",[]byte("synthetic"),0600);err!=nil{http.Error(w,err.Error(),500);return};w.WriteHeader(204);return}
+  if r.URL.Path=="/release" {if err=os.Remove("/readiness-blocked");err!=nil&&!os.IsNotExist(err){http.Error(w,err.Error(),500);return};w.WriteHeader(204);return}
+  if r.URL.Path=="/" {
+   if _,err=os.Stat("/readiness-blocked");err==nil{http.Error(w,"synthetic readiness blocked",503);return}else if !os.IsNotExist(err){http.Error(w,err.Error(),500);return}
+   if dependency:=os.Getenv("PORTO_TEST_DEPENDENCY");dependency!="" {response,err:=dependencyClient.Get(dependency);if err!=nil{http.Error(w,err.Error(),503);return};_,readErr:=io.Copy(io.Discard,response.Body);closeErr:=response.Body.Close();if readErr!=nil||closeErr!=nil||response.StatusCode!=200{http.Error(w,"synthetic dependency not ready",503);return};w.Header().Set("X-Synthetic-Dependency","ready")}
+  }
   if r.URL.Path=="/read" { data,err=os.ReadFile("/workspace/host-note.txt"); if err!=nil {http.Error(w,err.Error(),500);return}; _,_=w.Write(data);return }
   if r.URL.Path=="/write" { if err=os.WriteFile("/workspace/guest-note.txt",data,0644);err!=nil {http.Error(w,err.Error(),500);return} }
   if r.URL.Path=="/watch" {

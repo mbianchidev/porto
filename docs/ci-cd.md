@@ -60,7 +60,11 @@ unit and capability gates, not an x64 binary fallback.
 
 The native fixture also exercises the actual dashboard WebSocket against SDK
 execs, including exact nonzero exit, resize, process/exec-metadata reaping and an
-unrelated interactive exec that must survive. The Windows development-client
+unrelated interactive exec that must survive. Reaping binds to the tracked SDK
+exec IDs and PIDs, preserves every baseline PID, and rejects leftover terminal
+or fixture processes. New non-SDK Windows background services are identified
+from maintained HCS process details rather than mistaken for leaked execs by
+an exact whole-container PID-count comparison. The Windows development-client
 row enables `PORTO_TEST_WINDOWS_COEXISTENCE=1` against its already running owned
 Linux engine, preserving live PID/start identity and exact binary volume data
 through native install, changed-binary update, repair and context changes.
@@ -103,12 +107,34 @@ The maintained-tool test independently covers ignores, executable permissions,
 relative symlinks, renames and retaining both sides of a conflict. These are
 additional gates, not replacements for the existing clients or native mounts.
 
+Complete Windows guest shutdown/wake uses an explicit 180-second fixture
+policy: QEMU/WHPX boot plus Lima's final rootless provisioning can exceed the
+60-second product default on hosted runners. Native Linux/macOS keep their
+60-second check; software-emulated macOS keeps its existing 600-second policy.
+The original binary body, real task readiness, shared-wake assertions and
+configured deadline remain mandatory. The product default is unchanged.
+
 An opt-in native Apple Silicon fixture creates only its own 2 GiB VZ engine with
-no host-folder mounts. It verifies Rosetta, QEMU-compatible policy transitions,
+only its private synthetic project directory mounted for a bind comparison.
+It verifies Rosetta, QEMU-compatible policy transitions,
 native-only rejections and native arm64 builds, as well as the resource and
 sharing cases above. It requires installed Rosetta and must not be substituted
 with a software-emulated result. Reproduction commands and measured boundaries
 are in [resource management](resource-management.md).
+
+Native and Linux Lima policy acceptance also creates a real two-member Docker
+Compose group with exec-form dependency health checks. A separate process runs
+the production ownership controller, health scheduler and HTTP wake handlers.
+SIGKILL/restart verifies persistent stopped ownership and quarantine after an
+external unpause/re-pause; active execs, canceled initiating bodies and actual
+readiness timeouts retain their safety and diagnostics. Native sharing acceptance
+exercises guest shutdown/reconnect, offline edits, case-collision preservation,
+and identical 64 MiB/10,000-file ordinary/synchronized bind workloads.
+
+Separate opt-in standalone VM acceptance boots both an arm64 VZ guest executing
+real amd64 Rosetta userspace and an amd64 QEMU guest kernel. It checks native
+arm64 execution, unsupported combinations before creation, persistent guest-home
+data across restart, and identity-scoped teardown, with no host-folder mounts.
 
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;

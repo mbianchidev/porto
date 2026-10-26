@@ -23,7 +23,7 @@ func inspectOwnedContainerHealth(document json.RawMessage) (json.RawMessage, err
 			return nil, fmt.Errorf("decode inspected container labels: %w", err)
 		}
 	}
-	if labels[portoManagedLabel] != portoRuntimeVersion || labels[nerdctlHealthcheckLabel] == "" {
+	if labels[nerdctlHealthcheckLabel] == "" {
 		return document, nil
 	}
 	container := Container{}
@@ -53,10 +53,12 @@ func inspectOwnedContainerHealth(document json.RawMessage) (json.RawMessage, err
 	}
 	if container.Health.Status == "disabled" {
 		delete(state, "Health")
-	} else if encoded := labels[nerdctlHealthStateLabel]; encoded != "" {
-		state["Health"] = json.RawMessage(encoded)
-	} else {
-		state["Health"] = json.RawMessage(`{"Status":"starting","FailingStreak":0}`)
+	} else if ownsContainerHealth(labels) || len(state["Health"]) == 0 || string(state["Health"]) == "null" {
+		if encoded := labels[nerdctlHealthStateLabel]; encoded != "" {
+			state["Health"] = json.RawMessage(encoded)
+		} else {
+			state["Health"] = json.RawMessage(`{"Status":"starting","FailingStreak":0}`)
+		}
 	}
 	inspected["Config"], err = json.Marshal(configuration)
 	if err != nil {

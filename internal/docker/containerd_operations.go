@@ -1485,7 +1485,7 @@ func (r *grpcContainerRuntime) UpdateHealth(
 		return containerdOperationError("inspect health metadata for", id, err)
 	}
 	record := response.GetContainer()
-	if record.GetLabels()[portoManagedLabel] != portoRuntimeVersion {
+	if !ownsContainerHealth(record.GetLabels()) {
 		return fmt.Errorf(
 			"%w: container %q health scheduling is owned by its compatibility runtime",
 			ErrUnsupported,

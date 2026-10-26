@@ -121,12 +121,17 @@ type OwnershipUncertainError struct{ Err error }
 func (e OwnershipUncertainError) Error() string { return e.Err.Error() }
 func (e OwnershipUncertainError) Unwrap() error { return e.Err }
 
+type ReadinessPendingError struct{ Reason string }
+
+func (e ReadinessPendingError) Error() string { return e.Reason }
+
 type operation struct {
-	done    chan struct{}
-	cancel  context.CancelFunc
-	waking  bool
-	err     error
-	waiters int
+	done        chan struct{}
+	cancel      context.CancelFunc
+	waking      bool
+	err         error
+	waiters     int
+	cancelCause error
 }
 
 type Manager struct {
@@ -525,10 +530,18 @@ func (m *Manager) AcquireRequest(ctx context.Context, applicationID string, cont
 				m.mu.Lock()
 				op.waiters--
 				if op.waking && op.waiters == 0 {
+					op.cancelCause = context.Cause(ctx)
 					op.cancel()
 				}
+				pendingReason := m.state.Entries[applicationID].Error
 				m.mu.Unlock()
 				release()
+				if errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					if pendingReason == "" {
+						pendingReason = "the engine or application is not ready"
+					}
+					return RequestLease{}, fmt.Errorf("Resource Saver wake/readiness deadline: %s: %w", pendingReason, context.Cause(ctx))
+				}
 				return RequestLease{}, context.Cause(ctx)
 			}
 			continue
@@ -569,20 +582,29 @@ func (m *Manager) wake(ctx context.Context, entry Entry, op *operation) {
 		err = m.backend.Resume(ctx, entry)
 	}
 	if err == nil {
+		pendingReason := "the application has not passed readiness"
 		ticker := time.NewTicker(100 * time.Millisecond)
 		defer ticker.Stop()
 		for {
 			ready, readinessErr := m.backend.Ready(ctx, entry.Application)
 			if readinessErr != nil {
-				err = readinessErr
-				break
-			}
-			if ready {
+				var pending ReadinessPendingError
+				if !errors.As(readinessErr, &pending) {
+					err = readinessErr
+					break
+				}
+				pendingReason = pending.Reason
+				m.mu.Lock()
+				current := m.state.Entries[entry.Application.ID]
+				current.Error = pendingReason
+				m.state.Entries[entry.Application.ID] = current
+				m.mu.Unlock()
+			} else if ready {
 				break
 			}
 			select {
 			case <-ctx.Done():
-				err = fmt.Errorf("Resource Saver readiness deadline: %w", context.Cause(ctx))
+				err = fmt.Errorf("Resource Saver readiness deadline: %s: %w", pendingReason, context.Cause(ctx))
 			case <-ticker.C:
 				continue
 			}
@@ -591,6 +613,9 @@ func (m *Manager) wake(ctx context.Context, entry Entry, op *operation) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if err != nil && errors.Is(err, context.Canceled) && op.cancelCause != nil {
+		err = fmt.Errorf("Resource Saver readiness interrupted: %s: %w", m.state.Entries[entry.Application.ID].Error, op.cancelCause)
+	}
 	if err != nil {
 		entry.Phase, entry.Error, entry.UpdatedAt = "failed", err.Error(), m.now()
 		m.state.Entries[entry.Application.ID] = entry

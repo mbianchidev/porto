@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -121,6 +122,8 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 		t.Fatalf("native process enumeration omitted init or unrelated exec: init=%d exec=%d pids=%v", task.Pid(), unrelatedState.PID, baseline)
 	}
 	var dashboardExecs []string
+	dashboardPIDs := map[uint32]bool{}
+	observedBackground := map[uint32]bool{}
 	trackDashboardExec := func() {
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
@@ -152,6 +155,7 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 					t.Fatalf("dashboard SDK exec is not a real live process: PID=%d status=%+v, %v", process.Pid, status, err)
 				}
 				dashboardExecs = append(dashboardExecs, details.ExecID)
+				dashboardPIDs[process.Pid] = true
 			}
 			if len(dashboardExecs) == 1 {
 				return
@@ -170,8 +174,37 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 		t.Helper()
 		deadline := time.Now().Add(15 * time.Second)
 		for {
-			actual := pids()
-			reaped := slices.Equal(actual, baseline)
+			processes, err := task.Pids(nativeContext)
+			if err != nil {
+				t.Fatal(err)
+			}
+			actual := make([]uint32, 0, len(processes))
+			reaped := true
+			for _, current := range processes {
+				actual = append(actual, current.Pid)
+				if slices.Contains(baseline, current.Pid) {
+					continue
+				}
+				var details shimoptions.ProcessDetails
+				if current.Info == nil || current.Info.UnmarshalTo(&details) != nil {
+					t.Fatalf("native process %d omitted its ownership details", current.Pid)
+				}
+				image := strings.ToLower(filepath.Base(details.ImageName))
+				if details.ImageName == "" {
+					t.Fatalf("native process %d omitted its executable identity", current.Pid)
+				}
+				if dashboardPIDs[current.Pid] || details.ExecID != "" ||
+					image == "cmd.exe" || image == "conhost.exe" || image == "native-fixture.exe" {
+					reaped = false
+				} else if !observedBackground[current.Pid] {
+					observedBackground[current.Pid] = true
+					t.Logf("new non-SDK Windows background process is not a dashboard exec: PID=%d image=%s", current.Pid, details.ImageName)
+				}
+			}
+			slices.Sort(actual)
+			for _, original := range baseline {
+				reaped = reaped && slices.Contains(actual, original)
+			}
 			for _, id := range dashboardExecs {
 				_, err := task.LoadProcess(nativeContext, id, nil)
 				if err == nil {
@@ -199,6 +232,7 @@ func runNativeDashboardWebSocket(t *testing.T, parent context.Context, installat
 			t.Fatalf("dashboard exec cleanup changed init or unrelated task: init=%+v %v unrelated=%+v %v", state, err, unrelatedAfter, inspectErr)
 		}
 		dashboardExecs = nil
+		dashboardPIDs = map[uint32]bool{}
 	}
 	client := ClientFor(installation)
 	defer client.CloseIdleConnections()

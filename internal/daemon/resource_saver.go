@@ -259,7 +259,7 @@ func (backend *saverBackend) Resume(ctx context.Context, entry resourcesaver.Ent
 func (backend *saverBackend) Ready(ctx context.Context, application resourcesaver.Application) (bool, error) {
 	snapshot := backend.server.docker.ContainerSnapshot()
 	if !snapshot.Available || snapshot.Stale {
-		return false, nil
+		return false, resourcesaver.ReadinessPendingError{Reason: "waiting for a fresh owned container inventory"}
 	}
 	for _, member := range application.Members {
 		found := false
@@ -275,7 +275,7 @@ func (backend *saverBackend) Ready(ctx context.Context, application resourcesave
 				return false, fmt.Errorf("container %s failed readiness: %s", container.Name, container.Health.Output)
 			}
 			if container.State != "running" || container.Health.Status == "starting" {
-				return false, nil
+				return false, resourcesaver.ReadinessPendingError{Reason: fmt.Sprintf("container %s is %s with health %s", container.Name, container.State, container.Health.Status)}
 			}
 		}
 		if !found {
@@ -291,14 +291,14 @@ func (backend *saverBackend) Ready(ctx context.Context, application resourcesave
 		}
 		response, err := client.Do(request)
 		if err != nil {
-			return false, nil
+			return false, resourcesaver.ReadinessPendingError{Reason: fmt.Sprintf("HTTP readiness for %s: %v", route.Hostname, err)}
 		}
 		closeErr := response.Body.Close()
 		if closeErr != nil {
 			return false, closeErr
 		}
 		if response.StatusCode < 200 || response.StatusCode >= 400 {
-			return false, nil
+			return false, resourcesaver.ReadinessPendingError{Reason: fmt.Sprintf("HTTP readiness for %s returned %s", route.Hostname, response.Status)}
 		}
 	}
 	return true, nil

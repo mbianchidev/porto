@@ -79,6 +79,13 @@ Stopped-task ownership is checked again on wake. Failed wakes return a gateway
 error with diagnostics, never a successful empty response. Backend pause,
 suspension, resume and failure events appear in Activity.
 
+Compose readiness uses the configured probe rather than merely a running PID.
+Exec-form health checks retain their original argument array, without adding a
+shell requirement to scratch images. Porto schedules probes for its explicitly
+managed workloads and health configurations, including compatibility-created
+containers, without adopting their filesystem or CNI lifecycle. Before the
+first probe, Docker inspection reports `starting`, not a missing healthcheck.
+
 ## Engine budgets
 
 CPU, memory, swap and disk settings apply only to Porto's owned Lima engine.
@@ -231,8 +238,10 @@ bash scripts/bundle-desktop-runtime.sh darwin arm64 stage/runtime-darwin-arm64
 
 The following command explicitly authorizes a disposable VZ acceptance VM.
 It creates private `PORTO_HOME` and `LIMA_HOME` directories, uses two CPUs,
-2 GiB RAM and a 20 GiB sparse disk, disables host-folder mounts, and removes
-only that VM afterward. Existing Porto engines are not selected:
+2 GiB RAM and a 20 GiB sparse disk, and mounts only its freshly created synthetic
+`projects` directory for the ordinary-bind comparison. No home or real project
+directory is shared. Only that VM is removed afterward; existing Porto engines
+are not selected:
 
 ```sh
 PATH="$PWD/stage/runtime-darwin-arm64/bin:$PWD/stage/runtime-darwin-arm64/lima/bin:$PATH" \
@@ -247,7 +256,26 @@ It echoes the SHA-256 of an 819,200-byte initiating binary POST, exercises
 12 concurrent wakes, a real WebSocket, manual pause, complete engine shutdown,
 Rosetta/QEMU policy changes, and a native arm64 build. Sharing uses 10,000
 small synthetic files, an actual guest container bind, bidirectional edits and
-inotify. The separate maintained-tool case covers ignores and retained conflicts:
+inotify. Additional cases use real Docker Compose dependencies and SIGKILL a
+separate process running the production ownership controller, HTTP wake route
+and health scheduler. They verify persisted stop ownership, pause quarantine
+after manual unpause/re-pause during downtime, an active exec, a canceled
+initiating body, and a real readiness timeout.
+
+The sharing case stops and starts the guest, edits the host while disconnected,
+verifies both versions and the same session/root identity on reconnect, and
+creates case-colliding guest filenames against a case-insensitive host. Neither
+guest version is discarded. Individual native acceptance areas can be rerun:
+
+```sh
+PATH="$PWD/stage/runtime-darwin-arm64/bin:$PWD/stage/runtime-darwin-arm64/lima/bin:$PATH" \
+  PORTO_TEST_NATIVE_RUNTIME_POLICIES=1 \
+  go test ./internal/daemon \
+    -run '^TestNative(ResourceSaverLifecycle|SynchronizedShareResilience)$' \
+    -count=1 -timeout=30m -v
+```
+
+The separate maintained-tool case covers ignores and retained conflicts:
 
 ```sh
 PORTO_TEST_SYNC_BINARY="$PWD/stage/runtime-darwin-arm64/bin/mutagen" \
@@ -278,7 +306,37 @@ the native VZ process's cumulative `ps time` samples, not the VM's configured CP
 reservation. This already-quiet fixture did not show a measurable idle CPU
 decrease, and its small build did not demonstrate automatic post-build RSS
 reclamation. Complete engine suspension removed the measured process instead.
-The daemon, host listeners and OS caches remain. Tiny-file synchronization
-measures metadata-heavy initialization, not sequential byte throughput.
-Battery savings and improvements over ordinary binds have not been measured
-and are not claimed.
+The daemon, host listeners and OS caches remain. The earlier tiny-file
+synchronization result measures metadata-heavy initialization, not sequential
+byte throughput.
+
+A separate representative sharing run on the same host used the same original
+amd64 binary in both modes, 10,000 small files and eight deterministic
+pseudorandom 8 MiB payloads. Both modes traversed 10,011 files after reconnect
+and edit checks, read exactly 67,108,864 payload bytes, and produced the same
+SHA-256. The ordinary bind used VZ's host share; synchronized mode used the
+verified guest-disk copy:
+
+| Mode | First walk/read/hash | Second trial | Third trial | Effective MiB/s, first / second / third |
+| --- | --- | --- | --- | --- |
+| Ordinary bind | 630.309 ms | 253.167 ms | 318.846 ms | 101.538 / 252.798 / 200.724 |
+| Synchronized guest copy | 206.137 ms | 202.439 ms | 201.321 ms | 310.474 / 316.144 / 317.900 |
+
+This includes metadata traversal and hashing, not just storage transfer.
+Subsequent trials may use caches; caches are not forcibly dropped on the shared
+host. Initial synchronization of the larger dataset took 2.901 s and is an
+additional cost, not hidden inside the per-read comparison. Synchronized mode
+also uses extra guest storage and synchronization resources, so one read alone
+does not justify it. These observations do not predict every repository's
+performance or establish battery savings.
+
+The lifecycle acceptance also measures an otherwise-idle HTTP service with a
+100 ms housekeeping timer. One run recorded 36,231,000 ns of task CPU over
+15.0696 s (0.240424% of one core) and 39,206,912 bytes of task memory before
+automatic scale-to-zero. Both Compose members then had no runnable tasks;
+the timer's process CPU cost and process memory were removed, while the
+initiating request still recovered the group after process loss. These are
+container cgroup counters and task-state observations, not a whole-laptop
+CPU, VM-RAM or battery claim. The earlier bare-server host CPU sample remains
+below its measurement resolution; automatic post-build RSS reclamation is
+still not claimed.

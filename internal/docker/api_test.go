@@ -281,7 +281,9 @@ func TestDockerAPIRequestVersionControlsHealthStartInterval(t *testing.T) {
 			}}
 			body := `{"Image":"synthetic:latest","Healthcheck":{"Test":["CMD","true"],"StartInterval":1000000000}}`
 			response := httptest.NewRecorder()
-			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+			manager := New(runner)
+			manager.operationsConnector = func(context.Context) (containerOperations, error) { return &fakeContainerOperations{}, nil }
+			NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response,
 				httptest.NewRequest(http.MethodPost, "/v"+test.version+"/containers/create", strings.NewReader(body)))
 			if response.Code != test.status {
 				t.Fatalf("health request = %d: %s", response.Code, response.Body.String())
@@ -478,7 +480,7 @@ func TestComposeContainerNameUsesCanonicalFirstAlias(t *testing.T) {
 func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	runner := &fakeRunner{
 		outputs: map[string][]byte{
-			"nerdctl create --name demo --stop-signal SIGINT --stop-timeout 12 --network bridge --health-cmd curl -f http://localhost/health --health-interval 30s --health-timeout 5s --health-start-period 10s --health-retries 3 --env MODE=test --label app=demo --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("docker.io/library/alpine:latest\npull complete\ncontainer-id\n"),
+			"nerdctl create --name demo --stop-signal SIGINT --stop-timeout 12 --network bridge --health-cmd curl -f http://localhost/health --health-interval 30s --health-timeout 5s --health-start-period 10s --health-retries 3 --env MODE=test --label app=demo --label io.porto.container.health-managed=1 --publish 127.0.0.1:8080:80/tcp alpine:latest sleep 30": []byte("docker.io/library/alpine:latest\npull complete\ncontainer-id\n"),
 			"nerdctl start container-id": nil,
 		},
 		errors: map[string]error{},

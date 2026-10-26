@@ -891,6 +891,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		}
 		return id, err
 	}
+	if err := m.checkCompatibilityHealth(ctx, request.Healthcheck); err != nil {
+		return "", err
+	}
 	hostname, err := compatibilityContainerHostname(request)
 	if err != nil {
 		return "", err
@@ -997,6 +1000,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	for key, value := range request.Labels {
 		args = append(args, "--label", key+"="+value)
 	}
+	if request.Healthcheck != nil {
+		args = append(args, "--label", portoHealthManagedLabel+"="+portoRuntimeVersion)
+	}
 	for _, volume := range request.Volumes {
 		args = append(args, "--volume", volume)
 	}
@@ -1039,6 +1045,12 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	id, err := createdContainerID(output)
 	if err != nil {
 		return "", err
+	}
+	if err := m.preserveCompatibilityHealth(ctx, id, request.Healthcheck); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		_, cleanupErr := m.run(cleanup, "remove container after health configuration failure", "rm", "--force", id)
+		return "", errors.Join(err, cleanupErr)
 	}
 	if request.TTY && request.ConsoleSize != [2]uint{} {
 		if err := m.configureContainerConsole(ctx, id, request.ConsoleSize); err != nil {

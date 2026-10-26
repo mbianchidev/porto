@@ -74,3 +74,28 @@ func TestManagedHealthInspectionRejectsMalformedMetadataWithoutChangingLegacyHea
 		t.Fatalf("legacy runtime's health observation was overwritten: %s, %v", projected, err)
 	}
 }
+
+func TestConfiguredCompatibilityHealthIsStartingBeforeItsFirstProbe(t *testing.T) {
+	document, err := json.Marshal(map[string]any{
+		"Config": map[string]any{"Labels": map[string]string{
+			nerdctlHealthcheckLabel: `{"Test":["CMD-SHELL","/fixture --selftest"],"Interval":10000000000}`,
+		}},
+		"State": map[string]any{"Running": true},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	output, err := inspectOwnedContainerHealth(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var observed struct {
+		State struct{ Health *struct{ Status string } }
+	}
+	if err := json.Unmarshal(output, &observed); err != nil {
+		t.Fatal(err)
+	}
+	if observed.State.Health == nil || observed.State.Health.Status != "starting" {
+		t.Fatalf("Compose saw no healthcheck during the first-probe race: %s", output)
+	}
+}

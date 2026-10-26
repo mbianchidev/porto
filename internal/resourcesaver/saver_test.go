@@ -21,6 +21,7 @@ type syntheticBackend struct {
 	ready       bool
 	sleepError  error
 	resumeError error
+	readyError  error
 }
 
 func (b *syntheticBackend) Snapshot(context.Context) (Snapshot, error) {
@@ -43,7 +44,7 @@ func (b *syntheticBackend) Resume(context.Context, Entry) error {
 func (b *syntheticBackend) Ready(context.Context, Application) (bool, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	return b.ready, nil
+	return b.ready, b.readyError
 }
 func (b *syntheticBackend) SuspendEngine(context.Context, string) error {
 	b.mu.Lock()

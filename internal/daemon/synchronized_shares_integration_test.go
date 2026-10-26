@@ -21,6 +21,14 @@ import (
 func testOwnedGuestSynchronizedShare(t *testing.T, ctx context.Context, server *Server, manager *portodocker.Manager, image, architecture string) {
 	t.Helper()
 	root := t.TempDir()
+	native := os.Getenv("PORTO_TEST_NATIVE_RUNTIME_POLICIES") == "1"
+	if native {
+		var err error
+		root, err = os.MkdirTemp(filepath.Join(filepath.Dir(server.store.Directory()), "projects"), "synthetic-share-")
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	for index := range 10000 {
 		directory := filepath.Join(root, fmt.Sprintf("package-%03d", index/100))
 		if err := os.MkdirAll(directory, 0o700); err != nil {
@@ -33,6 +41,9 @@ func testOwnedGuestSynchronizedShare(t *testing.T, ctx context.Context, server *
 	if err := os.WriteFile(filepath.Join(root, "host-note.txt"), []byte("synthetic selected host root"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if native {
+		writeSyntheticSharingPayload(t, root)
+	}
 	started := time.Now()
 	share, err := server.syncShares.Create(ctx, 1, root, []string{"node_modules"})
 	if err != nil {
@@ -40,6 +51,10 @@ func testOwnedGuestSynchronizedShare(t *testing.T, ctx context.Context, server *
 	}
 	t.Logf("real owned guest synchronization: 10,000 entries ready in %s; only selected root=%s", time.Since(started), share.ID)
 	testSynchronizedShareHostKeyPin(t, ctx, server, share.RemoteHost)
+	if native {
+		testOwnedShareReconnectAndCaseCollisions(t, ctx, server, manager, share)
+		measureOwnedSharingModes(t, ctx, manager, image, architecture, root)
+	}
 	reservation, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
