@@ -96,6 +96,13 @@ Lima 2.2.1 now supplies checksum-pinned nerdctl 2.4.1, including the
 Saved archives are checked through the end before Porto serves them, so a
 failed export cannot masquerade as a successful backup.
 
+Container stop also distinguishes its own grace deadline from caller
+cancellation. A shim may report gRPC `Canceled` when that grace period expires;
+Porto checks the actual grace context before canceling it, then performs the
+requested SIGKILL escalation and confirms task exit. An earlier caller deadline
+still returns cancellation without an extra kill. This avoids an intermittent
+Testcontainers stop failure without retrying its workflow.
+
 Development-client acceptance also runs Resource Saver against the same
 disposable backends: original binary POST preservation, shared concurrent wakes,
 real WebSocket activity, manual-pause exclusion, and owned-engine shutdown and

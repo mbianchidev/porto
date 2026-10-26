@@ -914,6 +914,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		withContainerdNamespace(waitContext, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
+	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded)
 	cancel()
 	if waitErr == nil {
 		return r.cleanupNetworksResolved(ctx, id)
@@ -921,7 +922,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
-	if status.Code(waitErr) != codes.DeadlineExceeded {
+	if status.Code(waitErr) != codes.DeadlineExceeded && !graceExpired {
 		return containerdOperationError("wait for stopped", id, waitErr)
 	}
 	if err := r.Kill(ctx, id, 9); err != nil {
