@@ -278,6 +278,13 @@ before any backend operation. Escaped image names remain intact.
 | Container health configuration | `StartInterval` requires API 1.44; older inspect responses omit it |
 | Structured mount options | recursive read-only controls require API 1.44 and a capable Linux kernel/runtime; volume subpaths require 1.45 but remain unsupported; tmpfs option arrays require 1.46 |
 
+Image archive loads and request-body rootfs imports enable HTTP/1 full-duplex
+streaming before starting the backend. Progress may arrive before the upload
+finishes without Go's HTTP server draining unread archive bytes. Both
+content-length and chunked uploads preserve their binary contents; transport
+setup and progress-flush failures are reported rather than retried as image
+format errors.
+
 ### Create/update option boundaries
 
 | Options | Behavior |

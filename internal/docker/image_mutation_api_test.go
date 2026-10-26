@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -13,9 +14,86 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+type imageUploadRecorder struct{ *httptest.ResponseRecorder }
+
+func (imageUploadRecorder) EnableFullDuplex() error { return nil }
+
+func newImageUploadRecorder() imageUploadRecorder {
+	return imageUploadRecorder{httptest.NewRecorder()}
+}
+
+func TestDockerImageUploadsRejectUnsupportedDuplexBeforeMutation(t *testing.T) {
+	for _, path := range []string{"/v1.47/images/load", "/v1.47/images/create?fromSrc=-&repo=synthetic"} {
+		t.Run(path, func(t *testing.T) {
+			runner := &fakeRunner{streamer: func(runtimes.Command, func(runtimes.OutputChunk) error) ([]byte, error) {
+				t.Fatal("image mutation started without a safe upload transport")
+				return nil, nil
+			}}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response,
+				httptest.NewRequest(http.MethodPost, path, strings.NewReader("synthetic archive")))
+			if response.Code != http.StatusInternalServerError || !strings.Contains(response.Body.String(), "full-duplex image upload") {
+				t.Fatalf("unsupported upload transport = %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestDockerImageUploadProgressPreservesUnreadHTTPBody(t *testing.T) {
+	for _, path := range []string{"/v1.47/images/load", "/v1.47/images/create?fromSrc=-&repo=synthetic"} {
+		for _, chunked := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/chunked=%t", path, chunked), func(t *testing.T) {
+				archive := bytes.Repeat([]byte("synthetic\x00archive\xff\n"), 4096)
+				received := make(chan []byte, 1)
+				runner := &fakeRunner{streamer: func(command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+					if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("Importing\n")}); err != nil {
+						return nil, err
+					}
+					data, err := io.ReadAll(command.StdinReader)
+					received <- data
+					if err != nil {
+						return nil, err
+					}
+					return nil, emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("Loaded\n")})
+				}}
+				server := httptest.NewServer(NewAPI(New(runner), "/tmp/porto.sock"))
+				defer server.Close()
+				ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				var body io.Reader = bytes.NewReader(archive)
+				if chunked {
+					body = io.NopCloser(body)
+				}
+				request, err := http.NewRequestWithContext(ctx, http.MethodPost, server.URL+path, body)
+				if err != nil {
+					t.Fatal(err)
+				}
+				response, err := server.Client().Do(request)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer response.Body.Close()
+				progress, err := io.ReadAll(response.Body)
+				if err != nil || response.StatusCode != http.StatusOK || bytes.Contains(progress, []byte(`"error"`)) {
+					t.Fatalf("upload response = %d %s, error=%v", response.StatusCode, progress, err)
+				}
+				select {
+				case data := <-received:
+					if !bytes.Equal(data, archive) {
+						t.Fatalf("early progress consumed upload bytes: received %d, want %d", len(data), len(archive))
+					}
+				case <-ctx.Done():
+					t.Fatal("upload did not finish after early progress")
+				}
+			})
+		}
+	}
+}
 
 func TestDockerAPIImageTag(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
@@ -57,7 +135,7 @@ func TestDockerAPIImageLoadStreamsArchiveAndProgress(t *testing.T) {
 		}
 		return nil, nil
 	}
-	response := httptest.NewRecorder()
+	response := newImageUploadRecorder()
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1.47/images/load",
@@ -139,7 +217,7 @@ func TestDockerAPIImageLoadReportsMalformedArchiveFailure(t *testing.T) {
 	runner.streamer = func(runtimes.Command, func(runtimes.OutputChunk) error) ([]byte, error) {
 		return []byte("invalid tar header"), errors.New("exit status 1")
 	}
-	response := httptest.NewRecorder()
+	response := newImageUploadRecorder()
 	request := httptest.NewRequest(http.MethodPost, "/v1.47/images/load", bytes.NewBufferString("broken"))
 
 	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, request)
@@ -162,7 +240,7 @@ func TestDockerAPIImageImportStreamsRootFilesystem(t *testing.T) {
 		}
 		return nil, emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("sha256:imported\n")})
 	}
-	response := httptest.NewRecorder()
+	response := newImageUploadRecorder()
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/v1.47/images/create?fromSrc=-&repo=example%2Frootfs&tag=v1&platform=linux%2Famd64&message=seed",
@@ -186,7 +264,7 @@ func TestDockerImageTransfersFlushBeforeBackendCompletion(t *testing.T) {
 		"/v1.47/images/registry.example.test/synthetic/push",
 	} {
 		t.Run(path, func(t *testing.T) {
-			response := httptest.NewRecorder()
+			response := newImageUploadRecorder()
 			runner := &fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 				if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("synthetic transfer in progress\n")}); err != nil {
 					return nil, err

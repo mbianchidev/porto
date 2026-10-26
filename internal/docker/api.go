@@ -1157,10 +1157,7 @@ func encodeDockerProgress(w http.ResponseWriter, encoder *json.Encoder, value an
 	if err := encoder.Encode(value); err != nil {
 		return err
 	}
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return nil
+	return http.NewResponseController(w).Flush()
 }
 
 func writeDockerRaw(w http.ResponseWriter, value json.RawMessage, err error) {

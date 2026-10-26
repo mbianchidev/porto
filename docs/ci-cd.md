@@ -76,6 +76,12 @@ Unit transport gates run on Linux, macOS and Windows and exercise changing
 resolver answers without modifying host DNS. Expired/near-expiry leaf fixtures
 verify recovery without replacing the trusted CA.
 
+Image-transfer tests use a real HTTP/1 server and flush backend progress before
+reading either a content-length or chunked binary upload. This catches the
+request-body draining race that made Lima's real Docker save/load acceptance
+intermittently fail with `unrecognized image format`; in-memory response
+recorders alone cannot exercise that HTTP server behavior.
+
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;
 the daemon runs under the original Unix user or a restricted Windows token.
