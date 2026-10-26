@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path"
 	"runtime"
 	"strings"
 
@@ -145,22 +146,50 @@ func readImageArchiveIndex(archive *os.File) (ocispec.Index, error) {
 		return ocispec.Index{}, fmt.Errorf("rewind image archive: %w", err)
 	}
 	reader := tar.NewReader(archive)
+	var index *ocispec.Index
+	var layout ocispec.ImageLayout
+	legacy := false
 	for {
 		header, err := reader.Next()
 		if errors.Is(err, io.EOF) {
-			return ocispec.Index{}, errImageArchiveNoIndex
+			if layout.Version != "" {
+				if layout.Version != ocispec.ImageLayoutVersion || index == nil || len(index.Manifests) == 0 {
+					return ocispec.Index{}, errors.New("saved OCI image archive has an invalid layout or missing image index")
+				}
+				return *index, nil
+			}
+			if legacy {
+				return ocispec.Index{}, errImageArchiveNoIndex
+			}
+			return ocispec.Index{}, errors.New("saved image archive has neither an OCI layout nor a Docker manifest; update the engine's nerdctl to 2.4.0 or newer")
 		}
 		if err != nil {
 			return ocispec.Index{}, fmt.Errorf("read image archive: %w", err)
 		}
-		if header.Name != "index.json" {
+		name := path.Clean(header.Name)
+		if name != "index.json" && name != ocispec.ImageLayoutFile && name != "manifest.json" {
 			continue
 		}
-		var index ocispec.Index
-		if err := json.NewDecoder(io.LimitReader(reader, 16*1024*1024)).Decode(&index); err != nil {
-			return ocispec.Index{}, fmt.Errorf("decode image archive index: %w", err)
+		if (header.Typeflag != tar.TypeReg && header.Typeflag != tar.TypeRegA) || header.Size > 16*1024*1024 {
+			return ocispec.Index{}, fmt.Errorf("image archive member %s is not bounded regular JSON", name)
 		}
-		return index, nil
+		decoder := json.NewDecoder(reader)
+		switch name {
+		case "index.json":
+			if err := decoder.Decode(&index); err != nil {
+				return ocispec.Index{}, fmt.Errorf("decode image archive index: %w", err)
+			}
+		case ocispec.ImageLayoutFile:
+			if err := decoder.Decode(&layout); err != nil {
+				return ocispec.Index{}, fmt.Errorf("decode image archive layout: %w", err)
+			}
+		case "manifest.json":
+			var manifests []json.RawMessage
+			if err := decoder.Decode(&manifests); err != nil || manifests == nil {
+				return ocispec.Index{}, fmt.Errorf("invalid Docker image archive manifest: %v", err)
+			}
+			legacy = true
+		}
 	}
 }
 

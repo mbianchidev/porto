@@ -106,7 +106,7 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.0+porto.6`: the stable 2.2.0 source with
+Windows packages bundle Lima `v2.2.1+porto.1`: the stable 2.2.1 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
 backported and consoleless shutdown fixes. Graceful QEMU stops request ACPI
 powerdown through that instance's existing QMP socket and retain Lima's
@@ -125,6 +125,14 @@ unmodified upstream Lima binaries.
 ARM64 packages also use the actual Windows CPU feature bits when selecting SSH
 ciphers, instead of emitting a spurious initialization warning into every
 runtime response.
+
+New engines use nerdctl 2.4.1 from Lima 2.2.1. It fixes an upstream `save`
+race that could return a truncated archive under load. Existing engines retain
+their installed guest tools; upgrading Porto does not replace their disks.
+Porto validates saved archive structure before returning success. If an older
+engine reports an incomplete export, update nerdctl inside that owned guest to
+2.4.0 or newer using its upstream checksum-verified release, then retry the
+export. Do not delete the original image after a failed save.
 
 ### Windows guest recovery
 

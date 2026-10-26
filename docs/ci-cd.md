@@ -77,10 +77,17 @@ resolver answers without modifying host DNS. Expired/near-expiry leaf fixtures
 verify recovery without replacing the trusted CA.
 
 Image-transfer tests use a real HTTP/1 server and flush backend progress before
-reading either a content-length or chunked binary upload. This catches the
-request-body draining race that made Lima's real Docker save/load acceptance
-intermittently fail with `unrecognized image format`; in-memory response
-recorders alone cannot exercise that HTTP server behavior.
+reading either a content-length or chunked binary upload. This catches a
+request-body draining race; in-memory response recorders alone cannot exercise
+that HTTP server behavior.
+
+The reported Lima save/load flake also came from its older nerdctl 2.3.5:
+`save` could exit before its asynchronous export writer finished, returning an
+empty or truncated archive. The preceding passing run used the same version.
+Lima 2.2.1 now supplies checksum-pinned nerdctl 2.4.1, including the
+[upstream save fix](https://github.com/containerd/nerdctl/commit/80d3ab8a4dac11f4c87f0ea09d07492807c458a8).
+Saved archives are checked through the end before Porto serves them, so a
+failed export cannot masquerade as a successful backup.
 
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;
@@ -786,12 +793,13 @@ Dive `v0.13.1` is checksum-pinned for every supported desktop architecture.
 Its MIT license and version metadata ship beside the other runtime tools, and
 native packaging smoke tests execute `dive --version`.
 
-For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
+For Windows Lima 2.2.1, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
 `scripts/patches/lima-2.2.0-windows-stop.patch` and
 `scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
 `scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.6`. The PID change is an upstream backport; the
+`limactl.exe` as `v2.2.1+porto.1`. The patches were introduced for 2.2.0 and
+remain necessary on 2.2.1. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.

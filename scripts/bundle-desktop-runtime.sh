@@ -14,7 +14,7 @@ script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 kubectl_version="${KUBECTL_VERSION:-v1.36.1}"
 kind_version="${KIND_VERSION:-v0.33.0}"
 k9s_version="${K9S_VERSION:-v0.50.18}"
-lima_version="${LIMA_VERSION:-v2.2.0}"
+lima_version="${LIMA_VERSION:-v2.2.1}"
 docker_version="29.7.2"
 docker_git_commit="a7dcaa6fdb6ed04aacbfdc76357fdae01605609e"
 docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0a3cbf54a"
@@ -262,23 +262,35 @@ else
 fi
 
 lima_runtime_version="$lima_version"
-if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
-  lima_runtime_version="v2.2.0+porto.6"
-  download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz" \
-    "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
-  verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
+lima_source_checksum=""
+case "$lima_version" in
+  v2.2.0)
+    lima_source_checksum="cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
+    lima_windows_version="v2.2.0+porto.6"
+    ;;
+  v2.2.1)
+    lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
+    lima_windows_version="v2.2.1+porto.1"
+    ;;
+esac
+if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
+  lima_runtime_version="$lima_windows_version"
+  lima_source_directory="lima-${lima_version#v}"
+  download "https://github.com/lima-vm/lima/archive/refs/tags/${lima_version}.tar.gz" "$temporary/lima-source.tar.gz" \
+    "$lima_source_checksum"
+  verify "$lima_source_checksum" "$temporary/lima-source.tar.gz"
   # The release archive supplies templates; source-only aliases are not Go
   # build inputs and cannot be extracted reliably by Windows tar.
-  tar --exclude='lima-2.2.0/templates/*' \
-    --exclude='lima-2.2.0/pkg/limayaml/default.yaml' \
-    --exclude='lima-2.2.0/pkg/cidata/cloud-config.yaml' \
+  tar --exclude="$lima_source_directory/templates/*" \
+    --exclude="$lima_source_directory/pkg/limayaml/default.yaml" \
+    --exclude="$lima_source_directory/pkg/cidata/cloud-config.yaml" \
     -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
   lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
   lima_stop_patch="$script_directory/patches/lima-2.2.0-windows-stop.patch"
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
   (
-    cd "$temporary/lima-2.2.0"
+    cd "$temporary/$lima_source_directory"
     git apply --check "$lima_pid_patch" "$lima_stop_patch"
     git apply "$lima_pid_patch" "$lima_stop_patch"
     git apply --check "$lima_graceful_stop_patch"
@@ -294,7 +306,7 @@ if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
         -ldflags "-s -w -X github.com/lima-vm/lima/v2/pkg/version.Version=$lima_runtime_version" \
         -o "$destination/lima/bin/limactl.exe" ./cmd/limactl
   )
-  cp "$temporary/lima-2.2.0/LICENSE" "$destination/licenses/lima.txt"
+  cp "$temporary/$lima_source_directory/LICENSE" "$destination/licenses/lima.txt"
   cp "$lima_pid_patch" "$destination/licenses/lima-windows-pid.patch"
   cp "$lima_stop_patch" "$destination/licenses/lima-windows-stop.patch"
   cp "$lima_graceful_stop_patch" "$destination/licenses/lima-windows-graceful-stop.patch"
