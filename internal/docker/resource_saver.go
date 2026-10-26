@@ -32,6 +32,58 @@ type resourceSaverOwner struct {
 	Mode     string `json:"mode"`
 }
 
+type ResourceSaverActivity struct {
+	PID        uint32
+	RxBytes    uint64
+	TxBytes    uint64
+	ReadBytes  uint64
+	WriteBytes uint64
+}
+
+func (m *Manager) ResourceSaverActivity(ctx context.Context, id string) (ResourceSaverActivity, error) {
+	snapshot := m.ContainerSnapshot()
+	if !snapshot.Available || snapshot.Stale {
+		return ResourceSaverActivity{}, fmt.Errorf("%w: a fresh inventory is required for idle counters", ErrUnavailable)
+	}
+	container, err := findSnapshotContainer(snapshot, id)
+	if err != nil || container.PID == 0 {
+		return ResourceSaverActivity{}, fmt.Errorf("%w: the running task identity is unavailable for idle counters", ErrUnavailable)
+	}
+	backend, err := m.backendForCommand(ctx)
+	if err != nil {
+		return ResourceSaverActivity{}, err
+	}
+	const script = `set -eu
+root="/proc/$1"
+awk 'NR>2 { gsub(/:/," "); rx+=$2; tx+=$10 } END { printf "%.0f %.0f\n",rx,tx }' "$root/net/dev"
+awk '/^read_bytes:/ {read=$2; have_read=1} /^write_bytes:/ {write=$2; have_write=1}
+END {if (!have_read || !have_write) exit 1; printf "%.0f %.0f\n",read,write}' "$root/io"
+`
+	arguments := []string{"-c", script, "porto-idle-counters", strconv.FormatUint(uint64(container.PID), 10)}
+	command := runtimes.Command{Name: "sh", Args: arguments}
+	if backend.limaInstance != "" {
+		command.Name = backend.name
+		command.Args = append([]string{"shell", "--workdir=/", backend.limaInstance, "--", "sudo", "-n", "sh"}, arguments...)
+	}
+	output, err := m.runner.Run(ctx, command)
+	if err != nil {
+		return ResourceSaverActivity{}, runtimes.CommandError("read real task network and I/O counters", output, err)
+	}
+	fields := strings.Fields(string(output))
+	if len(fields) != 4 {
+		return ResourceSaverActivity{}, errors.New("backend returned incomplete task network/I/O counters")
+	}
+	var values [4]uint64
+	for index, field := range fields {
+		value, err := strconv.ParseUint(field, 10, 64)
+		if err != nil {
+			return ResourceSaverActivity{}, fmt.Errorf("decode real task activity: %w", err)
+		}
+		values[index] = value
+	}
+	return ResourceSaverActivity{PID: container.PID, RxBytes: values[0], TxBytes: values[1], ReadBytes: values[2], WriteBytes: values[3]}, nil
+}
+
 func (m *Manager) SetResourceSaver(manager *resourcesaver.Manager) { m.resourceSaver.Store(manager) }
 
 func (m *Manager) ResourceSaver() *resourcesaver.Manager { return m.resourceSaver.Load() }
@@ -217,8 +269,11 @@ awk 'FNR>1 && $4=="01" { active++ } END { print active+0 }' "$root/tcp" "$root/t
 		return runtimes.CommandError("inspect active container connections", output, err)
 	}
 	active, err := strconv.Atoi(strings.TrimSpace(string(output)))
-	if err != nil || active != 0 {
-		return fmt.Errorf("%w: established connections or an incomplete socket inventory prevent suspension", ErrConflict)
+	if err != nil {
+		return fmt.Errorf("%w: decode the complete socket inventory: %w", ErrConflict, err)
+	}
+	if active != 0 {
+		return fmt.Errorf("%w: %d established connection(s) prevent suspension", ErrConflict, active)
 	}
 	return nil
 }

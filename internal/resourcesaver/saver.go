@@ -269,6 +269,8 @@ func (m *Manager) Run(ctx context.Context) error {
 		select {
 		case <-ctx.Done():
 			return context.Cause(ctx)
+		case <-m.ctx.Done():
+			return context.Cause(m.ctx)
 		case <-ticker.C:
 		}
 	}

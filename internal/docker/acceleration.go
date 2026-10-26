@@ -103,13 +103,13 @@ func (m *Manager) prepareContainerArchitecture(ctx context.Context, request *Cre
 	return nil
 }
 
-func (m *Manager) validateExistingArchitecture(ctx context.Context, id string) error {
+func (m *Manager) validateExistingArchitecture(ctx context.Context, id string) (acceleration.Selection, error) {
 	if m.architecture == nil || m.IsNativeWindows() {
-		return nil
+		return acceleration.Selection{}, nil
 	}
 	document, err := m.InspectContainer(ctx, id)
 	if err != nil {
-		return err
+		return acceleration.Selection{}, err
 	}
 	var container struct {
 		Image  string
@@ -119,25 +119,50 @@ func (m *Manager) validateExistingArchitecture(ctx context.Context, id string) e
 		}
 	}
 	if err := json.Unmarshal(document, &container); err != nil {
-		return fmt.Errorf("decode container architecture: %w", err)
+		return acceleration.Selection{}, fmt.Errorf("decode container architecture: %w", err)
 	}
 	platform := container.Config.Labels[acceleration.PlatformLabel]
 	if platform == "" {
 		reference := firstNonEmpty(container.Config.Image, container.Image)
 		image, err := m.InspectImage(ctx, reference, "")
 		if err != nil {
-			return err
+			return acceleration.Selection{}, err
 		}
 		var configuration struct{ Architecture, Os, Variant string }
 		if err := json.Unmarshal(image, &configuration); err != nil {
-			return fmt.Errorf("decode existing image architecture: %w", err)
+			return acceleration.Selection{}, fmt.Errorf("decode existing image architecture: %w", err)
 		}
 		if configuration.Architecture == "" || configuration.Os != "linux" {
-			return errors.New("existing container image architecture is unavailable; refusing to guess its translation policy")
+			return acceleration.Selection{}, errors.New("existing container image architecture is unavailable; refusing to guess its translation policy")
 		}
 		platform = platforms.Format(ocispec.Platform{OS: configuration.Os, Architecture: configuration.Architecture, Variant: configuration.Variant})
 	}
-	_, err = m.selectArchitecture(ctx, platform, container.Config.Labels[acceleration.PolicyLabel])
+	return m.selectArchitecture(ctx, platform, container.Config.Labels[acceleration.PolicyLabel])
+}
+
+func (m *Manager) recordContainerExecution(ctx context.Context, id string, selection acceleration.Selection) (err error) {
+	if selection.Execution == "" {
+		return nil
+	}
+	backend, close, err := m.resourceSaverRuntime(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, close()) }()
+	resolved, err := m.resolveContainerID(ctx, id)
+	if err != nil {
+		return err
+	}
+	container, err := backend.client.LoadContainer(withContainerdNamespace(ctx, backend.namespace), resolved)
+	if err != nil {
+		return err
+	}
+	_, err = container.SetLabels(withContainerdNamespace(ctx, backend.namespace), map[string]string{
+		acceleration.ExecutionLabel: selection.Execution, acceleration.PlatformLabel: selection.Platform,
+	})
+	if err == nil {
+		m.invalidateContainerInventory()
+	}
 	return err
 }
 

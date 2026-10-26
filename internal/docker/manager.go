@@ -70,6 +70,7 @@ var (
 )
 
 type Manager struct {
+	syncResolve               func(context.Context, string) (string, error)
 	resourceSaver             atomic.Pointer[resourcesaver.Manager]
 	architecture              *acceleration.Manager
 	windows                   *windowsRuntime
@@ -848,6 +849,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	if err := m.prepareContainerArchitecture(ctx, &request); err != nil {
 		return "", err
 	}
+	if err := m.prepareSynchronizedMounts(ctx, &request); err != nil {
+		return "", err
+	}
 	if m.windows != nil {
 		if err := m.validateWindowsContainer(ctx, &request); err != nil {
 			return "", err
@@ -1329,7 +1333,7 @@ func (m *Manager) ContainerAction(ctx context.Context, id, action string) error 
 	return m.ContainerActionWithTimeout(ctx, id, action, 0)
 }
 
-func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) error {
+func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) (err error) {
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err
@@ -1370,9 +1374,16 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return err
 	}
 	if action == "start" || action == "restart" || action == "unpause" {
-		if err := m.validateExistingArchitecture(ctx, id); err != nil {
+		var selection acceleration.Selection
+		selection, err = m.validateExistingArchitecture(ctx, id)
+		if err != nil {
 			return err
 		}
+		defer func() {
+			if err == nil {
+				err = m.recordContainerExecution(ctx, id, selection)
+			}
+		}()
 	}
 	if m.IsNativeWindows() {
 		driver, err := m.nativeWindowsDriver(ctx)

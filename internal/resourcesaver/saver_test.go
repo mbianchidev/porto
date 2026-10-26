@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -229,7 +230,7 @@ func TestResourceSaverIncompleteAndBusyInventoriesNeverSuspend(t *testing.T) {
 	}
 }
 
-func TestResourceSaverReadinessFailurePreservesOwnershipAndDiagnostics(t *testing.T) {
+func TestResourceSaverResumeFailurePreservesOwnershipAndDiagnostics(t *testing.T) {
 	manager, backend, clock := saverFixture(t)
 	sleepFixture(t, manager, clock)
 	backend.mu.Lock()
@@ -241,6 +242,110 @@ func TestResourceSaverReadinessFailurePreservesOwnershipAndDiagnostics(t *testin
 	state := manager.State()
 	if state.Entries["synthetic-app"].Phase != "failed" || len(state.Events) < 2 || state.Events[len(state.Events)-1].Action != "wake-failed" {
 		t.Fatalf("wake diagnostics were discarded: %+v", state)
+	}
+}
+
+func TestResourceSaverReadinessDeadlineDoesNotReleaseQueuedTraffic(t *testing.T) {
+	manager, backend, clock := saverFixture(t)
+	sleepFixture(t, manager, clock)
+	backend.mu.Lock()
+	backend.ready = false
+	backend.mu.Unlock()
+	release, err := manager.Acquire(context.Background(), "synthetic-app")
+	if release != nil || !errors.Is(err, context.DeadlineExceeded) || !strings.Contains(err.Error(), "readiness") {
+		t.Fatalf("unready application escaped its wake deadline: release=%t, error=%v", release != nil, err)
+	}
+	state := manager.State()
+	if state.Pending != 0 || state.Entries["synthetic-app"].Phase != "failed" ||
+		state.Events[len(state.Events)-1].Action != "wake-failed" {
+		t.Fatalf("readiness timeout lost its diagnostics or reservation: %+v", state)
+	}
+}
+
+type blockedEngineBackend struct {
+	*syntheticBackend
+	gate chan struct{}
+}
+
+func (b *blockedEngineBackend) WakeEngine(ctx context.Context, _ string) error {
+	b.mu.Lock()
+	b.engineWakes++
+	b.mu.Unlock()
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-b.gate:
+		b.mu.Lock()
+		b.snapshot.EngineRunning = true
+		b.mu.Unlock()
+		return nil
+	}
+}
+
+func TestResourceSaverSharesEngineWakeAcrossApplicationsAndClientCancellation(t *testing.T) {
+	manager, backend, clock := saverFixture(t)
+	backend.snapshot.Applications = append(backend.snapshot.Applications, Application{
+		ID: "synthetic-other-app", Name: "other", Eligible: true,
+		Members: []Member{{ID: "synthetic-other-container", Identity: "synthetic-other-identity"}},
+	})
+	configuration := manager.State().Config
+	configuration.SuspendEngine, configuration.WakeSeconds = true, 5
+	if err := manager.Configure(configuration); err != nil {
+		t.Fatal(err)
+	}
+	held := &blockedEngineBackend{syntheticBackend: backend, gate: make(chan struct{})}
+	manager.backend = held
+	sleepFixture(t, manager, clock)
+	waitSaver(t, func() bool { return manager.State().Entries["synthetic-other-app"].Phase == "sleeping" })
+	backend.mu.Lock()
+	backend.snapshot.Applications = nil
+	backend.mu.Unlock()
+	if err := manager.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	clock.Add(int64(2 * time.Second))
+	if err := manager.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitSaver(t, func() bool {
+		state := manager.State()
+		return len(state.Events) > 0 && state.Events[len(state.Events)-1].Action == "engine-suspended"
+	})
+	canceled, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first, second := make(chan error, 1), make(chan error, 1)
+	go func() {
+		release, err := manager.Acquire(canceled, "synthetic-app")
+		if release != nil {
+			release()
+		}
+		first <- err
+	}()
+	go func() {
+		release, err := manager.Acquire(context.Background(), "synthetic-other-app")
+		if release != nil {
+			release()
+		}
+		second <- err
+	}()
+	waitSaver(t, func() bool {
+		backend.mu.Lock()
+		defer backend.mu.Unlock()
+		return manager.State().Pending == 2 && backend.engineWakes == 1
+	})
+	cancel()
+	if err := <-first; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled engine-waiting client returned %v", err)
+	}
+	close(held.gate)
+	if err := <-second; err != nil {
+		t.Fatalf("one canceled request aborted another application's shared engine wake: %v", err)
+	}
+	backend.mu.Lock()
+	defer backend.mu.Unlock()
+	if backend.engineWakes != 1 || backend.resumes != 1 || manager.State().Pending != 0 {
+		t.Fatalf("engine wake/resume/reservations were not coalesced: wakes=%d resumes=%d pending=%d",
+			backend.engineWakes, backend.resumes, manager.State().Pending)
 	}
 }
 

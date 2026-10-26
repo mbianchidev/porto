@@ -23,6 +23,9 @@ import (
 )
 
 func runtimeCmd(st *store.Store, args []string) error {
+	if len(args) > 0 && args[0] == "shares" {
+		return sharesCmd(args[1:])
+	}
 	if len(args) > 0 && args[0] == "resource-saver" {
 		return resourceSaverCmd(args[1:])
 	}

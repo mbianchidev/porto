@@ -1,10 +1,17 @@
 package docker
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 func TestEngineResourceBudgetsRejectUnsupportedChangesBeforeMutation(t *testing.T) {
@@ -64,5 +71,69 @@ func TestNewEngineSwapBudgetAppendsWithoutReplacingTemplateSetup(t *testing.T) {
 	}
 	if !strings.Contains(expression, ".provision = (.provision // []) + ") {
 		t.Fatal("new engine resource setup would replace inherited template provisions")
+	}
+}
+
+func TestEngineConfigurationStopsFailedBootBeforeRestoringOriginalConfiguration(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, engineInstanceName)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(directory, "lima.yaml")
+	const original = "cpus: 4\nmemory: 4GiB\n"
+	if err := os.WriteFile(path, []byte(original), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stops, starts := 0, 0
+	bootFailure := errors.New("synthetic VM started but guest readiness failed")
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		joined := strings.Join(command.Args, " ")
+		switch {
+		case command.Name == "nerdctl":
+			return []byte("{}"), nil
+		case joined == "list porto-engine --json":
+			return json.Marshal(struct {
+				Name string `json:"name"`
+				EngineConfiguration
+			}{Name: engineInstanceName, EngineConfiguration: EngineConfiguration{Directory: directory, Status: "Running", VMType: "vz"}})
+		case strings.Contains(joined, `.porto-engine-owner`):
+			return []byte("synthetic-owner\n"), nil
+		case joined == "stop porto-engine":
+			stops++
+			return nil, nil
+		case strings.HasPrefix(joined, "edit --tty=false --set="):
+			return nil, os.WriteFile(path, []byte("cpus: 2\nmemory: 2GiB\n"), 0o600)
+		case strings.HasPrefix(joined, "start --timeout="):
+			starts++
+			if starts == 1 {
+				return nil, bootFailure
+			}
+			data, err := os.ReadFile(path)
+			if err != nil || string(data) != original || stops != 2 {
+				return nil, errors.New("rollback restarted without stopping the failed VM and restoring its original YAML")
+			}
+			return nil, nil
+		}
+		return nil, errors.New("unexpected synthetic engine command: " + command.Name + " " + joined)
+	}}
+	manager := NewWithStateDir(runner, root)
+	manager.lookPath = func(name string) (string, error) { return name, nil }
+	manager.dialBuildKit = workingBuildKitDialer(t)
+	backend := newSnapshotterTestRuntime(t, "", "overlayfs", &snapshotterTestServer{snapshotter: "overlayfs"})
+	manager.runtimeConnector = func(context.Context) (containerRuntime, error) { return backend, nil }
+	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	err := manager.editEngineConfiguration(ctx, true,
+		func(EngineConfiguration, []byte) (string, error) { return ".cpus = 2", nil }, nil, nil)
+	if !errors.Is(err, bootFailure) || starts != 2 || stops != 2 {
+		t.Fatalf("failed boot recovery sequence: starts=%d stops=%d error=%v", starts, stops, err)
+	}
+	data, readErr := os.ReadFile(path)
+	if readErr != nil || string(data) != original {
+		t.Fatalf("failed boot lost the original configuration: %s, %v", data, readErr)
 	}
 }

@@ -89,6 +89,24 @@ Lima 2.2.1 now supplies checksum-pinned nerdctl 2.4.1, including the
 Saved archives are checked through the end before Porto serves them, so a
 failed export cannot masquerade as a successful backup.
 
+Development-client acceptance also runs Resource Saver against the same
+disposable backends: original binary POST preservation, shared concurrent wakes,
+real WebSocket activity, manual-pause exclusion, and owned-engine shutdown and
+traffic-triggered readiness. POSIX Lima rows additionally synchronize a synthetic
+10,000-file project through the owned SSH endpoint, verify strict host-key
+pinning with an unrelated synthetic key, mount the verified guest copy in an
+actual container, and check bidirectional writes and inotify notifications.
+The maintained-tool test independently covers ignores, executable permissions,
+relative symlinks, renames and retaining both sides of a conflict. These are
+additional gates, not replacements for the existing clients or native mounts.
+
+An opt-in native Apple Silicon fixture creates only its own 2 GiB VZ engine with
+no host-folder mounts. It verifies Rosetta, QEMU-compatible policy transitions,
+native-only rejections and native arm64 builds, as well as the resource and
+sharing cases above. It requires installed Rosetta and must not be substituted
+with a software-emulated result. Reproduction commands and measured boundaries
+are in [resource management](resource-management.md).
+
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;
 the daemon runs under the original Unix user or a restricted Windows token.
@@ -186,6 +204,13 @@ Source builds of the patched Docker CLI and Windows Lima still run against
 verified sources and patches, reusing Go's compiler cache rather than skipping
 builds or executable smoke checks. Docker integration image builds retain
 their no-cache setting and use fresh disposable engines.
+
+POSIX bundles also compile Porto's patched synchronization CLI and both Linux
+agent architectures from checksum-pinned Mutagen source. Module and compiler
+cache keys include that builder's pinned dependencies; no final synchronization
+binary, daemon state or selected-project data is cached. macOS compilation
+retains native FSEvents; the upstream deprecated FSEvents scheduling API produces
+a compiler warning, not a suppressed diagnostic or a polling-only replacement.
 
 The same optional download cache is available locally by setting
 `PORTO_DOWNLOAD_CACHE` to a dedicated directory when running packaging scripts.

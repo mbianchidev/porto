@@ -179,6 +179,9 @@ if [ "$goos" = "windows" ]; then
     bash "$script_directory/bundle-windows-containers.sh" amd64 "$destination/windows-containers/amd64"
   fi
 fi
+if [ "$goos" != "windows" ]; then
+  bash "$script_directory/bundle-synchronization-runtime.sh" "$goos" "$goarch" "$destination"
+fi
 
 case "$goos/$goarch" in
   darwin/amd64) dive_checksum="04e4c1bac21be3aef99799cf0e470149a072ea4786be50718aa846cd13746523" ;;
@@ -444,6 +447,10 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_ver
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
+
+if [ "$goos" != "windows" ]; then
+  cat "$destination/licenses/mutagen-build.txt" >> "$destination/VERSIONS"
+fi
 
 if [ "$goos" = "windows" ]; then
   cat >> "$destination/VERSIONS" <<EOF

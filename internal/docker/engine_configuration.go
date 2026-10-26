@@ -18,16 +18,19 @@ import (
 )
 
 type EngineConfiguration struct {
-	Directory string `json:"dir"`
-	Status    string `json:"status"`
-	VMType    string `json:"vmType"`
-	Arch      string `json:"arch"`
-	CPUs      int    `json:"cpus"`
-	Memory    int64  `json:"memory"`
-	Disk      int64  `json:"disk"`
+	SSHLocalPort int    `json:"sshLocalPort"`
+	Directory    string `json:"dir"`
+	Status       string `json:"status"`
+	VMType       string `json:"vmType"`
+	Arch         string `json:"arch"`
+	CPUs         int    `json:"cpus"`
+	Memory       int64  `json:"memory"`
+	Disk         int64  `json:"disk"`
 }
 
 func (m *Manager) CheckEngineIdle(ctx context.Context) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	if m.nativeGuard != nil {
 		for _, kind := range []string{"container", "volume"} {
 			if err := m.nativeGuard(kind, "*"); err != nil {
@@ -187,10 +190,10 @@ func (m *Manager) editEngineConfiguration(
 		"limactl", "edit", "--tty=false", "--set="+expression, state.Instance); err != nil {
 		return err
 	}
+	stopped = false
 	if _, err := m.startLimaRuntime(ctx, "start configured owned engine", state.Instance); err != nil {
 		return err
 	}
-	stopped = false
 	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
 		return err
 	}

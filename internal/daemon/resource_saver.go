@@ -19,8 +19,14 @@ import (
 type saverBackend struct {
 	server   *Server
 	mu       sync.Mutex
-	previous map[string]portodocker.ContainerMetricSample
+	previous map[string]saverIdleSample
 	latest   resourcesaver.Snapshot
+}
+
+type saverIdleSample struct {
+	Read     time.Time
+	CPU      uint64
+	Activity portodocker.ResourceSaverActivity
 }
 
 func (s *Server) activeResourceSaver() *resourcesaver.Manager {
@@ -35,7 +41,10 @@ func (s *Server) initializeResourceSaver(ctx context.Context) error {
 	if s.resourceSaver != nil {
 		return nil
 	}
-	backend := &saverBackend{server: s, previous: map[string]portodocker.ContainerMetricSample{}}
+	if s.store == nil || s.store.Directory() == "" {
+		return errors.New("Persistent project storage is required for Resource Saver")
+	}
+	backend := &saverBackend{server: s, previous: map[string]saverIdleSample{}}
 	manager, err := resourcesaver.New(ctx, filepath.Join(s.store.Directory(), "resource-saver.json"), backend)
 	if err != nil {
 		return err
@@ -105,7 +114,7 @@ func (backend *saverBackend) Snapshot(ctx context.Context) (resourcesaver.Snapsh
 			container.Labels["io.x-k8s.kind.cluster"] != "" || container.Labels["io.kubernetes.pod.name"] != "" {
 			application.Eligible, application.Reason = false, "Unmanaged, Kubernetes, or incomplete workloads are excluded"
 		}
-		if len(container.MountDetails) > 0 && container.Labels[portodocker.ResourceSaverStatefulLabel] != "true" {
+		if saverHasStatefulMounts(container.MountDetails) && container.Labels[portodocker.ResourceSaverStatefulLabel] != "true" {
 			application.Eligible, application.Reason = false, "Mounted/stateful workloads need separate explicit consent"
 		}
 		if timeout := container.Labels["dev.porto.resource-saver.idle-seconds"]; timeout != "" {
@@ -190,39 +199,27 @@ func (backend *saverBackend) busy(ctx context.Context, id string) (bool, error) 
 	if err != nil {
 		return false, err
 	}
-	if sample.CPU == nil || sample.Networks == nil || sample.BlockIO == nil || sample.PIDs == nil {
-		return false, errors.New("Complete CPU, network, disk I/O, and process counters are required for idle detection")
+	if sample.CPU == nil {
+		return false, errors.New("Backend CPU counters are required for idle detection")
 	}
+	activity, err := backend.server.docker.ResourceSaverActivity(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	current := saverIdleSample{Read: sample.Read, CPU: sample.CPU.TotalUsage, Activity: activity}
 	backend.mu.Lock()
 	previous, exists := backend.previous[id]
-	backend.previous[id] = sample
+	backend.previous[id] = current
 	backend.mu.Unlock()
-	if !exists || previous.CPU == nil || !sample.Read.After(previous.Read) || sample.CPU.TotalUsage < previous.CPU.TotalUsage {
+	if !exists || !sample.Read.After(previous.Read) || current.CPU < previous.CPU || current.Activity.PID != previous.Activity.PID {
 		return true, nil
 	}
-	cpuMillicores := float64(sample.CPU.TotalUsage-previous.CPU.TotalUsage) / float64(sample.Read.Sub(previous.Read)) * 1000
-	if cpuMillicores > 5 || sample.PIDs.Current > 1 {
+	cpuMillicores := float64(current.CPU-previous.CPU) / float64(sample.Read.Sub(previous.Read)) * 1000
+	if cpuMillicores > 5 {
 		return true, nil
 	}
-	for name, network := range sample.Networks {
-		old, exists := previous.Networks[name]
-		if !exists || network.RxBytes != old.RxBytes || network.TxBytes != old.TxBytes {
-			return true, nil
-		}
-	}
-	for _, operation := range sample.BlockIO {
-		found := false
-		for _, old := range previous.BlockIO {
-			if operation.Major == old.Major && operation.Minor == old.Minor && operation.Op == old.Op {
-				found = true
-				if operation.Value != old.Value {
-					return true, nil
-				}
-			}
-		}
-		if !found {
-			return true, nil
-		}
+	if current.Activity != previous.Activity {
+		return true, nil
 	}
 	return false, nil
 }
@@ -232,6 +229,16 @@ func saverApplicationID(container portodocker.Container) string {
 		return "compose:" + container.ComposeProject
 	}
 	return "container:" + container.ID
+}
+
+func saverHasStatefulMounts(mounts []portodocker.ContainerMount) bool {
+	for _, mount := range mounts {
+		if mount.Type == "volume" || mount.Type == "bind" &&
+			mount.Destination != "/etc/hosts" && mount.Destination != "/etc/hostname" && mount.Destination != "/etc/resolv.conf" {
+			return true
+		}
+	}
+	return false
 }
 
 func (backend *saverBackend) Sleep(ctx context.Context, entry resourcesaver.Entry) error {
@@ -299,6 +306,15 @@ func (backend *saverBackend) Ready(ctx context.Context, application resourcesave
 
 func (backend *saverBackend) SuspendEngine(ctx context.Context, token string) error {
 	server := backend.server
+	if server.syncShares != nil {
+		active, err := server.syncShares.Active()
+		if err != nil {
+			return err
+		}
+		if active {
+			return errors.New("Active synchronized shares require the engine; pause their synchronization before engine suspension")
+		}
+	}
 	if server.hasRuntimeOperations() || !server.beginRuntimeOperation() {
 		return errors.New("Active runtime or data work prevents engine suspension")
 	}

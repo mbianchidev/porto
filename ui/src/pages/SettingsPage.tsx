@@ -6,6 +6,7 @@ import { RegistrySettings } from '../components/RegistrySettings'
 import { NetworkSettings } from '../components/NetworkSettings'
 import { AccelerationSettings } from '../components/AccelerationSettings'
 import { EngineResourceSettings, ResourceSaverSettings } from '../components/ResourceManagement'
+import { SynchronizedSharesSettings } from '../components/SynchronizedSharesSettings'
 import { WSLSettings } from '../components/WSLSettings'
 import { WindowsContainersSettings } from '../components/WindowsContainersSettings'
 import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
@@ -427,6 +428,7 @@ export function SettingsPage({
       <AccelerationSettings />
       <EngineResourceSettings />
       <ResourceSaverSettings />
+      <SynchronizedSharesSettings />
       <WSLSettings />
       <WindowsContainersSettings />
       <RegistrySettings />

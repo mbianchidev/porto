@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/acceleration"
+	"gopkg.in/yaml.v3"
 )
 
 const selectAMD64HandlerScript = `set -eu
@@ -112,15 +113,35 @@ func (m *Manager) ApplyAcceleration(ctx context.Context, restartConfirmed bool) 
 			return fmt.Errorf("Rosetta host capability changed: %s", host.Rosetta.Reason)
 		}
 	}
-	return m.editEngineConfiguration(ctx, restartConfirmed, func(configuration EngineConfiguration, _ []byte) (string, error) {
+	return m.editEngineConfiguration(ctx, restartConfirmed, func(configuration EngineConfiguration, original []byte) (string, error) {
 		if settings.RosettaEnabled && (configuration.VMType != "vz" || acceleration.Architecture(configuration.Arch) != "arm64") {
 			return "", errors.New("Rosetta requires an arm64 VZ engine; driver conversion and disk replacement are not supported")
 		}
-		return fmt.Sprintf(".vmOpts.vz.rosetta.enabled = %t | .vmOpts.vz.rosetta.binfmt = %t", settings.RosettaEnabled, settings.RosettaEnabled), nil
+		return accelerationEngineExpression(settings, original)
 	}, nil, func(ctx context.Context) error {
 		if err := m.configureAMD64Handler(ctx); err != nil {
 			return err
 		}
 		return m.refreshLimaBuildKitPlatforms(ctx)
 	})
+}
+
+func accelerationEngineExpression(settings acceleration.Settings, original []byte) (string, error) {
+	var configuration struct {
+		Rosetta struct {
+			Enabled bool `yaml:"enabled"`
+		} `yaml:"rosetta"`
+		VMOpts struct {
+			VZ struct {
+				Rosetta struct {
+					Enabled bool `yaml:"enabled"`
+				} `yaml:"rosetta"`
+			} `yaml:"vz"`
+		} `yaml:"vmOpts"`
+	}
+	if err := yaml.Unmarshal(original, &configuration); err != nil {
+		return "", fmt.Errorf("read existing VZ device configuration: %w", err)
+	}
+	shareEnabled := settings.RosettaEnabled || configuration.Rosetta.Enabled || configuration.VMOpts.VZ.Rosetta.Enabled
+	return fmt.Sprintf(".vmOpts.vz.rosetta.enabled = %t | .vmOpts.vz.rosetta.binfmt = %t", shareEnabled, settings.RosettaEnabled), nil
 }

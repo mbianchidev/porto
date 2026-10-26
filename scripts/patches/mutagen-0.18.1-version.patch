@@ -1,0 +1,13 @@
+Porto's scoped synchronization toolchain uses updated Go and dependency
+versions. Give its agents a separate installation directory from upstream
+prebuilt agents so an older guest executable cannot be reused.
+
+diff --git a/pkg/mutagen/version.go b/pkg/mutagen/version.go
+--- a/pkg/mutagen/version.go
++++ b/pkg/mutagen/version.go
+@@ -21,4 +21,4 @@
+ 	// It must not contain spaces. If empty, no tag is appended to the version
+ 	// string.
+-	VersionTag = ""
++	VersionTag = "porto.1"
+ )

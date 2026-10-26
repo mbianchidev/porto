@@ -50,6 +50,7 @@ import (
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/syncshares"
 	"github.com/mbianchidev/porto/internal/vm"
 	"github.com/mbianchidev/porto/internal/wsl"
 )
@@ -68,6 +69,7 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
+	syncShares         *syncshares.Manager
 	resourceSaverMu    sync.Mutex
 	resourceSaver      *resourcesaver.Manager
 	saverBackend       *saverBackend
@@ -233,6 +235,12 @@ func New(st *store.Store, ui fs.FS) *Server {
 		identityErr:    identityErr,
 		registryVault:  registries.NewVault(),
 	}
+	syncRoot := ""
+	if st != nil {
+		syncRoot = st.Directory()
+	}
+	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
+	dockerManager.SetSynchronizedShareResolver(server.syncShares.Resolve)
 	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
 	server.nativeFiles = nativefiles.New(nativeRoot, runner)
 	server.networking = networking.New(filepath.Dir(dockerEngineDir))
@@ -418,6 +426,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.kubernetesRouteLoop(ctx)
 	go s.dockerCleanupLoop(ctx)
 	go s.nativeFiles.Monitor(ctx)
+	go s.syncShares.Monitor(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
 	log.Printf(
@@ -465,6 +474,11 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	}
 	if s.resourceSaver != nil {
 		if err := s.resourceSaver.Close(cleanupContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
+	}
+	if s.syncShares != nil {
+		if err := s.syncShares.Close(cleanupContext); err != nil {
 			shutdownErrors = append(shutdownErrors, err)
 		}
 	}

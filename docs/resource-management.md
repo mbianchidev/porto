@@ -121,6 +121,9 @@ installed Apple runtime. If needed, explicitly run
 `softwareupdate --install-rosetta` and accept Apple's license yourself. Porto
 does not silently install it or register host-wide emulation handlers.
 QEMU-backed engines cannot be converted to VZ or have their disks replaced.
+After a VZ engine has a Rosetta filesystem device, disabling translation keeps
+that existing device configuration and disables only its binfmt handler.
+Selecting QEMU does not remove a guest device or change the VM's architecture.
 
 For a native arm64 standalone VM with optional amd64 userspace:
 
@@ -135,3 +138,124 @@ Apple Silicon desktop bundles include the extra guest agent; source installs
 may need `lima-additional-guestagents`. Snapshots retain their QEMU-only boundary.
 The dashboard and runtime status distinguish native, Rosetta, QEMU and
 unsupported/missing-capability states without claiming unmeasured speedups.
+
+## Optimized synchronized project shares
+
+macOS and Linux can opt selected, registered project roots into a maintained
+Mutagen two-way-safe session. Windows/WSL retains ordinary bind mounts and the
+existing selected-distribution integration; synchronized mode is capability
+gated rather than substituting different path or ownership semantics.
+
+```sh
+porto shares create example-project --ignore node_modules,dist
+porto shares status
+porto shares mode <share-id> bind
+porto shares mode <share-id> synchronized
+porto shares detach <share-id> --confirm
+```
+
+Settings exposes the same project selector, startup/scan/staging state,
+connectivity, conflicts and filesystem problems. Only the selected root is
+synchronized into its identity-bound `/mnt/porto-sync/<share-id>` directory.
+Whole home directories, filesystem roots, overlapping roots and symlink roots
+are rejected. No existing host directory or guest copy is deleted on detach.
+
+New container bind mounts inside a selected synchronized root use that guest
+copy after a successful flush and conflict check. Existing containers are not
+retargeted; recreate them after a binding-mode change. The
+`dev.porto.share-mode=bind` label opts a container back into ordinary bindings.
+Paused, disconnected, conflicting or replaced-engine sessions fail before a
+new workload is created rather than falling back to an empty or stale copy.
+
+Both endpoints can change files. Atomic renames, staging and notifications use
+the maintained tool's implementation. Ignore patterns and VCS exclusions stay
+local. Portable permissions synchronize executable bits but not host UID/GID,
+ACLs or every platform-specific mode. Relative contained symlinks are supported;
+unsafe links and case collisions are reported. Conflicts retain both versions;
+inspect the host and guest copies and resolve them explicitly. Neither side
+automatically wins a destructive conflict. A stopped engine disconnects its
+session; reconnect uses the same ownership record and pinned guest host key,
+not a replacement guest. Active synchronized sessions prevent automatic engine
+suspension until their synchronization is paused.
+
+SSH configuration, verified host keys and the Mutagen daemon are private to
+Porto. Global SSH configuration and unrelated Mutagen sessions are not changed.
+Multiplexing, persistence and agent forwarding are disabled for these private
+connections.
+
+Desktop runtimes include a source-built `0.18.1-porto.1` CLI and Linux amd64/arm64
+agents, compiled with the current Go toolchain and pinned patched dependencies.
+Upstream 0.18.1 prebuilt executables are not used: their older Go and network
+dependencies have known vulnerabilities. Source development can prepare the
+same scoped toolchain without installing it host-wide:
+
+```sh
+bash scripts/bundle-synchronization-runtime.sh darwin arm64 stage/synchronization-runtime
+export PATH="$PWD/stage/synchronization-runtime/bin:$PATH"
+```
+
+Use the host's actual OS/architecture; macOS builds require macOS for native
+filesystem notifications. Ordinary binding mode does not require this tool.
+
+## Reproducing native measurements
+
+On an Apple Silicon Mac with installed Rosetta and the documented development
+toolchain, first build the runtime inputs:
+
+```sh
+bash scripts/bundle-desktop-runtime.sh darwin arm64 stage/runtime-darwin-arm64
+```
+
+The following command explicitly authorizes a disposable VZ acceptance VM.
+It creates private `PORTO_HOME` and `LIMA_HOME` directories, uses two CPUs,
+2 GiB RAM and a 20 GiB sparse disk, disables host-folder mounts, and removes
+only that VM afterward. Existing Porto engines are not selected:
+
+```sh
+PATH="$PWD/stage/runtime-darwin-arm64/bin:$PWD/stage/runtime-darwin-arm64/lima/bin:$PATH" \
+  PORTO_TEST_NATIVE_RUNTIME_POLICIES=1 \
+  go test ./internal/daemon -run '^TestNativeAppleSiliconRuntimePolicies$' \
+    -count=1 -timeout=25m -v
+```
+
+The workload is a synthetic amd64 Go HTTP server built into a scratch image,
+with a no-cache BuildKit `RUN` step that executes the original Linux binary.
+It echoes the SHA-256 of an 819,200-byte initiating binary POST, exercises
+12 concurrent wakes, a real WebSocket, manual pause, complete engine shutdown,
+Rosetta/QEMU policy changes, and a native arm64 build. Sharing uses 10,000
+small synthetic files, an actual guest container bind, bidirectional edits and
+inotify. The separate maintained-tool case covers ignores and retained conflicts:
+
+```sh
+PORTO_TEST_SYNC_BINARY="$PWD/stage/runtime-darwin-arm64/bin/mutagen" \
+  go test ./internal/syncshares \
+    -run '^TestMaintainedSynchronizationPreservesLargeSyntheticRepository$' \
+    -count=1 -timeout=5m -v
+```
+
+An observed run on an Apple M5 Max, macOS 26.6, Go 1.27.3, Lima 2.2.1,
+an arm64 VZ guest and `0.18.1-porto.1` synchronization toolchain recorded:
+
+| Observation | Measured result |
+| --- | --- |
+| Fresh engine provisioning, possibly using Lima's cloud-image cache | 38.75 s |
+| No-cache synthetic BuildKit build | 0.671 s |
+| Measured host process subtree RSS before / immediately after / five seconds after build | 138,264,576 / 138,264,576 / 146,685,952 bytes |
+| Running synthetic task memory before scale-to-zero | 38,563,840 bytes; task absent after stopping |
+| Original binary POST after task scale-to-zero | 1.099 s; exact payload checksum preserved |
+| Host process subtree RSS before complete engine suspension | 216,121,344 bytes; owned process absent afterward |
+| Native VZ host-process CPU during a five-second idle sample | 0.00 CPU seconds at `ps` resolution; process absent after suspension |
+| Original POST through complete engine and task wake/readiness | 10.699 s |
+| Initial 10,000-file host-to-guest synchronization | 2.632 s |
+
+These are reproducible observations, not latency guarantees or cross-product
+benchmarks. RSS covers the measured owned process subtree, not every macOS
+Virtualization.framework service or all guest RAM. CPU uses differences between
+the native VZ process's cumulative `ps time` samples, not the VM's configured CPU
+reservation. This already-quiet fixture did not show a measurable idle CPU
+decrease, and its small build did not demonstrate automatic post-build RSS
+reclamation. Complete engine suspension removed the measured process instead.
+The daemon, host listeners and OS caches remain. Tiny-file synchronization
+measures metadata-heavy initialization, not sequential byte throughput.
+Battery savings and improvements over ordinary binds have not been measured
+and are not claimed.

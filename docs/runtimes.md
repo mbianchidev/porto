@@ -46,6 +46,12 @@ Additional runtime features require:
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
 
+See [resource management and architecture policies](resource-management.md) for
+owned-engine budgets, opt-in idle suspension and HTTP wake, selected synchronized
+project shares, and native/Rosetta/QEMU capability boundaries. Native arm64
+workloads stay native; Rosetta translates amd64 userspace in an arm64 VZ guest,
+not an amd64 VM kernel.
+
 For an installed desktop package, use either the non-conflicting `docker`
 command created by the install script or the explicit bundled entry point:
 

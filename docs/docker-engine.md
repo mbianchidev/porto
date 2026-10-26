@@ -9,6 +9,11 @@ when actual reclaimed bytes are unavailable rather than inventing a total.
 
 Porto owns a Docker Engine-compatible API endpoint. It does not forward requests to Docker Desktop, Podman, or another Docker daemon.
 
+Engine budgets, opt-in Resource Saver, architecture policy and synchronized bind
+mapping are described in [resource management](resource-management.md). They use
+the same ownership-checked backend and do not adopt manually paused tasks or
+retarget existing container mounts.
+
 ## Architecture
 
 The data path is:
@@ -46,6 +51,9 @@ The API server is part of the Porto daemon and starts whenever the Docker runtim
 
 - If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
 - Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper and configures QEMU user-mode emulation only in that owned VM. CLI-only installations can run `porto docker engine-install`.
+
+An explicit supported Rosetta policy selects VZ and its amd64 userspace handler
+for a new Apple Silicon engine instead. Existing QEMU disks are not converted.
 
 New Windows engines use `template://ubuntu-24.04`; macOS and Linux keep Lima's
 default template. This selection applies only when creating an engine and

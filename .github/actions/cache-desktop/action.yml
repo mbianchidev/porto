@@ -32,4 +32,4 @@ runs:
           ${{ runner.temp }}/porto-download-cache
           ${{ env.PORTO_ELECTRON_CACHE }}
           ${{ env.PORTO_ELECTRON_BUILDER_CACHE }}
-        key: porto-desktop-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ hashFiles('ui/electron/package-lock.json', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-windows-containers.sh', 'scripts/windows-container-toolchain.cjs', 'scripts/download-file.sh', 'scripts/test-docker-clients.sh') }}
+        key: porto-desktop-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ hashFiles('ui/electron/package-lock.json', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh', 'scripts/bundle-windows-containers.sh', 'scripts/windows-container-toolchain.cjs', 'scripts/download-file.sh', 'scripts/test-docker-clients.sh') }}

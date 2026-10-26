@@ -454,9 +454,23 @@ func (r *grpcContainerRuntime) Snapshot(ctx context.Context) ([]Container, error
 		// ListTasks can populate only ID for the container's init task.
 		taskByContainer[firstNonEmpty(process.GetContainerID(), process.GetID())] = process
 	}
+	compatibilityRecords := make([]*containersapi.Container, 0, len(records))
+	for _, record := range records {
+		if record.GetLabels()[nerdctlNameLabel] != "" && record.GetLabels()[portoManagedLabel] != portoRuntimeVersion {
+			compatibilityRecords = append(compatibilityRecords, record)
+		}
+	}
+	compatibility, compatibilityErr := r.compatibilityMetadata(ctx, compatibilityRecords)
 	containers := make([]Container, 0, len(records))
 	for _, record := range records {
 		mapped := containerFromContainerd(record, taskByContainer[record.GetID()])
+		if record.GetLabels()[nerdctlNameLabel] != "" && record.GetLabels()[portoManagedLabel] != portoRuntimeVersion {
+			if compatibilityErr != nil {
+				mapped.InventoryError = combineInventoryError(mapped.InventoryError, compatibilityErr)
+			} else {
+				mergeContainerCompatibilityMetadata(&mapped, compatibility[record.GetID()])
+			}
+		}
 		containers = append(containers, mapped)
 	}
 	return containers, nil
