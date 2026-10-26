@@ -286,7 +286,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.1"
+    lima_windows_version="v2.2.1+porto.2"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -305,6 +305,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_stop_patch="$script_directory/patches/lima-2.2.0-windows-stop.patch"
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
+  lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
   (
     cd "$temporary/$lima_source_directory"
     git apply --check "$lima_pid_patch" "$lima_stop_patch"
@@ -313,6 +314,14 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     git apply "$lima_graceful_stop_patch"
     git apply --check "$lima_arm64_cpu_patch"
     git apply "$lima_arm64_cpu_patch"
+    if [ "$lima_version" = v2.2.1 ]; then
+      git apply --check "$lima_wsl_mount_patch"
+      git apply "$lima_wsl_mount_patch"
+      if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
+        CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
+          -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
+      fi
+    fi
     if [ "$goarch" = arm64 ] && [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = windows/arm64 ]; then
       CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/sshutil \
         -run '^TestWindowsARM64AESUsesOSFeatureBits$' -count=1
@@ -327,6 +336,9 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   cp "$lima_stop_patch" "$destination/licenses/lima-windows-stop.patch"
   cp "$lima_graceful_stop_patch" "$destination/licenses/lima-windows-graceful-stop.patch"
   cp "$lima_arm64_cpu_patch" "$destination/licenses/lima-windows-arm64-cpu.patch"
+  if [ "$lima_version" = v2.2.1 ]; then
+    cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
+  fi
 fi
 
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

@@ -1,0 +1,80 @@
+--- a/pkg/limayaml/validate.go
++++ b/pkg/limayaml/validate.go
+@@ -16,6 +16,7 @@
+ 	"slices"
+ 	"strconv"
+ 	"strings"
++	"syscall"
+ 	"unicode"
+ 
+ 	"github.com/docker/go-units"
+@@ -30,6 +31,16 @@
+ 	"github.com/lima-vm/lima/v2/pkg/version/versionutil"
+ )
+ 
++func offlineWSLMount(location string, err error) bool {
++	// A reconnecting WSL file provider can reject directory metadata handles.
++	// Keep its existing mount configuration valid, just as for a missing root.
++	if runtime.GOOS != "windows" || !errors.Is(err, syscall.Errno(1)) {
++		return false
++	}
++	location = strings.ToLower(strings.ReplaceAll(location, "/", `\`))
++	return strings.HasPrefix(location, `\\wsl.localhost\`) || strings.HasPrefix(location, `\\wsl$\`)
++}
++
+ func Validate(y *limatype.LimaYAML, warn bool) error {
+ 	var errs error
+ 
+@@ -133,11 +144,11 @@
+ 		}
+ 		st, err := os.Stat(loc)
+ 		if err != nil {
+-			if !errors.Is(err, os.ErrNotExist) {
++			if !errors.Is(err, os.ErrNotExist) && !offlineWSLMount(loc, err) {
+ 				errs = errors.Join(errs, fmt.Errorf("field `mounts[%d].location` refers to an inaccessible path: %#q: %w", i, f.Location, err))
+ 			}
+ 			if warn {
+-				logrus.Warnf("field `mounts[%d].location` refers to a non-existent directory: %#q:", i, f.Location)
++				logrus.Warnf("field `mounts[%d].location` refers to an unavailable directory: %#q: %v", i, f.Location, err)
+ 			}
+ 		} else if !st.IsDir() {
+ 			errs = errors.Join(errs, fmt.Errorf("field `mounts[%d].location` refers to a non-directory path: %#q: %w", i, f.Location, err))
+--- /dev/null
++++ b/pkg/limayaml/validate_wsl_mount_test.go
+@@ -0,0 +1,36 @@
++// SPDX-FileCopyrightText: Copyright The Lima Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package limayaml
++
++import (
++	"os"
++	"runtime"
++	"syscall"
++	"testing"
++)
++
++func TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable(t *testing.T) {
++	for _, test := range []struct {
++		name     string
++		location string
++		err      error
++		offline  bool
++	}{
++		{"localhost", `\\wsl.localhost\selected\root`, syscall.Errno(1), true},
++		{"legacy alias", `\\wsl$\selected\home\synthetic`, syscall.Errno(1), true},
++		{"case insensitive", `\\WSL.LOCALHOST\selected\root`, syscall.Errno(1), true},
++		{"wrapped provider", `\\wsl.localhost\selected\root`, &os.PathError{Op: "CreateFile", Err: syscall.Errno(1)}, true},
++		{"access denied", `\\wsl.localhost\selected\root`, syscall.Errno(5), false},
++		{"ordinary UNC", `\\server\project`, syscall.Errno(1), false},
++		{"lookalike server", `\\wsl.localhost.example\selected`, syscall.Errno(1), false},
++		{"local directory", `C:\synthetic`, syscall.Errno(1), false},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			want := test.offline && runtime.GOOS == "windows"
++			if got := offlineWSLMount(test.location, test.err); got != want {
++				t.Fatalf("offline mount = %t, want %t", got, want)
++			}
++		})
++	}
++}

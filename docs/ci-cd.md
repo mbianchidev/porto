@@ -156,6 +156,14 @@ changing the control distribution. No WSL driver replaces QEMU, and there is no
 WSL 1 fallback or expected-failure path. The fixture releases owned shares
 before unregistering only its own distributions.
 
+The Windows Lima source patch also classifies only `ERROR_INVALID_FUNCTION`
+from the WSL UNC provider as a temporarily unavailable mount, like Lima's
+existing missing-directory case. A stopped/reconnecting distribution must not
+make the running engine's configuration unreadable. Ordinary UNC paths,
+access-denied errors and non-directory paths still fail validation; actual
+mount/read failures remain visible. The full native shutdown/reconnect workflow
+and a source-level error-classification test exercise this boundary.
+
 Hosted Windows ARM64 does not provide the nested virtualization needed for WSL
 2. That row verifies native HTTPS/ConPTY and architecture-matched Linux ELF
 artifacts rather than claiming a real ARM64 WSL workflow. The complete platform
@@ -825,9 +833,10 @@ For Windows Lima 2.2.1, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
 `scripts/patches/lima-2.2.0-windows-stop.patch` and
 `scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
-`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and rebuilds only
-`limactl.exe` as `v2.2.1+porto.1`. The patches were introduced for 2.2.0 and
-remain necessary on 2.2.1. The PID change is an upstream backport; the
+`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and
+`scripts/patches/lima-2.2.1-windows-wsl-mount.patch`, and rebuilds only
+`limactl.exe` as `v2.2.1+porto.2`. The first four patches were introduced for
+2.2.0 and remain necessary on 2.2.1. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.
@@ -840,6 +849,8 @@ exercises VM loss/reconnect and engine update/shutdown through that path.
 The ARM64 fix reads the Windows-populated `x/sys/cpu` feature bits even when
 its `Initialized` flag is false, matching that library's platform behavior.
 Native ARM64 packaging checks that AES detection agrees with the OS feature bit.
+Native Windows packaging also verifies that only WSL UNC provider
+`ERROR_INVALID_FUNCTION` is classified as a temporarily unavailable root.
 Other signals keep upstream behavior. All patches and the Apache-2.0 license
 ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
 Other platforms keep their verified upstream binaries. Remove each patch
