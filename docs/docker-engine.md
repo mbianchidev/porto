@@ -14,6 +14,12 @@ mapping are described in [resource management](resource-management.md). They use
 the same ownership-checked backend and do not adopt manually paused tasks or
 retarget existing container mounts.
 
+Image deletion can wait for containerd layer and snapshot garbage collection,
+especially with native Windows filesystem layers. It uses the bounded
+30-minute image/storage operation budget rather than the 20-second metadata
+probe budget. A caller's shorter deadline or cancellation still takes priority;
+cleanup errors are returned instead of being retried or ignored.
+
 ## Architecture
 
 The data path is:

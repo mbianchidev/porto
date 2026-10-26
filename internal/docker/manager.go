@@ -2201,7 +2201,7 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 		args = append(args, "--force")
 	}
 	args = append(args, normalizeNerdctlReference(id))
-	_, err = m.run(ctx, "remove Porto image", args...)
+	_, err = m.runWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "remove Porto image", nil, args...)
 	return err
 }
 

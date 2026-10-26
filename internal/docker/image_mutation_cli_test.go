@@ -17,6 +17,46 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
+func TestImageRemovalUsesStorageBudgetWithoutExtendingCallerDeadlines(t *testing.T) {
+	for _, scenario := range []struct {
+		name                     string
+		configured, caller, want time.Duration
+	}{
+		{name: "storage cleanup", configured: defaultTimeout, want: imageTransferTimeout},
+		{name: "longer configured operation", configured: 45 * time.Minute, want: 45 * time.Minute},
+		{name: "caller deadline", configured: defaultTimeout, caller: 2 * time.Second, want: 2 * time.Second},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var remaining time.Duration
+			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				if strings.Join(command.Args, " ") != "image rm --force synthetic:latest" {
+					return nil, fmt.Errorf("unexpected image-removal command: %+v", command)
+				}
+				deadline, ok := ctx.Deadline()
+				if !ok {
+					return nil, errors.New("image removal has no bounded storage deadline")
+				}
+				remaining = time.Until(deadline)
+				return nil, nil
+			})
+			manager := New(runner)
+			manager.timeout = scenario.configured
+			ctx := context.Background()
+			if scenario.caller > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, scenario.caller)
+				defer cancel()
+			}
+			if err := manager.RemoveImage(ctx, "synthetic:latest", true); err != nil {
+				t.Fatal(err)
+			}
+			if remaining <= scenario.want-time.Second || remaining > scenario.want {
+				t.Fatalf("image removal budget = %s, want %s with caller deadline preserved", remaining, scenario.want)
+			}
+		})
+	}
+}
+
 func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
