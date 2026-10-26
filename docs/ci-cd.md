@@ -497,9 +497,13 @@ and reused for the destination, source VM, and restarts. Only the Ubuntu source
 URIs change; suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
 from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
-indexes. An unavailable snapshot or failed index fetch remains an error, with
-no fallback to mutable mirrors or relaxed checks. The 20-minute boot deadline
-is unchanged, and installed Porto environments are not reconfigured.
+indexes. APT retries transient download failures, including HTTP 503 responses,
+up to ten times per file, with exponential backoff capped at 30 seconds and
+30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
+and package downloads. An unavailable snapshot or failed index fetch remains
+an error after the retry budget is exhausted, with no fallback to mutable
+mirrors or relaxed checks. The 20-minute boot deadline is unchanged, and
+installed Porto environments are not reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
