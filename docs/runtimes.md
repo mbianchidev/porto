@@ -312,6 +312,12 @@ and Nodes. Resource dashboards share context selection, namespaced inventories
 add namespace filtering, and each list provides health signals plus an adjacent
 inspector for the selected resource.
 
+Namespace filters and resource search match case-insensitive substrings:
+`app`, `App`, and `APP` include `app-1`, `app2`, and `application`.
+An empty namespace filter or `all` shows every namespace. Filtering uses the
+current context's read-only inventory; inspecting or mutating a selected object
+still uses its complete, exact namespace and name.
+
 The **Port forwarding** dashboard starts and stops explicit loopback forwards
 for Services, Pods, and Deployments. Leave the local port empty to allocate a
 free port from Porto's forwarding range, or request a specific available port.

@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector, InspectorErrorBoundary } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
@@ -28,13 +28,13 @@ export function KubernetesServices({
   const available = status.data?.available ?? false
   const services = usePolledResource<KubernetesService[]>(
     (signal) => available
-      ? apiGet(`/api/kubernetes/services?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/services?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     6000,
-    [context, namespace, available],
-    available ? `kubernetes:${context}:services:${namespace}` : undefined,
+    [context, available],
+    available ? `kubernetes:${context}:services:all` : undefined,
   )
-  const items = services.data ?? []
+  const items = (services.data ?? []).filter((service) => matchesNamespace(service.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((service) => normalizedQuery === '' || [service.name, service.namespace, service.type]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))

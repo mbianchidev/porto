@@ -2,7 +2,7 @@ import { useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import type { KubernetesContext, LampState } from '../types'
 import { Inspector } from './Inspector'
 import { InventoryList } from './InventoryList'
@@ -11,7 +11,7 @@ import { KubernetesContextSelect } from './KubernetesContextSelect'
 import { StatusLamp } from './StatusLamp'
 import { RuntimeGate } from './SectionChrome'
 
-type KubernetesWorkloadDashboardProps<T> = {
+type KubernetesWorkloadDashboardProps<T extends { namespace: string }> = {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
@@ -34,7 +34,7 @@ type KubernetesWorkloadDashboardProps<T> = {
   renderInspector: (item: T) => ReactNode
 }
 
-export function KubernetesWorkloadDashboard<T>({
+export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
   context,
   contexts,
   onContextChange,
@@ -64,13 +64,13 @@ export function KubernetesWorkloadDashboard<T>({
   const available = !status.loading && !status.error && (status.data?.available ?? false)
   const resources = usePolledResource<T[]>(
     (signal) => available
-      ? apiGet(`/api/kubernetes/${endpoint}?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/${endpoint}?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     6000,
-    [context, namespace, available],
-    available ? `kubernetes:${context}:${cacheKey}:${namespace}` : undefined,
+    [context, available],
+    available ? `kubernetes:${context}:${cacheKey}:all` : undefined,
   )
-  const items = resources.data ?? []
+  const items = (resources.data ?? []).filter((item) => matchesNamespace(item.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((item) => normalizedQuery === '' || matchesQuery(item, normalizedQuery))
   const selected = items.find((item) => getKey(item) === selectedKey) ?? null

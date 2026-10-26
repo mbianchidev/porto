@@ -2,7 +2,7 @@ import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
@@ -570,13 +570,13 @@ export function Pods({
   const available = status.data?.available ?? false
   const pods = usePolledResource<KubernetesPod[]>(
     (signal) => available
-      ? apiGet(`/api/kubernetes/pods?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/pods?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     5000,
-    [context, namespace, available],
-    available ? `kubernetes:${context}:pods:${namespace}` : undefined,
+    [context, available],
+    available ? `kubernetes:${context}:pods:all` : undefined,
   )
-  const items = pods.data ?? []
+  const items = (pods.data ?? []).filter((pod) => matchesNamespace(pod.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((pod) => normalizedQuery === '' || [pod.name, pod.namespace, pod.node]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))

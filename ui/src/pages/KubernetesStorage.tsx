@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
@@ -56,18 +56,18 @@ export function KubernetesStorage({
   )
   const claims = usePolledResource<KubernetesPersistentVolumeClaim[]>(
     (signal) => available && tab === 'claims'
-      ? apiGet(`/api/kubernetes/persistent-volume-claims?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/persistent-volume-claims?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     8000,
-    [context, namespace, available, tab],
-    available && tab === 'claims' ? `kubernetes:${context}:persistent-volume-claims:${namespace}` : undefined,
+    [context, available, tab],
+    available && tab === 'claims' ? `kubernetes:${context}:persistent-volume-claims:all` : undefined,
   )
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const volumeItems = (volumes.data ?? []).map((volume) => ({
     ...volume,
     accessModes: volume.accessModes ?? [],
   }))
-  const claimItems = (claims.data ?? []).map((claim) => ({
+  const claimItems = (claims.data ?? []).filter((claim) => matchesNamespace(claim.namespace, namespace)).map((claim) => ({
     ...claim,
     accessModes: claim.accessModes ?? [],
   }))
