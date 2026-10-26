@@ -37,6 +37,12 @@ created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
 dump_lima_boot_logs() {
+  if [ "$(uname -s)" = Linux ] && [ -c /dev/kvm ]; then
+    printf '\nCI KVM access diagnostics\n' >&2
+    if ! { id && ls -l /dev/kvm && getfacl /dev/kvm; } >&2; then
+      echo "Some read-only KVM access diagnostics were unavailable." >&2
+    fi
+  fi
   if ! node scripts/lima-boot-diagnostics.cjs "$LIMA_HOME/porto-engine"; then
     echo "Some read-only boot diagnostics were unavailable; preserving the original failure." >&2
   fi

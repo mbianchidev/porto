@@ -70,6 +70,9 @@ HTTP, HTTPS and SOCKS proxies on every existing development-client backend.
 The matrix includes rootful local Linux and KVM-backed Linux Lima, plus Lima
 on macOS and Windows. The Linux Lima row fails if native KVM is unavailable;
 software emulation is not substituted for that required acceptance.
+The full Linux Lima fixture runs in a fresh `kvm`-group process, as the runtime
+data fixtures do, so a later engine wake does not depend on the initial device
+ACL remaining unchanged. KVM access diagnostics are retained on boot failure.
 It verifies custom CA trust and its removal, proxy transitions and local
 bypass; rootful local Linux additionally requests a real container private IP.
 Unit transport gates run on Linux, macOS and Windows and exercise changing
