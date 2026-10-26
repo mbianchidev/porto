@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/resources"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -30,6 +31,7 @@ var (
 )
 
 type Manager struct {
+	architecture    *acceleration.Manager
 	runner          runtimes.Runner
 	timeout         time.Duration
 	resourceTimeout time.Duration
@@ -58,6 +60,8 @@ type Image struct {
 }
 
 type Instance struct {
+	Execution         string   `json:"execution,omitempty"`
+	RosettaEnabled    bool     `json:"rosettaEnabled"`
 	Name              string   `json:"name"`
 	Status            string   `json:"status"`
 	VMType            string   `json:"vmType"`
@@ -73,18 +77,20 @@ type Instance struct {
 }
 
 type CreateRequest struct {
-	Name         string        `json:"name"`
-	Owner        string        `json:"owner,omitempty"`
-	Image        string        `json:"image"`
-	VMType       string        `json:"vmType,omitempty"`
-	CPUs         int           `json:"cpus"`
-	MemoryMiB    int           `json:"memoryMiB"`
-	DiskGiB      int           `json:"diskGiB"`
-	Architecture string        `json:"architecture"`
-	Provision    string        `json:"provision"`
-	Start        bool          `json:"start"`
-	Network      string        `json:"network,omitempty"`
-	PortForwards []PortForward `json:"portForwards,omitempty"`
+	ArchitecturePolicy string        `json:"architecturePolicy,omitempty"`
+	RosettaEnabled     bool          `json:"rosettaEnabled,omitempty"`
+	Name               string        `json:"name"`
+	Owner              string        `json:"owner,omitempty"`
+	Image              string        `json:"image"`
+	VMType             string        `json:"vmType,omitempty"`
+	CPUs               int           `json:"cpus"`
+	MemoryMiB          int           `json:"memoryMiB"`
+	DiskGiB            int           `json:"diskGiB"`
+	Architecture       string        `json:"architecture"`
+	Provision          string        `json:"provision"`
+	Start              bool          `json:"start"`
+	Network            string        `json:"network,omitempty"`
+	PortForwards       []PortForward `json:"portForwards,omitempty"`
 }
 
 type PortForward struct {
@@ -120,11 +126,13 @@ memory_bytes=$(awk '/^MemTotal:/{total=$2}/^MemAvailable:/{available=$2}END{prin
 printf '%s %s\n' "$cpu_millicores" "$memory_bytes"`
 
 type Metadata struct {
-	Name      string    `json:"name"`
-	Kind      string    `json:"kind"`
-	Owner     string    `json:"owner,omitempty"`
-	Image     string    `json:"image"`
-	CreatedAt time.Time `json:"createdAt"`
+	ArchitecturePolicy string    `json:"architecturePolicy,omitempty"`
+	RosettaEnabled     bool      `json:"rosettaEnabled,omitempty"`
+	Name               string    `json:"name"`
+	Kind               string    `json:"kind"`
+	Owner              string    `json:"owner,omitempty"`
+	Image              string    `json:"image"`
+	CreatedAt          time.Time `json:"createdAt"`
 }
 
 func New(runner runtimes.Runner) *Manager {
@@ -146,11 +154,16 @@ func (m *Manager) Status(ctx context.Context) Status {
 	if err != nil {
 		return Status{Provider: "lima", Message: err.Error()}
 	}
+
 	return Status{
 		Available: true,
 		Provider:  "lima",
 		Version:   strings.TrimSpace(string(output)),
 	}
+}
+
+func (m *Manager) SetAccelerationManager(manager *acceleration.Manager) {
+	m.architecture = manager
 }
 
 func (m *Manager) Images() []Image {
@@ -195,6 +208,7 @@ func (m *Manager) List(ctx context.Context) ([]Instance, error) {
 			return nil, fmt.Errorf("read VM ownership for %s: %w", instance.Name, metadataErr)
 		}
 		if metadata.Kind == "standalone" {
+			instance.RosettaEnabled = metadata.RosettaEnabled
 			standalone = append(standalone, instance)
 		}
 	}
@@ -312,8 +326,8 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	if !image.Available {
 		return Instance{}, errors.New(image.Message)
 	}
-	if request.VMType != "" && request.VMType != "qemu" {
-		return Instance{}, fmt.Errorf("unsupported VM type %q; use qemu or omit vmType for the host default", request.VMType)
+	if request.VMType != "" && request.VMType != "qemu" && request.VMType != "vz" {
+		return Instance{}, fmt.Errorf("unsupported VM type %q; use qemu, vz, or omit vmType for the host default", request.VMType)
 	}
 	if request.CPUs <= 0 {
 		request.CPUs = 2
@@ -341,6 +355,28 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	if request.Architecture != "" && !supportsArchitecture(image, request.Architecture) {
 		return Instance{}, fmt.Errorf("%s does not support %s", image.Distribution, request.Architecture)
 	}
+	if m.architecture != nil {
+		settings, err := m.architecture.Settings()
+		if err != nil {
+			return Instance{}, err
+		}
+		policy, err := acceleration.EffectivePolicy(settings.Policy, request.ArchitecturePolicy)
+		if err != nil {
+			return Instance{}, err
+		}
+		capabilities := m.architecture.ProbeHost(ctx)
+		if request.RosettaEnabled && request.VMType == "" {
+			request.VMType = "vz"
+		}
+		if request.Architecture != "" && acceleration.Architecture(request.Architecture) != capabilities.HostArchitecture && request.VMType == "" {
+			request.VMType = "qemu"
+		}
+		if _, err := acceleration.SelectVM(capabilities, policy, request.Architecture, request.VMType, request.RosettaEnabled); err != nil {
+			return Instance{}, err
+		}
+	} else if request.RosettaEnabled || request.ArchitecturePolicy != "" || request.VMType == "vz" {
+		return Instance{}, errors.New("VM architecture capability service is unavailable; restart the matching Porto daemon")
+	}
 	existing, err := m.Existing(ctx, []string{request.Name})
 	if err != nil {
 		return Instance{}, fmt.Errorf("inspect Lima instance before creation: %w", err)
@@ -360,6 +396,9 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 	} else {
 		if request.VMType != "" {
 			args = append(args, "--vm-type", request.VMType)
+		}
+		if request.RosettaEnabled {
+			args = append(args, "--set=.vmOpts.vz.rosetta.enabled = true | .vmOpts.vz.rosetta.binfmt = true")
 		}
 		args = append(
 			args,
@@ -382,7 +421,8 @@ func (m *Manager) create(ctx context.Context, request CreateRequest, kind string
 			request.Name,
 		)
 	}
-	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Owner: request.Owner, Image: request.Image, CreatedAt: time.Now().UTC()}); err != nil {
+	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: kind, Owner: request.Owner, Image: request.Image,
+		ArchitecturePolicy: request.ArchitecturePolicy, RosettaEnabled: request.RosettaEnabled, CreatedAt: time.Now().UTC()}); err != nil {
 		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
 	}
 	if request.Start {
@@ -435,6 +475,14 @@ func (m *Manager) Get(ctx context.Context, name string) (Instance, error) {
 	}
 	for _, instance := range instances {
 		if instance.Name == name {
+			if m.stateDir != "" {
+				metadata, err := m.readMetadata(name)
+				if err == nil {
+					instance.RosettaEnabled = metadata.RosettaEnabled
+				} else if !errors.Is(err, os.ErrNotExist) {
+					return Instance{}, err
+				}
+			}
 			return instance, nil
 		}
 	}
@@ -494,6 +542,23 @@ func (m *Manager) start(ctx context.Context, name string, timeout time.Duration)
 	}
 	if len(existing) == 0 {
 		return fmt.Errorf("VM %q not found; refusing to create a replacement during start", name)
+	}
+	if m.architecture != nil {
+		settings, err := m.architecture.Settings()
+		if err != nil {
+			return err
+		}
+		metadata, err := m.readMetadata(name)
+		if err != nil {
+			return err
+		}
+		policy, err := acceleration.EffectivePolicy(settings.Policy, metadata.ArchitecturePolicy)
+		if err != nil {
+			return err
+		}
+		if _, err := acceleration.SelectVM(m.architecture.ProbeHost(ctx), policy, existing[0].Architecture, existing[0].VMType, metadata.RosettaEnabled); err != nil {
+			return err
+		}
 	}
 	startArgs := []string{"start", "--timeout=" + timeout.String(), name}
 	_, startErr := m.run(ctx, timeout, "start Lima instance", startArgs...)
@@ -819,7 +884,15 @@ func (m *Manager) image(id string) (Image, bool) {
 func decodeInstance(raw map[string]any) Instance {
 	vmType := stringValue(raw, "vmType", "VMType")
 	snapshotSupported, snapshotMessage := snapshotCapability(vmType)
+	execution := "native"
+	architecture := acceleration.Architecture(stringValue(raw, "arch", "Arch"))
+	if architecture == "" {
+		execution = "unknown"
+	} else if architecture != runtime.GOARCH {
+		execution = "qemu"
+	}
 	return Instance{
+		Execution:         execution,
 		Name:              stringValue(raw, "name", "Name"),
 		Status:            stringValue(raw, "status", "Status"),
 		VMType:            vmType,
@@ -1086,6 +1159,9 @@ func (m *Manager) writeCreateConfig(request CreateRequest, image Image) (string,
 		builder.WriteString("arch: ")
 		builder.WriteString(strconv.Quote(request.Architecture))
 		builder.WriteByte('\n')
+	}
+	if request.RosettaEnabled {
+		builder.WriteString("vmOpts:\n  vz:\n    rosetta:\n      enabled: true\n      binfmt: true\n")
 	}
 	if request.Network != "" {
 		builder.WriteString("networks:\n  - lima: ")

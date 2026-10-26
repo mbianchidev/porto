@@ -167,10 +167,12 @@ func (a *API) hijackBuildKitControl(
 		grpc.UnknownServiceHandler(transparentBuildKitHandler(connection)),
 	)
 	controlapi.RegisterControlServer(server, &buildKitControlProxy{
-		client:              controlapi.NewControlClient(connection),
-		containerdNamespace: configuredContainerdNamespace(),
-		imageExported:       a.manager.invalidateContainerInventory,
-		solveGate:           a.manager.dataReadGate,
+		client:               controlapi.NewControlClient(connection),
+		containerdNamespace:  configuredContainerdNamespace(),
+		imageExported:        a.manager.invalidateContainerInventory,
+		solveGate:            a.manager.dataReadGate,
+		validateArchitecture: a.manager.validateBuildKitArchitecture,
+		filterArchitecture:   a.manager.filterBuildKitArchitecture,
 	})
 	stopped := make(chan struct{})
 	go func() {

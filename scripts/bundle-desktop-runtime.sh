@@ -261,6 +261,19 @@ else
   tar -xzf "$temporary/$lima_asset" -C "$destination/lima"
 fi
 
+if [ "$goos/$goarch" = "darwin/arm64" ]; then
+  lima_agents_asset="lima-additional-guestagents-${lima_version#v}-Darwin-arm64.tar.gz"
+  lima_agents_checksum="$(manifest_checksum "$temporary/lima-checksums.txt" "$lima_agents_asset")"
+  if [ -z "$lima_agents_checksum" ]; then
+    echo "Lima release does not publish the additional Apple Silicon guest agents." >&2
+    exit 1
+  fi
+  download "https://github.com/lima-vm/lima/releases/download/${lima_version}/${lima_agents_asset}" \
+    "$temporary/$lima_agents_asset" "$lima_agents_checksum"
+  verify "$lima_agents_checksum" "$temporary/$lima_agents_asset"
+  tar -xzf "$temporary/$lima_agents_asset" -C "$destination/lima"
+fi
+
 lima_runtime_version="$lima_version"
 lima_source_checksum=""
 case "$lima_version" in

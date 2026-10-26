@@ -23,6 +23,12 @@ import (
 )
 
 func runtimeCmd(st *store.Store, args []string) error {
+	if len(args) > 0 && args[0] == "resource-saver" {
+		return resourceSaverCmd(args[1:])
+	}
+	if len(args) > 0 && args[0] == "acceleration" {
+		return accelerationCmd(args[1:])
+	}
 	if len(args) == 0 || args[0] == "status" {
 		if daemonUp() {
 			return api("GET", "/api/runtime", nil, os.Stdout)
@@ -88,6 +94,10 @@ func dockerCmd(args []string) error {
 		return runDockerCLI(nil)
 	}
 	switch args[0] {
+	case "engine-resources":
+		return engineResourcesCmd(args[1:])
+	case "acceleration":
+		return accelerationCmd(args[1:])
 	case "windows":
 		return windowsContainersCmd(args[1:])
 	case "data":
@@ -668,16 +678,19 @@ func vmCmd(args []string) error {
 		memory := fs.Int("memory", 2048, "memory MiB")
 		disk := fs.Int("disk", 20, "disk GiB")
 		architecture := fs.String("arch", "", "aarch64 or x86_64")
-		vmType := fs.String("vm-type", "", "qemu for snapshot support")
+		vmType := fs.String("vm-type", "", "qemu for snapshots or vz for native macOS virtualization")
+		architecturePolicy := fs.String("architecture-policy", "", "automatic, native-only, rosetta-preferred, or qemu-compatible")
+		rosetta := fs.Bool("rosetta", false, "enable already-installed Rosetta userspace translation in an arm64 VZ guest")
 		provision := fs.String("provision", "", "post-start shell command")
 		stopped := fs.Bool("stopped", false, "create without starting")
-		if err := parseInterspersed(fs, args[1:], map[string]bool{"stopped": true}); err != nil {
+		if err := parseInterspersed(fs, args[1:], map[string]bool{"stopped": true, "rosetta": true}); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
 			return errors.New("usage: porto vm create <name> [--image ubuntu-24.04] [--vm-type qemu] [--cpus 2] [--memory 2048] [--disk 20]")
 		}
 		return runtimePOST("/api/vms/instances", vm.CreateRequest{
+			ArchitecturePolicy: *architecturePolicy, RosettaEnabled: *rosetta,
 			Name: fs.Arg(0), Image: *image, VMType: *vmType, CPUs: *cpus, MemoryMiB: *memory,
 			DiskGiB: *disk, Architecture: *architecture, Provision: *provision, Start: !*stopped,
 		})

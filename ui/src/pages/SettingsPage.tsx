@@ -4,6 +4,8 @@ import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
 import { DockerCleanupSettings } from '../components/DockerCleanupSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
 import { NetworkSettings } from '../components/NetworkSettings'
+import { AccelerationSettings } from '../components/AccelerationSettings'
+import { EngineResourceSettings, ResourceSaverSettings } from '../components/ResourceManagement'
 import { WSLSettings } from '../components/WSLSettings'
 import { WindowsContainersSettings } from '../components/WindowsContainersSettings'
 import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
@@ -422,6 +424,9 @@ export function SettingsPage({
       />
 
       <NetworkSettings />
+      <AccelerationSettings />
+      <EngineResourceSettings />
+      <ResourceSaverSettings />
       <WSLSettings />
       <WindowsContainersSettings />
       <RegistrySettings />

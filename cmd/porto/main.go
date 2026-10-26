@@ -156,6 +156,8 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 		return vmCmd(args[1:])
 	case "runtime":
 		return runtimeCmd(db, args[1:])
+	case "resource-saver":
+		return resourceSaverCmd(args[1:])
 	case "containers", "builds", "networks", "volumes":
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":

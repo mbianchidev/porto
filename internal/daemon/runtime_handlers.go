@@ -28,6 +28,12 @@ const maxRuntimeRequestBytes = 2 * 1024 * 1024
 func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	s.dataRoutes(mux)
 	mux.HandleFunc("GET /api/runtime", s.runtimeStatus)
+	mux.HandleFunc("GET /api/runtime/acceleration", s.accelerationStatus)
+	mux.HandleFunc("PUT /api/runtime/acceleration", s.configureAcceleration)
+	mux.HandleFunc("POST /api/runtime/acceleration/apply", s.applyAcceleration)
+	mux.HandleFunc("GET /api/runtime/resource-saver", s.resourceSaverStatus)
+	mux.HandleFunc("PUT /api/runtime/resource-saver", s.configureResourceSaver)
+	mux.HandleFunc("POST /api/docker/containers/{id}/resource-saver", s.requireRuntime("docker", s.configureContainerResourceSaver))
 	mux.HandleFunc("GET /api/runtime/features", s.runtimeFeatures)
 	mux.HandleFunc("POST /api/runtime/features/{feature}/{action}", s.setRuntimeFeature)
 	mux.HandleFunc("GET /api/runtime/providers", s.runtimeProviders)
@@ -207,13 +213,15 @@ func (s *Server) dockerContainers(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
 	var request struct {
-		Isolation     string   `json:"isolation"`
-		Command       []string `json:"command"`
-		Name          string   `json:"name"`
-		Image         string   `json:"image"`
-		HostPort      int      `json:"hostPort"`
-		ContainerPort int      `json:"containerPort"`
-		HealthCommand string   `json:"healthCommand"`
+		Platform           string   `json:"platform"`
+		ArchitecturePolicy string   `json:"architecturePolicy"`
+		Isolation          string   `json:"isolation"`
+		Command            []string `json:"command"`
+		Name               string   `json:"name"`
+		Image              string   `json:"image"`
+		HostPort           int      `json:"hostPort"`
+		ContainerPort      int      `json:"containerPort"`
+		HealthCommand      string   `json:"healthCommand"`
 	}
 	if !decodeRuntimeJSON(w, r, &request) {
 		return
@@ -240,6 +248,7 @@ func (s *Server) createDockerContainer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	createRequest := portodocker.CreateContainerRequest{
+		Platform: request.Platform, ArchitecturePolicy: request.ArchitecturePolicy,
 		Isolation: request.Isolation, Command: request.Command,
 		Name:  request.Name,
 		Image: request.Image,

@@ -27,6 +27,11 @@ type containerStartBaseline struct {
 }
 
 func (m *Manager) StartExec(ctx context.Context, request ExecRequest) (runtimes.Process, error) {
+	ctx, release, err := m.dataReadGate(ctx)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
 	if err := validateObjectID(request.ContainerID); err != nil {
 		return nil, fmt.Errorf("container: %w", err)
 	}

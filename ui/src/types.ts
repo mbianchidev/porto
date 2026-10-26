@@ -206,6 +206,9 @@ export type DockerStatus = {
 }
 
 export type DockerContainer = {
+  labels?: Record<string, string>
+  execution?: string
+  platform?: string
   id: string
   name: string
   image: string
@@ -332,6 +335,8 @@ export type DockerImage = {
 }
 
 export type DockerContainerCreateRequest = {
+  platform?: string
+  architecturePolicy?: string
   name: string
   image: string
   hostPort: number
@@ -788,6 +793,8 @@ export type VMImage = {
 }
 
 export type VMInstance = {
+  execution?: string
+  rosettaEnabled?: boolean
   name: string
   status: string
   vmType: string
@@ -803,9 +810,11 @@ export type VMInstance = {
 }
 
 export type VMCreateRequest = {
+  architecturePolicy?: string
+  rosettaEnabled?: boolean
   name: string
   image: string
-  vmType: '' | 'qemu'
+  vmType: '' | 'qemu' | 'vz'
   cpus: number
   memoryMiB: number
   diskGiB: number

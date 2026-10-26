@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/autoscaling"
 	"github.com/mbianchidev/porto/internal/certificates"
@@ -43,6 +44,7 @@ import (
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
 	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/mbianchidev/porto/internal/resourcesaver"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
@@ -66,6 +68,10 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
+	resourceSaverMu    sync.Mutex
+	resourceSaver      *resourcesaver.Manager
+	saverBackend       *saverBackend
+	architecture       *acceleration.Manager
 	store              *store.Store
 	mu                 sync.Mutex
 	running            map[int64]*projectProcess
@@ -179,9 +185,13 @@ func New(st *store.Store, ui fs.FS) *Server {
 	vmStateDir, _ := config.VMStateDir()
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
 	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
+	architecture := acceleration.New(filepath.Dir(dockerEngineDir), runner)
+	dockerManager.SetAccelerationManager(architecture)
+	vmManager.SetAccelerationManager(architecture)
 	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
 	daemonIdentity, identityErr := currentDaemonIdentity()
 	server := &Server{
+		architecture:    architecture,
 		store:           st,
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
@@ -299,6 +309,15 @@ func (s *Server) Run(ctx context.Context) error {
 		defer func() {
 			cancelAutoscaling()
 			<-autoscalingDone
+		}()
+	}
+	if err := s.initializeResourceSaver(ctx); err != nil {
+		log.Printf("Resource Saver is unavailable; no workloads will be adopted: %v", err)
+	} else {
+		go func() {
+			if err := s.resourceSaver.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("Resource Saver worker stopped: %v", err)
+			}
 		}()
 	}
 	if settings.DockerEnabled {
@@ -443,6 +462,11 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	}
 	if err := s.stopDockerCleanup(cleanupContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
+	}
+	if s.resourceSaver != nil {
+		if err := s.resourceSaver.Close(cleanupContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
 	}
 	if s.nativeFiles != nil {
 		if err := s.nativeFiles.Close(cleanupContext); err != nil {

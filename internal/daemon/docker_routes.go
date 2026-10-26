@@ -8,6 +8,9 @@ func (s *Server) dockerResourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/status", s.dockerStatus)
 	if !s.windowsWorker {
 		mux.HandleFunc("GET /api/docker/cleanup", s.dockerCleanupStatus)
+		mux.HandleFunc("GET /api/docker/engine/resources", s.engineResourceStatus)
+		mux.HandleFunc("PUT /api/docker/engine/resources", s.requireRuntime("docker", s.configureEngineResources))
+		mux.HandleFunc("POST /api/docker/engine/resources/apply", s.requireRuntime("docker", s.applyEngineResources))
 		mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 		mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
 		mux.HandleFunc("POST /api/docker/engine/stop", s.requireRuntime("docker", s.stopDockerEngine))

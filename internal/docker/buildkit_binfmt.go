@@ -113,5 +113,8 @@ func (m *Manager) installLimaBinfmt(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	if err := m.configureAMD64Handler(ctx); err != nil {
+		return err
+	}
 	return m.refreshLimaBuildKitPlatforms(ctx)
 }
