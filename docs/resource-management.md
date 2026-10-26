@@ -52,6 +52,11 @@ streams and WebSocket upgrades hold the application active until disconnect.
 Wake queue and body limits apply only to requests waiting for an owned sleeper.
 Readiness releases the queue reservation while retaining the activity lease;
 ordinary traffic to an already-running application is not capped by wake limits.
+Queued upload bodies are staged in private temporary files within those limits
+before readiness wait. This lets HTTP/1 detect a disconnected uploading client
+promptly instead of retaining its wake until timeout. The wake deadline also
+bounds upload staging; temporary data is removed on completion, cancellation or
+failure. Already-running applications keep their ordinary streaming behavior.
 
 Interactive containers, running execs, unobservable multi-process applications,
 established connections, unsupported networks, unmanaged dependencies, missing
@@ -141,6 +146,21 @@ Apple Silicon desktop bundles include the extra guest agent; source installs
 may need `lima-additional-guestagents`. Snapshots retain their QEMU-only boundary.
 The dashboard and runtime status distinguish native, Rosetta, QEMU and
 unsupported/missing-capability states without claiming unmeasured speedups.
+
+Standalone VM acceptance is separate from container-engine acceptance. On a
+supported Apple Silicon host, the following command authorizes two disposable
+standalone VMs, with no host mounts and 2 GiB RAM each. They run sequentially:
+the first uses an arm64 VZ kernel with real amd64 Rosetta userspace and native
+arm64 ELF execution; the second boots an actual amd64 kernel under QEMU.
+Both verify persistent guest-home data across stop/start and remove only their
+own instances afterward:
+
+```sh
+PATH="$PWD/stage/runtime-darwin-arm64/bin:$PWD/stage/runtime-darwin-arm64/lima/bin:$PATH" \
+  PORTO_TEST_NATIVE_STANDALONE_POLICIES=1 \
+  go test ./internal/vm -run '^TestNativeStandaloneArchitecturePolicies$' \
+    -count=1 -timeout=50m -v
+```
 
 ## Optimized synchronized project shares
 

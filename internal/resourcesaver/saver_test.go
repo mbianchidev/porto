@@ -203,7 +203,7 @@ func TestResourceSaverReadiedTrafficKeepsItsActivityLeaseButNotItsQueueReservati
 func TestResourceSaverBodyLimitsApplyOnlyToQueuedWakes(t *testing.T) {
 	manager, backend, clock := saverFixture(t)
 	limit := manager.State().Config.MaxBodyBytes
-	live, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1)
+	live, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1, nil)
 	if err != nil {
 		t.Fatalf("a live upload was rejected by a wake-only limit: %v", err)
 	}
@@ -212,7 +212,7 @@ func TestResourceSaverBodyLimitsApplyOnlyToQueuedWakes(t *testing.T) {
 	}
 	live.Release()
 	sleepFixture(t, manager, clock)
-	if _, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1); !errors.Is(err, ErrQueuedBodyTooLarge) {
+	if _, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1, nil); !errors.Is(err, ErrQueuedBodyTooLarge) {
 		t.Fatalf("an oversized queued upload was not rejected before wake: %v", err)
 	}
 	backend.mu.Lock()
@@ -221,7 +221,7 @@ func TestResourceSaverBodyLimitsApplyOnlyToQueuedWakes(t *testing.T) {
 	if resumes != 0 || manager.State().Pending != 0 {
 		t.Fatal("an oversized queued upload mutated the workload or leaked a reservation")
 	}
-	queued, err := manager.AcquireRequest(context.Background(), "synthetic-app", -1)
+	queued, err := manager.AcquireRequest(context.Background(), "synthetic-app", -1, nil)
 	if err != nil {
 		t.Fatal(err)
 	}

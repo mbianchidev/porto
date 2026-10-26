@@ -452,11 +452,11 @@ func (m *Manager) suspendEngine(ctx context.Context, token string, op *operation
 }
 
 func (m *Manager) Acquire(ctx context.Context, applicationID string) (func(), error) {
-	lease, err := m.AcquireRequest(ctx, applicationID, -1)
+	lease, err := m.AcquireRequest(ctx, applicationID, -1, nil)
 	return lease.Release, err
 }
 
-func (m *Manager) AcquireRequest(ctx context.Context, applicationID string, contentLength int64) (RequestLease, error) {
+func (m *Manager) AcquireRequest(ctx context.Context, applicationID string, contentLength int64, prepare func(int64) error) (RequestLease, error) {
 	m.mu.Lock()
 	if m.ctx.Err() != nil {
 		m.mu.Unlock()
@@ -503,6 +503,12 @@ func (m *Manager) AcquireRequest(ctx context.Context, applicationID string, cont
 			m.lastActivity[applicationID] = m.now()
 			m.mu.Unlock()
 		})
+	}
+	if bodyLimit > 0 && prepare != nil {
+		if err := prepare(bodyLimit); err != nil {
+			release()
+			return RequestLease{}, err
+		}
 	}
 	for {
 		m.mu.Lock()

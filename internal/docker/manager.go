@@ -1898,7 +1898,11 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
-	return m.inspect(ctx, "container", id)
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil || m.IsNativeWindows() {
+		return document, err
+	}
+	return inspectOwnedContainerHealth(document)
 }
 
 func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {

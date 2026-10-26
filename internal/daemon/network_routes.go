@@ -197,7 +197,20 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 			}
 			if applicationID != "" {
 				wakeContext, cancelWake := context.WithTimeout(r.Context(), time.Duration(state.Config.WakeSeconds)*time.Second)
-				lease, err := manager.AcquireRequest(wakeContext, applicationID, r.ContentLength)
+				defer cancelWake()
+				var queuedBody *queuedRequestBody
+				defer func() {
+					if queuedBody != nil {
+						if err := queuedBody.Close(); err != nil {
+							slog.Warn("Remove Resource Saver queued body", "error", err)
+						}
+					}
+				}()
+				lease, err := manager.AcquireRequest(wakeContext, applicationID, r.ContentLength, func(limit int64) error {
+					var err error
+					queuedBody, err = stageQueuedRequestBody(wakeContext, w, r, limit)
+					return err
+				})
 				cancelWake()
 				if err != nil {
 					code := http.StatusBadGateway
