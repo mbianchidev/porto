@@ -163,6 +163,10 @@ make the running engine's configuration unreadable. Ordinary UNC paths,
 access-denied errors and non-directory paths still fail validation; actual
 mount/read failures remain visible. The full native shutdown/reconnect workflow
 and a source-level error-classification test exercise this boundary.
+Explicit requests from the selected running distribution wait for its UNC
+directory provider to support real reads before reaching Docker. This bounded
+readiness gate does not restart a stopped distribution, probe an unselected
+one, or retry permission errors; read-only status never touches its filesystem.
 
 Hosted Windows ARM64 does not provide the nested virtualization needed for WSL
 2. That row verifies native HTTPS/ConPTY and architecture-matched Linux ELF

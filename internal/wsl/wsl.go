@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/filelock"
@@ -66,6 +67,7 @@ type Manager struct {
 	executable func() (string, error)
 	home       func() (string, error)
 	runtimeDir string
+	probeShare func(string) error
 }
 
 func (m *Manager) Supported() bool { return m.platform == "windows" }
@@ -78,6 +80,7 @@ func New(root string, runner runtimes.Runner) *Manager {
 		root: root, runner: runner, platform: runtime.GOOS,
 		executable: os.Executable, home: os.UserHomeDir,
 		runtimeDir: os.Getenv("PORTO_WSL_RUNTIME_DIR"),
+		probeShare: probeSharedDirectory,
 	}
 	manager.discover = func(ctx context.Context) ([]Distribution, error) { return platformDistributions(ctx, runner) }
 	return manager
@@ -431,10 +434,76 @@ func (m *Manager) Authorize(ctx context.Context, name, owner string) (Integratio
 			if !distribution.Running {
 				return Integration{}, errors.New("selected WSL distribution is stopped; start it and retry")
 			}
+			if err := m.waitForShares(ctx, integration); err != nil {
+				return Integration{}, err
+			}
 			return integration, nil
 		}
 	}
 	return Integration{}, errors.New("WSL distribution has not opted in to this Porto integration")
+}
+
+func probeSharedDirectory(root string) error {
+	directory, err := os.Open(root)
+	if err != nil {
+		return err
+	}
+	info, err := directory.Stat()
+	if err == nil && !info.IsDir() {
+		err = errors.New("selected WSL share is no longer a directory")
+	}
+	if err == nil {
+		_, err = directory.Readdirnames(1)
+		if errors.Is(err, io.EOF) {
+			err = nil
+		}
+	}
+	return errors.Join(err, directory.Close())
+}
+
+func (m *Manager) waitForShares(ctx context.Context, integration Integration) error {
+	var roots []string
+	prefix := `\\wsl.localhost\` + integration.Distribution + `\`
+	for _, share := range integration.Shares {
+		if strings.HasPrefix(strings.ToLower(share.WindowsPath), strings.ToLower(prefix)) {
+			roots = append(roots, share.WindowsPath)
+		}
+	}
+	if len(roots) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := ctx.Err(); err != nil {
+			return context.Cause(ctx)
+		}
+		var waiting error
+		for _, root := range roots {
+			if err := m.probeShare(root); err != nil {
+				waiting = fmt.Errorf("selected WSL filesystem %q is not ready: %w", root, err)
+				transient := false
+				// Only reconnect errors from the selected Windows file provider are retryable.
+				for _, code := range []syscall.Errno{1, 21, 53, 64, 67, 121, 1231} {
+					transient = transient || errors.Is(err, code)
+				}
+				if !transient {
+					return waiting
+				}
+				break
+			}
+		}
+		if waiting == nil {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return errors.Join(waiting, context.Cause(ctx))
+		case <-ticker.C:
+		}
+	}
 }
 
 func TranslatePath(integration Integration, source string) (string, error) {
