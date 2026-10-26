@@ -2322,7 +2322,11 @@ func (p *ClusterProvisioner) installK3s(
 	}
 	args := append(env, "sh", "/tmp/porto-install-k3s.sh")
 	if server {
-		args = append(args, "server", "--disable", "traefik", "--node-name", machineName, "--write-kubeconfig-mode", "600")
+		// Envoy Gateway's bundle owns the Gateway API CRDs and admission policies.
+		args = append(args,
+			"server", "--disable", "traefik", "--disable", "gateway-api-crd",
+			"--node-name", machineName, "--write-kubeconfig-mode", "600",
+		)
 	} else {
 		args = append(args, "agent", "--node-name", machineName)
 	}

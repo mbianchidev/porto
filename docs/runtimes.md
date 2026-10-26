@@ -404,8 +404,15 @@ the actionable backend message until the user deletes the failed cluster record.
 
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the
-packaged Traefik chart; all three providers use the same Gateway API data
-plane instead.
+packaged `traefik` and `gateway-api-crd` components before starting the server;
+all three providers use Envoy Gateway as their Gateway API data plane instead.
+Porto's Envoy Gateway bundle installs the Gateway API CRDs and admission
+policies, avoiding server-side apply ownership conflicts with k3s's separate
+Gateway API Helm chart. Disabling Traefik alone does not disable that chart.
+The additional component-disable flag is harmless on older k3s releases that
+do not package it. This applies only to new server provisioning; Porto does
+not change existing clusters' component configuration or force ownership of
+their CRDs.
 
 For k3s and k0s, Porto provisions one Lima VM for the controller and one VM
 for each requested worker. CPU, RAM, and disk values are per VM. Nodes share
@@ -418,7 +425,10 @@ It never adopts, starts, or deletes a pre-existing Lima instance just because
 the name matches. Rename or remove the conflicting Lima instance, or choose a
 different cluster name. If an earlier failed attempt remains in Porto with an
 `error` state after its VM was cleaned up, delete that failed cluster record
-before retrying creation.
+before retrying creation. A provisioning fix must run in the daemon, not only
+a newly installed CLI. Arrange a safe interruption of managed applications and
+restart the daemon with the updated binary before retrying; quitting the
+desktop alone leaves the existing daemon running.
 
 Porto continuously reconciles HTTP-capable Service ports in running managed
 clusters into Gateway API `HTTPRoute` resources. ClusterIP, NodePort, and

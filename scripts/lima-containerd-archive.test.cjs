@@ -33,6 +33,19 @@ test('CI snapshot selection uses UTC boundaries and rejects an invalid date', ()
   assert.throws(() => dependencyProvisionOverride(new Date('invalid')), RangeError)
 })
 
+test('CI APT downloads retry transient failures with bounded backoff and transport timeouts', () => {
+  const override = dependencyProvisionOverride(new Date('2026-10-22T14:35:00Z'))
+  const [{ script }] = JSON.parse(override.slice('.provision += '.length))
+  assert.match(script, /Acquire::Retries "10";/)
+  assert.match(script, /Acquire::Retries::Delay "true";/)
+  assert.match(script, /Acquire::Retries::Delay::Maximum "30";/)
+  assert.match(script, /Acquire::http::Timeout "30";/)
+  assert.match(script, /Acquire::https::Timeout "30";/)
+  assert.match(script, /Debug::Acquire::Retries "true";/)
+  assert.match(script, /APT::Update::Error-Mode "any";/)
+  assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
+})
+
 test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {
   const script = fs.readFileSync(path.join(__dirname, 'test-docker-clients.sh'), 'utf8')
   assert.match(script, /limactl "\$\{lima_options\[@\]\}" template:ubuntu-26\.04/)
