@@ -49,6 +49,9 @@ do not provide first-connection wake. The bounded queue defaults to 64 requests,
 16 MiB per body, and a 60-second wake/readiness deadline. Client cancellation
 releases its reservation; concurrent requests share one resume. Active proxied
 streams and WebSocket upgrades hold the application active until disconnect.
+Wake queue and body limits apply only to requests waiting for an owned sleeper.
+Readiness releases the queue reservation while retaining the activity lease;
+ordinary traffic to an already-running application is not capped by wake limits.
 
 Interactive containers, running execs, unobservable multi-process applications,
 established connections, unsupported networks, unmanaged dependencies, missing

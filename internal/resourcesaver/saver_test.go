@@ -161,6 +161,76 @@ func TestResourceSaverCoalescesConcurrentWakesAndBoundsRequests(t *testing.T) {
 	}
 }
 
+func TestResourceSaverLiveTrafficDoesNotConsumeTheWakeQueue(t *testing.T) {
+	manager, _, _ := saverFixture(t)
+	configuration := manager.State().Config
+	configuration.MaxPending = 1
+	if err := manager.Configure(configuration); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		release, err := manager.Acquire(context.Background(), "synthetic-app")
+		if err != nil {
+			t.Fatalf("ordinary live traffic was limited by the wake queue: %v", err)
+		}
+		defer release()
+	}
+	if pending := manager.State().Pending; pending != 0 {
+		t.Fatalf("live requests were counted as queued wakes: %d", pending)
+	}
+}
+
+func TestResourceSaverReadiedTrafficKeepsItsActivityLeaseButNotItsQueueReservation(t *testing.T) {
+	manager, _, clock := saverFixture(t)
+	sleepFixture(t, manager, clock)
+	release, err := manager.Acquire(context.Background(), "synthetic-app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	if pending := manager.State().Pending; pending != 0 {
+		t.Fatalf("a request still held its wake reservation after readiness: %d", pending)
+	}
+	clock.Add(int64(10 * time.Second))
+	if err := manager.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(manager.State().Entries) != 0 {
+		t.Fatal("a readied request lost its activity lease before forwarding completed")
+	}
+}
+
+func TestResourceSaverBodyLimitsApplyOnlyToQueuedWakes(t *testing.T) {
+	manager, backend, clock := saverFixture(t)
+	limit := manager.State().Config.MaxBodyBytes
+	live, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1)
+	if err != nil {
+		t.Fatalf("a live upload was rejected by a wake-only limit: %v", err)
+	}
+	if live.QueuedBodyLimit != 0 {
+		t.Fatal("a live upload inherited a queued-body limit")
+	}
+	live.Release()
+	sleepFixture(t, manager, clock)
+	if _, err := manager.AcquireRequest(context.Background(), "synthetic-app", limit+1); !errors.Is(err, ErrQueuedBodyTooLarge) {
+		t.Fatalf("an oversized queued upload was not rejected before wake: %v", err)
+	}
+	backend.mu.Lock()
+	resumes := backend.resumes
+	backend.mu.Unlock()
+	if resumes != 0 || manager.State().Pending != 0 {
+		t.Fatal("an oversized queued upload mutated the workload or leaked a reservation")
+	}
+	queued, err := manager.AcquireRequest(context.Background(), "synthetic-app", -1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer queued.Release()
+	if queued.QueuedBodyLimit != limit {
+		t.Fatalf("a chunked initiating upload lost its reserved body limit: %d", queued.QueuedBodyLimit)
+	}
+}
+
 func TestResourceSaverCancellationReapsSharedWake(t *testing.T) {
 	manager, backend, clock := saverFixture(t)
 	sleepFixture(t, manager, clock)

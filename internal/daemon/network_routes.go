@@ -18,6 +18,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/resourcesaver"
 )
 
 var routeDNSLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -195,24 +196,24 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 				}
 			}
 			if applicationID != "" {
-				if r.ContentLength > state.Config.MaxBodyBytes {
-					http.Error(w, "Resource Saver request exceeds the configured queued body limit", http.StatusRequestEntityTooLarge)
-					return true
-				}
 				wakeContext, cancelWake := context.WithTimeout(r.Context(), time.Duration(state.Config.WakeSeconds)*time.Second)
-				release, err := manager.Acquire(wakeContext, applicationID)
+				lease, err := manager.AcquireRequest(wakeContext, applicationID, r.ContentLength)
 				cancelWake()
 				if err != nil {
 					code := http.StatusBadGateway
 					if errors.Is(err, context.DeadlineExceeded) {
 						code = http.StatusGatewayTimeout
+					} else if errors.Is(err, resourcesaver.ErrQueuedBodyTooLarge) {
+						code = http.StatusRequestEntityTooLarge
 					}
 					slog.Warn("Resource Saver request wake failed", "application", applicationID, "error", err)
 					http.Error(w, "Resource Saver could not prepare the application: "+err.Error(), code)
 					return true
 				}
-				defer release()
-				r.Body = http.MaxBytesReader(w, r.Body, state.Config.MaxBodyBytes)
+				defer lease.Release()
+				if lease.QueuedBodyLimit > 0 {
+					r.Body = http.MaxBytesReader(w, r.Body, lease.QueuedBodyLimit)
+				}
 			}
 		}
 	}
@@ -235,6 +236,12 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = &http.Transport{Proxy: nil, DisableKeepAlives: true, ResponseHeaderTimeout: 30 * time.Second}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		var bodyLimit *http.MaxBytesError
+		if errors.As(err, &bodyLimit) {
+			slog.Warn("Resource Saver queued request body exceeded its limit", "container", route.Name, "limit", bodyLimit.Limit)
+			http.Error(w, resourcesaver.ErrQueuedBodyTooLarge.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Warn("Container HTTP upstream unavailable", "container", route.Name, "error", err)
 		http.Error(w, fmt.Sprintf("container %s has no responding HTTP listener", route.Name), http.StatusBadGateway)
 	}

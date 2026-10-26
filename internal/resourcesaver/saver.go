@@ -26,6 +26,13 @@ const (
 	ScaleZero  = "container-scale-to-zero"
 )
 
+var ErrQueuedBodyTooLarge = errors.New("Resource Saver request exceeds the configured queued body limit")
+
+type RequestLease struct {
+	Release         func()
+	QueuedBodyLimit int64
+}
+
 type Override struct {
 	Mode        string `json:"mode,omitempty"`
 	IdleSeconds int    `json:"idleSeconds,omitempty"`
@@ -445,30 +452,55 @@ func (m *Manager) suspendEngine(ctx context.Context, token string, op *operation
 }
 
 func (m *Manager) Acquire(ctx context.Context, applicationID string) (func(), error) {
+	lease, err := m.AcquireRequest(ctx, applicationID, -1)
+	return lease.Release, err
+}
+
+func (m *Manager) AcquireRequest(ctx context.Context, applicationID string, contentLength int64) (RequestLease, error) {
 	m.mu.Lock()
 	if m.ctx.Err() != nil {
 		m.mu.Unlock()
-		return nil, context.Cause(m.ctx)
+		return RequestLease{}, context.Cause(m.ctx)
 	}
-	if m.state.Pending >= m.state.Config.MaxPending {
+	if err := ctx.Err(); err != nil {
 		m.mu.Unlock()
-		return nil, errors.New("Resource Saver wake queue is full; retry after current requests finish waking")
+		return RequestLease{}, context.Cause(ctx)
 	}
-	m.state.Pending++
+	_, queued := m.state.Entries[applicationID]
+	if queued && contentLength > m.state.Config.MaxBodyBytes {
+		m.mu.Unlock()
+		return RequestLease{}, ErrQueuedBodyTooLarge
+	}
+	if queued && m.state.Pending >= m.state.Config.MaxPending {
+		m.mu.Unlock()
+		return RequestLease{}, errors.New("Resource Saver wake queue is full; retry after current requests finish waking")
+	}
+	var bodyLimit int64
+	if queued {
+		m.state.Pending++
+		bodyLimit = m.state.Config.MaxBodyBytes
+	}
 	m.active[applicationID]++
 	m.mu.Unlock()
+	unqueueLocked := func() {
+		if !queued {
+			return
+		}
+		queued = false
+		m.state.Pending--
+		if m.state.Pending == 0 {
+			if operation := m.operations["engine"]; operation != nil && operation.waking {
+				operation.cancel()
+			}
+		}
+	}
 	var once sync.Once
 	release := func() {
 		once.Do(func() {
 			m.mu.Lock()
-			m.state.Pending--
+			unqueueLocked()
 			m.active[applicationID]--
 			m.lastActivity[applicationID] = m.now()
-			if m.state.Pending == 0 {
-				if operation := m.operations["engine"]; operation != nil && operation.waking {
-					operation.cancel()
-				}
-			}
 			m.mu.Unlock()
 		})
 	}
@@ -481,7 +513,7 @@ func (m *Manager) Acquire(ctx context.Context, applicationID string) (func(), er
 			case <-op.done:
 				if op.err != nil && op.waking {
 					release()
-					return nil, op.err
+					return RequestLease{}, op.err
 				}
 			case <-ctx.Done():
 				m.mu.Lock()
@@ -491,19 +523,20 @@ func (m *Manager) Acquire(ctx context.Context, applicationID string) (func(), er
 				}
 				m.mu.Unlock()
 				release()
-				return nil, context.Cause(ctx)
+				return RequestLease{}, context.Cause(ctx)
 			}
 			continue
 		}
 		entry, owned := m.state.Entries[applicationID]
 		if !owned {
+			unqueueLocked()
 			m.mu.Unlock()
-			return release, nil
+			return RequestLease{Release: release, QueuedBodyLimit: bodyLimit}, nil
 		}
 		if entry.Phase == "recovery-required" {
 			m.mu.Unlock()
 			release()
-			return nil, errors.New(entry.Error)
+			return RequestLease{}, errors.New(entry.Error)
 		}
 		wakeContext, cancel := context.WithTimeout(m.ctx, time.Duration(m.state.Config.WakeSeconds)*time.Second)
 		op := &operation{done: make(chan struct{}), cancel: cancel, waking: true}
@@ -515,7 +548,7 @@ func (m *Manager) Acquire(ctx context.Context, applicationID string) (func(), er
 			cancel()
 			m.mu.Unlock()
 			release()
-			return nil, err
+			return RequestLease{}, err
 		}
 		m.workers.Add(1)
 		go m.wake(wakeContext, entry, op)
