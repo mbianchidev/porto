@@ -5,9 +5,9 @@ const { spawn } = require('node:child_process')
 
 const {
   DAEMON_URL, EXPECTED, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, load,
-  noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, target, waitFor, within, workspacePath, write,
+  noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { daemonProcesses } = require('../ui/electron/daemon-readiness.cjs')
+const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
 const { dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
 
 async function hostProcesses(env, { platform = process.platform, runImpl = run } = {}) {
@@ -74,24 +74,14 @@ async function preflight(fixture, env) {
     'Refusing existing Porto daemon processes; the desktop must never stop unrelated work')
 }
 
-function commandPath(name, env) {
-  for (const directory of env.PATH.split(path.delimiter)) {
-    const candidate = path.join(directory, name + (process.platform === 'win32' ? '.exe' : ''))
-    try {
-      fs.accessSync(candidate, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
-      return candidate
-    } catch (error) {
-      if (!['ENOENT', 'EACCES', 'ENOTDIR'].includes(error.code)) throw error
-    }
-  }
-  throw new Error(`Required runtime executable ${name} is missing; installed acceptance cannot skip`)
-}
-
 async function configureLima(fixture, env) {
   if (fixture.backend === 'default') return
   assert.equal(fixture.backend, 'qemu-tcg')
   const arch = fixture.target.split('/')[1]
-  const qemu = commandPath(arch === 'amd64' ? 'qemu-system-x86_64' : 'qemu-system-aarch64', env)
+  const name = arch === 'amd64' ? 'qemu-system-x86_64' : 'qemu-system-aarch64'
+  const qemu = process.platform === 'win32'
+    ? path.join(layout(fixture.installRoot).runtime, 'qemu', `${name}.exe`)
+    : await systemExecutable(name, env)
   await run(qemu, ['--version'], { env })
   if (fixture.target.startsWith('windows/')) {
     assert.ok(qemu.startsWith(path.join(layout(fixture.installRoot).runtime, 'qemu') + path.sep),
@@ -247,7 +237,7 @@ async function stopProcess(processRecord, env, tree = false) {
   if (!processRecord || !processRecord.identity) return
   if (await identity(processRecord.pid, env) !== processRecord.identity) return
   if (process.platform === 'win32' && tree) {
-    await run(path.join(env.SystemRoot, 'System32', 'taskkill.exe'),
+    await run('taskkill.exe',
       ['/PID', String(processRecord.pid), '/T', '/F'], { env })
   } else {
     process.kill(processRecord.pid, 'SIGTERM')
@@ -306,6 +296,27 @@ async function startDesktop(fixture, installed, env) {
       'installed dashboard must actually render')
     return { renderer, health, desktop: record, daemon }
   } catch (error) {
+    for (const [label, file] of [
+      ['desktop', path.join(fixture.directory, 'desktop-launch.log')],
+      ['daemon', path.join(fixture.portoHome, 'logs', 'porto.log')],
+    ]) {
+      try {
+        if (!fs.existsSync(file)) continue
+        const descriptor = fs.openSync(file, 'r')
+        let contents
+        try {
+          const size = fs.fstatSync(descriptor).size
+          const bytes = Buffer.alloc(Math.min(size, 16384))
+          fs.readSync(descriptor, bytes, 0, bytes.length, Math.max(0, size - bytes.length))
+          contents = runtimeFailureDiagnostic(new Error(bytes.toString('utf8')))
+        } finally {
+          fs.closeSync(descriptor)
+        }
+        console.error(`Installed ${label} startup diagnostics:\n${contents}`)
+      } catch (diagnosticError) {
+        console.error(`Installed ${label} startup diagnostics unavailable: ${failureDiagnostic(diagnosticError)}`)
+      }
+    }
     renderer?.close()
     // The health check can fail before the detached, owned daemon was recorded.
     const owned = daemon ? [daemon] : (await daemons(env))

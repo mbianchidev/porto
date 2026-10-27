@@ -8,6 +8,7 @@ const { setTimeout: delay } = require('node:timers/promises')
 
 const { validateToolchainLayout } = require('./docker-toolchain-smoke.cjs')
 
+const SOURCE_ROOT = fs.realpathSync(path.join(__dirname, '..'))
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const PORTS = [37623, 37680, 37681]
 const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1' }
@@ -15,6 +16,127 @@ const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx':
 function within(root, candidate) {
   const relative = path.relative(root, candidate)
   return relative !== '' && !path.isAbsolute(relative) && relative !== '..' && !relative.startsWith(`..${path.sep}`)
+}
+
+function untrustedCommand() {
+  return Object.assign(new Error('Acceptance commands must use trusted workspace files or approved OS tools'), {
+    code: 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE',
+  })
+}
+
+function workspaceFile(file) {
+  const absolute = path.resolve(SOURCE_ROOT, file)
+  if (!within(SOURCE_ROOT, absolute)) throw untrustedCommand()
+  const actual = fs.realpathSync(absolute)
+  if (!within(SOURCE_ROOT, actual) || !fs.statSync(actual).isFile()) throw untrustedCommand()
+  return actual
+}
+
+function windowsSystemDirectoryFromModules(modules) {
+  const directories = ['ntdll.dll', 'kernel32.dll', 'kernelbase.dll'].map((name) => {
+    const matches = modules.filter((file) => path.win32.basename(file).toLowerCase() === name)
+    if (matches.length !== 1) throw untrustedCommand()
+    return path.win32.dirname(matches[0])
+  })
+  if (!path.win32.isAbsolute(directories[0]) ||
+      path.win32.basename(directories[0]).toLowerCase() !== 'system32' ||
+      directories.some((directory) => directory.toLowerCase() !== directories[0].toLowerCase())) {
+    throw untrustedCommand()
+  }
+  return directories[0]
+}
+
+let systemDirectory
+function windowsSystemDirectory() {
+  if (systemDirectory) return systemDirectory
+  const excluded = process.report.excludeEnv
+  const excludedNetwork = process.report.excludeNetwork
+  assert.equal(typeof excluded, 'boolean', 'The native Node report API must support excluding environment data')
+  assert.equal(typeof excludedNetwork, 'boolean', 'The native Node report API must support excluding network data')
+  try {
+    process.report.excludeEnv = true
+    process.report.excludeNetwork = true
+    // Loaded KnownDLL paths come from the OS loader, never SystemRoot or PATH.
+    systemDirectory = fs.realpathSync(windowsSystemDirectoryFromModules(process.report.getReport().sharedObjects))
+    return systemDirectory
+  } finally {
+    process.report.excludeEnv = excluded
+    process.report.excludeNetwork = excludedNetwork
+  }
+}
+
+function windowsSupportEnvironment(fixture, inherited, directory) {
+  const root = path.win32.dirname(directory)
+  const homeRoot = path.win32.parse(fixture.home).root
+  const result = {
+    SystemRoot: root, WINDIR: root, SystemDrive: path.win32.parse(root).root.replace(/\\$/, ''),
+    OS: 'Windows_NT', COMSPEC: path.win32.join(directory, 'cmd.exe'),
+    HOMEDRIVE: homeRoot.replace(/\\$/, ''), HOMEPATH: '\\' + fixture.home.slice(homeRoot.length),
+    PSModulePath: path.win32.join(directory, 'WindowsPowerShell', 'v1.0', 'Modules'),
+    PSModuleAnalysisCachePath: path.win32.join(fixture.home, 'AppData', 'Local', 'Microsoft', 'Windows', 'PowerShell', 'ModuleAnalysisCache'),
+  }
+  for (const name of ['ProgramData', 'ALLUSERSPROFILE', 'ProgramFiles', 'ProgramFiles(x86)',
+    'ProgramW6432', 'CommonProgramFiles', 'CommonProgramFiles(x86)', 'CommonProgramW6432']) {
+    const key = Object.keys(inherited).find((key) => key.toLowerCase() === name.toLowerCase())
+    if (key && path.win32.isAbsolute(inherited[key])) result[name] = inherited[key]
+  }
+  return result
+}
+
+function approvedTool(candidate, root) {
+  const actual = fs.realpathSync(candidate)
+  if (!within(fs.realpathSync(root), actual)) throw untrustedCommand()
+  fs.accessSync(actual, process.platform === 'win32' ? fs.constants.F_OK : fs.constants.X_OK)
+  return candidate
+}
+
+let windowsGitRoots
+async function systemExecutable(name, env) {
+  if (process.platform === 'win32') {
+    const directory = windowsSystemDirectory()
+    if (name === 'powershell.exe') return approvedTool(path.join(directory, 'WindowsPowerShell', 'v1.0', name), directory)
+    if (name === 'taskkill.exe') return approvedTool(path.join(directory, name), directory)
+    if (name !== 'git') throw untrustedCommand()
+    if (!windowsGitRoots) {
+      const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.Environment+SpecialFolder]::ProgramFilesX86)) {
+  [Console]::WriteLine([System.Environment]::GetFolderPath($folder))
+}`], { env, timeout: 10000 })
+      windowsGitRoots = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((folder) => path.join(folder, 'Git'))
+    }
+    for (const root of windowsGitRoots) {
+      for (const relative of ['bin/git.exe', 'cmd/git.exe']) {
+        try { return approvedTool(path.join(root, relative), root) } catch (error) {
+          if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error
+        }
+      }
+    }
+  } else {
+    if (name === 'ps') return approvedTool('/bin/ps', '/bin')
+    if (!['git', 'qemu-system-x86_64', 'qemu-system-aarch64'].includes(name)) throw untrustedCommand()
+    const roots = process.platform === 'darwin'
+      ? (process.arch === 'arm64' ? ['/opt/homebrew', '/usr/local', '/usr'] : ['/usr/local', '/opt/homebrew', '/usr'])
+      : ['/usr', '/usr/local']
+    for (const root of roots) {
+      try { return approvedTool(path.join(root, 'bin', name), root) } catch (error) {
+        if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error
+      }
+    }
+  }
+  throw Object.assign(new Error('A required trusted OS tool is missing'), { code: 'ENOENT' })
+}
+
+async function trustedExecutable(file, env) {
+  if (file === process.execPath) return process.execPath
+  if (file === 'git' || file === 'powershell.exe' || file === 'taskkill.exe') return systemExecutable(file, env)
+  if (process.platform !== 'win32' && file === '/bin/ps') return systemExecutable('ps', env)
+  if (process.platform !== 'win32' && ['qemu-system-x86_64', 'qemu-system-aarch64'].includes(path.basename(file))) {
+    const expected = await systemExecutable(path.basename(file), env)
+    if (file === expected) return expected
+  }
+  return workspaceFile(file)
 }
 
 function workspacePath(value) {
@@ -145,6 +267,10 @@ function prepare(directory, expectedTarget = target()) {
   for (const name of ['home', 'portoHome', 'limaHome', 'scratch', 'profile', 'dockerConfig']) {
     fs.mkdirSync(fixture[name], { mode: 0o700 })
   }
+  for (const relative of ['Documents/WindowsPowerShell/Modules', 'AppData/Roaming',
+    'AppData/Local/Microsoft/Windows/PowerShell']) {
+    fs.mkdirSync(path.join(fixture.home, relative), { recursive: true, mode: 0o700 })
+  }
   const suffix = process.platform === 'win32' ? '.exe' : ''
   const context = crypto.createHash('sha256').update('unrelated-synthetic-context').digest('hex')
   const config = {
@@ -202,9 +328,13 @@ function environment(fixture, packageLayout = layout(fixture.installRoot), inher
     if (key) env[name] = inherited[key]
   }
   const systemPath = inherited.PATH || inherited.Path || ''
+  const nativePaths = process.platform === 'win32'
+    ? [windowsSystemDirectory(), path.join(windowsSystemDirectory(), 'WindowsPowerShell', 'v1.0')]
+    : []
   const locale = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
   return {
     ...env,
+    ...(process.platform === 'win32' ? windowsSupportEnvironment(fixture, inherited, windowsSystemDirectory()) : {}),
     ...(process.platform !== 'win32' ? { LANG: locale, LC_ALL: locale } : {}),
     HOME: fixture.home, USERPROFILE: fixture.home,
     APPDATA: path.join(fixture.home, 'AppData', 'Roaming'),
@@ -224,7 +354,7 @@ function environment(fixture, packageLayout = layout(fixture.installRoot), inher
     CONTAINERD_ADDRESS: path.join(fixture.directory, 'no-host-containerd.sock'),
     BUILDKIT_HOST: `unix://${fixture.directory}/no-host-buildkit.sock`,
     PATH: [path.join(packageLayout.runtime, 'bin'), path.dirname(packageLayout.limactl),
-      path.join(packageLayout.runtime, 'qemu'), systemPath].join(path.delimiter),
+      path.join(packageLayout.runtime, 'qemu'), ...nativePaths, systemPath].join(path.delimiter),
   }
 }
 
@@ -268,6 +398,8 @@ function failureDiagnostic(error) {
       return 'Acceptance command output could not be read. Check the runner process and pipe capabilities; do not claim the command completed.'
     case 'PORTO_COMMAND_SHELL_FORBIDDEN':
       return 'Shell execution is forbidden in installed acceptance. Use an executable and argument array, or pass a trusted script file explicitly to /bin/sh.'
+    case 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE':
+      return 'An untrusted executable or script was refused. Use the verified workspace package or documented OS-installed prerequisite tools, not an inherited PATH override.'
     case 'PORTO_PROCESS_INSPECTION_UNAVAILABLE':
       return 'Process identity inspection is unavailable. Check runner permissions and native process-inspection support; never treat an unverified owned process as stopped.'
     case 'ENOENT':
@@ -327,9 +459,7 @@ async function terminateCommandTree(child, env, signal) {
   if (child.exitCode !== null || child.signalCode !== null) {
     throw new Error(`Owned command PID ${child.pid} exited before taskkill; refusing a possibly reused PID`)
   }
-  const systemRoot = process.env.SystemRoot || process.env.SYSTEMROOT
-  assert.ok(systemRoot, 'SystemRoot is required to reap the exact owned Windows command tree')
-  const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe')
+  const taskkill = await systemExecutable('taskkill.exe', env)
   await new Promise((resolve, reject) => {
     const helper = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
       env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
@@ -374,12 +504,10 @@ async function terminateCommandTree(child, env, signal) {
   })
 }
 
-async function run(file, args, options = {}, {
-  spawnImpl = spawn, terminateImpl = terminateCommandTree,
-} = {}) {
+function checkedOptions(options) {
   const {
     allowFailure = false, timeout = 120000, cleanupTimeout = 5000,
-    maxBuffer = 8 * 1024 * 1024, ...childOptions
+    maxBuffer = 8 * 1024 * 1024,
   } = options
   if (options.shell !== undefined && options.shell !== false) {
     throw Object.assign(new Error('Installed acceptance commands must use argv-only execution'), {
@@ -390,12 +518,43 @@ async function run(file, args, options = {}, {
     assert.ok(Number.isSafeInteger(value) && value > 0, `${name} must be a positive integer`)
   }
   assert.ok(timeout <= 2147483647 && cleanupTimeout <= 2147483647, 'Command timers must not overflow')
-  const child = spawnImpl(file, args, {
-    ...childOptions, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+  const cwd = fs.realpathSync(options.cwd || SOURCE_ROOT)
+  if (cwd !== SOURCE_ROOT && !within(SOURCE_ROOT, cwd)) throw untrustedCommand()
+  return {
+    allowFailure, timeout, cleanupTimeout, maxBuffer, env: options.env, cwd,
+  }
+}
+
+async function run(file, args, options = {}, {
+  spawnImpl = spawn, terminateImpl = terminateCommandTree,
+} = {}) {
+  const checked = checkedOptions(options)
+  const executable = spawnImpl === spawn ? await trustedExecutable(file, checked.env) : file
+  const argv = executable === process.execPath && args.length > 0 && args[0] !== '-e'
+    ? [workspaceFile(path.resolve(checked.cwd, args[0])), ...args.slice(1)]
+    : args
+  const child = spawnImpl(executable, argv, {
+    env: checked.env, cwd: checked.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     // Keep the child referenced, but isolate its Unix process group for teardown.
-    detached: process.platform !== 'win32',
-    shell: false,
+    detached: process.platform !== 'win32', shell: false,
   })
+  return captureCommand(child, file, argv, checked, terminateImpl)
+}
+
+async function runShellFile(file, args = [], options = {}) {
+  assert.notEqual(process.platform, 'win32', 'Windows acceptance uses the native installer rather than a Unix shell')
+  const script = workspaceFile(file)
+  const checked = checkedOptions({ ...options, cwd: SOURCE_ROOT })
+  const argv = ['--', './' + path.relative(SOURCE_ROOT, script), ...args]
+  const child = spawn('/bin/sh', argv, {
+    env: checked.env, cwd: checked.cwd, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+    detached: true, shell: false,
+  })
+  return captureCommand(child, '/bin/sh', argv, checked, terminateCommandTree)
+}
+
+async function captureCommand(child, file, args, options, terminateImpl) {
+  const { allowFailure, timeout, cleanupTimeout, maxBuffer, env } = options
   const closed = new Promise((resolve, reject) => {
     child.once('error', reject)
     child.once('close', (status, signal) => resolve({ status, signal }))
@@ -443,7 +602,7 @@ async function run(file, args, options = {}, {
       })
       try {
         await Promise.race([
-          Promise.all([terminateImpl(child, childOptions.env, controller.signal), closed]),
+          Promise.all([terminateImpl(child, env, controller.signal), closed]),
           cleanupDeadline,
         ])
       } catch (error) {
@@ -493,5 +652,6 @@ async function waitFor(check, description, timeout = 60000) {
 module.exports = {
   DAEMON_URL, EXPECTED, PORTS, available, digest, environment, fileDigest, inspectPackage,
   failureDiagnostic, layout, load, nativeHeader, noListeners, pluginPaths, prepare, preserved, run, save,
-  reportedVersion, target, waitFor, within, workspacePath, write,
+  reportedVersion, runShellFile, systemExecutable, target, trustedExecutable, waitFor,
+  windowsSupportEnvironment, windowsSystemDirectoryFromModules, within, workspacePath, write,
 }

@@ -10,7 +10,8 @@ const { PassThrough } = require('node:stream')
 
 const {
   EXPECTED, available, digest, environment, failureDiagnostic, inspectPackage, layout, load, nativeHeader,
-  pluginPaths, prepare, preserved, reportedVersion, run, save, target, waitFor, workspacePath, write,
+  pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
+  trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { existingDesktops, hostProcesses, identity, restored } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
@@ -123,6 +124,93 @@ test('isolated environment drops credentials, external transports, source entrie
   assert.ok(env.CONTAINERD_ADDRESS.startsWith(current.directory))
   assert.ok(env.BUILDKIT_HOST.startsWith(`unix://${current.directory}`))
   assert.equal(env.PATH.split(path.delimiter)[0], path.join(layout(current.installRoot).runtime, 'bin'))
+  for (const relative of ['Documents/WindowsPowerShell/Modules', 'AppData/Roaming',
+    'AppData/Local/Microsoft/Windows/PowerShell']) {
+    assert.ok(fs.statSync(path.join(current.home, relative)).isDirectory())
+  }
+})
+
+test('Windows startup support keeps synthetic profile paths and only native OS capabilities', () => {
+  const fixture = { home: 'D:\\Synthetic workspace\\h' }
+  const env = windowsSupportEnvironment(fixture, {
+    SystemRoot: 'E:\\untrusted', PSModulePath: 'E:\\untrusted\\modules',
+    ProgramFiles: 'R:\\Program Files', ProgramData: 'Q:\\ProgramData',
+    USERNAME: 'unrelated-user', USERDOMAIN: 'unrelated-domain', GITHUB_TOKEN: 'synthetic-secret',
+  }, 'Q:\\Native OS\\System32')
+  assert.equal(env.SystemRoot, 'Q:\\Native OS')
+  assert.equal(env.WINDIR, env.SystemRoot)
+  assert.equal(env.SystemDrive, 'Q:')
+  assert.equal(env.COMSPEC, 'Q:\\Native OS\\System32\\cmd.exe')
+  assert.equal(env.OS, 'Windows_NT')
+  assert.equal(env.HOMEDRIVE, 'D:')
+  assert.equal(env.HOMEPATH, '\\Synthetic workspace\\h')
+  assert.equal(env.PSModulePath, 'Q:\\Native OS\\System32\\WindowsPowerShell\\v1.0\\Modules')
+  assert.ok(env.PSModuleAnalysisCachePath.startsWith(fixture.home + '\\'))
+  assert.equal(env.ProgramFiles, 'R:\\Program Files')
+  for (const name of ['USERNAME', 'USERDOMAIN', 'GITHUB_TOKEN']) assert.equal(env[name], undefined)
+})
+
+test('Windows OS tool roots come from loaded KnownDLLs rather than environment paths', () => {
+  const modules = ['ntdll.dll', 'kernel32.dll', 'kernelbase.dll']
+    .map((name) => `Q:\\Native OS\\System32\\${name}`)
+  assert.equal(windowsSystemDirectoryFromModules(modules), 'Q:\\Native OS\\System32')
+  for (const invalid of [
+    modules.slice(0, 2),
+    modules.concat('R:\\Untrusted\\System32\\kernel32.dll'),
+    [modules[0], modules[1], 'R:\\Untrusted\\System32\\kernelbase.dll'],
+    modules.map((file) => file.replace('System32', 'untrusted')),
+  ]) assert.throws(() => windowsSystemDirectoryFromModules(invalid), { code: 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE' })
+})
+
+if (process.platform === 'win32') {
+  test('native PowerShell startup works with only the isolated Windows capabilities', async (t) => {
+    const current = fixture(t)
+    const result = await run('powershell.exe', [
+      '-NoProfile', '-NonInteractive', '-Command', '[Console]::Out.Write("installed-native-startup-ready")',
+    ], { env: environment(current), timeout: 10000 })
+    assert.equal(result.stdout, 'installed-native-startup-ready')
+    assert.equal(result.stderr, '')
+  })
+}
+
+test('executable selection fences workspace files and refuses symlink escapes', async (t) => {
+  const current = fixture(t)
+  const tool = path.join(current.home, 'approved tool é')
+  write(tool, 'synthetic selection fixture', 0o700)
+  assert.equal(await trustedExecutable(tool), fs.realpathSync(tool))
+  const outside = path.join(current.home, 'outside')
+  fs.symlinkSync(path.dirname(process.execPath), outside, process.platform === 'win32' ? 'junction' : 'dir')
+  await assert.rejects(trustedExecutable(path.join(outside, path.basename(process.execPath))),
+    { code: 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE' })
+  await assert.rejects(run(process.execPath, [path.join(outside, path.basename(process.execPath))]),
+    { code: 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE' })
+})
+
+test('fenced Node script entry points retain relative-cwd and Unicode path behavior', async (t) => {
+  const current = fixture(t)
+  const file = 'relative entry é.cjs'
+  write(path.join(current.home, file), 'process.stdout.write("trusted workspace entry")\n')
+  const result = await run(process.execPath, [file], { cwd: current.home, env: environment(current) })
+  assert.equal(result.stdout, 'trusted workspace entry')
+})
+
+test('inherited PATH cannot select Git or host QEMU from a synthetic override', async (t) => {
+  const current = fixture(t)
+  const injected = path.join(current.home, 'untrusted PATH')
+  const suffix = process.platform === 'win32' ? '.exe' : ''
+  for (const name of ['git', 'qemu-system-x86_64']) write(path.join(injected, name + suffix), 'must never execute', 0o700)
+  const env = environment(current, layout(current.installRoot), { ...process.env, PATH: injected })
+  const git = await systemExecutable('git', env)
+  assert.ok(!git.startsWith(injected + path.sep))
+  assert.match((await run('git', ['--version'], { env })).stdout, /^git version /)
+  if (process.platform !== 'win32') {
+    try {
+      const qemu = await systemExecutable('qemu-system-x86_64', env)
+      assert.ok(!qemu.startsWith(injected + path.sep))
+    } catch (error) {
+      assert.equal(error.code, 'ENOENT', 'Missing real QEMU must fail closed instead of selecting the PATH override')
+    }
+  }
 })
 
 test('synthetic project discovery cannot inherit the surrounding source Git repository', async (t) => {
@@ -293,11 +381,16 @@ test('argv-only execution preserves shell metacharacters as literal argument dat
 if (process.platform !== 'win32') {
   test('argv-only execution retains intentional /bin/sh script-file invocation', async (t) => {
     const current = fixture(t)
-    const script = path.join(current.home, 'explicit script é.sh')
+    const script = path.join(current.home, "explicit ; ' $script é.sh")
     write(script, '#!/bin/sh\nprintf "%s" "$1"\n')
     const argument = 'literal ; $(echo unexpected)'
-    const result = await run('/bin/sh', [script, argument], { env: environment(current) })
+    const result = await runShellFile(script, [argument], { env: environment(current) })
     assert.equal(result.stdout, argument)
+    const outside = path.join(current.home, 'outside shell scripts')
+    fs.symlinkSync(path.dirname(process.execPath), outside, 'dir')
+    await assert.rejects(runShellFile(path.join(outside, path.basename(process.execPath))), {
+      code: 'PORTO_COMMAND_UNTRUSTED_EXECUTABLE',
+    })
   })
 }
 
@@ -306,6 +399,7 @@ test('public failure diagnostics use fixed actionable categories without seriali
   for (const code of [
     'PORTO_COMMAND_TIMEOUT', 'PORTO_COMMAND_OUTPUT_LIMIT', 'PORTO_COMMAND_IO',
     'PORTO_COMMAND_SHELL_FORBIDDEN', 'PORTO_PROCESS_INSPECTION_UNAVAILABLE',
+    'PORTO_COMMAND_UNTRUSTED_EXECUTABLE',
     'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ERR_ASSERTION', secret, undefined,
   ]) {
     const error = Object.assign(new Error(`https://user:${secret}@synthetic.invalid/?token=${secret}`), {

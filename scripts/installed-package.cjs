@@ -4,7 +4,7 @@ const http = require('node:http')
 const path = require('node:path')
 
 const {
-  environment, failureDiagnostic, fileDigest, prepare, run, save, target, within, workspacePath,
+  environment, failureDiagnostic, fileDigest, prepare, runShellFile, save, target, within, workspacePath,
 } = require('./installed-fixture.cjs')
 const { acceptance, preflight, removed } = require('./installed-acceptance.cjs')
 
@@ -72,7 +72,7 @@ async function main(args) {
   try {
     const install = async () => {
       await preflight(fixture, env)
-      const result = await run('/bin/sh', [path.join(__dirname, 'install-desktop.sh')], {
+      const result = await runShellFile(path.join(__dirname, 'install-desktop.sh'), [], {
         env: {
           ...env,
           PORTO_VERSION: `v${version}`, PORTO_RELEASE_BASE_URL: release.url,
