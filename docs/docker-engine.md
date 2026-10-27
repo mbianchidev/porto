@@ -93,6 +93,12 @@ label says `running`. Observing the inventory never changes its restart policy.
 Both created and exited containers can be started or removed without a
 running task; Stop and Restart remain disabled until the container is active.
 
+Docker inspect also projects an explicitly empty compatibility-runtime status
+from its existing lifecycle flags and timestamps. A never-started container
+therefore reports `created` to Compose instead of an empty state that can
+prevent startup convergence. Explicit nonempty states, process identity,
+exit history, health and other inspection fields are retained.
+
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a helper channel open for the gRPC connection. All host
 platforms use `limactl shell` standard input/output and the bundled guest helper's
