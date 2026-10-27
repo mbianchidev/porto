@@ -156,6 +156,10 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 		return vmCmd(args[1:])
 	case "runtime":
 		return runtimeCmd(db, args[1:])
+	case "resource-saver":
+		return resourceSaverCmd(args[1:])
+	case "shares":
+		return sharesCmd(args[1:])
 	case "containers", "builds", "networks", "volumes":
 		return runtimeResourceAlias(args[0], args[1:])
 	case "daemon":
@@ -744,6 +748,7 @@ Commands:
   porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
+  porto docker engine-resources status|configure|apply [--restart-engine]
   porto docker windows status|install|start|stop|remove|context [--confirm]
   porto docker containers|builds|networks|volumes
   porto docker storage usage|prune --category <type>|--objects kind:name,... [--confirm]
@@ -765,6 +770,9 @@ Commands:
   porto kubernetes cluster create|start|stop|scale|upgrade|upgrade-recover|autoscaling|delete
   porto runtime status|enable|disable <docker|kubernetes|vms>
   porto runtime providers|install <lima|qemu|kind|k9s|k0s>
+  porto runtime acceleration status|configure|apply [--restart-engine]
+  porto resource-saver status|configure|container
+  porto shares status|create|mode|detach
   porto diagnose [--json]
   porto diagnose bundle [--preview] [--output path]
   porto diagnose repair <action> [--target name] --confirm

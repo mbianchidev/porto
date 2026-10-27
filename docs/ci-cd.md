@@ -60,7 +60,11 @@ unit and capability gates, not an x64 binary fallback.
 
 The native fixture also exercises the actual dashboard WebSocket against SDK
 execs, including exact nonzero exit, resize, process/exec-metadata reaping and an
-unrelated interactive exec that must survive. The Windows development-client
+unrelated interactive exec that must survive. Reaping binds to the tracked SDK
+exec IDs and PIDs, preserves every baseline PID, and rejects leftover terminal
+or fixture processes. New non-SDK Windows background services are identified
+from maintained HCS process details rather than mistaken for leaked execs by
+an exact whole-container PID-count comparison. The Windows development-client
 row enables `PORTO_TEST_WINDOWS_COEXISTENCE=1` against its already running owned
 Linux engine, preserving live PID/start identity and exact binary volume data
 through native install, changed-binary update, repair and context changes.
@@ -70,11 +74,74 @@ HTTP, HTTPS and SOCKS proxies on every existing development-client backend.
 The matrix includes rootful local Linux and KVM-backed Linux Lima, plus Lima
 on macOS and Windows. The Linux Lima row fails if native KVM is unavailable;
 software emulation is not substituted for that required acceptance.
+The full Linux Lima fixture runs in a fresh `kvm`-group process, as the runtime
+data fixtures do, so a later engine wake does not depend on the initial device
+ACL remaining unchanged. KVM access diagnostics are retained on boot failure.
 It verifies custom CA trust and its removal, proxy transitions and local
 bypass; rootful local Linux additionally requests a real container private IP.
 Unit transport gates run on Linux, macOS and Windows and exercise changing
 resolver answers without modifying host DNS. Expired/near-expiry leaf fixtures
 verify recovery without replacing the trusted CA.
+
+Image-transfer tests use a real HTTP/1 server and flush backend progress before
+reading either a content-length or chunked binary upload. This catches a
+request-body draining race; in-memory response recorders alone cannot exercise
+that HTTP server behavior.
+
+The reported Lima save/load flake also came from its older nerdctl 2.3.5:
+`save` could exit before its asynchronous export writer finished, returning an
+empty or truncated archive. The preceding passing run used the same version.
+Lima 2.2.1 now supplies checksum-pinned nerdctl 2.4.1, including the
+[upstream save fix](https://github.com/containerd/nerdctl/commit/80d3ab8a4dac11f4c87f0ea09d07492807c458a8).
+Saved archives are checked through the end before Porto serves them, so a
+failed export cannot masquerade as a successful backup.
+
+Container stop also distinguishes its own grace deadline from caller
+cancellation. A shim may report gRPC `Canceled` when that grace period expires;
+Porto checks the actual grace context before canceling it, then performs the
+requested SIGKILL escalation and confirms task exit. An earlier caller deadline
+still returns cancellation without an extra kill. This avoids an intermittent
+Testcontainers stop failure without retrying its workflow.
+
+Development-client acceptance also runs Resource Saver against the same
+disposable backends: original binary POST preservation, shared concurrent wakes,
+real WebSocket activity, manual-pause exclusion, and owned-engine shutdown and
+traffic-triggered readiness. POSIX Lima rows additionally synchronize a synthetic
+10,000-file project through the owned SSH endpoint, verify strict host-key
+pinning with an unrelated synthetic key, mount the verified guest copy in an
+actual container, and check bidirectional writes and inotify notifications.
+The maintained-tool test independently covers ignores, executable permissions,
+relative symlinks, renames and retaining both sides of a conflict. These are
+additional gates, not replacements for the existing clients or native mounts.
+
+Complete Windows guest shutdown/wake uses an explicit 180-second fixture
+policy: QEMU/WHPX boot plus Lima's final rootless provisioning can exceed the
+60-second product default on hosted runners. Native Linux/macOS keep their
+60-second check; software-emulated macOS keeps its existing 600-second policy.
+The original binary body, real task readiness, shared-wake assertions and
+configured deadline remain mandatory. The product default is unchanged.
+
+An opt-in native Apple Silicon fixture creates only its own 2 GiB VZ engine with
+only its private synthetic project directory mounted for a bind comparison.
+It verifies Rosetta, QEMU-compatible policy transitions,
+native-only rejections and native arm64 builds, as well as the resource and
+sharing cases above. It requires installed Rosetta and must not be substituted
+with a software-emulated result. Reproduction commands and measured boundaries
+are in [resource management](resource-management.md).
+
+Native and Linux Lima policy acceptance also creates a real two-member Docker
+Compose group with exec-form dependency health checks. A separate process runs
+the production ownership controller, health scheduler and HTTP wake handlers.
+SIGKILL/restart verifies persistent stopped ownership and quarantine after an
+external unpause/re-pause; active execs, canceled initiating bodies and actual
+readiness timeouts retain their safety and diagnostics. Native sharing acceptance
+exercises guest shutdown/reconnect, offline edits, case-collision preservation,
+and identical 64 MiB/10,000-file ordinary/synchronized bind workloads.
+
+Separate opt-in standalone VM acceptance boots both an arm64 VZ guest executing
+real amd64 Rosetta userspace and an amd64 QEMU guest kernel. It checks native
+arm64 execution, unsupported combinations before creation, persistent guest-home
+data across restart, and identity-scoped teardown, with no host-folder mounts.
 
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
 not only a substitute TLS server. Only its helper installation is elevated;
@@ -121,6 +188,18 @@ native Windows credential vault, distro shutdown/reconnect and removal without
 changing the control distribution. No WSL driver replaces QEMU, and there is no
 WSL 1 fallback or expected-failure path. The fixture releases owned shares
 before unregistering only its own distributions.
+
+The Windows Lima source patch also classifies only `ERROR_INVALID_FUNCTION`
+from the WSL UNC provider as a temporarily unavailable mount, like Lima's
+existing missing-directory case. A stopped/reconnecting distribution must not
+make the running engine's configuration unreadable. Ordinary UNC paths,
+access-denied errors and non-directory paths still fail validation; actual
+mount/read failures remain visible. The full native shutdown/reconnect workflow
+and a source-level error-classification test exercise this boundary.
+Explicit requests from the selected running distribution wait for its UNC
+directory provider to support real reads before reaching Docker. This bounded
+readiness gate does not restart a stopped distribution, probe an unselected
+one, or retry permission errors; read-only status never touches its filesystem.
 
 Hosted Windows ARM64 does not provide the nested virtualization needed for WSL
 2. That row verifies native HTTPS/ConPTY and architecture-matched Linux ELF
@@ -173,6 +252,13 @@ Source builds of the patched Docker CLI and Windows Lima still run against
 verified sources and patches, reusing Go's compiler cache rather than skipping
 builds or executable smoke checks. Docker integration image builds retain
 their no-cache setting and use fresh disposable engines.
+
+POSIX bundles also compile Porto's patched synchronization CLI and both Linux
+agent architectures from checksum-pinned Mutagen source. Module and compiler
+cache keys include that builder's pinned dependencies; no final synchronization
+binary, daemon state or selected-project data is cached. macOS compilation
+retains native FSEvents; the upstream deprecated FSEvents scheduling API produces
+a compiler warning, not a suppressed diagnostic or a polling-only replacement.
 
 The same optional download cache is available locally by setting
 `PORTO_DOWNLOAD_CACHE` to a dedicated directory when running packaging scripts.
@@ -780,12 +866,14 @@ Dive `v0.13.1` is checksum-pinned for every supported desktop architecture.
 Its MIT license and version metadata ship beside the other runtime tools, and
 native packaging smoke tests execute `dive --version`.
 
-For Windows Lima 2.2.0, the bundler checksum-verifies the stable source archive,
+For Windows Lima 2.2.1, the bundler checksum-verifies the stable source archive,
 applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
 `scripts/patches/lima-2.2.0-windows-stop.patch` and
 `scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
-`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and rebuilds only
-`limactl.exe` as `v2.2.0+porto.6`. The PID change is an upstream backport; the
+`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and
+`scripts/patches/lima-2.2.1-windows-wsl-mount.patch`, and rebuilds only
+`limactl.exe` as `v2.2.1+porto.2`. The first four patches were introduced for
+2.2.0 and remain necessary on 2.2.1. The PID change is an upstream backport; the
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.
@@ -798,6 +886,8 @@ exercises VM loss/reconnect and engine update/shutdown through that path.
 The ARM64 fix reads the Windows-populated `x/sys/cpu` feature bits even when
 its `Initialized` flag is false, matching that library's platform behavior.
 Native ARM64 packaging checks that AES detection agrees with the OS feature bit.
+Native Windows packaging also verifies that only WSL UNC provider
+`ERROR_INVALID_FUNCTION` is classified as a temporarily unavailable root.
 Other signals keep upstream behavior. All patches and the Apache-2.0 license
 ship in `runtime/licenses`, and `runtime/VERSIONS` records the patched version.
 Other platforms keep their verified upstream binaries. Remove each patch

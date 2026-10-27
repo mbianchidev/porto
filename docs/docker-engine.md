@@ -9,6 +9,17 @@ when actual reclaimed bytes are unavailable rather than inventing a total.
 
 Porto owns a Docker Engine-compatible API endpoint. It does not forward requests to Docker Desktop, Podman, or another Docker daemon.
 
+Engine budgets, opt-in Resource Saver, architecture policy and synchronized bind
+mapping are described in [resource management](resource-management.md). They use
+the same ownership-checked backend and do not adopt manually paused tasks or
+retarget existing container mounts.
+
+Image deletion can wait for containerd layer and snapshot garbage collection,
+especially with native Windows filesystem layers. It uses the bounded
+30-minute image/storage operation budget rather than the 20-second metadata
+probe budget. A caller's shorter deadline or cancellation still takes priority;
+cleanup errors are returned instead of being retried or ignored.
+
 ## Architecture
 
 The data path is:
@@ -46,6 +57,9 @@ The API server is part of the Porto daemon and starts whenever the Docker runtim
 
 - If `nerdctl`, containerd, and BuildKit are available in Porto's `PATH`, Porto uses the local containerd installation and connects to containerd directly for supported operations.
 - Otherwise, the packaged desktop app automatically creates a persistent Lima VM named `porto-engine` with rootless containerd, BuildKit, and writable default host mounts on first launch, including on Windows. Porto installs its bundled Linux runtime helper and configures QEMU user-mode emulation only in that owned VM. CLI-only installations can run `porto docker engine-install`.
+
+An explicit supported Rosetta policy selects VZ and its amd64 userspace handler
+for a new Apple Silicon engine instead. Existing QEMU disks are not converted.
 
 New Windows engines use `template://ubuntu-24.04`; macOS and Linux keep Lima's
 default template. This selection applies only when creating an engine and
@@ -277,6 +291,13 @@ before any backend operation. Escaped image names remain intact.
 | `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45 |
 | Container health configuration | `StartInterval` requires API 1.44; older inspect responses omit it |
 | Structured mount options | recursive read-only controls require API 1.44 and a capable Linux kernel/runtime; volume subpaths require 1.45 but remain unsupported; tmpfs option arrays require 1.46 |
+
+Image archive loads and request-body rootfs imports enable HTTP/1 full-duplex
+streaming before starting the backend. Progress may arrive before the upload
+finishes without Go's HTTP server draining unread archive bytes. Both
+content-length and chunked uploads preserve their binary contents; transport
+setup and progress-flush failures are reported rather than retried as image
+format errors.
 
 ### Create/update option boundaries
 

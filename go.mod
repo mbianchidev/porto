@@ -18,6 +18,7 @@ require (
 	github.com/containerd/typeurl/v2 v2.3.0
 	github.com/creack/pty v1.1.24
 	github.com/distribution/reference v0.6.0
+	github.com/ebitengine/purego v0.11.2
 	github.com/go-logr/logr v1.4.4
 	github.com/moby/buildkit v0.34.1
 	github.com/moby/moby/api v1.56.1

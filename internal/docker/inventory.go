@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/acceleration"
 )
 
 const (
@@ -431,6 +433,8 @@ func (i *containerInventory) publishContainers(
 		}
 	}
 	for index := range containers {
+		containers[index].Execution = containers[index].Labels[acceleration.ExecutionLabel]
+		containers[index].Platform = containers[index].Labels[acceleration.PlatformLabel]
 		history := make([]ContainerLifecycleEvent, 0, maxContainerEvents)
 		for eventIndex := len(i.snapshot.Events) - 1; eventIndex >= 0 && len(history) < maxContainerEvents; eventIndex-- {
 			event := i.snapshot.Events[eventIndex]

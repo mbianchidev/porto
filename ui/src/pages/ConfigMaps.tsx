@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { apiGet, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector } from '../components/Inspector'
@@ -32,13 +32,13 @@ export function ConfigMaps({
   const available = !status.loading && !status.error && (status.data?.available ?? false)
   const configMaps = usePolledResource<KubernetesConfigMap[]>(
     (signal) => available
-      ? apiGet(`/api/kubernetes/configmaps?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/configmaps?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     6000,
-    [context, namespace, available],
-    available ? `kubernetes:${context}:configmaps:${namespace}` : undefined,
+    [context, available],
+    available ? `kubernetes:${context}:configmaps:all` : undefined,
   )
-  const items = configMaps.data ?? []
+  const items = (configMaps.data ?? []).filter((configMap) => matchesNamespace(configMap.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((configMap) => normalizedQuery === '' || [
     configMap.name,

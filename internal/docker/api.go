@@ -79,6 +79,12 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	request := r.Clone(dockerVersionedContext(requestContext, version))
 	request.URL.Path = path
+	if saver := a.manager.ResourceSaver(); saver != nil && path != "/_ping" && path != "/version" {
+		if err := saver.WakeEngine(r.Context()); err != nil {
+			writeDockerError(w, fmt.Errorf("%w: Resource Saver engine wake: %w", ErrUnavailable, err))
+			return
+		}
+	}
 	if request.URL.RawPath != "" {
 		request.URL.RawPath, _, err = dockerVersionedPath(request.URL.RawPath)
 		if err != nil {
@@ -1157,10 +1163,7 @@ func encodeDockerProgress(w http.ResponseWriter, encoder *json.Encoder, value an
 	if err := encoder.Encode(value); err != nil {
 		return err
 	}
-	if flusher, ok := w.(http.Flusher); ok {
-		flusher.Flush()
-	}
-	return nil
+	return http.NewResponseController(w).Flush()
 }
 
 func writeDockerRaw(w http.ResponseWriter, value json.RawMessage, err error) {

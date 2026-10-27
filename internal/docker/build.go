@@ -39,6 +39,9 @@ func (m *Manager) StreamBuild(
 	if err := validateBuildRequest(request); err != nil {
 		return err
 	}
+	if err := m.validateArchitecturePlatforms(ctx, request.Platform, request.ArchitecturePolicy); err != nil {
+		return err
+	}
 	args := []string{"build", "--progress", "plain"}
 	args = appendStringFlag(args, "--file", request.Dockerfile)
 	for _, tag := range request.Tags {

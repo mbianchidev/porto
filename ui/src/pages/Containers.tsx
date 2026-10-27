@@ -7,6 +7,7 @@ import { useDockerMode } from '../dockerMode'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
 import { RuntimeFiles } from '../components/RuntimeFiles'
+import { ContainerResourceSaver } from '../components/ResourceManagement'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
 import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
@@ -29,6 +30,8 @@ const EMPTY_CREATE_DRAFT = {
   hostPort: '',
   containerPort: '',
   healthCommand: '',
+  platform: '',
+  architecturePolicy: '',
 }
 const InteractiveTerminal = lazy(async () => {
   const terminal = await import('../components/VMTerminal')
@@ -202,6 +205,8 @@ export function Containers() {
       hostPort,
       containerPort,
       healthCommand: createDraft.healthCommand.trim(),
+      ...(createDraft.platform ? { platform: createDraft.platform } : {}),
+      ...(createDraft.architecturePolicy ? { architecturePolicy: createDraft.architecturePolicy } : {}),
     }
     setCreating(true)
     try {
@@ -355,6 +360,26 @@ export function Containers() {
               />
               <small>Runs inside the container every 30 seconds. Leave blank when the image supplies no suitable command.</small>
             </label>
+            {dockerMode !== 'windows' && <>
+              <label>
+                <span>Linux platform</span>
+                <select value={createDraft.platform} onChange={(event) => setCreateDraft({ ...createDraft, platform: event.target.value })}>
+                  <option value="">Backend native</option>
+                  <option value="linux/arm64">linux/arm64</option>
+                  <option value="linux/amd64">linux/amd64</option>
+                </select>
+              </label>
+              <label>
+                <span>Architecture policy override</span>
+                <select value={createDraft.architecturePolicy} onChange={(event) => setCreateDraft({ ...createDraft, architecturePolicy: event.target.value })}>
+                  <option value="">Use global policy</option>
+                  <option value="automatic">Automatic</option>
+                  <option value="native-only">Native only</option>
+                  <option value="rosetta-preferred">Prefer Rosetta</option>
+                  <option value="qemu-compatible">QEMU compatible</option>
+                </select>
+              </label>
+            </>}
             <div className="containerCreateActions">
               <button type="submit" disabled={creating}>{creating ? 'Creating…' : 'Create and start'}</button>
               <button type="button" disabled={creating} onClick={() => { setCreateOpen(false); setCreateDraft(EMPTY_CREATE_DRAFT) }}>Cancel</button>
@@ -424,12 +449,14 @@ export function Containers() {
               onSelect={setContainerTab}
             />
             <div role="tabpanel" id="container-inspector-panel" aria-labelledby={`container-inspector-panel-${containerTab}`} tabIndex={0}>
+            {containerTab === 'overview' && dockerMode !== 'windows' && <ContainerResourceSaver key={selected.id} container={selected} onChanged={containers.reload} />}
             {containerTab === 'overview' && (
               <>
                 <div className="drawerReadouts" aria-label="Container readouts">
                   <span><small>State</small><strong>{selected.state}</strong></span>
                   <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>
                   <span><small>Health</small><strong>{healthLabel(selected.health.status)}</strong></span>
+                  <span><small>Execution</small><strong>{selected.execution || 'not recorded'}{selected.platform ? ` / ${selected.platform}` : ''}</strong></span>
                   <span><small>Restarts</small><strong>{selected.restartCount}</strong></span>
                   <span><small>Created</small><strong>{selected.createdAt || '—'}</strong></span>
                 </div>

@@ -76,6 +76,8 @@ type EngineOwnershipStatus struct {
 }
 
 type Container struct {
+	Execution         string                    `json:"execution,omitempty"`
+	Platform          string                    `json:"platform,omitempty"`
 	ID                string                    `json:"id"`
 	Name              string                    `json:"name"`
 	Image             string                    `json:"image"`
@@ -242,19 +244,20 @@ type Build struct {
 }
 
 type BuildRequest struct {
-	Context       string             `json:"context"`
-	ContextReader io.Reader          `json:"-"`
-	Dockerfile    string             `json:"dockerfile"`
-	Tag           string             `json:"tag"`
-	Tags          []string           `json:"tags,omitempty"`
-	Target        string             `json:"target"`
-	Platform      string             `json:"platform"`
-	Network       string             `json:"network,omitempty"`
-	NoCache       bool               `json:"noCache"`
-	Pull          bool               `json:"pull,omitempty"`
-	BuildArgs     map[string]*string `json:"buildArgs,omitempty"`
-	Labels        map[string]string  `json:"labels,omitempty"`
-	CacheFrom     []string           `json:"cacheFrom,omitempty"`
+	ArchitecturePolicy string             `json:"architecturePolicy,omitempty"`
+	Context            string             `json:"context"`
+	ContextReader      io.Reader          `json:"-"`
+	Dockerfile         string             `json:"dockerfile"`
+	Tag                string             `json:"tag"`
+	Tags               []string           `json:"tags,omitempty"`
+	Target             string             `json:"target"`
+	Platform           string             `json:"platform"`
+	Network            string             `json:"network,omitempty"`
+	NoCache            bool               `json:"noCache"`
+	Pull               bool               `json:"pull,omitempty"`
+	BuildArgs          map[string]*string `json:"buildArgs,omitempty"`
+	Labels             map[string]string  `json:"labels,omitempty"`
+	CacheFrom          []string           `json:"cacheFrom,omitempty"`
 }
 
 type ContainerStats struct {
@@ -339,56 +342,57 @@ type CreateNetworkRequest struct {
 }
 
 type CreateContainerRequest struct {
-	Isolation    string `json:"isolation,omitempty"`
-	Name         string
-	Image        string
-	Platform     string
-	Command      []string
-	Entrypoint   []string
-	Environment  []string
-	Labels       map[string]string
-	WorkingDir   string
-	User         string
-	Hostname     string
-	StopSignal   string
-	StopTimeout  *int
-	Healthcheck  *ContainerHealthcheck
-	Privileged   bool
-	SecurityOpt  []string
-	Tmpfs        map[string]string
-	Sysctls      map[string]string
-	Devices      []ContainerDevice
-	Cgroupns     string
-	Userns       string
-	Init         bool
-	ShmSize      int64
-	Networks     []ContainerNetwork
-	Volumes      []string
-	Publish      []string
-	Expose       []string
-	Restart      string
-	TTY          bool
-	Interactive  bool
-	StdinOnce    bool
-	Remove       bool
-	Limits       ContainerUpdate
-	ReadOnly     bool
-	CapAdd       []string
-	CapDrop      []string
-	DNS          []string
-	DNSSearch    []string
-	DNSOptions   []string
-	ExtraHosts   []string
-	GroupAdd     []string
-	Ulimits      []ContainerUlimit
-	GPUs         []string
-	PublishAll   bool
-	ConsoleSize  [2]uint
-	Mounts       []string
-	IPC          string
-	PIDMode      string
-	UTS          string
-	CgroupParent string
+	ArchitecturePolicy string `json:"architecturePolicy,omitempty"`
+	Isolation          string `json:"isolation,omitempty"`
+	Name               string
+	Image              string
+	Platform           string
+	Command            []string
+	Entrypoint         []string
+	Environment        []string
+	Labels             map[string]string
+	WorkingDir         string
+	User               string
+	Hostname           string
+	StopSignal         string
+	StopTimeout        *int
+	Healthcheck        *ContainerHealthcheck
+	Privileged         bool
+	SecurityOpt        []string
+	Tmpfs              map[string]string
+	Sysctls            map[string]string
+	Devices            []ContainerDevice
+	Cgroupns           string
+	Userns             string
+	Init               bool
+	ShmSize            int64
+	Networks           []ContainerNetwork
+	Volumes            []string
+	Publish            []string
+	Expose             []string
+	Restart            string
+	TTY                bool
+	Interactive        bool
+	StdinOnce          bool
+	Remove             bool
+	Limits             ContainerUpdate
+	ReadOnly           bool
+	CapAdd             []string
+	CapDrop            []string
+	DNS                []string
+	DNSSearch          []string
+	DNSOptions         []string
+	ExtraHosts         []string
+	GroupAdd           []string
+	Ulimits            []ContainerUlimit
+	GPUs               []string
+	PublishAll         bool
+	ConsoleSize        [2]uint
+	Mounts             []string
+	IPC                string
+	PIDMode            string
+	UTS                string
+	CgroupParent       string
 }
 
 type ContainerUlimit struct {

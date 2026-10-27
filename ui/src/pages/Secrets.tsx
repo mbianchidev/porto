@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
@@ -28,13 +28,13 @@ export function Secrets({
   const available = !status.loading && !status.error && (status.data?.available ?? false)
   const secrets = usePolledResource<KubernetesSecret[]>(
     (signal) => available
-      ? apiGet(`/api/kubernetes/secrets?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/secrets?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     6000,
-    [context, namespace, available],
-    available ? `kubernetes:${context}:secrets:${namespace}` : undefined,
+    [context, available],
+    available ? `kubernetes:${context}:secrets:all` : undefined,
   )
-  const items = secrets.data ?? []
+  const items = (secrets.data ?? []).filter((secret) => matchesNamespace(secret.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const filtered = items.filter((secret) => normalizedQuery === '' || [
     secret.name,

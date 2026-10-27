@@ -2,6 +2,11 @@ import { useCallback, useEffect, useState } from 'react'
 import { apiGet, errorMessage, isAbortError } from './api'
 import type { KubernetesStatus } from './types'
 
+export function matchesNamespace(namespace: string, query: string): boolean {
+  const normalized = query.trim().toLocaleLowerCase()
+  return normalized === '' || normalized === 'all' || namespace.toLocaleLowerCase().includes(normalized)
+}
+
 type KubernetesStatusState = {
   key: string
   data: KubernetesStatus | null

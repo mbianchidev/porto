@@ -46,6 +46,7 @@ func TestPlatformImageArchiveSelectsRuntimeManifest(t *testing.T) {
 	}
 	defer archive.Close()
 	writer := tar.NewWriter(archive)
+	writeJSONTarEntry(t, writer, ocispec.ImageLayoutFile, ocispec.ImageLayout{Version: ocispec.ImageLayoutVersion})
 	writeJSONTarEntry(t, writer, "blobs/sha256/"+nestedDigest.Encoded(), nested)
 	writeJSONTarEntry(t, writer, "index.json", root)
 	if err := writer.Close(); err != nil {
@@ -63,6 +64,7 @@ func TestPlatformImageArchiveSelectsRuntimeManifest(t *testing.T) {
 	if normalized == archive {
 		t.Fatal("multi-platform archive was not normalized")
 	}
+	defer os.Remove(normalized.Name())
 	index, err := readImageArchiveIndex(normalized)
 	if err != nil {
 		t.Fatal(err)
@@ -72,6 +74,43 @@ func TestPlatformImageArchiveSelectsRuntimeManifest(t *testing.T) {
 	}
 	if index.Manifests[0].Annotations["org.opencontainers.image.ref.name"] != "latest" {
 		t.Fatalf("normalized annotations = %+v", index.Manifests[0].Annotations)
+	}
+}
+
+func TestSavedImageArchiveRejectsEmptyAndTruncatedExports(t *testing.T) {
+	for _, scenario := range []string{"empty", "index only", "truncated member"} {
+		t.Run(scenario, func(t *testing.T) {
+			archive, err := os.CreateTemp(t.TempDir(), "synthetic-export-*.tar")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer archive.Close()
+			writer := tar.NewWriter(archive)
+			switch scenario {
+			case "index only":
+				writeJSONTarEntry(t, writer, "index.json", ocispec.Index{})
+			case "truncated member":
+				writeJSONTarEntry(t, writer, "manifest.json", []map[string]string{{"Config": "synthetic.json"}})
+				if err := writer.WriteHeader(&tar.Header{Name: "synthetic.json", Size: 1024, Mode: 0o600}); err != nil {
+					t.Fatal(err)
+				}
+				if _, err := writer.Write([]byte("partial")); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if scenario != "truncated member" {
+				if err := writer.Close(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if normalized, err := platformImageArchive(archive); err == nil {
+				if normalized != archive {
+					_ = normalized.Close()
+					_ = os.Remove(normalized.Name())
+				}
+				t.Fatal("incomplete backend export was accepted as a saved image")
+			}
+		})
 	}
 }
 

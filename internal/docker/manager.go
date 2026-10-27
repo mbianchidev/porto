@@ -15,12 +15,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/networking"
 	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/mbianchidev/porto/internal/resourcesaver"
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/windowscontainers"
@@ -67,6 +70,9 @@ var (
 )
 
 type Manager struct {
+	syncResolve               func(context.Context, string) (string, error)
+	resourceSaver             atomic.Pointer[resourcesaver.Manager]
+	architecture              *acceleration.Manager
 	windows                   *windowsRuntime
 	runner                    runtimes.Runner
 	timeout                   time.Duration
@@ -120,11 +126,12 @@ type Manager struct {
 type RegistryAuthResolver func(context.Context, string) (*RegistryAuth, error)
 
 type engineState struct {
-	Mode      string      `json:"mode"`
-	Instance  string      `json:"instance,omitempty"`
-	OwnerID   string      `json:"ownerId,omitempty"`
-	CreatedAt time.Time   `json:"createdAt"`
-	WSLMounts []wsl.Share `json:"wslMounts,omitempty"`
+	ResourceSaverToken string      `json:"resourceSaverToken,omitempty"`
+	Mode               string      `json:"mode"`
+	Instance           string      `json:"instance,omitempty"`
+	OwnerID            string      `json:"ownerId,omitempty"`
+	CreatedAt          time.Time   `json:"createdAt"`
+	WSLMounts          []wsl.Share `json:"wslMounts,omitempty"`
 }
 
 func New(runner runtimes.Runner) *Manager {
@@ -143,7 +150,9 @@ func New(runner runtimes.Runner) *Manager {
 		return manager
 	}
 	stateDir, _ := config.DockerEngineDir()
-	return NewWithStateDir(nil, stateDir)
+	manager := NewWithStateDir(nil, stateDir)
+	manager.SetAccelerationManager(acceleration.New(filepath.Dir(stateDir), nil))
+	return manager
 }
 
 func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
@@ -328,7 +337,12 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 
 	existingState, stateErr := m.readEngineState()
 	ownedLima := stateErr == nil && existingState.Mode == "lima" && existingState.Instance == engineInstanceName && existingState.OwnerID != ""
-	if !ownedLima {
+	limits, err := m.EngineLimits()
+	if err != nil {
+		return Status{}, err
+	}
+	requiresVM := limits.CPUs > 0 || limits.MemoryMiB > 0 || limits.DiskGiB > 0 || limits.SwapMiB != nil
+	if !ownedLima && !requiresVM {
 		if path, err := m.lookPath("nerdctl"); err == nil {
 			direct := commandBackend{name: path, description: "containerd via nerdctl"}
 			if output, verifyErr := m.runBackend(ctx, direct, 10*time.Second, "verify local containerd", nil, "version"); verifyErr == nil {
@@ -383,6 +397,16 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 				arguments = append(arguments, "--set="+strings.Replace(expression, ".mounts = ", ".mounts = (.mounts // []) + ", 1))
 			}
 		}
+		accelerationArguments, err := m.accelerationCreateArguments(ctx)
+		if err != nil {
+			return Status{}, err
+		}
+		arguments = append(arguments, accelerationArguments...)
+		resourceArguments, err := m.resourceCreateArguments(ownerID)
+		if err != nil {
+			return Status{}, err
+		}
+		arguments = append(arguments, resourceArguments...)
 		arguments = append(arguments, limaEngineTemplate(runtime.GOOS))
 		_, err = m.startLimaRuntime(ctx, "create Porto container runtime", arguments...)
 	} else if !running {
@@ -603,6 +627,11 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 	if m.IsNativeWindows() {
 		return false, fmt.Errorf("%w: use the explicit native Windows service stop/update action", ErrUnsupported)
 	}
+	if saver := m.ResourceSaver(); saver != nil && ctx.Value(resourceSaverContextKey{}) != true {
+		if err := saver.ForgetEngine(); err != nil {
+			return false, fmt.Errorf("%w: %w", ErrConflict, err)
+		}
+	}
 	if m.nativeClose != nil {
 		if err := m.nativeClose(ctx); err != nil {
 			return false, fmt.Errorf("detach native files before engine shutdown: %w", err)
@@ -635,6 +664,12 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 	}
 	if state.Mode != "lima" {
 		return false, fmt.Errorf("Porto engine state has unsupported mode %q", state.Mode)
+	}
+	if ctx.Value(resourceSaverContextKey{}) != true && state.ResourceSaverToken != "" {
+		state.ResourceSaverToken = ""
+		if err := m.writeEngineState(state); err != nil {
+			return false, err
+		}
 	}
 	exists, running, err := m.limaInstanceStatus(ctx)
 	if err != nil {
@@ -786,6 +821,13 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		return "", err
 	}
 	defer release()
+	if m.ResourceSaver() != nil {
+		request.Labels = cloneStringMap(request.Labels)
+		if request.Labels == nil {
+			request.Labels = map[string]string{}
+		}
+		request.Labels[ManagedWorkloadLabel] = "true"
+	}
 	if err := validateObjectID(request.Image); err != nil {
 		return "", fmt.Errorf("image: %w", err)
 	}
@@ -803,6 +845,12 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	}
 	if request.Limits.MemorySwappiness != nil && *request.Limits.MemorySwappiness == -1 {
 		request.Limits.MemorySwappiness = nil
+	}
+	if err := m.prepareContainerArchitecture(ctx, &request); err != nil {
+		return "", err
+	}
+	if err := m.prepareSynchronizedMounts(ctx, &request); err != nil {
+		return "", err
 	}
 	if m.windows != nil {
 		if err := m.validateWindowsContainer(ctx, &request); err != nil {
@@ -842,6 +890,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			m.invalidateContainerInventory()
 		}
 		return id, err
+	}
+	if err := m.checkCompatibilityHealth(ctx, request.Healthcheck); err != nil {
+		return "", err
 	}
 	hostname, err := compatibilityContainerHostname(request)
 	if err != nil {
@@ -949,6 +1000,9 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	for key, value := range request.Labels {
 		args = append(args, "--label", key+"="+value)
 	}
+	if request.Healthcheck != nil {
+		args = append(args, "--label", portoHealthManagedLabel+"="+portoRuntimeVersion)
+	}
 	for _, volume := range request.Volumes {
 		args = append(args, "--volume", volume)
 	}
@@ -991,6 +1045,12 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 	id, err := createdContainerID(output)
 	if err != nil {
 		return "", err
+	}
+	if err := m.preserveCompatibilityHealth(ctx, id, request.Healthcheck); err != nil {
+		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+		defer cancel()
+		_, cleanupErr := m.run(cleanup, "remove container after health configuration failure", "rm", "--force", id)
+		return "", errors.Join(err, cleanupErr)
 	}
 	if request.TTY && request.ConsoleSize != [2]uint{} {
 		if err := m.configureContainerConsole(ctx, id, request.ConsoleSize); err != nil {
@@ -1285,12 +1345,24 @@ func (m *Manager) ContainerAction(ctx context.Context, id, action string) error 
 	return m.ContainerActionWithTimeout(ctx, id, action, 0)
 }
 
-func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) error {
+func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action string, timeout int) (err error) {
 	ctx, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return err
 	}
 	defer release()
+	if saver := m.ResourceSaver(); saver != nil && ctx.Value(resourceSaverContextKey{}) != true {
+		switch action {
+		case "start", "stop", "restart", "pause", "unpause", "remove", "remove-force", "remove-volumes", "remove-force-volumes":
+			resolved, err := m.resolveContainerID(ctx, id)
+			if err != nil {
+				return err
+			}
+			if err := saver.ForgetMember(resolved); err != nil {
+				return fmt.Errorf("%w: %w", ErrConflict, err)
+			}
+		}
+	}
 	if m.nativeGuard != nil && m.nativeGuard("container", "*") != nil &&
 		(strings.HasPrefix(action, "remove") || action == "start" || action == "stop" || action == "restart") {
 		name, err := m.ContainerName(ctx, id)
@@ -1312,6 +1384,18 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	}
 	if err := validateObjectID(id); err != nil {
 		return err
+	}
+	if action == "start" || action == "restart" || action == "unpause" {
+		var selection acceleration.Selection
+		selection, err = m.validateExistingArchitecture(ctx, id)
+		if err != nil {
+			return err
+		}
+		defer func() {
+			if err == nil {
+				err = m.recordContainerExecution(ctx, id, selection)
+			}
+		}()
 	}
 	if m.IsNativeWindows() {
 		driver, err := m.nativeWindowsDriver(ctx)
@@ -1826,7 +1910,11 @@ func (m *Manager) containerWaitState(ctx context.Context, id string) (containerW
 }
 
 func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMessage, error) {
-	return m.inspect(ctx, "container", id)
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil || m.IsNativeWindows() {
+		return document, err
+	}
+	return inspectOwnedContainerHealth(document)
 }
 
 func (m *Manager) ContainerTTY(ctx context.Context, id string) (bool, error) {
@@ -2129,7 +2217,7 @@ func (m *Manager) RemoveImage(ctx context.Context, id string, force bool) error 
 		args = append(args, "--force")
 	}
 	args = append(args, normalizeNerdctlReference(id))
-	_, err = m.run(ctx, "remove Porto image", args...)
+	_, err = m.runWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "remove Porto image", nil, args...)
 	return err
 }
 

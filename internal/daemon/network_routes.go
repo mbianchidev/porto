@@ -2,6 +2,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"maps"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/mbianchidev/porto/internal/config"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/resourcesaver"
 )
 
 var routeDNSLabel = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$`)
@@ -145,6 +147,8 @@ func (s *Server) watchContainerRoutes(ctx context.Context) {
 	for {
 		snapshot := s.docker.ContainerSnapshot()
 		routes, warnings := backendHTTPRoutes(snapshot, s.nativeContainerSnapshot(ctx, false))
+		routes, saverWarnings := s.resourceSaverRoutes(routes)
+		warnings = append(warnings, saverWarnings...)
 		s.networkRoutesMu.Lock()
 		changed := !maps.Equal(s.networkRoutes, routes)
 		s.networkRoutes = routes
@@ -172,6 +176,60 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 	if !exists {
 		return false
 	}
+	if manager := s.activeResourceSaver(); manager != nil && route.Backend != "windows" {
+		state := manager.State()
+		applicationID := ""
+		for id, entry := range state.Entries {
+			for _, owned := range entry.Application.Routes {
+				if owned.Hostname == hostname && owned.ContainerID == route.ContainerID &&
+					owned.Host == route.Host && owned.Port == route.Port {
+					applicationID = id
+				}
+			}
+		}
+		if applicationID != "" || state.Config.Mode != "disabled" {
+			if applicationID == "" {
+				for _, container := range s.docker.ContainerSnapshot().Containers {
+					if container.ID == route.ContainerID {
+						applicationID = saverApplicationID(container)
+					}
+				}
+			}
+			if applicationID != "" {
+				wakeContext, cancelWake := context.WithTimeout(r.Context(), time.Duration(state.Config.WakeSeconds)*time.Second)
+				defer cancelWake()
+				var queuedBody *queuedRequestBody
+				defer func() {
+					if queuedBody != nil {
+						if err := queuedBody.Close(); err != nil {
+							slog.Warn("Remove Resource Saver queued body", "error", err)
+						}
+					}
+				}()
+				lease, err := manager.AcquireRequest(wakeContext, applicationID, r.ContentLength, func(limit int64) error {
+					var err error
+					queuedBody, err = stageQueuedRequestBody(wakeContext, w, r, limit)
+					return err
+				})
+				cancelWake()
+				if err != nil {
+					code := http.StatusBadGateway
+					if errors.Is(err, context.DeadlineExceeded) {
+						code = http.StatusGatewayTimeout
+					} else if errors.Is(err, resourcesaver.ErrQueuedBodyTooLarge) {
+						code = http.StatusRequestEntityTooLarge
+					}
+					slog.Warn("Resource Saver request wake failed", "application", applicationID, "error", err)
+					http.Error(w, "Resource Saver could not prepare the application: "+err.Error(), code)
+					return true
+				}
+				defer lease.Release()
+				if lease.QueuedBodyLimit > 0 {
+					r.Body = http.MaxBytesReader(w, r.Body, lease.QueuedBodyLimit)
+				}
+			}
+		}
+	}
 	current, _ := backendHTTPRoutes(s.docker.ContainerSnapshot(), s.nativeContainerSnapshot(r.Context(), true))
 	live, exists := current[hostname]
 	backend := route.Backend
@@ -182,6 +240,7 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 		http.Error(w, "container route ownership changed or the engine is unavailable; wait for a fresh inventory", http.StatusServiceUnavailable)
 		return true
 	}
+
 	target, err := url.Parse("http://" + net.JoinHostPort(route.Host, strconv.Itoa(route.Port)))
 	if err != nil {
 		http.Error(w, "invalid owned container route", http.StatusInternalServerError)
@@ -190,9 +249,43 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 	proxy := httputil.NewSingleHostReverseProxy(target)
 	proxy.Transport = &http.Transport{Proxy: nil, DisableKeepAlives: true, ResponseHeaderTimeout: 30 * time.Second}
 	proxy.ErrorHandler = func(w http.ResponseWriter, _ *http.Request, err error) {
+		var bodyLimit *http.MaxBytesError
+		if errors.As(err, &bodyLimit) {
+			slog.Warn("Resource Saver queued request body exceeded its limit", "container", route.Name, "limit", bodyLimit.Limit)
+			http.Error(w, resourcesaver.ErrQueuedBodyTooLarge.Error(), http.StatusRequestEntityTooLarge)
+			return
+		}
 		slog.Warn("Container HTTP upstream unavailable", "container", route.Name, "error", err)
 		http.Error(w, fmt.Sprintf("container %s has no responding HTTP listener", route.Name), http.StatusBadGateway)
 	}
 	proxy.ServeHTTP(w, r)
 	return true
+}
+
+func (s *Server) resourceSaverRoutes(routes map[string]containerHTTPRoute) (map[string]containerHTTPRoute, []string) {
+	manager := s.activeResourceSaver()
+	if manager == nil {
+		return routes, nil
+	}
+	conflicts := map[string]bool{}
+	var warnings []string
+	for _, entry := range manager.State().Entries {
+		for _, owned := range entry.Application.Routes {
+			if previous, exists := routes[owned.Hostname]; exists &&
+				(previous.ContainerID != owned.ContainerID || previous.Backend == "windows" || previous.Host != owned.Host || previous.Port != owned.Port) {
+				delete(routes, owned.Hostname)
+				conflicts[owned.Hostname] = true
+				warnings = append(warnings, "Resource Saver route "+owned.Hostname+" conflicts with a different live owner; no ambiguous route is exposed")
+				continue
+			}
+			if !conflicts[owned.Hostname] {
+				routes[owned.Hostname] = containerHTTPRoute{
+					Backend: "linux", ContainerID: owned.ContainerID, Name: entry.Application.Name,
+					Hostname: owned.Hostname, Host: owned.Host, Port: owned.Port,
+					HTTPURL: config.ProjectHTTPURL(owned.Hostname), HTTPSURL: config.ProjectHTTPSURL(owned.Hostname),
+				}
+			}
+		}
+	}
+	return routes, warnings
 }

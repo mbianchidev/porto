@@ -14,7 +14,7 @@ script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 kubectl_version="${KUBECTL_VERSION:-v1.36.1}"
 kind_version="${KIND_VERSION:-v0.33.0}"
 k9s_version="${K9S_VERSION:-v0.50.18}"
-lima_version="${LIMA_VERSION:-v2.2.0}"
+lima_version="${LIMA_VERSION:-v2.2.1}"
 docker_version="29.7.2"
 docker_git_commit="a7dcaa6fdb6ed04aacbfdc76357fdae01605609e"
 docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0a3cbf54a"
@@ -179,6 +179,9 @@ if [ "$goos" = "windows" ]; then
     bash "$script_directory/bundle-windows-containers.sh" amd64 "$destination/windows-containers/amd64"
   fi
 fi
+if [ "$goos" != "windows" ]; then
+  bash "$script_directory/bundle-synchronization-runtime.sh" "$goos" "$goarch" "$destination"
+fi
 
 case "$goos/$goarch" in
   darwin/amd64) dive_checksum="04e4c1bac21be3aef99799cf0e470149a072ea4786be50718aa846cd13746523" ;;
@@ -261,30 +264,64 @@ else
   tar -xzf "$temporary/$lima_asset" -C "$destination/lima"
 fi
 
+if [ "$goos/$goarch" = "darwin/arm64" ]; then
+  lima_agents_asset="lima-additional-guestagents-${lima_version#v}-Darwin-arm64.tar.gz"
+  lima_agents_checksum="$(manifest_checksum "$temporary/lima-checksums.txt" "$lima_agents_asset")"
+  if [ -z "$lima_agents_checksum" ]; then
+    echo "Lima release does not publish the additional Apple Silicon guest agents." >&2
+    exit 1
+  fi
+  download "https://github.com/lima-vm/lima/releases/download/${lima_version}/${lima_agents_asset}" \
+    "$temporary/$lima_agents_asset" "$lima_agents_checksum"
+  verify "$lima_agents_checksum" "$temporary/$lima_agents_asset"
+  tar -xzf "$temporary/$lima_agents_asset" -C "$destination/lima"
+fi
+
 lima_runtime_version="$lima_version"
-if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
-  lima_runtime_version="v2.2.0+porto.6"
-  download "https://github.com/lima-vm/lima/archive/refs/tags/v2.2.0.tar.gz" "$temporary/lima-source.tar.gz" \
-    "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
-  verify "cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5" "$temporary/lima-source.tar.gz"
+lima_source_checksum=""
+case "$lima_version" in
+  v2.2.0)
+    lima_source_checksum="cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
+    lima_windows_version="v2.2.0+porto.6"
+    ;;
+  v2.2.1)
+    lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
+    lima_windows_version="v2.2.1+porto.2"
+    ;;
+esac
+if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
+  lima_runtime_version="$lima_windows_version"
+  lima_source_directory="lima-${lima_version#v}"
+  download "https://github.com/lima-vm/lima/archive/refs/tags/${lima_version}.tar.gz" "$temporary/lima-source.tar.gz" \
+    "$lima_source_checksum"
+  verify "$lima_source_checksum" "$temporary/lima-source.tar.gz"
   # The release archive supplies templates; source-only aliases are not Go
   # build inputs and cannot be extracted reliably by Windows tar.
-  tar --exclude='lima-2.2.0/templates/*' \
-    --exclude='lima-2.2.0/pkg/limayaml/default.yaml' \
-    --exclude='lima-2.2.0/pkg/cidata/cloud-config.yaml' \
+  tar --exclude="$lima_source_directory/templates/*" \
+    --exclude="$lima_source_directory/pkg/limayaml/default.yaml" \
+    --exclude="$lima_source_directory/pkg/cidata/cloud-config.yaml" \
     -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
   lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
   lima_stop_patch="$script_directory/patches/lima-2.2.0-windows-stop.patch"
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
+  lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
   (
-    cd "$temporary/lima-2.2.0"
+    cd "$temporary/$lima_source_directory"
     git apply --check "$lima_pid_patch" "$lima_stop_patch"
     git apply "$lima_pid_patch" "$lima_stop_patch"
     git apply --check "$lima_graceful_stop_patch"
     git apply "$lima_graceful_stop_patch"
     git apply --check "$lima_arm64_cpu_patch"
     git apply "$lima_arm64_cpu_patch"
+    if [ "$lima_version" = v2.2.1 ]; then
+      git apply --check "$lima_wsl_mount_patch"
+      git apply "$lima_wsl_mount_patch"
+      if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
+        CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
+          -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
+      fi
+    fi
     if [ "$goarch" = arm64 ] && [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = windows/arm64 ]; then
       CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/sshutil \
         -run '^TestWindowsARM64AESUsesOSFeatureBits$' -count=1
@@ -294,11 +331,14 @@ if [ "$goos" = "windows" ] && [ "$lima_version" = "v2.2.0" ]; then
         -ldflags "-s -w -X github.com/lima-vm/lima/v2/pkg/version.Version=$lima_runtime_version" \
         -o "$destination/lima/bin/limactl.exe" ./cmd/limactl
   )
-  cp "$temporary/lima-2.2.0/LICENSE" "$destination/licenses/lima.txt"
+  cp "$temporary/$lima_source_directory/LICENSE" "$destination/licenses/lima.txt"
   cp "$lima_pid_patch" "$destination/licenses/lima-windows-pid.patch"
   cp "$lima_stop_patch" "$destination/licenses/lima-windows-stop.patch"
   cp "$lima_graceful_stop_patch" "$destination/licenses/lima-windows-graceful-stop.patch"
   cp "$lima_arm64_cpu_patch" "$destination/licenses/lima-windows-arm64-cpu.patch"
+  if [ "$lima_version" = v2.2.1 ]; then
+    cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
+  fi
 fi
 
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then
@@ -419,6 +459,10 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_ver
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
+
+if [ "$goos" != "windows" ]; then
+  cat "$destination/licenses/mutagen-build.txt" >> "$destination/VERSIONS"
+fi
 
 if [ "$goos" = "windows" ]; then
   cat >> "$destination/VERSIONS" <<EOF

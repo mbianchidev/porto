@@ -32,6 +32,55 @@ type containerHealthLog struct {
 	Output   string    `json:"Output"`
 }
 
+const portoHealthManagedLabel = "io.porto.container.health-managed"
+
+func ownsContainerHealth(labels map[string]string) bool {
+	return labels[portoManagedLabel] == portoRuntimeVersion || labels[portoHealthManagedLabel] == portoRuntimeVersion ||
+		labels[ManagedWorkloadLabel] == "true"
+}
+
+func (m *Manager) checkCompatibilityHealth(ctx context.Context, check *ContainerHealthcheck) error {
+	if check == nil || len(check.Test) == 0 || check.Test[0] != "CMD" {
+		return nil
+	}
+	handled, err := m.withContainerOperations(ctx, func(containerOperations) error { return nil })
+	if err != nil {
+		return err
+	}
+	if !handled {
+		return fmt.Errorf("%w: exec-form health checks require backend metadata access before creating this container", ErrUnsupported)
+	}
+	return nil
+}
+
+func (m *Manager) preserveCompatibilityHealth(ctx context.Context, id string, check *ContainerHealthcheck) error {
+	if check == nil || len(check.Test) == 0 || check.Test[0] != "CMD" {
+		return nil
+	}
+	encoded, err := json.Marshal(check)
+	if err != nil {
+		return err
+	}
+	// nerdctl's --health-cmd is always CMD-SHELL; restore the original argv
+	// before start so scratch images do not acquire a nonexistent shell dependency.
+	updates := map[string]string{
+		portoHealthManagedLabel: portoRuntimeVersion, nerdctlHealthStateLabel: `{"Status":"starting","FailingStreak":0}`,
+	}
+	if len(check.Test) > 0 {
+		updates[nerdctlHealthcheckLabel] = string(encoded)
+	}
+	handled, err := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.UpdateLabels(ctx, id, updates)
+	})
+	if err != nil {
+		return err
+	}
+	if !handled {
+		return fmt.Errorf("%w: persist original health configuration", ErrUnsupported)
+	}
+	return nil
+}
+
 type containerHealthState struct {
 	Status        string               `json:"Status"`
 	FailingStreak int                  `json:"FailingStreak"`
@@ -88,7 +137,7 @@ func (m *Manager) scheduleHealthChecks(
 	m.scheduleNetworkReconciliation(ctx, state, snapshot, now)
 	active := make(map[string]struct{})
 	for _, container := range snapshot.Containers {
-		if container.Labels[portoManagedLabel] != portoRuntimeVersion ||
+		if !ownsContainerHealth(container.Labels) ||
 			container.State != "running" ||
 			container.Healthcheck == nil ||
 			!healthcheckEnabled(container.Healthcheck) {

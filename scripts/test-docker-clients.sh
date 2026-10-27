@@ -37,6 +37,12 @@ created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
 dump_lima_boot_logs() {
+  if [ "$(uname -s)" = Linux ] && [ -c /dev/kvm ]; then
+    printf '\nCI KVM access diagnostics\n' >&2
+    if ! { id && ls -l /dev/kvm && getfacl /dev/kvm; } >&2; then
+      echo "Some read-only KVM access diagnostics were unavailable." >&2
+    fi
+  fi
   if ! node scripts/lima-boot-diagnostics.cjs "$LIMA_HOME/porto-engine"; then
     echo "Some read-only boot diagnostics were unavailable; preserving the original failure." >&2
   fi
@@ -313,6 +319,19 @@ fi
     "$client_tests" -test.run '^TestDockerDevelopmentClientsIntegration$' -test.count=1 -test.failfast -test.timeout=25m -test.v
   fi
 )
+if [ "$suite" = clients ]; then
+  policy_tests="$temporary/porto-policy-tests"
+  if [ "$goos" = windows ]; then policy_tests="$policy_tests.exe"; fi
+  run_as_runner go test -c -o "$policy_tests" ./internal/daemon
+  (
+    cd "$root/internal/daemon"
+    "$policy_tests" -test.run '^TestResourceSaverOwnedRuntimeAcceptance$' -test.count=1 -test.failfast -test.timeout=20m -test.v
+  )
+  if [ "$goos" != windows ]; then
+    run_as_runner env PORTO_TEST_SYNC_BINARY="$runtime/bin/mutagen" \
+      go test ./internal/syncshares -run '^TestMaintainedSynchronizationPreservesLargeSyntheticRepository$' -count=1 -failfast -timeout=5m -v
+  fi
+fi
 if [ "$suite/$goos" = data/darwin ] && { [ "$phase" = all ] || [ "$phase" = native ]; }; then
   PORTO_TEST_WEBDAV_NATIVE=1 go test ./internal/nativefiles -run '^TestMacOSNativeWebDAV' -count=1 -failfast -timeout=5m -v
 fi

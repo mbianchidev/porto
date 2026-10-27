@@ -216,7 +216,13 @@ printf '%s\n' registry.synthetic.invalid | docker-credential-porto erase
 	if err := manager.ContainerAction(ctx, containerName, "unpause"); err != nil {
 		t.Fatal(err)
 	}
-	shell(selected, `set -eu; docker exec "$1" test -f /workspace/from-container`, containerName)
+	shell(selected, `set -eu
+docker exec "$1" sh -c 'if ! test -f /workspace/from-container; then
+  echo "The selected WSL bind did not reconnect to its original data" >&2
+  ls -la /workspace >&2
+  cat /proc/self/mountinfo >&2
+  exit 1
+fi'`, containerName)
 	mustRun(binary, "wsl", "disable", selected)
 	otherAfter := shell(untouched, `set -eu
 for file in "$HOME/.profile" "$HOME/.bashrc" "$HOME/porto-unrelated-fixture"; do

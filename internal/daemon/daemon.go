@@ -26,6 +26,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/autoscaling"
 	"github.com/mbianchidev/porto/internal/certificates"
@@ -43,11 +44,13 @@ import (
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
 	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/mbianchidev/porto/internal/resourcesaver"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/sendbox"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 	"github.com/mbianchidev/porto/internal/sqnsl"
 	"github.com/mbianchidev/porto/internal/store"
+	"github.com/mbianchidev/porto/internal/syncshares"
 	"github.com/mbianchidev/porto/internal/vm"
 	"github.com/mbianchidev/porto/internal/wsl"
 )
@@ -66,6 +69,11 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
+	syncShares         *syncshares.Manager
+	resourceSaverMu    sync.Mutex
+	resourceSaver      *resourcesaver.Manager
+	saverBackend       *saverBackend
+	architecture       *acceleration.Manager
 	store              *store.Store
 	mu                 sync.Mutex
 	running            map[int64]*projectProcess
@@ -179,9 +187,13 @@ func New(st *store.Store, ui fs.FS) *Server {
 	vmStateDir, _ := config.VMStateDir()
 	vmManager := vm.NewWithStateDir(runner, vmStateDir)
 	dockerManager := portodocker.NewWithStateDir(runner, dockerEngineDir)
+	architecture := acceleration.New(filepath.Dir(dockerEngineDir), runner)
+	dockerManager.SetAccelerationManager(architecture)
+	vmManager.SetAccelerationManager(architecture)
 	clusterProvisioner := kubernetes.NewClusterProvisioner(vmManager, runner, kubeconfigDir)
 	daemonIdentity, identityErr := currentDaemonIdentity()
 	server := &Server{
+		architecture:    architecture,
 		store:           st,
 		running:         map[int64]*projectProcess{},
 		stopping:        map[int64]bool{},
@@ -223,6 +235,12 @@ func New(st *store.Store, ui fs.FS) *Server {
 		identityErr:    identityErr,
 		registryVault:  registries.NewVault(),
 	}
+	syncRoot := ""
+	if st != nil {
+		syncRoot = st.Directory()
+	}
+	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
+	dockerManager.SetSynchronizedShareResolver(server.syncShares.Resolve)
 	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
 	server.nativeFiles = nativefiles.New(nativeRoot, runner)
 	server.networking = networking.New(filepath.Dir(dockerEngineDir))
@@ -299,6 +317,15 @@ func (s *Server) Run(ctx context.Context) error {
 		defer func() {
 			cancelAutoscaling()
 			<-autoscalingDone
+		}()
+	}
+	if err := s.initializeResourceSaver(ctx); err != nil {
+		log.Printf("Resource Saver is unavailable; no workloads will be adopted: %v", err)
+	} else {
+		go func() {
+			if err := s.resourceSaver.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("Resource Saver worker stopped: %v", err)
+			}
 		}()
 	}
 	if settings.DockerEnabled {
@@ -399,6 +426,7 @@ func (s *Server) Run(ctx context.Context) error {
 	go s.kubernetesRouteLoop(ctx)
 	go s.dockerCleanupLoop(ctx)
 	go s.nativeFiles.Monitor(ctx)
+	go s.syncShares.Monitor(ctx)
 	s.syncSQLNotSoLite(ctx)
 	s.syncKillSwitch(ctx)
 	log.Printf(
@@ -443,6 +471,16 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	}
 	if err := s.stopDockerCleanup(cleanupContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
+	}
+	if s.resourceSaver != nil {
+		if err := s.resourceSaver.Close(cleanupContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
+	}
+	if s.syncShares != nil {
+		if err := s.syncShares.Close(cleanupContext); err != nil {
+			shutdownErrors = append(shutdownErrors, err)
+		}
 	}
 	if s.nativeFiles != nil {
 		if err := s.nativeFiles.Close(cleanupContext); err != nil {

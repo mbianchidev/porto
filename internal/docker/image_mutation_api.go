@@ -46,6 +46,10 @@ func (a *API) tagImage(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *API) loadImages(w http.ResponseWriter, r *http.Request) {
+	if err := enableDockerUploadStreaming(w, r); err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	wrote := false
 	encoder := json.NewEncoder(w)
 	emit := func(chunk runtimes.OutputChunk) error {
@@ -94,7 +98,12 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 	}
 	source := r.URL.Query().Get("fromSrc")
 	input := r.Body
-	if source != "-" {
+	if source == "-" {
+		if err := enableDockerUploadStreaming(w, r); err != nil {
+			writeDockerError(w, err)
+			return
+		}
+	} else {
 		parsed, err := url.Parse(source)
 		if err != nil || parsed.Host == "" || parsed.User != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") {
 			writeDockerError(w, errors.New("invalid remote import URL: HTTP or HTTPS is required without embedded credentials"))
@@ -162,6 +171,17 @@ func (a *API) importImage(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		_ = encodeDockerProgress(w, encoder, map[string]string{"status": "Import complete"})
 	}
+}
+
+func enableDockerUploadStreaming(w http.ResponseWriter, r *http.Request) error {
+	if r.ProtoMajor >= 2 {
+		return nil
+	}
+	// HTTP/1 otherwise drains the unread upload when the first progress frame is flushed.
+	if err := http.NewResponseController(w).EnableFullDuplex(); err != nil {
+		return fmt.Errorf("enable full-duplex image upload: %w", err)
+	}
+	return nil
 }
 
 func (a *API) pushImage(w http.ResponseWriter, r *http.Request) {

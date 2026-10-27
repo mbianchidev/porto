@@ -4,6 +4,7 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { StatusLamp } from '../components/StatusLamp'
 import { DataOperations } from '../components/DataOperations'
+import { ResourceSaverActivity } from '../components/ResourceManagement'
 import type { ActivityLevel, ActivityResourceSnapshot, ResourceUsage } from '../types'
 
 const LEVEL_LAMP: Record<ActivityLevel, 'running' | 'starting' | 'crashed'> = {
@@ -80,6 +81,7 @@ export function Activity() {
       </div>
       <div className="workArea activityWorkArea">
         <DataOperations />
+        <ResourceSaverActivity />
         <section className="activityResources" aria-label="Current resource consumption">
           <div className="activityResourcesHeading">
             <div>

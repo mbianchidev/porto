@@ -1,7 +1,7 @@
 import { useRef, useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
-import { useKubernetesStatus } from '../kubernetes'
+import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
@@ -55,28 +55,28 @@ export function KubernetesGateways({
   )
   const gateways = usePolledResource<KubernetesGateway[]>(
     (signal) => available && tab === 'gateways'
-      ? apiGet(`/api/kubernetes/gateways?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/gateways?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     8000,
-    [context, namespace, available, tab],
-    available && tab === 'gateways' ? `kubernetes:${context}:gateways:${namespace}` : undefined,
+    [context, available, tab],
+    available && tab === 'gateways' ? `kubernetes:${context}:gateways:all` : undefined,
   )
   const routes = usePolledResource<KubernetesHTTPRoute[]>(
     (signal) => available && tab === 'routes'
-      ? apiGet(`/api/kubernetes/http-routes?context=${encodeURIComponent(context)}&namespace=${encodeURIComponent(namespace)}`, signal)
+      ? apiGet(`/api/kubernetes/http-routes?context=${encodeURIComponent(context)}&namespace=all`, signal)
       : Promise.resolve([]),
     8000,
-    [context, namespace, available, tab],
-    available && tab === 'routes' ? `kubernetes:${context}:http-routes:${namespace}` : undefined,
+    [context, available, tab],
+    available && tab === 'routes' ? `kubernetes:${context}:http-routes:all` : undefined,
   )
   const normalizedQuery = query.trim().toLocaleLowerCase()
   const classItems = classes.data ?? []
-  const gatewayItems = (gateways.data ?? []).map((item) => ({
+  const gatewayItems = (gateways.data ?? []).filter((item) => matchesNamespace(item.namespace, namespace)).map((item) => ({
     ...item,
     addresses: item.addresses ?? [],
     listeners: item.listeners ?? [],
   }))
-  const routeItems = (routes.data ?? []).map((item) => ({
+  const routeItems = (routes.data ?? []).filter((item) => matchesNamespace(item.namespace, namespace)).map((item) => ({
     ...item,
     hostnames: item.hostnames ?? [],
     parentRefs: item.parentRefs ?? [],

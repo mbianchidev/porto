@@ -46,6 +46,12 @@ Additional runtime features require:
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
 
+See [resource management and architecture policies](resource-management.md) for
+owned-engine budgets, opt-in idle suspension and HTTP wake, selected synchronized
+project shares, and native/Rosetta/QEMU capability boundaries. Native arm64
+workloads stay native; Rosetta translates amd64 userspace in an arm64 VZ guest,
+not an amd64 VM kernel.
+
 For an installed desktop package, use either the non-conflicting `docker`
 command created by the install script or the explicit bundled entry point:
 
@@ -305,6 +311,12 @@ Services, Jobs, CronJobs, storage, Gateway API resources, ConfigMaps, Secrets,
 and Nodes. Resource dashboards share context selection, namespaced inventories
 add namespace filtering, and each list provides health signals plus an adjacent
 inspector for the selected resource.
+
+Namespace filters and resource search match case-insensitive substrings:
+`app`, `App`, and `APP` include `app-1`, `app2`, and `application`.
+An empty namespace filter or `all` shows every namespace. Filtering uses the
+current context's read-only inventory; inspecting or mutating a selected object
+still uses its complete, exact namespace and name.
 
 The **Port forwarding** dashboard starts and stops explicit loopback forwards
 for Services, Pods, and Deployments. Leave the local port empty to allocate a

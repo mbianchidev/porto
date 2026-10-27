@@ -10,6 +10,7 @@ import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
 import { NativeFiles } from '../components/NativeFiles'
+import type { AccelerationStatus } from '../acceleration'
 import type { RuntimeProviderStatus, VMCreateRequest, VMImage, VMInstance, VMStatus } from '../types'
 
 const COLUMNS_TEMPLATE = '12px minmax(150px,1.2fr) minmax(110px,0.7fr) minmax(70px,0.4fr) minmax(90px,0.5fr) minmax(90px,0.5fr)'
@@ -113,6 +114,7 @@ export function Machines() {
   const images = usePolledResource<VMImage[]>((signal) => apiGet('/api/vms/images', signal), 0, [])
   const instances = usePolledResource<VMInstance[]>((signal) => apiGet('/api/vms/instances', signal), 6000, [])
   const providers = usePolledResource<RuntimeProviderStatus[]>((signal) => apiGet('/api/runtime/providers', signal), 15000, [])
+  const acceleration = usePolledResource<AccelerationStatus>((signal) => apiGet('/api/runtime/acceleration', signal), 30000, [], 'runtime:acceleration')
   const items = instances.data ?? []
   const selected = items.find((instance) => instance.name === selectedName) ?? null
   const available = status.data?.available ?? false
@@ -257,6 +259,8 @@ export function Machines() {
                 <dl className="runtimeGrid">
                   <div><dt>Driver</dt><dd>{selected.vmType || '—'}</dd></div>
                   <div><dt>Architecture</dt><dd>{selected.architecture}</dd></div>
+                  <div><dt>Execution</dt><dd>{selected.execution || 'not recorded'}</dd></div>
+                  <div><dt>Rosetta userspace</dt><dd>{selected.rosettaEnabled ? 'configured in this arm64 VZ guest' : 'disabled'}</dd></div>
                   <div><dt>CPUs</dt><dd>{selected.cpus}</dd></div>
                   <div><dt>Memory</dt><dd>{formatBytes(selected.memoryBytes)}</dd></div>
                   <div><dt>Disk</dt><dd>{formatBytes(selected.diskBytes)}</dd></div>
@@ -321,11 +325,12 @@ export function Machines() {
                   value={form.vmType}
                   onChange={(event) => {
                     const vmType = event.target.value
-                    if (vmType === '' || vmType === 'qemu') setForm({ ...form, vmType })
+                    if (vmType === '' || vmType === 'qemu' || vmType === 'vz') setForm({ ...form, vmType, rosettaEnabled: vmType === 'qemu' ? false : form.rosettaEnabled })
                   }}
                 >
                   <option value="">Host default</option>
                   <option value="qemu">QEMU · snapshot support</option>
+                  <option value="vz" disabled={!acceleration.data?.capabilities?.virtualization.supported}>VZ · native macOS virtualization</option>
                 </select>
               </label>
               <p className="hintLine">Choose QEMU when this machine needs snapshots. Existing VZ machines cannot be converted.</p>
@@ -346,6 +351,10 @@ export function Machines() {
               <label>
                 <span>CPUs</span>
                 <input type="number" min={1} max={32} value={form.cpus} onChange={(event) => setForm({ ...form, cpus: Number(event.target.value) })} />
+              </label>
+              <label className="toggleRow">
+                <span><strong>Rosetta amd64 userspace</strong><small>Apple Silicon, installed Rosetta, and an arm64 VZ guest only. This does not boot an amd64 kernel.</small></span>
+                <input type="checkbox" checked={form.rosettaEnabled ?? false} disabled={!acceleration.data?.capabilities?.rosettaHost.supported || form.vmType === 'qemu' || form.architecture === 'x86_64'} onChange={(event) => setForm({ ...form, rosettaEnabled: event.target.checked, vmType: event.target.checked ? 'vz' : form.vmType, architecture: event.target.checked ? 'aarch64' : form.architecture })} />
               </label>
               <label>
                 <span>Memory (MiB)</span>

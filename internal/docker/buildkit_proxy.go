@@ -18,10 +18,12 @@ import (
 
 type buildKitControlProxy struct {
 	controlapi.UnimplementedControlServer
-	client              controlapi.ControlClient
-	containerdNamespace string
-	imageExported       func()
-	solveGate           func(context.Context) (context.Context, func(), error)
+	client               controlapi.ControlClient
+	containerdNamespace  string
+	imageExported        func()
+	solveGate            func(context.Context) (context.Context, func(), error)
+	validateArchitecture func(context.Context, *controlapi.SolveRequest) error
+	filterArchitecture   func(context.Context, *controlapi.ListWorkersResponse) error
 
 	workerMu         sync.Mutex
 	workerCompatible bool
@@ -55,6 +57,11 @@ func (p *buildKitControlProxy) Solve(ctx context.Context, request *controlapi.So
 		}
 		defer release()
 		ctx = gated
+	}
+	if p.validateArchitecture != nil {
+		if err := p.validateArchitecture(ctx, request); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
 	}
 	rewritten, hasMoby, err := rewriteMobyExporters(request)
 	if err != nil {
@@ -189,6 +196,11 @@ func (p *buildKitControlProxy) ListWorkers(ctx context.Context, request *control
 		grpc.Trailer(&trailer),
 	)
 	forwardBuildKitUnaryMetadata(ctx, header, trailer)
+	if err == nil && p.filterArchitecture != nil {
+		if err := p.filterArchitecture(ctx, response); err != nil {
+			return nil, status.Error(codes.FailedPrecondition, err.Error())
+		}
+	}
 	return response, err
 }
 
