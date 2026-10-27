@@ -364,7 +364,7 @@ fi
 download "https://raw.githubusercontent.com/kubernetes/kubernetes/${kubectl_version}/LICENSE" "$destination/licenses/kubernetes.txt"
 download "https://raw.githubusercontent.com/kubernetes-sigs/kind/${kind_version}/LICENSE" "$destination/licenses/kind.txt"
 download "https://raw.githubusercontent.com/derailed/k9s/${k9s_version}/LICENSE" "$destination/licenses/k9s.txt"
-download "https://raw.githubusercontent.com/pkg/sftp/v1.13.11/LICENSE" "$destination/licenses/sftp.txt"
+download "https://raw.githubusercontent.com/pkg/sftp/v1.13.12/LICENSE" "$destination/licenses/sftp.txt"
 if [ "$goos" = "windows" ]; then
   download "https://raw.githubusercontent.com/winfsp/cgofuse/v1.6.0/LICENSE.txt" "$destination/licenses/cgofuse.txt"
 fi
