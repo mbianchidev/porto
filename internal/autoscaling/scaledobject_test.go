@@ -19,6 +19,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/nodeoverlay"
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
+	"sigs.k8s.io/karpenter/pkg/state/prediction"
 )
 
 func TestScaledObjectApplyAuthenticationAndOwnership(t *testing.T) {
@@ -133,7 +134,7 @@ func TestUpstreamControllerConstructionAcrossClusters(t *testing.T) {
 		clk := clock.RealClock{}
 		controllers := controllers.NewControllers(ctx, nil, clk, c,
 			events.NewRecorder(record.NewFakeRecorder(100)), provider, provider, state.NewCluster(clk, c, provider),
-			nodeoverlay.NewInstanceTypeStore())
+			nodeoverlay.NewInstanceTypeStore(), prediction.NewStore())
 		if len(controllers) < 20 {
 			t.Fatalf("upstream provisioning/disruption/lifecycle controllers missing: %d", len(controllers))
 		}

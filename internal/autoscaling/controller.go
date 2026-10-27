@@ -25,6 +25,7 @@ import (
 	"sigs.k8s.io/karpenter/pkg/controllers/state"
 	"sigs.k8s.io/karpenter/pkg/events"
 	"sigs.k8s.io/karpenter/pkg/operator/options"
+	"sigs.k8s.io/karpenter/pkg/state/prediction"
 )
 
 func controllerContext(ctx context.Context) context.Context {
@@ -80,7 +81,7 @@ func runController(ctx context.Context, connection clusterConnection, provider *
 	for _, controller := range controllers.NewControllers(
 		ctx, mgr, clock.RealClock{}, mgr.GetClient(),
 		events.NewRecorder(mgr.GetEventRecorderFor("porto-karpenter")), // upstream Recorder uses the legacy event interface
-		provider, provider, cluster, nodeoverlay.NewInstanceTypeStore(),
+		provider, provider, cluster, nodeoverlay.NewInstanceTypeStore(), prediction.NewStore(),
 	) {
 		if err := controller.Register(ctx, mgr); err != nil {
 			return fmt.Errorf("register upstream Karpenter controller: %w", err)

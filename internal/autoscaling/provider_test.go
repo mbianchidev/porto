@@ -150,6 +150,21 @@ func testProvider(t *testing.T) (*localProvider, *mockProvisioner, client.Client
 	return provider, p, c, active
 }
 
+func TestProviderRejectsUnsupportedReboot(t *testing.T) {
+	ctx := context.Background()
+	provider, p, _, active := testProvider(t)
+	claim, err := provider.Create(ctx, testClaim("reboot"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := provider.Reboot(ctx, claim, "synthetic-reboot"); !cloudprovider.IsNodeRebootNotImplementedError(err) {
+		t.Fatalf("unsupported reboot must return the upstream terminal error: %v", err)
+	}
+	if len(provider.RepairPolicies()) != 0 || p.scaled != 1 || p.deleted != 0 || len(provider.records) != 1 || active.Load() != 0 {
+		t.Fatal("unsupported reboot must preserve workers without enabling automatic repair")
+	}
+}
+
 func TestStorageProtectionRetriesConcurrentNodeMetadata(t *testing.T) {
 	ctx := context.Background()
 	provider, _, c, _ := testProvider(t)

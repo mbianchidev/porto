@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	KarpenterVersion = "1.14.2"
+	KarpenterVersion = "1.15.1"
 	KEDAVersion      = "2.21.0"
 	ownerLabel       = "autoscaling.porto.dev/owner"
 	claimLabel       = "autoscaling.porto.dev/claim"

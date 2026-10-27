@@ -84,6 +84,9 @@ func runtimeName(request kubernetes.ClusterRequest) string {
 
 func (p *localProvider) Name() string                                 { return "porto" }
 func (p *localProvider) RepairPolicies() []cloudprovider.RepairPolicy { return nil }
+func (p *localProvider) Reboot(context.Context, *v1.NodeClaim, string) error {
+	return cloudprovider.NewNodeRebootNotImplementedError()
+}
 func (p *localProvider) GetSupportedNodeClasses() []status.Object {
 	return []status.Object{&PortoNodeClass{}}
 }
