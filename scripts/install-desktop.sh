@@ -273,7 +273,7 @@ else
 Type=Application
 Name=Porto
 Comment=Local apps, containers, Kubernetes, and virtual machines
-Exec=$install_root/Porto
+Exec="$install_root/Porto"
 Icon=$install_root/resources/porto.png
 Terminal=false
 Categories=Development;

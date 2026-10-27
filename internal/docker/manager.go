@@ -322,9 +322,14 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	if m.IsNativeWindows() {
 		return Status{}, fmt.Errorf("%w: use 'porto docker windows install' for the separate native service", ErrUnsupported)
 	}
-	m.installMu.Lock()
+	if err := reportEngineInstall(ctx, "checking", "runtime", "Checking the existing container runtime and required tools."); err != nil {
+		return Status{}, err
+	}
+	if err := m.lockEngineInstallation(ctx); err != nil {
+		return Status{}, err
+	}
 	defer m.installMu.Unlock()
-	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	lock, err := acquireEngineInstallLockContext(ctx, filepath.Join(m.stateDir, engineLockFile))
 	if err != nil {
 		return Status{}, fmt.Errorf("lock Porto container runtime installation: %w", err)
 	}
@@ -334,6 +339,9 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			m.invalidateContainerInventory()
 		}
 	}()
+	if err := context.Cause(ctx); err != nil {
+		return Status{}, err
+	}
 
 	existingState, stateErr := m.readEngineState()
 	ownedLima := stateErr == nil && existingState.Mode == "lima" && existingState.Instance == engineInstanceName && existingState.OwnerID != ""
@@ -346,9 +354,15 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		if path, err := m.lookPath("nerdctl"); err == nil {
 			direct := commandBackend{name: path, description: "containerd via nerdctl"}
 			if output, verifyErr := m.runBackend(ctx, direct, 10*time.Second, "verify local containerd", nil, "version"); verifyErr == nil {
+				if err := reportEngineInstall(ctx, "verifying", "buildkit", "Verifying the existing local BuildKit backend."); err != nil {
+					return Status{}, err
+				}
 				buildKit, buildKitErr := m.dialBuildKitBackend(ctx, direct)
 				if buildKitErr == nil {
 					_ = buildKit.Close()
+					if err := reportEngineInstall(ctx, "saving", "state", "Saving the verified local container runtime configuration."); err != nil {
+						return Status{}, err
+					}
 					if err := m.writeEngineState(engineState{Mode: "direct", CreatedAt: time.Now().UTC()}); err != nil {
 						return Status{}, err
 					}
@@ -356,6 +370,9 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 				}
 			}
 		}
+	}
+	if err := reportEngineInstall(ctx, "checking", "lima", "Checking Lima and the existing Porto guest."); err != nil {
+		return Status{}, err
 	}
 	if _, err := m.lookPath("limactl"); err != nil {
 		return Status{}, errors.New("Lima is required to install the Porto container runtime; install limactl and retry")
@@ -368,11 +385,25 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	if exists && !ownedLima {
 		return Status{}, fmt.Errorf("Lima instance %q already exists but is not owned by Porto", engineInstanceName)
 	}
+	if err := m.requireEngineInstallStreaming(ctx); err != nil {
+		return Status{}, err
+	}
 	created := false
+	defer func() {
+		if err == nil || !created {
+			return
+		}
+		cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer cancel()
+		_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up failed Porto container runtime", nil, "limactl", "delete", "--force", engineInstanceName)
+		if cleanupErr != nil {
+			cleanupErr = engineInstallCleanupError{cleanupErr}
+		}
+		err = errors.Join(err, cleanupErr)
+	}()
 	ownerID := existingState.OwnerID
 	wslMounts := existingState.WSLMounts
 	if !exists {
-		created = true
 		ownerID, err = randomResourceName()
 		if err != nil {
 			return Status{}, err
@@ -397,36 +428,37 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 				arguments = append(arguments, "--set="+strings.Replace(expression, ".mounts = ", ".mounts = (.mounts // []) + ", 1))
 			}
 		}
-		accelerationArguments, err := m.accelerationCreateArguments(ctx)
-		if err != nil {
-			return Status{}, err
+		accelerationArguments, accelerationErr := m.accelerationCreateArguments(ctx)
+		if accelerationErr != nil {
+			return Status{}, accelerationErr
 		}
 		arguments = append(arguments, accelerationArguments...)
-		resourceArguments, err := m.resourceCreateArguments(ownerID)
-		if err != nil {
-			return Status{}, err
+		resourceArguments, resourceErr := m.resourceCreateArguments(ownerID)
+		if resourceErr != nil {
+			return Status{}, resourceErr
 		}
 		arguments = append(arguments, resourceArguments...)
 		arguments = append(arguments, limaEngineTemplate(runtime.GOOS))
+		if err := reportEngineInstall(ctx, "starting", "lima", "Preparing the Lima guest; uncached guest images and containerd / BuildKit tools must download."); err != nil {
+			return Status{}, err
+		}
+		created = true
 		_, err = m.startLimaRuntime(ctx, "create Porto container runtime", arguments...)
 	} else if !running {
+		if err := reportEngineInstall(ctx, "starting", "lima", "Starting the existing Porto-owned Lima guest."); err != nil {
+			return Status{}, err
+		}
 		_, err = m.startLimaRuntime(ctx, "start Porto container runtime", engineInstanceName)
 	}
 	if err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up failed Porto container runtime", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
+		return Status{}, err
+	}
+	if err := reportEngineInstall(ctx, "verifying", "ownership", "Verifying Porto's guest ownership before configuring runtime components."); err != nil {
 		return Status{}, err
 	}
 	if created {
 		if err := m.writeLimaOwnership(ctx, ownerID); err != nil {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up unowned Porto container runtime", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
+			return Status{}, err
 		}
 	} else {
 		var ownershipErr error
@@ -439,22 +471,16 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			return Status{}, ownershipErr
 		}
 	}
+	if err := reportEngineInstall(ctx, "configuring", "multi-platform", "Checking guest QEMU / binfmt support; missing multi-platform packages must download."); err != nil {
+		return Status{}, err
+	}
 	if err := m.installLimaBinfmt(ctx); err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without multi-platform support", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
+		return Status{}, err
+	}
+	if err := reportEngineInstall(ctx, "configuring", "runtime-helper", "Installing and checking the bundled guest runtime helper."); err != nil {
 		return Status{}, err
 	}
 	if err := m.installLimaRuntimeHelper(ctx, engineInstanceName); err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without helper", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
 		return Status{}, err
 	}
 	limaBackend := commandBackend{
@@ -465,40 +491,34 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		ownerID:      ownerID,
 	}
 	var versionOutput []byte
+	if err := reportEngineInstall(ctx, "configuring", "network", "Checking the owned guest's proxy and registry network settings."); err != nil {
+		return Status{}, err
+	}
 	err = m.applyGuestNetworking(ctx, limaBackend, false)
 	if err == nil {
+		if err := reportEngineInstall(ctx, "verifying", "containerd", "Verifying the containerd backend."); err != nil {
+			return Status{}, err
+		}
 		versionOutput, err = m.runBackend(ctx, limaBackend, 30*time.Second, "verify Porto container runtime", nil, "version")
 	}
 	if err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up failed Porto container runtime", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
+		return Status{}, err
+	}
+	if err := reportEngineInstall(ctx, "verifying", "buildkit", "Verifying the BuildKit backend."); err != nil {
 		return Status{}, err
 	}
 	buildKit, err := m.dialBuildKitBackend(ctx, limaBackend)
 	if err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up Porto runtime without BuildKit", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
 		return Status{}, err
 	}
 	_ = buildKit.Close()
+	if err := reportEngineInstall(ctx, "saving", "state", "Saving the verified Porto container runtime configuration."); err != nil {
+		return Status{}, err
+	}
 	if err := m.writeEngineState(engineState{
 		Mode: "lima", Instance: engineInstanceName, OwnerID: ownerID, CreatedAt: time.Now().UTC(),
 		WSLMounts: wslMounts,
 	}); err != nil {
-		if created {
-			cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
-			_, cleanupErr := m.runCommand(cleanupContext, 5*time.Minute, "clean up untracked Porto container runtime", nil, "limactl", "delete", "--force", engineInstanceName)
-			cancel()
-			return Status{}, errors.Join(err, cleanupErr)
-		}
 		return Status{}, err
 	}
 	return installedStatus(limaBackend, versionOutput), nil
@@ -506,6 +526,9 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 
 func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
 	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
+	if engineObserver(ctx) != nil {
+		return nil, m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: "limactl", Args: arguments})
+	}
 	return m.runCommand(ctx, engineStartTimeout, action, nil, "limactl", arguments...)
 }
 
@@ -620,26 +643,42 @@ func (m *Manager) StopEngine(ctx context.Context) error {
 }
 
 func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
+	ctx, release, err := m.BeginDataTransaction(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer release()
 	return m.stopEngine(ctx, true)
 }
 
-func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bool, err error) {
-	if m.IsNativeWindows() {
-		return false, fmt.Errorf("%w: use the explicit native Windows service stop/update action", ErrUnsupported)
-	}
+func (m *Manager) releaseEngineShutdownHandles(ctx context.Context) error {
 	if saver := m.ResourceSaver(); saver != nil && ctx.Value(resourceSaverContextKey{}) != true {
 		if err := saver.ForgetEngine(); err != nil {
-			return false, fmt.Errorf("%w: %w", ErrConflict, err)
+			return fmt.Errorf("%w: %w", ErrConflict, err)
 		}
 	}
 	if m.nativeClose != nil {
 		if err := m.nativeClose(ctx); err != nil {
-			return false, fmt.Errorf("detach native files before engine shutdown: %w", err)
+			return fmt.Errorf("detach native files before engine shutdown: %w", err)
 		}
 	}
-	m.installMu.Lock()
+	return nil
+}
+
+func (m *Manager) stopEngine(ctx context.Context, forUpdate bool) (stopped bool, err error) {
+	if m.IsNativeWindows() {
+		return false, fmt.Errorf("%w: use the explicit native Windows service stop/update action", ErrUnsupported)
+	}
+	if !forUpdate {
+		if err := m.releaseEngineShutdownHandles(ctx); err != nil {
+			return false, err
+		}
+	}
+	if err := m.lockEngineInstallation(ctx); err != nil {
+		return false, err
+	}
 	defer m.installMu.Unlock()
-	lock, err := acquireEngineInstallLock(filepath.Join(m.stateDir, engineLockFile))
+	lock, err := acquireEngineInstallLockContext(ctx, filepath.Join(m.stateDir, engineLockFile))
 	if err != nil {
 		return false, fmt.Errorf("lock Porto container runtime shutdown: %w", err)
 	}
@@ -650,14 +689,14 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 		}
 	}()
 	state, err := m.readEngineState()
-	if allowMissing && errors.Is(err, os.ErrNotExist) {
+	if forUpdate && errors.Is(err, os.ErrNotExist) {
 		return false, nil
 	}
 	if err != nil {
 		return false, fmt.Errorf("read Porto engine state: %w", err)
 	}
 	if state.Mode == "direct" {
-		if allowMissing {
+		if forUpdate {
 			return false, nil
 		}
 		return false, errors.New("the direct nerdctl backend is managed outside Porto")
@@ -665,7 +704,7 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 	if state.Mode != "lima" {
 		return false, fmt.Errorf("Porto engine state has unsupported mode %q", state.Mode)
 	}
-	if ctx.Value(resourceSaverContextKey{}) != true && state.ResourceSaverToken != "" {
+	if !forUpdate && ctx.Value(resourceSaverContextKey{}) != true && state.ResourceSaverToken != "" {
 		state.ResourceSaverToken = ""
 		if err := m.writeEngineState(state); err != nil {
 			return false, err
@@ -676,16 +715,34 @@ func (m *Manager) stopEngine(ctx context.Context, allowMissing bool) (stopped bo
 		return false, err
 	}
 	if !exists {
-		if allowMissing {
+		if forUpdate {
 			return false, nil
 		}
 		return false, fmt.Errorf("Porto-owned Lima instance %q is missing", state.Instance)
 	}
+	if running {
+		if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
+			return false, err
+		}
+		if forUpdate {
+			if err := m.checkEngineWorkloadsIdle(ctx); err != nil {
+				return false, fmt.Errorf("cannot prepare Porto update while workloads or builds are active or unobservable; stop them and retry: %w", err)
+			}
+		}
+	}
+	if forUpdate {
+		if err := m.releaseEngineShutdownHandles(ctx); err != nil {
+			return false, err
+		}
+		if state.ResourceSaverToken != "" {
+			state.ResourceSaverToken = ""
+			if err := m.writeEngineState(state); err != nil {
+				return false, err
+			}
+		}
+	}
 	if !running {
 		return false, nil
-	}
-	if err := m.verifyLimaOwnership(ctx, state.OwnerID); err != nil {
-		return false, err
 	}
 	_, err = m.runCommand(ctx, 5*time.Minute, "stop Porto container runtime", nil, "limactl", "stop", state.Instance)
 	return err == nil, err

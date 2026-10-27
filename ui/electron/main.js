@@ -33,6 +33,7 @@ const {
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
+  runtimeFailureDiagnostic,
   windowsDaemonProcesses,
   waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
@@ -728,13 +729,21 @@ async function ensureDaemonRunning() {
   return false
 }
 
-async function ensureDockerEngine() {
+async function ensureDockerEngine({ onProgress = () => {}, signal } = {}) {
   console.debug('Checking container runtime readiness')
+  signal?.throwIfAborted()
+  await onProgress({ message: 'Checking the bundled local runtime executables.' })
   if (app.isPackaged) {
-    const toolchain = await inspectBundledDockerToolchain({
-      resourcesPath: process.resourcesPath,
-      environment: await portoEnvironment(),
-    })
+    let toolchain
+    try {
+      toolchain = await inspectBundledDockerToolchain({
+        resourcesPath: process.resourcesPath,
+        environment: await portoEnvironment(),
+      })
+    } catch (error) {
+      console.error('Bundled Docker toolchain validation failed: %s', runtimeFailureDiagnostic(error))
+      throw new Error("A bundled local runtime executable is missing or cannot run. Repair or reinstall Porto's bundled tools, then retry.")
+    }
     if (!toolchain.supported) {
       console.warn('Bundled Docker toolchain is unavailable on this platform: %s', toolchain.message)
     } else {
@@ -752,13 +761,17 @@ async function ensureDockerEngine() {
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
   })
+  signal?.throwIfAborted()
   if (command !== null) {
     console.debug('Reconciling the bundled container runtime')
-    await installDockerEngine({ daemonURL: DAEMON_URL })
+    await installDockerEngine({ daemonURL: DAEMON_URL, onProgress, signal })
+    await onProgress({ message: 'Waiting for the verified container backend and inventory to become available.' })
     status = await waitForDockerEngine({ daemonURL: DAEMON_URL })
     console.debug('Container runtime readiness: available=%s enabled=%s', status.available, status.enabled)
   }
+  signal?.throwIfAborted()
   if (app.isPackaged && process.platform !== 'win32' && status.available) {
+    await onProgress({ message: 'Checking the Porto Docker context.' })
     await installDockerContext({ daemonURL: DAEMON_URL })
   }
 }
@@ -766,7 +779,7 @@ async function ensureDockerEngine() {
 function createBootstrapWindow(show = true) {
   const window = new BrowserWindow({
     width: 460,
-    height: 210,
+    height: 250,
     resizable: false,
     show,
     backgroundColor: '#141516',
@@ -790,10 +803,29 @@ function createBootstrapWindow(show = true) {
       p { margin: 0; color: #a6a9ae; line-height: 1.5; }
     </style>
   </head>
-  <body><main><h1>Preparing Porto</h1><p>Starting the daemon and bundled container runtime. First launch can take a few minutes.</p></main></body>
+  <body><main><h1>Preparing Porto</h1><p id="provisioning-progress" role="status" aria-atomic="true">Starting the daemon and bundled container runtime. First launch can take a few minutes.</p></main></body>
 </html>`
-  window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-  return window
+  const loaded = window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  app.once('before-quit', abort)
+  window.once('closed', () => {
+    abort()
+    app.removeListener('before-quit', abort)
+  })
+  return {
+    window,
+    signal: controller.signal,
+    async onProgress({ message }) {
+      await loaded
+      controller.signal.throwIfAborted()
+      if (!window.isDestroyed()) {
+        await window.webContents.executeJavaScript(
+          `document.getElementById('provisioning-progress').textContent = ${JSON.stringify(message)}`,
+        )
+      }
+    },
+  }
 }
 
 function createWindow() {
@@ -961,7 +993,8 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-  const bootstrapWindow = createBootstrapWindow(!startHidden)
+  const bootstrap = createBootstrapWindow(!startHidden)
+  const bootstrapWindow = bootstrap.window
   const healthy = await ensureDaemonRunning()
   if (!healthy) {
     console.error('Porto daemon did not reach compatible readiness')
@@ -975,8 +1008,12 @@ app.whenReady().then(async () => {
   }
   let dockerError = null
   try {
-    await ensureDockerEngine()
+    await ensureDockerEngine(bootstrap)
   } catch (error) {
+    if (bootstrap.signal.aborted) {
+      app.quit()
+      return
+    }
     dockerError = error
     console.error('Unable to prepare the bundled Porto container runtime', error)
   }

@@ -1291,8 +1291,15 @@ func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
 		},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
+	manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
+		return updateSafetyRuntime(t, &updateTasks{}), nil
+	}
+	manager.dialBuildKit = workingBuildKitDialer(t)
+	detached := false
+	manager.nativeGuard = func(string, string) error { return ErrConflict }
+	manager.nativeClose = func(context.Context) error { detached = true; return nil }
 	if err := manager.writeEngineState(engineState{
-		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner", ResourceSaverToken: "synthetic-sleep-owner",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1302,6 +1309,13 @@ func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatal("running Porto engine was not stopped for the update")
+	}
+	if !detached {
+		t.Fatal("idle engine update did not detach owned native files")
+	}
+	state, err := manager.readEngineState()
+	if err != nil || state.ResourceSaverToken != "" {
+		t.Fatalf("idle engine update did not release engine sleep ownership: %+v, %v", state, err)
 	}
 	for _, command := range runner.commands {
 		if command.Name == "limactl" && strings.Join(command.Args, " ") == "stop porto-engine" {

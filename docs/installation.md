@@ -65,9 +65,17 @@ contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
 system installation. Windows ARM64 excludes KinD because upstream does not
 publish a native binary; Porto builds its Docker CLI from Docker's pinned
 official source and bundles upstream Windows ARM64 Compose and Buildx plugins.
-Linux installation installs QEMU
-through `apt`, `dnf`, `pacman`, or `zypper` when it is missing. Set
-`PORTO_SKIP_PREREQS=1` to skip that Linux prerequisite step.
+Linux installation installs missing QEMU through `apt`, `dnf`, `pacman`, or
+`zypper`, then executes the host-architecture system emulator and `qemu-img` to
+verify both prerequisites. A failed package installation, missing executable or
+broken executable stops setup before stopping daemons or replacing an existing
+Porto installation. QEMU is required for the managed Linux container engine,
+not only standalone VMs.
+
+Set `PORTO_SKIP_PREREQS=1` only when intentionally managing those prerequisites
+yourself or using an existing local containerd backend. This explicitly skips
+verification; the installer reports that distinction rather than claiming the
+managed container engine is ready.
 
 On macOS, Linux, and Windows, the packaged app automatically provisions and starts its
 containerd and BuildKit backend on first launch when Docker support is enabled.
@@ -76,6 +84,16 @@ login-shell `PATH`, so project commands can find package managers and language
 toolchains installed outside the system paths available to graphical applications.
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
+
+The first-launch window reports the active tool checks, guest startup,
+downloads, runtime-helper setup and containerd/BuildKit verification. Guest
+images and missing guest tools still require network access; bundled host
+clients do not make a clean first launch offline. A verified existing engine
+does not download or recreate its guest just because Porto reopens. Download,
+DNS/proxy/trust failures, missing or broken local executables, ownership
+conflicts and unavailable backends have distinct retry guidance. Closing the
+preparation window cancels provisioning; existing engines and data are retained,
+and only a newly created failed guest is eligible for cleanup.
 
 The install scripts add a `docker` command beside `porto` only when that name is
 unused or already points to Porto. Existing user-managed commands are preserved.
@@ -190,10 +208,15 @@ on **Settings** to skip the download prompt. Porto never restarts itself: after
 verification it waits for **Restart and update**. That restart replaces the
 desktop package and reconnects the bundled daemon without deleting or
 recreating existing VMs, Kubernetes clusters, containers, images, or volumes.
-On Windows, Porto first stops its owned container engine cleanly and starts it
-again after the updated desktop launches. If another Porto VM or Kubernetes
-cluster still has the bundled QEMU runtime open, the update aborts instead of
-force-killing that workload; stop it and retry the update.
+On Windows, Porto stops its owned container engine only after a fresh
+all-namespace task inventory and active-build check prove it idle, then starts
+it again after the updated desktop launches. Running or manually paused
+containers, Kubernetes nodes, active builds, storage operations and unavailable
+inventory prevent update preparation. Stop the workloads explicitly and retry;
+refusal does not detach native files or change Resource Saver ownership.
+Owned native attachments are closed only after the idle checks succeed.
+If another Porto VM or Kubernetes cluster still has the bundled QEMU runtime
+open, the update aborts instead of force-killing that workload.
 
 In-app installation requires the current application directory to be writable
 by the user. The one-line installers use writable per-user locations by default.
@@ -406,9 +429,11 @@ Source builds use standard host tools:
 Release desktop apps bundle Docker, Compose, Buildx, Dive, kubectl, k9s, and Lima.
 Kind is bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
 not because upstream does not publish relocatable binaries and package-manager
-builds have large architecture-specific dynamic library closures. On macOS, run
-`brew install qemu` and restart Porto. Source builds can install the other
-providers with `porto runtime install lima|kind|k9s|k0s`.
+builds have large architecture-specific dynamic library closures. Default macOS
+VZ-backed container engines do not require QEMU. Install it with
+`brew install qemu` and restart Porto when selecting QEMU-backed VMs,
+snapshot-capable VMs or foreign-architecture guest kernels. Source builds can
+install the other providers with `porto runtime install lima|kind|k9s|k0s`.
 
 Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 

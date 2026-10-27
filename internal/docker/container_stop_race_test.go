@@ -122,6 +122,9 @@ func TestStopReconcilesExitedOrReapedTasksWithoutHidingOtherFailures(t *testing.
 				if !errors.Is(err, test.wantErr) {
 					t.Fatalf("stop error = %v, want %v", err, test.wantErr)
 				}
+				if test.wantErr == ErrUnavailable && errors.Is(err, ErrNotFound) {
+					t.Fatalf("unknown backend state was reported as a missing container: %v", err)
+				}
 			} else if err != nil {
 				t.Fatal(err)
 			}

@@ -1,7 +1,9 @@
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
+const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
+const vm = require('node:vm')
 
 const {
   bundledExecutablePaths,
@@ -20,6 +22,7 @@ const {
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
+  runtimeFailureDiagnostic,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
   waitForDockerEngine,
@@ -177,7 +180,293 @@ test('installs the engine through the active daemon', async () => {
 
   assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
   assert.equal(request.options.method, 'POST')
+  assert.equal(request.options.headers, undefined)
   assert.equal(status.available, true)
+})
+
+function engineEvent(type, value) {
+  const key = type === 'complete' ? 'status' : type === 'error' ? 'error' : 'progress'
+  return `${JSON.stringify({ type, [key]: value })}\n`
+}
+
+function engineProgressResponse(contents, { cancel = () => {} } = {}) {
+  return new Response(new ReadableStream({
+    start(controller) {
+      controller.enqueue(typeof contents === 'string' ? new TextEncoder().encode(contents) : contents)
+      controller.close()
+    },
+    cancel,
+  }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+}
+
+const guestDownloadProgress = {
+  stage: 'downloading',
+  component: 'guest-image',
+  message: 'Downloading the required Lima guest image.',
+}
+
+test('streams actual provisioning progress before installation completes', async () => {
+  let stream
+  let request
+  let completed = false
+  let observedProgress
+  const observed = new Promise((resolve) => { observedProgress = resolve })
+  const result = installDockerEngine({
+    fetchImpl: async (url, options) => {
+      request = { url, options }
+      return new Response(new ReadableStream({
+        start(controller) { stream = controller },
+      }), { headers: { 'Content-Type': 'application/x-ndjson; charset=utf-8' } })
+    },
+    onProgress: (progress) => observedProgress(progress),
+  }).then((status) => {
+    completed = true
+    return status
+  })
+  await Promise.resolve()
+  const progress = engineEvent('progress', guestDownloadProgress)
+  stream.enqueue(new TextEncoder().encode(progress.slice(0, 27)))
+  stream.enqueue(new TextEncoder().encode(progress.slice(27)))
+  assert.deepEqual(await observed, guestDownloadProgress)
+  assert.equal(completed, false)
+  assert.equal(request.url, 'http://127.0.0.1:37623/api/docker/engine/install')
+  assert.equal(request.options.headers.Accept, 'application/x-ndjson')
+  stream.enqueue(new TextEncoder().encode(engineEvent('complete', { available: true, backend: 'fixture' })))
+  stream.close()
+  assert.deepEqual(await result, { available: true, backend: 'fixture' })
+})
+
+test('distinguishes actionable network, local-tool and backend failures without echoing raw diagnostics', async () => {
+  for (const [code, guidance] of [
+    ['network', /DNS, proxy settings and HTTPS trust/],
+    ['local-tool', /runtime executable is missing or cannot run/],
+    ['backend', /backend or Porto daemon is unavailable/],
+    ['ownership', /Preserve existing instances and data/],
+  ]) {
+    await assert.rejects(installDockerEngine({
+      fetchImpl: async () => engineProgressResponse(
+        engineEvent('progress', guestDownloadProgress)
+        + engineEvent('error', { code, message: 'https://user:super-secret@proxy.invalid/?token=hidden' }),
+      ),
+      onProgress: () => {},
+    }), (error) => {
+      assert.equal(error.code, code)
+      assert.match(error.message, guidance)
+      assert.doesNotMatch(error.message, /super-secret|proxy\.invalid|token=hidden/)
+      return true
+    })
+  }
+})
+
+test('retains explicit cleanup guidance after a failed provisioning operation', async () => {
+  await assert.rejects(installDockerEngine({
+    fetchImpl: async () => engineProgressResponse(engineEvent('error', {
+      code: 'network', message: 'download failed', cleanupRequired: true,
+    })),
+    onProgress: () => {},
+  }), (error) => {
+    assert.equal(error.code, 'network')
+    assert.equal(error.cleanupRequired, true)
+    assert.match(error.message, /Cleanup also needs attention/)
+    return true
+  })
+})
+
+test('rejects malformed, truncated and contradictory installation streams without falling back', async (t) => {
+  const complete = engineEvent('complete', { available: true })
+  for (const [name, contents] of [
+    ['empty', ''],
+    ['missing completion', engineEvent('progress', guestDownloadProgress)],
+    ['truncated JSON', '{"type":"complete","status":'],
+    ['truncated terminal line', complete.trimEnd()],
+    ['invalid JSON', '{not-json}\n'],
+    ['array event', '[]\n'],
+    ['null event', 'null\n'],
+    ['unknown event', '{"type":"unexpected"}\n'],
+    ['invalid progress', engineEvent('progress', { stage: 'complete', component: 'lima', message: 'ready' })],
+    ['empty progress', engineEvent('progress', { ...guestDownloadProgress, message: '' })],
+    ['unknown error', engineEvent('error', { code: 'unknown', message: 'failure' })],
+    ['malformed error', engineEvent('error', { code: 'network', message: 5 })],
+    ['unavailable completion', engineEvent('complete', { available: false })],
+    ['duplicate completion', complete + complete],
+    ['progress after completion', complete + engineEvent('progress', guestDownloadProgress)],
+    ['error after completion', complete + engineEvent('error', { code: 'network', message: 'failure' })],
+    ['oversized event', engineEvent('progress', { ...guestDownloadProgress, message: 'x'.repeat(20000) })],
+    ['invalid UTF-8', Uint8Array.from([0xff, 0x0a])],
+  ]) {
+    await t.test(name, async () => {
+      let requests = 0
+      await assert.rejects(installDockerEngine({
+        fetchImpl: async () => {
+          requests += 1
+          return engineProgressResponse(contents)
+        },
+        onProgress: () => {},
+      }), (error) => {
+        assert.equal(error.code, 'transport')
+        assert.match(error.message, /Setup has not been confirmed/)
+        return true
+      })
+      assert.equal(requests, 1)
+    })
+  }
+})
+
+test('does not silently accept a legacy JSON response after requesting progress', async () => {
+  let requests = 0
+  await assert.rejects(installDockerEngine({
+    fetchImpl: async () => {
+      requests += 1
+      return Response.json({ available: true })
+    },
+    onProgress: () => {},
+  }), (error) => error.code === 'transport')
+  assert.equal(requests, 1)
+})
+
+test('fails closed if the progress reader fails after a complete event', async () => {
+  let reads = 0
+  await assert.rejects(installDockerEngine({
+    fetchImpl: async () => new Response(new ReadableStream({
+      pull(controller) {
+        if (reads++ === 0) {
+          controller.enqueue(new TextEncoder().encode(engineEvent('complete', { available: true })))
+        } else {
+          controller.error(new Error('secret transport diagnostic'))
+        }
+      },
+    }), { headers: { 'Content-Type': 'application/x-ndjson' } }),
+    onProgress: () => {},
+  }), (error) => {
+    assert.equal(error.code, 'transport')
+    assert.doesNotMatch(error.message, /secret/)
+    return true
+  })
+})
+
+test('cancels the request and its progress reader on timeout', async () => {
+  let requestSignal
+  let cancelled = false
+  await assert.rejects(installDockerEngine({
+    timeoutMs: 20,
+    fetchImpl: async (_url, { signal }) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(engineEvent('progress', guestDownloadProgress)))
+        },
+        cancel() { cancelled = true },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+    },
+    onProgress: () => {},
+  }), (error) => error.code === 'cancelled')
+  assert.equal(requestSignal.aborted, true)
+  assert.equal(cancelled, true)
+})
+
+test('cancels provisioning when the bootstrap caller aborts', async () => {
+  const controller = new AbortController()
+  let requestSignal
+  let cancelled = false
+  await assert.rejects(installDockerEngine({
+    signal: controller.signal,
+    fetchImpl: async (_url, { signal }) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(stream) {
+          stream.enqueue(new TextEncoder().encode(engineEvent('progress', guestDownloadProgress)))
+        },
+        cancel() { cancelled = true },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+    },
+    onProgress: () => controller.abort(),
+  }), (error) => error.code === 'cancelled')
+  assert.equal(requestSignal.aborted, true)
+  assert.equal(cancelled, true)
+})
+
+test('does not start provisioning for an already-aborted bootstrap caller', async () => {
+  const controller = new AbortController()
+  controller.abort()
+  await assert.rejects(installDockerEngine({
+    signal: controller.signal,
+    fetchImpl: async () => assert.fail('an aborted caller must not start installation'),
+    onProgress: () => {},
+  }), (error) => error.code === 'cancelled')
+})
+
+test('aborts rather than hiding a failed progress observer', async () => {
+  let requestSignal
+  let cancelled = false
+  await assert.rejects(installDockerEngine({
+    fetchImpl: async (_url, { signal }) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(engineEvent('progress', guestDownloadProgress)))
+        },
+        cancel() { cancelled = true },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+    },
+    onProgress: () => { throw new Error('secret observer failure') },
+  }), (error) => {
+    assert.equal(error.code, 'transport')
+    assert.doesNotMatch(error.message, /secret/)
+    return true
+  })
+  assert.equal(requestSignal.aborted, true)
+  assert.equal(cancelled, true)
+})
+
+test('reports an unreachable provisioning daemon separately from required downloads', async () => {
+  await assert.rejects(installDockerEngine({
+    fetchImpl: async () => { throw new TypeError('fetch failed') },
+    onProgress: () => {},
+  }), (error) => error.code === 'backend')
+})
+
+test('preserves useful runtime diagnostics while removing secrets and entire URLs', () => {
+  const error = new Error('synthetic Buildx check failed: EACCES; password=secret-private-value\n'
+    + 'Details: {"token":"json-private-value"}\n'
+    + 'Proxy check failed: authorization: Bearer bearer-private-value\n'
+    + 'download=https://download.invalid/tool?signature=url-private-value\n'
+    + 'proxy=socks5://proxy.invalid:1080\n'
+    + '-----BEGIN PRIVATE KEY-----\nprivate-key-value\n-----END PRIVATE KEY-----')
+  const message = runtimeFailureDiagnostic(error)
+  assert.match(message, /synthetic Buildx check failed: EACCES/)
+  for (const secret of ['secret-private-value', 'json-private-value', 'bearer-private-value', 'url-private-value', 'private-key-value', 'download.invalid', 'proxy.invalid', 'https://', 'socks5://']) {
+    assert.equal(message.includes(secret), false, `diagnostics exposed ${secret}`)
+  }
+})
+
+test('logs the sanitized bundled-toolchain root cause before returning the safe bootstrap error', async () => {
+  const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8')
+  const start = source.indexOf('async function ensureDockerEngine(')
+  const end = source.indexOf('\nfunction createBootstrapWindow(', start)
+  assert.ok(start !== -1 && end > start)
+  const entries = []
+  const ensureDockerEngine = vm.runInNewContext(`(${source.slice(start, end)})`, {
+    app: { isPackaged: true },
+    process: { resourcesPath: '/synthetic/runtime' },
+    portoEnvironment: async () => ({}),
+    inspectBundledDockerToolchain: async () => {
+      throw new Error('Bundled Docker compose check failed: synthetic executable permission denied; token=tool-private-value; https://tool.invalid/download')
+    },
+    runtimeFailureDiagnostic,
+    console: {
+      debug() {},
+      error: (...args) => entries.push(args),
+    },
+  })
+  await assert.rejects(ensureDockerEngine(), (error) => {
+    assert.match(error.message, /A bundled local runtime executable is missing or cannot run/)
+    assert.doesNotMatch(error.message, /synthetic executable|tool-private-value|tool\.invalid/)
+    assert.equal(entries.length, 1, 'root cause must be logged before the error reaches the caller')
+    return true
+  })
+  assert.match(entries[0][1], /Bundled Docker compose check failed: synthetic executable permission denied/)
+  assert.doesNotMatch(entries[0][1], /tool-private-value|tool\.invalid|https:\/\//)
+  assert.equal(entries[0].some((entry) => entry instanceof Error), false)
 })
 
 test('prepares the owned engine before a Windows desktop update', async () => {

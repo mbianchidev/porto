@@ -173,3 +173,10 @@ test('missing Linux package manager reports incomplete setup', (t) => {
   assert.match(result.stderr, /incomplete.*QEMU/is)
   assert.equal(fs.existsSync(path.join(result.installRoot, 'previous-installation')), true)
 })
+
+test('the Linux desktop launcher quotes installed paths with spaces and non-ASCII names', (t) => {
+  const result = fixture(t)
+  assert.equal(result.status, 0, result.stderr)
+  const desktop = fs.readFileSync(path.join(result.root, 'home', '.local', 'share', 'applications', 'porto.desktop'), 'utf8')
+  assert.equal(desktop.split('\n').find((line) => line.startsWith('Exec=')), `Exec="${result.installRoot}/Porto"`)
+})

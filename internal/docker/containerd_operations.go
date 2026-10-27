@@ -949,7 +949,7 @@ func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id stri
 	// before releasing its networks; never hide a missing live task target.
 	process, err := r.getTask(ctx, id)
 	if err != nil && status.Code(err) != codes.NotFound {
-		return errors.Join(stopErr, containerdOperationError("verify stopped task for", id, err))
+		return fmt.Errorf("verify stopped state after %v: %w", stopErr, containerdOperationError("verify stopped task for", id, err))
 	}
 	if err == nil && process.GetStatus() != tasktypes.Status_STOPPED {
 		return stopErr

@@ -3,6 +3,8 @@ package docker
 import (
 	"context"
 	"time"
+
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
 const limaBinfmtInstallCommand = `set -eu
@@ -94,22 +96,16 @@ fi
 `
 
 func (m *Manager) installLimaBinfmt(ctx context.Context) error {
-	_, err := m.runCommand(
-		ctx,
-		5*time.Minute,
-		"configure Porto multi-platform builds",
-		nil,
-		"limactl",
-		"shell",
-		"--workdir=/",
-		engineInstanceName,
-		"--",
-		"sudo",
-		"-n",
-		"sh",
-		"-c",
-		limaBinfmtInstallCommand,
-	)
+	command := runtimes.Command{
+		Name: "limactl",
+		Args: []string{"shell", "--workdir=/", engineInstanceName, "--", "sudo", "-n", "sh", "-c", limaBinfmtInstallCommand},
+	}
+	var err error
+	if engineObserver(ctx) != nil {
+		err = m.streamEngineInstallCommand(ctx, 5*time.Minute, "configure Porto multi-platform builds", command)
+	} else {
+		_, err = m.runCommand(ctx, 5*time.Minute, "configure Porto multi-platform builds", nil, command.Name, command.Args...)
+	}
 	if err != nil {
 		return err
 	}

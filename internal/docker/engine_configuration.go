@@ -28,9 +28,7 @@ type EngineConfiguration struct {
 	Disk         int64  `json:"disk"`
 }
 
-func (m *Manager) CheckEngineIdle(ctx context.Context) (err error) {
-	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
+func (m *Manager) CheckEngineIdle(ctx context.Context) error {
 	if m.nativeGuard != nil {
 		for _, kind := range []string{"container", "volume"} {
 			if err := m.nativeGuard(kind, "*"); err != nil {
@@ -38,6 +36,12 @@ func (m *Manager) CheckEngineIdle(ctx context.Context) (err error) {
 			}
 		}
 	}
+	return m.checkEngineWorkloadsIdle(ctx)
+}
+
+func (m *Manager) checkEngineWorkloadsIdle(ctx context.Context) (err error) {
+	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	defer cancel()
 	runtimeClient, err := m.runtimeConnector(ctx)
 	if err != nil {
 		return fmt.Errorf("fresh all-namespace engine inventory is unavailable: %w", err)
