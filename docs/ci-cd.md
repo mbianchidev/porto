@@ -530,12 +530,22 @@ covering silent in-place replacement and NSIS installation paths containing
 spaces without launching the updated desktop.
 These checks do not boot a guest or prove guest-kernel compatibility.
 
-Native installers build in four independent OS/architecture jobs rather than
-two sequential architecture loops. Each job verifies exactly one installer;
-each macOS job also verifies its matching desktop archive and DMG checksum.
-The Windows AMD64 job retains the complete installed-package, WinFsp,
-logging, blocked-update, in-place-update, and uninstall smoke checks; ARM64
-remains a cross-built package, not a claimed native execution test.
+Native installers build in four independent, architecture-matched host jobs.
+Each job verifies exactly one installer; each macOS job also verifies its
+matching desktop archive and DMG checksum. Both Windows architectures run the
+installed-package, WinFsp, logging, blocked-update, in-place-update and
+uninstall checks. The two Linux toolchain jobs also build and install their
+native desktop archive rather than treating an ARM64 cross-build as execution.
+
+The [installed-package gate](installed-acceptance.md) runs the shipped desktop,
+daemon, Docker, Compose and Buildx from real paths containing spaces and
+non-ASCII characters. It requires real Compose/Buildx workflows, safe refusal
+to update a running workload, and byte-checked preservation through replacement
+and removal. Hosted fixtures explicitly select QEMU TCG; their evidence does
+not qualify default hardware-accelerated drivers. Test definitions, package
+builds, native host execution and actual successful runtime results remain
+distinct evidence.
+
 CI and CodeQL matrices use fail-fast: a failed member cancels queued and
 running siblings instead of spending more time on an already-failed matrix.
 Successful runs still execute every platform, architecture, and validation

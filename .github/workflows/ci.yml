@@ -236,13 +236,17 @@ jobs:
         run: node --test scripts/check-go-crypto.test.cjs scripts/windows-container-toolchain.test.cjs
 
   linux-toolchain:
-    name: Linux Docker toolchain (${{ matrix.arch }})
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
+    name: Installed Linux toolchain (${{ matrix.arch }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
     strategy:
       fail-fast: true
       matrix:
-        arch: [amd64, arm64]
+        include:
+          - os: ubuntu-latest
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
@@ -256,22 +260,99 @@ jobs:
         with:
           node-version: '26'
           check-latest: true
+          cache: npm
+          cache-dependency-path: |
+            ui/package-lock.json
+            ui/electron/package-lock.json
 
       - uses: ./.github/actions/cache-desktop
         with:
           target: linux-${{ matrix.arch }}
 
-      - name: Build checksum-pinned runtime
-        run: bash scripts/bundle-desktop-runtime.sh linux "${{ matrix.arch }}" "$RUNNER_TEMP/runtime"
-
-      - name: Run clean Compose smoke
-        if: matrix.arch == 'amd64'
+      - name: Require the matching native host and test installed acceptance assertions
         env:
-          DOCKER_CONFIG: ${{ runner.temp }}/clean-docker-config
+          EXPECTED_TARGET: linux/${{ matrix.arch }}
+        run: |
+          node -e "require('node:assert/strict').equal(require('./scripts/installed-fixture.cjs').target(), process.env.EXPECTED_TARGET)"
+          node --test scripts/installed-acceptance.test.cjs
+
+      - name: Install Linux desktop and VM prerequisites
+        run: |
+          case "${{ matrix.arch }}" in
+            amd64) qemu_package=qemu-system-x86; firmware_package=ovmf ;;
+            arm64) qemu_package=qemu-system-arm; firmware_package=qemu-efi-aarch64 ;;
+          esac
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends \
+            "$qemu_package" "$firmware_package" qemu-utils openssh-client \
+            xvfb xauth libgbm1 libgtk-3-0t64 libnss3 libasound2t64
+
+      - name: Build checksum-pinned runtime once
+        run: |
+          mkdir -p .installed-build/scratch
+          TMPDIR="$GITHUB_WORKSPACE/.installed-build/scratch" \
+            bash scripts/bundle-desktop-runtime.sh linux "${{ matrix.arch }}" "$GITHUB_WORKSPACE/.installed-build/runtime"
+
+      - name: Preserve the synthetic Compose API contract coverage
+        env:
+          DOCKER_CONFIG: ${{ github.workspace }}/.installed-contract-docker
         run: |
           mkdir -p "$DOCKER_CONFIG"
-          PATH="$RUNNER_TEMP/runtime/bin:$PATH" \
+          PATH="$GITHUB_WORKSPACE/.installed-build/runtime/bin:$PATH" \
             go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1 -failfast
+
+      - name: Package the native Linux desktop once
+        id: desktop
+        env:
+          GOARCH: ${{ matrix.arch }}
+          CGO_ENABLED: '0'
+          TMPDIR: ${{ github.workspace }}/.installed-build/scratch
+        run: |
+          set -euo pipefail
+          version="$(node -p "require('./ui/package.json').version.split('+')[0]")+ci.${GITHUB_RUN_NUMBER}"
+          name="porto-desktop_${version}_linux_${GOARCH}"
+          stage="$GITHUB_WORKSPACE/.installed-build"
+          npm --prefix ui ci
+          npm --prefix ui run build
+          npm --prefix ui/electron ci
+          mkdir -p "$stage/cli" "$stage/package" dist
+          go build -trimpath \
+            -ldflags "-s -w -X github.com/mbianchidev/porto/internal/config.Version=$version" \
+            -o "$stage/cli/porto" ./cmd/porto
+          electron_arch="$GOARCH"
+          if [ "$GOARCH" = amd64 ]; then electron_arch=x64; fi
+          (
+            cd ui/electron
+            node package.cjs --platform=linux "--arch=$electron_arch" "--out=$stage/package" \
+              "--porto-release-version=$version" "--app-version=${version%%+*}" \
+              "--build-version=$GITHUB_RUN_NUMBER" \
+              "--extra-resource=$stage/cli/porto" \
+              "--extra-resource=$GITHUB_WORKSPACE/ui/dist" \
+              "--extra-resource=$GITHUB_WORKSPACE/.installed-build/runtime"
+          )
+          packaged_app="$(find "$stage/package" -mindepth 1 -maxdepth 1 -type d -print -quit)"
+          test -n "$packaged_app"
+          node scripts/desktop-runtime-symlinks.cjs --validate "$packaged_app"
+          mv "$packaged_app" "$stage/$name"
+          tar -czf "dist/$name.tar.gz" -C "$stage" "$name"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Exercise real installed desktop, Compose, Buildx and preservation
+        env:
+          VERSION: ${{ steps.desktop.outputs.version }}
+          TMPDIR: ${{ github.workspace }}/.installed-build/scratch
+        run: |
+          xvfb-run -a node scripts/installed-package.cjs \
+            "dist/porto-desktop_${VERSION}_linux_${{ matrix.arch }}.tar.gz" \
+            "$VERSION" "linux/${{ matrix.arch }}" .installed-linux qemu-tcg
+
+      - name: Upload completed installed Linux evidence
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: installed-linux-${{ matrix.arch }}
+          path: dist/installed-acceptance_linux_${{ matrix.arch }}.json
+          if-no-files-found: error
+          retention-days: 3
 
   development-clients:
     name: Development clients (${{ matrix.backend }}, ${{ matrix.os }})
@@ -535,23 +616,23 @@ jobs:
   native-installers:
     name: Native installers (${{ matrix.goos }}/${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 120
     env:
       CGO_ENABLED: '0'
     strategy:
       fail-fast: true
       matrix:
         include:
-          - os: macos-latest
+          - os: macos-26-intel
             goos: darwin
             arch: amd64
           - os: macos-latest
             goos: darwin
             arch: arm64
-          - os: windows-latest
+          - os: windows-2025
             goos: windows
             arch: amd64
-          - os: windows-latest
+          - os: windows-11-arm
             goos: windows
             arch: arm64
     steps:
@@ -575,6 +656,14 @@ jobs:
       - uses: ./.github/actions/cache-desktop
         with:
           target: ${{ matrix.goos }}-${{ matrix.arch }}
+
+      - name: Require matching native execution and test installed assertions
+        shell: bash
+        env:
+          EXPECTED_TARGET: ${{ matrix.goos }}/${{ matrix.arch }}
+        run: |
+          node -e "require('node:assert/strict').equal(require('./scripts/installed-fixture.cjs').target(), process.env.EXPECTED_TARGET)"
+          node --test scripts/installed-acceptance.test.cjs
 
       - name: Build desktop inputs
         shell: bash
@@ -618,16 +707,54 @@ jobs:
             hdiutil verify "$image"
           done
 
+      - name: Install macOS QEMU for the explicitly software-emulated hosted fixture
+        if: runner.os == 'macOS'
+        run: brew install qemu
+
+      - name: Exercise real installed macOS desktop, Compose, Buildx and preservation
+        if: runner.os == 'macOS'
+        shell: bash
+        env:
+          VERSION: ${{ steps.installers.outputs.version }}
+        run: |
+          node scripts/installed-package.cjs \
+            "dist/porto-desktop_${VERSION}_darwin_${{ matrix.arch }}.dmg" \
+            "$VERSION" "darwin/${{ matrix.arch }}" .installed-macos qemu-tcg
+
       - name: Install and uninstall Windows package
-        if: runner.os == 'Windows' && matrix.arch == 'amd64'
+        if: runner.os == 'Windows'
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Stop'
           $installers = @(Get-ChildItem dist -Filter '*.exe')
           if ($installers.Count -ne 1) {
             throw "Expected one Windows installer, found $($installers.Count)."
           }
-          $installer = Get-Item 'dist/porto-desktop_${{ steps.installers.outputs.version }}_windows_amd64.exe'
-          $installRoot = Join-Path $env:RUNNER_TEMP 'Porto installer smoke'
+          $installer = Get-Item 'dist/porto-desktop_${{ steps.installers.outputs.version }}_windows_${{ matrix.arch }}.exe'
+          $fixture = Join-Path $env:GITHUB_WORKSPACE '.installed-windows'
+          & node scripts/installed-acceptance.cjs prepare $fixture 'windows/${{ matrix.arch }}' qemu-tcg
+          if ($LASTEXITCODE -ne 0) { throw 'Installed acceptance isolation failed.' }
+          $acceptanceEnvironment = & node scripts/installed-acceptance.cjs environment $fixture | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { throw 'Installed acceptance environment failed.' }
+          foreach ($entry in $acceptanceEnvironment.PSObject.Properties) {
+            [Environment]::SetEnvironmentVariable($entry.Name, [string]$entry.Value, 'Process')
+          }
+          & node scripts/installed-acceptance.cjs preflight $fixture
+          if ($LASTEXITCODE -ne 0) { throw 'Refusing existing Porto listeners or processes.' }
+          foreach ($registryRoot in @(
+            'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\Software\Microsoft\Windows\CurrentVersion\Uninstall',
+            'HKLM:\Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall'
+          )) {
+            if (-not (Test-Path -LiteralPath $registryRoot)) { continue }
+            $existingPorto = @(Get-ChildItem -LiteralPath $registryRoot | ForEach-Object {
+              Get-ItemProperty -LiteralPath $_.PSPath
+            } | Where-Object { $_.DisplayName -eq 'Porto' })
+            if ($existingPorto.Count -ne 0) {
+              throw 'Installed acceptance requires a clean CI host; refusing an existing Porto installation.'
+            }
+          }
+          $installRoot = Join-Path $fixture 'Porto installé 路径'
           $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Porto.lnk'
           $desktopShortcutExisted = Test-Path $desktopShortcut
           $process = Start-Process $installer.FullName -ArgumentList "/S /D=$installRoot" -Wait -PassThru
@@ -647,7 +774,7 @@ jobs:
             throw 'Installer did not include the desktop runtime.'
           }
           $docker = Join-Path $installRoot 'resources/runtime/bin/docker.exe'
-          $dockerConfig = Join-Path $env:RUNNER_TEMP 'Porto clean Docker config'
+          $dockerConfig = Join-Path $fixture 'Docker 配置 with spaces'
           New-Item -ItemType Directory -Force -Path $dockerConfig | Out-Null
           $oldDockerConfig = $env:DOCKER_CONFIG
           $oldPath = $env:PATH
@@ -663,15 +790,14 @@ jobs:
             $dive = Join-Path $installRoot 'resources/runtime/bin/dive.exe'
             & $dive --version | Out-Null
             if ($LASTEXITCODE -ne 0) { throw 'Installed Dive image inspector failed.' }
-            go test ./internal/docker -run '^TestDockerComposeUpUsesPortoNativeSocket$' -count=1 -failfast
-            if ($LASTEXITCODE -ne 0) { throw 'Installed Docker Compose failed the Porto API smoke test.' }
           }
           finally {
             $env:DOCKER_CONFIG = $oldDockerConfig
             $env:PATH = $oldPath
           }
           $qemuImg = Join-Path $installRoot 'resources/runtime/qemu/qemu-img.exe'
-          $qemuSystem = Join-Path $installRoot 'resources/runtime/qemu/qemu-system-x86_64.exe'
+          $qemuName = if ('${{ matrix.arch }}' -eq 'arm64') { 'qemu-system-aarch64.exe' } else { 'qemu-system-x86_64.exe' }
+          $qemuSystem = Join-Path $installRoot "resources/runtime/qemu/$qemuName"
           foreach ($binary in @($qemuImg, $qemuSystem)) {
             if (-not (Test-Path $binary)) {
               throw "Installer did not include $binary."
@@ -709,11 +835,18 @@ jobs:
           finally {
             Remove-Item Env:PORTO_TEST_DAEMON
           }
-          $scriptPath = (Resolve-Path './ui/electron/apply-update.ps1').Path
-          $blockedUpdatePackage = Join-Path $env:RUNNER_TEMP 'Porto blocked update package.exe'
-          $blockedUpdateError = Join-Path $env:RUNNER_TEMP 'Porto blocked update error.txt'
-          $blockedUpdateReady = Join-Path $env:RUNNER_TEMP 'Porto blocked update ready.txt'
-          $blockedUpdateProceed = Join-Path $env:RUNNER_TEMP 'Porto blocked update proceed.txt'
+          & node scripts/installed-acceptance.cjs run $fixture
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Real installed named-pipe Compose/Buildx/desktop acceptance failed.'
+          }
+          $scriptPath = Join-Path $installRoot 'resources/apply-update.ps1'
+          if (-not (Test-Path -LiteralPath $scriptPath)) {
+            throw 'The installed Windows update helper is missing.'
+          }
+          $blockedUpdatePackage = Join-Path $fixture 'Porto blocked update package.exe'
+          $blockedUpdateError = Join-Path $fixture 'Porto blocked update error.txt'
+          $blockedUpdateReady = Join-Path $fixture 'Porto blocked update ready.txt'
+          $blockedUpdateProceed = Join-Path $fixture 'Porto blocked update proceed.txt'
           Copy-Item $installer.FullName $blockedUpdatePackage
           Remove-Item $blockedUpdateError, $blockedUpdateReady, $blockedUpdateProceed -Force -ErrorAction SilentlyContinue
           $qemuBlocker = Start-Process `
@@ -770,10 +903,10 @@ jobs:
               $blockedUpdateProceed
             ) | Remove-Item -Force -ErrorAction SilentlyContinue
           }
-          $updatePackage = Join-Path $env:RUNNER_TEMP 'Porto update package.exe'
-          $updateError = Join-Path $env:RUNNER_TEMP 'Porto update error.txt'
-          $updateReady = Join-Path $env:RUNNER_TEMP 'Porto update ready.txt'
-          $updateProceed = Join-Path $env:RUNNER_TEMP 'Porto update proceed.txt'
+          $updatePackage = Join-Path $fixture 'Porto update package.exe'
+          $updateError = Join-Path $fixture 'Porto update error.txt'
+          $updateReady = Join-Path $fixture 'Porto update ready.txt'
+          $updateProceed = Join-Path $fixture 'Porto update proceed.txt'
           Copy-Item $installer.FullName $updatePackage
           Remove-Item $updateReady, $updateProceed -Force -ErrorAction SilentlyContinue
           $updateArguments = @(
@@ -812,6 +945,10 @@ jobs:
           if (-not (Test-Path (Join-Path $installRoot 'Porto.exe'))) {
             throw 'In-place update helper removed Porto.exe.'
           }
+          & node scripts/installed-acceptance.cjs upgraded $fixture
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installed update failed populated-state/toolchain/real-volume preservation.'
+          }
           $uninstaller = Get-ChildItem $installRoot -Filter 'Uninstall*.exe' | Select-Object -First 1
           if (-not $uninstaller) {
             throw 'Installer did not create an uninstaller.'
@@ -819,6 +956,10 @@ jobs:
           $process = Start-Process $uninstaller.FullName -ArgumentList '/S' -Wait -PassThru
           if ($process.ExitCode -ne 0) {
             throw "Uninstaller exited with code $($process.ExitCode)."
+          }
+          & node scripts/installed-acceptance.cjs removed $fixture
+          if ($LASTEXITCODE -ne 0) {
+            throw 'Installed uninstall failed populated-state and unrelated Docker preservation.'
           }
 
       - name: Upload native installers
@@ -829,6 +970,7 @@ jobs:
             dist/*.dmg
             dist/*.exe
             dist/*.tar.gz
+            dist/installed-acceptance_*.json
           if-no-files-found: error
           compression-level: 0
           retention-days: 3

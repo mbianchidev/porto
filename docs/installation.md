@@ -95,6 +95,10 @@ conflicts and unavailable backends have distinct retry guidance. Closing the
 preparation window cancels provisioning; existing engines and data are retained,
 and only a newly created failed guest is eligible for cleanup.
 
+See [installed-package acceptance](installed-acceptance.md) for the real
+clean-install, upgrade and removal gates, including the distinction between
+native host binaries and software-emulated guest qualification.
+
 The install scripts add a `docker` command beside `porto` only when that name is
 unused or already points to Porto. Existing user-managed commands are preserved.
 The always-available explicit form is:
