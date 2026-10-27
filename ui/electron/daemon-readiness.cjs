@@ -123,7 +123,7 @@ function runtimeFailureDiagnostic(error) {
   message = message
     .replace(/-----BEGIN (?:[A-Z0-9 ]*PRIVATE KEY|CERTIFICATE)-----[\s\S]*?-----END (?:[A-Z0-9 ]*PRIVATE KEY|CERTIFICATE)-----/g, '[REDACTED]')
     .replace(/\b[a-z][a-z0-9+.-]*:\/\/[^\s"'<>]+/gi, '[REDACTED URL]')
-    .replace(/("[^"]*(?:password|passwd|token|secret|authorization|auth|key-data|certificate-data|proxy)[^"]*"\s*:\s*)"(?:\\.|[^"])*"/gi, '$1"[REDACTED]"')
+    .replace(/("[^"]*(?:password|passwd|token|secret|authorization|auth|key-data|certificate-data|proxy)[^"]*"\s*:\s*)"(?:\\.|[^"\\])*"/gi, '$1"[REDACTED]"')
     .replace(/(authorization\s*:\s*bearer\s+)[^\s]+/gi, '$1[REDACTED]')
     .replace(/^(\s*[A-Z0-9_.-]*(?:PASSWORD|PASSWD|TOKEN|SECRET|AUTHORIZATION|AUTH|KEY-DATA|CERTIFICATE-DATA|PROXY)[A-Z0-9_.-]*\s*[:=]\s*).+$/gim, '$1[REDACTED]')
     .replace(/\b(password|passwd|token|secret|authorization|auth)\s*[:=]\s*[^,\s;"']+/gi, '$1=[REDACTED]')

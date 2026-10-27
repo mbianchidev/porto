@@ -89,6 +89,7 @@ func TestPrepareEngineUpdatePreservesActiveAndUnobservableWorkloads(t *testing.T
 				`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
 			}}
 			manager := NewWithStateDir(runner, t.TempDir())
+			manager.lookPath = func(name string) (string, error) { return name, nil }
 			manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
 				return updateSafetyRuntime(t, &updateTasks{state: test.state, err: test.inventoryErr}), nil
 			}
@@ -112,6 +113,9 @@ func TestPrepareEngineUpdatePreservesActiveAndUnobservableWorkloads(t *testing.T
 			stopped, err := manager.PrepareEngineUpdate(context.Background())
 			if err == nil || stopped {
 				t.Fatalf("unsafe update was accepted: stopped=%t error=%v", stopped, err)
+			}
+			if test.inventoryErr == nil && !errors.Is(err, ErrConflict) {
+				t.Fatalf("observable active workload was not reported as a lifecycle conflict: %v", err)
 			}
 			if detached {
 				t.Fatal("refused update detached existing native files")

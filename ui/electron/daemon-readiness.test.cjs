@@ -439,6 +439,23 @@ test('preserves useful runtime diagnostics while removing secrets and entire URL
   }
 })
 
+test('malformed escaped diagnostics cannot cause exponential backtracking', () => {
+  const { spawnSync } = require('node:child_process')
+  const result = spawnSync(process.execPath, ['-e', `
+    const input = require('node:fs').readFileSync(0, 'utf8')
+    require(process.argv[1]).runtimeFailureDiagnostic(new Error(input))
+    process.stdout.write('completed')
+  `, require.resolve('./daemon-readiness.cjs')], {
+    input: '"auth":"' + '\\!'.repeat(20000),
+    encoding: 'utf8',
+    timeout: 5000,
+    shell: false,
+  })
+  assert.ifError(result.error)
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.stdout, 'completed')
+})
+
 test('logs the sanitized bundled-toolchain root cause before returning the safe bootstrap error', async () => {
   const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8')
   const start = source.indexOf('async function ensureDockerEngine(')

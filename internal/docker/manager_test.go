@@ -1291,6 +1291,7 @@ func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
 		},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
+	manager.lookPath = func(name string) (string, error) { return name, nil }
 	manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
 		return updateSafetyRuntime(t, &updateTasks{}), nil
 	}

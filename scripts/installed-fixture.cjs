@@ -255,6 +255,35 @@ function reportedVersion(output, expected) {
     `Installed tool must report the exact pinned version ${expected}`)
 }
 
+function failureDiagnostic(error) {
+  const fallback = 'Installed-package acceptance failed. Check the isolated runner prerequisites and package contents, then retry with a fresh disposable CI fixture. Error details are omitted to protect credentials.'
+  let code
+  try { code = error?.code } catch { return fallback }
+  switch (code) {
+    case 'PORTO_COMMAND_TIMEOUT':
+      return 'An acceptance command timed out. Check guest download connectivity and backend readiness, verify owned-process cleanup, then retry the disposable CI fixture.'
+    case 'PORTO_COMMAND_OUTPUT_LIMIT':
+      return 'An acceptance command exceeded its output limit. Check the packaged tool for repeated output and verify owned-process cleanup before retrying.'
+    case 'PORTO_COMMAND_IO':
+      return 'Acceptance command output could not be read. Check the runner process and pipe capabilities; do not claim the command completed.'
+    case 'PORTO_COMMAND_SHELL_FORBIDDEN':
+      return 'Shell execution is forbidden in installed acceptance. Use an executable and argument array, or pass a trusted script file explicitly to /bin/sh.'
+    case 'PORTO_PROCESS_INSPECTION_UNAVAILABLE':
+      return 'Process identity inspection is unavailable. Check runner permissions and native process-inspection support; never treat an unverified owned process as stopped.'
+    case 'ENOENT':
+      return 'A required installed file or executable is missing. Verify the complete package and documented runner prerequisites, then rerun the clean fixture.'
+    case 'EACCES':
+    case 'EPERM':
+      return 'Runner permissions prevented access to a required tool or owned process. Verify executable permissions and process-inspection access before retrying.'
+    case 'ENOSPC':
+      return 'The acceptance runner has insufficient disk space. Reclaim disposable CI storage and retry with a fresh fixture.'
+    case 'ERR_ASSERTION':
+      return 'Installed package verification failed. Use a matching native target on a clean disposable CI host; verify shipped tools and synthetic-state preservation.'
+    default:
+      return fallback
+  }
+}
+
 async function available(address) {
   await new Promise((resolve, reject) => {
     const socket = net.connect(address)
@@ -303,7 +332,7 @@ async function terminateCommandTree(child, env, signal) {
   const taskkill = path.join(systemRoot, 'System32', 'taskkill.exe')
   await new Promise((resolve, reject) => {
     const helper = spawn(taskkill, ['/PID', String(child.pid), '/T', '/F'], {
-      env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
+      env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], shell: false,
     })
     let output = ''
     let finished = false
@@ -352,6 +381,11 @@ async function run(file, args, options = {}, {
     allowFailure = false, timeout = 120000, cleanupTimeout = 5000,
     maxBuffer = 8 * 1024 * 1024, ...childOptions
   } = options
+  if (options.shell !== undefined && options.shell !== false) {
+    throw Object.assign(new Error('Installed acceptance commands must use argv-only execution'), {
+      code: 'PORTO_COMMAND_SHELL_FORBIDDEN',
+    })
+  }
   for (const [name, value] of Object.entries({ timeout, cleanupTimeout, maxBuffer })) {
     assert.ok(Number.isSafeInteger(value) && value > 0, `${name} must be a positive integer`)
   }
@@ -360,6 +394,7 @@ async function run(file, args, options = {}, {
     ...childOptions, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'],
     // Keep the child referenced, but isolate its Unix process group for teardown.
     detached: process.platform !== 'win32',
+    shell: false,
   })
   const closed = new Promise((resolve, reject) => {
     child.once('error', reject)
@@ -457,6 +492,6 @@ async function waitFor(check, description, timeout = 60000) {
 
 module.exports = {
   DAEMON_URL, EXPECTED, PORTS, available, digest, environment, fileDigest, inspectPackage,
-  layout, load, nativeHeader, noListeners, pluginPaths, prepare, preserved, run, save,
+  failureDiagnostic, layout, load, nativeHeader, noListeners, pluginPaths, prepare, preserved, run, save,
   reportedVersion, target, waitFor, within, workspacePath, write,
 }

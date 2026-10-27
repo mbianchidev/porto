@@ -9,10 +9,10 @@ const { EventEmitter, once } = require('node:events')
 const { PassThrough } = require('node:stream')
 
 const {
-  EXPECTED, available, digest, environment, inspectPackage, layout, load, nativeHeader,
+  EXPECTED, available, digest, environment, failureDiagnostic, inspectPackage, layout, load, nativeHeader,
   pluginPaths, prepare, preserved, reportedVersion, run, save, target, waitFor, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, identity, restored } = require('./installed-acceptance.cjs')
+const { existingDesktops, hostProcesses, identity, restored } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -271,6 +271,59 @@ test('missing commands and unsuccessful processes fail closed, never become a sk
     /failed.*7.*synthetic tool failure/s)
 })
 
+test('shell opt-in is rejected before spawning, including when failures are otherwise allowed', async () => {
+  let spawned = false
+  for (const shell of [true, '/bin/sh', 'cmd.exe', '']) {
+    await assert.rejects(run(process.execPath, ['-e', ''], { shell, allowFailure: true }, {
+      spawnImpl: () => { spawned = true; throw new Error('Shell opt-in reached spawn') },
+    }), { code: 'PORTO_COMMAND_SHELL_FORBIDDEN' })
+  }
+  assert.equal(spawned, false)
+})
+
+test('argv-only execution preserves shell metacharacters as literal argument data', async (t) => {
+  const current = fixture(t)
+  const args = ['with spaces é', 'value; echo unexpected', '$(echo unexpected)', 'value & echo unexpected']
+  const result = await run(process.execPath, ['-e', 'process.stdout.write(JSON.stringify(process.argv.slice(1)))', ...args], {
+    shell: false, env: environment(current),
+  })
+  assert.deepEqual(JSON.parse(result.stdout), args)
+})
+
+if (process.platform !== 'win32') {
+  test('argv-only execution retains intentional /bin/sh script-file invocation', async (t) => {
+    const current = fixture(t)
+    const script = path.join(current.home, 'explicit script é.sh')
+    write(script, '#!/bin/sh\nprintf "%s" "$1"\n')
+    const argument = 'literal ; $(echo unexpected)'
+    const result = await run('/bin/sh', [script, argument], { env: environment(current) })
+    assert.equal(result.stdout, argument)
+  })
+}
+
+test('public failure diagnostics use fixed actionable categories without serializing errors or credentials', () => {
+  const secret = 'synthetic-credential-must-not-be-logged'
+  for (const code of [
+    'PORTO_COMMAND_TIMEOUT', 'PORTO_COMMAND_OUTPUT_LIMIT', 'PORTO_COMMAND_IO',
+    'PORTO_COMMAND_SHELL_FORBIDDEN', 'PORTO_PROCESS_INSPECTION_UNAVAILABLE',
+    'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ERR_ASSERTION', secret, undefined,
+  ]) {
+    const error = Object.assign(new Error(`https://user:${secret}@synthetic.invalid/?token=${secret}`), {
+      code, stdout: secret, stderr: secret, stack: secret,
+      cause: new Error(secret),
+      toString() { throw new Error(secret) },
+      [Symbol.for('nodejs.util.inspect.custom')]() { throw new Error(secret) },
+    })
+    const diagnostic = failureDiagnostic(error)
+    assert.equal(typeof diagnostic, 'string')
+    assert.ok(diagnostic.length > 40)
+    assert.ok(!diagnostic.includes(secret))
+    assert.ok(!diagnostic.includes('https://'))
+  }
+  const inaccessibleCode = { get code() { throw new Error(secret) } }
+  assert.equal(failureDiagnostic(inaccessibleCode), failureDiagnostic(undefined))
+})
+
 function alive(pid) {
   try { process.kill(pid, 0); return true } catch (error) {
     if (error.code === 'ESRCH') return false
@@ -309,6 +362,7 @@ async function commandTree(t, mode) {
   const env = environment(current)
   const script = path.join(current.home, 'owned-process-tree.cjs')
   const record = path.join(current.home, 'owned-pids.json')
+  const recordedIdentities = new Map()
   let unrelated
   t.after(async () => {
     try {
@@ -316,7 +370,7 @@ async function commandTree(t, mode) {
         const { pids } = JSON.parse(fs.readFileSync(record, 'utf8'))
         for (const pid of pids.reverse()) {
           const value = await identity(pid, env)
-          if (value.includes(current.id)) {
+          if (value && value === recordedIdentities.get(pid)) {
             try { process.kill(pid, 'SIGKILL') } catch (error) {
               if (error.code !== 'ESRCH') throw error
             }
@@ -346,8 +400,12 @@ if (level === 'leaf') {
     else {
       fs.writeFileSync(record + '.next', JSON.stringify({ pids }))
       fs.renameSync(record + '.next', record)
-      if (mode === 'stdout' || mode === 'stderr') process[mode].write(Buffer.alloc(32768, 120))
-      if (mode === 'exited') process.exit(0)
+      const ready = setInterval(() => {
+        if (!fs.existsSync(record + '.proceed')) return
+        clearInterval(ready)
+        if (mode === 'stdout' || mode === 'stderr') process[mode].write(Buffer.alloc(32768, 120))
+        if (mode === 'exited') process.exit(0)
+      }, 10)
     }
   })
 }
@@ -361,15 +419,25 @@ if (level === 'leaf') {
   const started = Date.now()
   let failure
   let deadline
+  const command = run(process.execPath, [script, 'root', mode, record, current.id], {
+    cwd: current.home, env, allowFailure: true, timeout, cleanupTimeout: 3000, maxBuffer: 4096,
+  }).then((result) => ({ result }), (error) => ({ error }))
   try {
-    await Promise.race([
-      run(process.execPath, [script, 'root', mode, record, current.id], {
-        cwd: current.home, env, allowFailure: true, timeout, cleanupTimeout: 3000, maxBuffer: 4096,
-      }),
+    await waitFor(() => fs.existsSync(record), 'synthetic process tree readiness', timeout)
+    const { pids } = JSON.parse(fs.readFileSync(record, 'utf8'))
+    for (const pid of pids) {
+      const value = await identity(pid, env)
+      assert.ok(value, 'The owned process generation must be recorded before interruption')
+      recordedIdentities.set(pid, value)
+    }
+    write(record + '.proceed', 'ready')
+    const outcome = await Promise.race([
+      command,
       new Promise((_, reject) => {
         deadline = setTimeout(() => reject(new Error('The command regression did not settle')), timeout + 5000)
       }),
     ])
+    failure = outcome.error
   } catch (error) {
     failure = error
   } finally {
@@ -423,6 +491,7 @@ test('cleanup itself is bounded when pipe close or the reaper never completes', 
     }, {
       spawnImpl: (_file, _args, options) => {
         assert.equal(options.detached, process.platform !== 'win32')
+        assert.equal(options.shell, false)
         return child
       },
       terminateImpl: (owned) => {
@@ -443,15 +512,20 @@ test('cleanup itself is bounded when pipe close or the reaper never completes', 
   }
 })
 
-test('native identity distinguishes a live process from an exited or reused PID', async (t) => {
-  const value = await identity(process.pid, process.env)
+test('native identity works under synthetic HOME and distinguishes an exited or reused PID', async (t) => {
+  const current = fixture(t)
+  const env = environment(current)
+  const value = await identity(process.pid, env)
   assert.ok(value)
-  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+  if (process.platform === 'win32') assert.ok(Array.isArray(await hostProcesses(env)))
+  const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], {
+    env, cwd: current.home, stdio: 'ignore',
+  })
   t.after(() => stopSynthetic(child))
-  const original = await identity(child.pid, process.env)
+  const original = await identity(child.pid, env)
   assert.ok(original)
   await stopSynthetic(child)
-  assert.notEqual(await identity(child.pid, process.env), original)
+  assert.notEqual(await identity(child.pid, env), original)
 })
 
 test('Unix identity accepts only the actual missing-PID status, not inspection failures', async () => {
@@ -468,40 +542,66 @@ test('Unix identity accepts only the actual missing-PID status, not inspection f
     await assert.rejects(identity(123, {}, {
       platform: 'linux', runImpl: async () => result, logImpl: (message) => logs.push(message),
     }), { code: 'PORTO_PROCESS_INSPECTION_UNAVAILABLE' })
-    assert.match(logs[0], /inspection unavailable for PID 123/)
+    assert.match(logs[0], /Process identity inspection is unavailable/)
   }
 })
 
-test('CIM identity requires an explicit matching missing-PID result and complete live identity', async () => {
+test('Windows native identity requires an explicit matching missing PID and complete start/executable identity', async () => {
   const result = (document) => ({ status: 0, signal: null, stdout: JSON.stringify(document), stderr: '' })
-  const fields = { CreationDate: '2026-10-27T18:00:00Z', ExecutablePath: 'C:\\Synthetic\\porto.exe', CommandLine: 'porto.exe daemon start' }
+  const fields = { StartTimeTicks: '639287208000000000', ExecutablePath: 'C:\\Synthetic\\porto.exe' }
   assert.equal(await identity(123, {}, {
     platform: 'win32', runImpl: async () => result({ pid: 123, exists: false }),
   }), '')
   assert.equal(await identity(123, {}, {
     platform: 'win32', runImpl: async () => result({ pid: 123, exists: true, identity: fields }),
   }), JSON.stringify(fields))
+  for (const changed of [
+    { ...fields, StartTimeTicks: '639287208000000001' },
+    { ...fields, ExecutablePath: 'C:\\Synthetic\\different.exe' },
+  ]) {
+    assert.notEqual(await identity(123, {}, {
+      platform: 'win32', runImpl: async () => result({ pid: 123, exists: true, identity: changed }),
+    }), JSON.stringify(fields))
+  }
   for (const response of [
-    { status: 1, signal: null, stdout: '', stderr: 'CIM service unavailable' },
+    { status: 1, signal: null, stdout: '', stderr: 'Native process inspection unavailable' },
     { status: 0, signal: null, stdout: '', stderr: '' },
-    { status: 0, signal: null, stdout: '{}', stderr: 'Non-terminating CIM error' },
+    { status: 0, signal: null, stdout: '{}', stderr: 'Native process access denied' },
     result({ pid: 999, exists: false }),
     result({ pid: 123, exists: true, identity: { ...fields, ExecutablePath: '' } }),
+    result({ pid: 123, exists: true, identity: { ...fields, StartTimeTicks: 'invalid' } }),
   ]) {
     const logs = []
     await assert.rejects(identity(123, {}, {
       platform: 'win32', runImpl: async (_file, args) => {
         assert.match(args.at(-1), /\$ErrorActionPreference = 'Stop'/)
-        assert.match(args.at(-1), /Get-CimInstance.*-ErrorAction Stop/)
+        assert.match(args.at(-1), /\[System\.Diagnostics\.Process\]::GetProcessById\(123\)/)
+        assert.match(args.at(-1), /\$target\.StartTime\.ToUniversalTime\(\)\.Ticks/)
+        assert.match(args.at(-1), /\$target\.MainModule\.FileName/)
         return response
       }, logImpl: (message) => logs.push(message),
     }), { code: 'PORTO_PROCESS_INSPECTION_UNAVAILABLE' })
-    assert.match(logs[0], /inspection unavailable for PID 123/)
+    assert.match(logs[0], /Process identity inspection is unavailable/)
+  }
+})
+
+test('Windows native enumeration requires explicit PID/executable records without WMI or a user profile', async () => {
+  const record = { ProcessId: 123, Name: 'Porto.exe', ExecutablePath: 'C:\\Synthetic\\resources\\porto.exe' }
+  const runImpl = async (_file, args, options) => {
+    assert.equal(options.timeout, 10000)
+    assert.match(args.at(-1), /\[System\.Diagnostics\.Process\]::GetProcesses\(\)/)
+    return { stdout: JSON.stringify([record]), stderr: '', status: 0, signal: null }
+  }
+  assert.deepEqual(await hostProcesses({}, { platform: 'win32', runImpl }), [record])
+  for (const document of ['', {}, [{ ...record, ProcessId: 0 }], [{ ...record, ExecutablePath: '' }]]) {
+    await assert.rejects(hostProcesses({}, {
+      platform: 'win32', runImpl: async () => ({ stdout: typeof document === 'string' ? document : JSON.stringify(document) }),
+    }))
   }
 })
 
 test('identity inspection timeout remains an unavailable-inspection error rather than process exit', async () => {
-  const timedOut = Object.assign(new Error('synthetic inspection timed out'), { code: 'PORTO_COMMAND_TIMEOUT' })
+  const timedOut = Object.assign(new Error('synthetic inspection timed out: synthetic-secret-must-not-be-logged'), { code: 'PORTO_COMMAND_TIMEOUT' })
   const logs = []
   await assert.rejects(identity(123, {}, {
     runImpl: async () => { throw timedOut }, logImpl: (message) => logs.push(message),
@@ -510,7 +610,8 @@ test('identity inspection timeout remains an unavailable-inspection error rather
     assert.equal(error.cause, timedOut)
     return true
   })
-  assert.match(logs[0], /inspection unavailable.*timed out/)
+  assert.match(logs[0], /Process identity inspection is unavailable/)
+  assert.ok(!logs[0].includes('synthetic-secret-must-not-be-logged'))
 })
 
 test('local release fixture serves exactly the built package and its real checksum', async (t) => {
@@ -552,7 +653,7 @@ test('the executable acceptance command refuses a non-CI developer environment',
     env: { ...process.env, GITHUB_ACTIONS: '' }, allowFailure: true,
   })
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /disposable CI hosts only, never a developer runtime/)
+  assert.match(result.stderr, /clean disposable CI host/)
   assert.equal(fs.existsSync('.must-not-be-created'), false)
 })
 
@@ -562,6 +663,24 @@ test('unknown acceptance commands do not execute a backend even in CI', async (t
     path.join(__dirname, 'installed-acceptance.cjs'), 'unknown-acceptance-command', current.directory,
   ], { env: { ...process.env, GITHUB_ACTIONS: 'true' }, allowFailure: true })
   assert.equal(result.status, 1)
-  assert.match(result.stderr, /Unknown installed acceptance command/)
+  assert.match(result.stderr, /Installed-package acceptance failed/)
+  preserved(current)
+})
+
+test('both executable entry points omit environment-derived error details from public stderr', async (t) => {
+  const current = fixture(t)
+  const secret = 'synthetic-environment-credential-not-for-public-errors'
+  const env = { ...process.env, GITHUB_ACTIONS: 'true', PORTO_TEST_FAILURE_SECRET: secret }
+  for (const [file, args, expected] of [
+    ['installed-acceptance.cjs', [env.PORTO_TEST_FAILURE_SECRET, current.directory], failureDiagnostic(undefined)],
+    ['installed-package.cjs', ['unused-artifact', '1.0.0', env.PORTO_TEST_FAILURE_SECRET, 'unused-fixture'], failureDiagnostic({ code: 'ERR_ASSERTION' })],
+  ]) {
+    const result = await run(process.execPath, [path.join(__dirname, file), ...args], { env, allowFailure: true })
+    assert.equal(result.status, 1)
+    assert.equal(result.stdout, '')
+    assert.equal(result.stderr.trim(), expected)
+    assert.ok(!result.stderr.includes(secret))
+    assert.ok(!result.stderr.includes(' at '))
+  }
   preserved(current)
 })

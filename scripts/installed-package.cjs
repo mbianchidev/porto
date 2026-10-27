@@ -4,7 +4,7 @@ const http = require('node:http')
 const path = require('node:path')
 
 const {
-  environment, fileDigest, prepare, run, save, target, within, workspacePath,
+  environment, failureDiagnostic, fileDigest, prepare, run, save, target, within, workspacePath,
 } = require('./installed-fixture.cjs')
 const { acceptance, preflight, removed } = require('./installed-acceptance.cjs')
 
@@ -101,7 +101,7 @@ async function main(args) {
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error)
+    console.error(failureDiagnostic(error))
     process.exitCode = 1
   })
 }

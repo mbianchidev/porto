@@ -909,18 +909,22 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if err := r.Kill(ctx, id, stopSignal); err != nil {
 		return r.reconcileStoppedTask(ctx, id, err)
 	}
-	waitContext, cancel := context.WithTimeout(ctx, stopTimeout)
+	graceDeadline := time.Now().Add(stopTimeout)
+	waitContext, cancel := context.WithDeadline(ctx, graceDeadline)
 	_, waitErr := r.tasks.Wait(
 		withContainerdNamespace(waitContext, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
-	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded)
+	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded) || !time.Now().Before(graceDeadline)
 	cancel()
 	if waitErr == nil {
 		return r.cleanupNetworksResolved(ctx, id)
 	}
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
+	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
 	}
 	if status.Code(waitErr) != codes.DeadlineExceeded && !graceExpired {
 		return r.reconcileStoppedTask(ctx, id, containerdOperationError("wait for stopped", id, waitErr))
@@ -942,7 +946,7 @@ func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id stri
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if !errors.Is(stopErr, ErrNotFound) {
+	if !errors.Is(stopErr, ErrNotFound) && !errors.Is(stopErr, context.Canceled) {
 		return stopErr
 	}
 	// Exit can race a signal or wait. Verify the task is no longer runnable

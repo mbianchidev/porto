@@ -4,19 +4,40 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 
 const {
-  DAEMON_URL, EXPECTED, digest, environment, fileDigest, inspectPackage, layout, load,
+  DAEMON_URL, EXPECTED, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, load,
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { daemonProcesses, windowsDaemonProcesses } = require('../ui/electron/daemon-readiness.cjs')
+const { daemonProcesses } = require('../ui/electron/daemon-readiness.cjs')
 const { dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
 
-async function hostProcesses(env) {
-  if (process.platform !== 'win32') {
-    return (await run('/bin/ps', ['-ax', '-o', 'pid=,command='], { env })).stdout
+async function hostProcesses(env, { platform = process.platform, runImpl = run } = {}) {
+  if (platform !== 'win32') {
+    return (await runImpl('/bin/ps', ['-ax', '-o', 'pid=,command='], { env })).stdout
   }
-  const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
-    '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); Get-CimInstance Win32_Process | Select-Object ProcessId,Name,CommandLine | ConvertTo-Json -Compress'], { env })
-  return JSON.parse(result.stdout || '[]')
+  const result = await runImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
+$ErrorActionPreference = 'Stop'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+$result = @()
+foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
+  try {
+    if ($target.ProcessName -ine 'porto') { continue }
+    try {
+      $executable = $target.MainModule.FileName
+      if ($target.HasExited) { continue }
+      if ([System.IO.Path]::GetFileName($executable) -ine 'porto.exe') { throw 'Process executable changed during inspection' }
+      $result += @{ ProcessId = $target.Id; Name = 'Porto.exe'; ExecutablePath = $executable }
+    } catch {
+      if (-not $target.HasExited) { throw }
+    }
+  } finally {
+    $target.Dispose()
+  }
+}
+ConvertTo-Json -InputObject @($result) -Compress
+`], { env, timeout: 10000 })
+  const processes = JSON.parse(result.stdout)
+  daemonCandidates(processes, platform)
+  return processes
 }
 
 function existingDesktops(processes, platform = process.platform) {
@@ -27,8 +48,19 @@ function existingDesktops(processes, platform = process.platform) {
 }
 
 async function daemons(env) {
-  const processes = await hostProcesses(env)
-  return process.platform === 'win32' ? windowsDaemonProcesses(processes) : daemonProcesses(processes)
+  return daemonCandidates(await hostProcesses(env))
+}
+
+function daemonCandidates(processes, platform = process.platform) {
+  if (platform !== 'win32') return daemonProcesses(processes)
+  assert.ok(Array.isArray(processes), 'Windows process enumeration must return an explicit array')
+  return processes.map((item) => {
+    assert.ok(Number.isSafeInteger(item.ProcessId) && item.ProcessId > 0, 'Windows process enumeration omitted a specific PID')
+    assert.ok(typeof item.ExecutablePath === 'string' && path.win32.basename(item.ExecutablePath).toLowerCase() === 'porto.exe',
+      'Windows process enumeration omitted a verifiable Porto executable')
+    assert.equal(item.Name, 'Porto.exe', 'Windows process enumeration returned an unexpected process')
+    return { pid: item.ProcessId, executable: item.ExecutablePath }
+  })
 }
 
 async function preflight(fixture, env) {
@@ -38,7 +70,7 @@ async function preflight(fixture, env) {
   await noListeners(fixture)
   const processes = await hostProcesses(env)
   assert.equal(existingDesktops(processes), false, 'Refusing an existing Porto desktop; never quit unrelated work')
-  assert.deepEqual(process.platform === 'win32' ? windowsDaemonProcesses(processes) : daemonProcesses(processes), [],
+  assert.deepEqual(daemonCandidates(processes), [],
     'Refusing existing Porto daemon processes; the desktop must never stop unrelated work')
 }
 
@@ -156,11 +188,30 @@ async function identity(pid, env, {
       ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$target = Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" -ErrorAction Stop
-if ($null -eq $target) {
+try {
+  $target = [System.Diagnostics.Process]::GetProcessById(${pid})
+} catch [System.ArgumentException] {
   @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
-} else {
-  @{ pid = ${pid}; exists = $true; identity = ($target | Select-Object CreationDate,ExecutablePath,CommandLine) } | ConvertTo-Json -Compress
+  exit 0
+}
+try {
+  try {
+    $start = $target.StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
+    $executable = $target.MainModule.FileName
+    if ($target.HasExited) {
+      @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
+    } else {
+      @{ pid = $target.Id; exists = $true; identity = @{ StartTimeTicks = $start; ExecutablePath = $executable } } | ConvertTo-Json -Compress
+    }
+  } catch {
+    if ($target.HasExited) {
+      @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
+    } else {
+      throw
+    }
+  }
+} finally {
+  $target.Dispose()
 }`]]
       : ['/bin/ps', ['-p', String(pid), '-o', 'lstart=,command=']]
     const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: 10000 })
@@ -174,19 +225,20 @@ if ($null -eq $target) {
       return stdout
     }
     const document = JSON.parse(stdout)
-    assert.equal(document.pid, pid, 'CIM inspection did not identify the requested PID')
+    assert.equal(document.pid, pid, 'Windows inspection did not identify the requested PID')
     if (document.exists === false && document.identity === undefined) return ''
-    assert.equal(document.exists, true, 'CIM inspection did not report whether the process exists')
-    const fields = ['CreationDate', 'ExecutablePath', 'CommandLine']
+    assert.equal(document.exists, true, 'Windows inspection did not report whether the process exists')
+    const fields = ['StartTimeTicks', 'ExecutablePath']
     for (const field of fields) {
       assert.ok(typeof document.identity?.[field] === 'string' && document.identity[field].trim(),
-        `CIM process identity is unavailable: ${field}`)
+        `Windows process identity is unavailable: ${field}`)
     }
+    assert.match(document.identity.StartTimeTicks, /^[0-9]{1,20}$/, 'Windows process start time must identify its creation')
     return JSON.stringify(Object.fromEntries(fields.map((field) => [field, document.identity[field]])))
   } catch (error) {
     const failure = new Error(`Process identity inspection unavailable for PID ${pid}: ${error.message}`, { cause: error })
     failure.code = 'PORTO_PROCESS_INSPECTION_UNAVAILABLE'
-    logImpl(failure.message)
+    logImpl(failureDiagnostic(failure))
     throw failure
   }
 }
@@ -508,9 +560,9 @@ async function main(args) {
 
 if (require.main === module) {
   main(process.argv.slice(2)).catch((error) => {
-    console.error(error)
+    console.error(failureDiagnostic(error))
     process.exitCode = 1
   })
 }
 
-module.exports = { acceptance, configureLima, existingDesktops, identity, main, preflight, removed, restored }
+module.exports = { acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight, removed, restored }

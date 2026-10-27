@@ -17,11 +17,12 @@ import (
 
 type exitingStopTasks struct {
 	*fakeTasksClient
-	signal uint32
-	exit   func()
-	waits  int
-	force  bool
-	reaped bool
+	signal  uint32
+	exit    func()
+	waits   int
+	force   bool
+	reaped  bool
+	waitErr error
 }
 
 func (tasks *exitingStopTasks) Kill(ctx context.Context, request *tasksapi.KillRequest, options ...grpc.CallOption) (*emptypb.Empty, error) {
@@ -37,6 +38,10 @@ func (tasks *exitingStopTasks) Wait(ctx context.Context, request *tasksapi.WaitR
 	tasks.waits++
 	if (tasks.signal == 9 || tasks.force) && tasks.waits == 1 {
 		return nil, status.Error(codes.DeadlineExceeded, "synthetic grace interval expired")
+	}
+	if tasks.waitErr != nil {
+		tasks.exit()
+		return nil, tasks.waitErr
 	}
 	if tasks.reaped {
 		tasks.exit()
@@ -88,6 +93,7 @@ func TestStopReconcilesExitedOrReapedTasksWithoutHidingOtherFailures(t *testing.
 		recordErr  error
 		wantErr    error
 		cleanupErr bool
+		waitErr    error
 	}{
 		{name: "graceful exit before SIGTERM", signal: 15, taskState: tasktypes.Status_STOPPED},
 		{name: "reaped graceful wait", reaped: true, taskErr: status.Error(codes.NotFound, "task missing")},
@@ -97,12 +103,15 @@ func TestStopReconcilesExitedOrReapedTasksWithoutHidingOtherFailures(t *testing.
 		{name: "cannot verify stopped state", signal: 9, taskErr: status.Error(codes.Unavailable, "shim unavailable"), wantErr: ErrUnavailable},
 		{name: "replacement task is being created", signal: 9, taskState: tasktypes.Status_CREATED, wantErr: ErrNotFound},
 		{name: "network cleanup fails", signal: 9, taskState: tasktypes.Status_STOPPED, cleanupErr: true},
+		{name: "shim cancels wait after exit", taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Canceled, "shim wait stream closed after exit")},
+		{name: "shim cancels forced wait after exit", force: true, taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Canceled, "shim wait stream closed after exit")},
+		{name: "cancelled wait does not prove a running task stopped", taskState: tasktypes.Status_RUNNING, waitErr: status.Error(codes.Canceled, "shim wait stream closed"), wantErr: context.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo", Labels: map[string]string{}}}
 			tasks := &exitingStopTasks{
 				fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING}},
-				signal:          test.signal, force: test.force, reaped: test.reaped,
+				signal:          test.signal, force: test.force, reaped: test.reaped, waitErr: test.waitErr,
 			}
 			tasks.exit = func() {
 				tasks.process.Status = test.taskState
