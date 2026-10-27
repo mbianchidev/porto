@@ -5,7 +5,7 @@ replicas are independent options:
 
 | Controller | Purpose | Supported distributions |
 | --- | --- | --- |
-| Karpenter 1.14.2 with Porto's provider | Create real local Lima worker VMs for unschedulable pods | k3s, k0s |
+| Karpenter 1.15.1 with Porto's provider | Create real local Lima worker VMs for unschedulable pods | k3s, k0s |
 | KEDA 2.21.0 | Scale workload replicas from event triggers | k3s, k0s, kind |
 
 KEDA does not create nodes. Karpenter does not choose replica counts. Combining
