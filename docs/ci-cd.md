@@ -764,6 +764,9 @@ available. Command Line Tools alone cannot compile the modern icon. Install full
 Xcode and complete its first-launch setup before running the macOS desktop tests
 or preparing a release. Source development still uses the `.icns` icon and
 prepares its cached bundle without compiling a native entry point.
+That isolated development copy is ad-hoc signed with its nested helpers,
+including unsigned helpers in upstream Intel archives. The npm-installed
+Electron runtime and its native entry point are never modified.
 
 Packaging honors an explicit `DEVELOPER_DIR`, otherwise checks the active Xcode
 and then `/Applications/Xcode.app/Contents/Developer`. It selects tools only for

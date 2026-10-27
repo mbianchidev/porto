@@ -264,6 +264,8 @@ func testComposeResourceSaverProcessRecovery(t *testing.T, ctx context.Context, 
 			}
 		}
 		t.Fatalf("create the actual synthetic Compose dependency group: %v: %s", err, output)
+	} else {
+		t.Logf("synthetic Compose startup: %s", output)
 	}
 	members := map[string]string{}
 	waitPolicy(t, ctx, func() bool {

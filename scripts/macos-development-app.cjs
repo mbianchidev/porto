@@ -103,7 +103,7 @@ async function prepareMacOSDevelopmentApp({
     ].join('\n'), { mode: 0o600 })
     fs.writeFileSync(path.join(resources, MARKER), JSON.stringify({ key, source, version }), { mode: 0o600 })
     // Sign only the isolated cached bundle after its source entry is embedded.
-    run('/usr/bin/codesign', ['--force', '--sign', '-', '--timestamp=none', staged])
+    run('/usr/bin/codesign', ['--force', '--deep', '--sign', '-', '--timestamp=none', staged])
     validateDevelopmentApp(staged, key)
     try {
       fs.renameSync(staged, bundle)

@@ -1971,6 +1971,10 @@ func (m *Manager) InspectContainer(ctx context.Context, id string) (json.RawMess
 	if err != nil || m.IsNativeWindows() {
 		return document, err
 	}
+	document, err = normalizeCompatibilityInspectState(document)
+	if err != nil {
+		return nil, err
+	}
 	return inspectOwnedContainerHealth(document)
 }
 
