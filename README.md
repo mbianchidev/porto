@@ -39,7 +39,7 @@ Releases target **macOS, Linux, and Windows** on **x86-64 (`amd64`) and ARM64 (`
 | Platform | Desktop package | Runtime requirements and boundaries |
 | --- | --- | --- |
 | macOS | DMG | Lima is bundled. Install QEMU with `brew install qemu` for snapshot-capable VMs, then restart Porto. |
-| Linux | Portable archive | The installer installs and verifies architecture-matched QEMU and `qemu-img` before replacing Porto. Failed prerequisites stop setup. KVM access enables hardware acceleration. |
+| Linux | Portable archive | The installer verifies QEMU and prepares a [scoped desktop sandbox permission](docs/installation.md#linux-desktop-sandbox) where AppArmor requires it, with administrator approval. Failed prerequisites stop setup before replacing Porto. KVM access enables hardware acceleration. |
 | Windows | EXE installer | Lima and QEMU are bundled. Native Windows-container tooling is separately selected on supported AMD64 hosts. Native WCOW and kind are not substituted with x64 binaries on ARM64; see the [matrix](docs/windows-integration.md#embedded-terminals-and-supported-boundaries). |
 
 Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.

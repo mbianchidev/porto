@@ -72,10 +72,11 @@ broken executable stops setup before stopping daemons or replacing an existing
 Porto installation. QEMU is required for the managed Linux container engine,
 not only standalone VMs.
 
-Set `PORTO_SKIP_PREREQS=1` only when intentionally managing those prerequisites
-yourself or using an existing local containerd backend. This explicitly skips
-verification; the installer reports that distinction rather than claiming the
-managed container engine is ready.
+Set `PORTO_SKIP_PREREQS=1` only when intentionally managing the runtime and
+desktop sandbox prerequisites yourself, for example when using an existing
+local containerd backend. This explicitly skips verification and automatic
+sandbox setup; the installer reports that distinction rather than claiming
+the app or managed container engine is ready.
 
 On macOS, Linux, and Windows, the packaged app automatically provisions and starts its
 containerd and BuildKit backend on first launch when Docker support is enabled.
@@ -159,6 +160,37 @@ Porto validates saved archive structure before returning success. If an older
 engine reports an incomplete export, update nerdctl inside that owned guest to
 2.4.0 or newer using its upstream checksum-verified release, then retry the
 export. Do not delete the original image after a failed save.
+
+### Linux desktop sandbox
+
+Ubuntu and other AppArmor-enabled hosts can restrict unprivileged user
+namespaces. A portable Electron app then cannot start with its ordinary
+Chromium sandbox. Porto's installer detects this policy and requests
+administrator approval to load a permission for the resolved installed
+`Porto` executable, before stopping or replacing an existing app. It installs
+the distribution's AppArmor parser if needed on an APT-based host.
+
+The root-owned policy lives at the path printed during setup:
+`/etc/apparmor.d/porto-sandbox-<uid>-<executable-path-sha256>`. It grants `userns`
+to that literal executable attachment, leaving the app otherwise unconfined
+as before. It does not globally disable AppArmor or its namespace restriction,
+disable Chromium sandboxing, or make Electron's helper SUID root. Existing
+administrator policies and symlinks are never overwritten. Permission,
+validation or policy-loading failures stop setup with the existing
+installation intact.
+
+Spaces and non-ASCII installation paths work. Paths containing control
+characters or AppArmor pattern/quoting syntax are refused rather than
+interpreted as a broader permission. Choose a literal path when prompted.
+Direct archive extraction on a restricted host still requires an
+administrator-provided sandbox permission; use the installer for automatic
+setup.
+
+The permission is a host prerequisite and survives manual app removal, like
+other administrator-installed prerequisites. If it is no longer needed, an
+administrator can unload the **exact printed policy** with `sudo apparmor_parser -R`
+followed by that path, then remove that same file. Do not remove unrelated
+profiles or disable the global AppArmor restriction.
 
 ### Windows guest recovery
 

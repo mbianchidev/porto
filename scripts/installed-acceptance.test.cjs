@@ -171,6 +171,66 @@ if (process.platform === 'win32') {
     assert.equal(result.stdout, 'installed-native-startup-ready')
     assert.equal(result.stderr, '')
   })
+
+  test('native process payload stages work without PowerShell module autoload', async (t) => {
+    const current = fixture(t)
+    const env = environment(current)
+    const prelude = `
+$ErrorActionPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+`
+    const processStage = (body) => `${prelude}
+$target = [System.Diagnostics.Process]::GetProcessById(${process.pid})
+try {
+${body}
+} finally {
+  $target.Dispose()
+}`
+    for (const [name, script, check] of [
+      ['specific PID lookup', processStage('[Console]::Out.WriteLine($target.Id)'), (stdout) => {
+        assert.equal(stdout.trim(), String(process.pid))
+      }],
+      ['creation time', processStage('[Console]::Out.WriteLine($target.StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture))'), (stdout) => {
+        assert.match(stdout.trim(), /^[0-9]{1,20}$/)
+      }],
+      ['executable and liveness', processStage(`
+$executable = $target.MainModule.FileName
+[Console]::Out.WriteLine([System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($executable)))
+[Console]::Out.WriteLine($target.HasExited)
+`), (stdout) => {
+        const lines = stdout.trim().split(/\r?\n/)
+        assert.equal(lines.length, 2)
+        const executable = Buffer.from(lines[0], 'base64').toString('utf16le')
+        assert.equal(fs.realpathSync(executable).toLowerCase(), fs.realpathSync(process.execPath).toLowerCase())
+        assert.equal(lines[1], 'False')
+      }],
+    ]) {
+      await t.test(name, async () => {
+        const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+          env, timeout: 10000,
+        })
+        assert.equal(result.stderr, '')
+        check(result.stdout)
+      })
+    }
+    await t.test('Console-only identity serialization', async () => {
+      const fields = { StartTimeTicks: '639287208000000000', ExecutablePath: 'C:\\Synthetic space 路径\\Porto 🚀.exe' }
+      const script = `${prelude}
+$executable = '${fields.ExecutablePath}'
+[Console]::Out.WriteLine('PORTO_PROCESS_IDENTITY_V1')
+[Console]::Out.WriteLine('123')
+[Console]::Out.WriteLine('present')
+[Console]::Out.WriteLine('${fields.StartTimeTicks}')
+[Console]::Out.WriteLine([System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($executable)))
+`
+      const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
+        env, timeout: 10000,
+      })
+      assert.equal(result.stderr, '')
+      assert.equal(await identity(123, env, { platform: 'win32', runImpl: async () => result }), JSON.stringify(fields))
+    })
+  })
 }
 
 test('executable selection fences workspace files and refuses symlink escapes', async (t) => {
@@ -641,8 +701,15 @@ test('Unix identity accepts only the actual missing-PID status, not inspection f
 })
 
 test('Windows native identity requires an explicit matching missing PID and complete start/executable identity', async () => {
-  const result = (document) => ({ status: 0, signal: null, stdout: JSON.stringify(document), stderr: '' })
-  const fields = { StartTimeTicks: '639287208000000000', ExecutablePath: 'C:\\Synthetic\\porto.exe' }
+  const packet = (document) => [
+    'PORTO_PROCESS_IDENTITY_V1', String(document.pid),
+    ...(document.exists === false ? ['missing'] : [
+      'present', document.identity?.StartTimeTicks || '',
+      Buffer.from(document.identity?.ExecutablePath || '', 'utf16le').toString('base64'),
+    ]),
+  ].join('\r\n') + '\r\n'
+  const result = (document) => ({ status: 0, signal: null, stdout: packet(document), stderr: '' })
+  const fields = { StartTimeTicks: '639287208000000000', ExecutablePath: 'C:\\Synthetic space 路径\\Porto 🚀.exe' }
   assert.equal(await identity(123, {}, {
     platform: 'win32', runImpl: async () => result({ pid: 123, exists: false }),
   }), '')
@@ -664,11 +731,16 @@ test('Windows native identity requires an explicit matching missing PID and comp
     result({ pid: 999, exists: false }),
     result({ pid: 123, exists: true, identity: { ...fields, ExecutablePath: '' } }),
     result({ pid: 123, exists: true, identity: { ...fields, StartTimeTicks: 'invalid' } }),
+    { ...result({ pid: 123, exists: false }), stdout: packet({ pid: 123, exists: false }) + 'unexpected\r\n' },
+    { status: 0, signal: null, stdout: 'PORTO_PROCESS_IDENTITY_V1\n123\npresent\n1\n!!!!\n', stderr: '' },
+    { status: 0, signal: null, stdout: 'PORTO_PROCESS_IDENTITY_V1\n123\npresent\n1\nAA==\n', stderr: '' },
+    result({ pid: 123, exists: true, identity: { ...fields, ExecutablePath: 'relative.exe' } }),
   ]) {
     const logs = []
     await assert.rejects(identity(123, {}, {
       platform: 'win32', runImpl: async (_file, args) => {
         assert.match(args.at(-1), /\$ErrorActionPreference = 'Stop'/)
+        assert.match(args.at(-1), /\$PSModuleAutoLoadingPreference = 'None'/)
         assert.match(args.at(-1), /\[System\.Diagnostics\.Process\]::GetProcessById\(123\)/)
         assert.match(args.at(-1), /\$target\.StartTime\.ToUniversalTime\(\)\.Ticks/)
         assert.match(args.at(-1), /\$target\.MainModule\.FileName/)
@@ -680,18 +752,28 @@ test('Windows native identity requires an explicit matching missing PID and comp
 })
 
 test('Windows native enumeration requires explicit PID/executable records without WMI or a user profile', async () => {
-  const record = { ProcessId: 123, Name: 'Porto.exe', ExecutablePath: 'C:\\Synthetic\\resources\\porto.exe' }
+  const record = { ProcessId: 123, Name: 'Porto.exe', ExecutablePath: 'C:\\Synthetic space 路径\\resources\\porto.exe' }
+  const packet = (records) => 'PORTO_PROCESS_LIST_V1\r\n' + records.map((item) =>
+    `${item.ProcessId}\t${Buffer.from(item.ExecutablePath, 'utf16le').toString('base64')}\r\n`).join('')
   const runImpl = async (_file, args, options) => {
     assert.equal(options.timeout, 10000)
     assert.match(args.at(-1), /\[System\.Diagnostics\.Process\]::GetProcesses\(\)/)
-    return { stdout: JSON.stringify([record]), stderr: '', status: 0, signal: null }
+    assert.match(args.at(-1), /\$PSModuleAutoLoadingPreference = 'None'/)
+    return { stdout: packet([record]), stderr: '', status: 0, signal: null }
   }
   assert.deepEqual(await hostProcesses({}, { platform: 'win32', runImpl }), [record])
-  for (const document of ['', {}, [{ ...record, ProcessId: 0 }], [{ ...record, ExecutablePath: '' }]]) {
+  assert.deepEqual(await hostProcesses({}, {
+    platform: 'win32', runImpl: async () => ({ status: 0, signal: null, stdout: packet([]), stderr: '' }),
+  }), [])
+  for (const stdout of ['', '{}', packet([{ ...record, ProcessId: 0 }]), packet([{ ...record, ExecutablePath: '' }]),
+    'PORTO_PROCESS_LIST_V1\n123\t!!!!\n', packet([record]) + 'unexpected\n']) {
     await assert.rejects(hostProcesses({}, {
-      platform: 'win32', runImpl: async () => ({ stdout: typeof document === 'string' ? document : JSON.stringify(document) }),
+      platform: 'win32', runImpl: async () => ({ status: 0, signal: null, stdout, stderr: '' }),
     }))
   }
+  await assert.rejects(hostProcesses({}, {
+    platform: 'win32', runImpl: async () => ({ status: 0, signal: null, stdout: packet([record]), stderr: 'unexpected warning' }),
+  }))
 })
 
 test('identity inspection timeout remains an unavailable-inspection error rather than process exit', async () => {

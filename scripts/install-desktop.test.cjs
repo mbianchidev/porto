@@ -21,6 +21,7 @@ function fixture(t, {
   skip = false,
   existing = '',
   imageTool = true,
+  sandbox = 'unrestricted',
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-installer-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -28,13 +29,28 @@ function fixture(t, {
   const home = path.join(root, 'home')
   fs.mkdirSync(bin)
   fs.mkdirSync(home)
-  for (const name of ['awk', 'cat', 'chmod', 'cp', 'dirname', 'gzip', 'head', 'ln', 'mkdir', 'mktemp', 'rm', 'sed', 'sh', 'shasum', 'sleep', 'tar']) {
+  for (const name of ['awk', 'basename', 'cat', 'chmod', 'cp', 'dirname', 'gzip', 'head', 'ln', 'mkdir', 'mktemp', 'rm', 'sed', 'sh', 'shasum', 'sleep', 'tar']) {
     const result = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' })
     assert.equal(result.status, 0, `required fixture tool ${name}: ${result.stderr}`)
     fs.symlinkSync(result.stdout.trim(), path.join(bin, name))
   }
   executable(path.join(bin, 'uname'), `case "$1" in -s) echo Linux;; -m) echo ${arch === 'amd64' ? 'x86_64' : 'aarch64'};; esac`)
-  executable(path.join(bin, 'id'), 'echo 0')
+  executable(path.join(bin, 'id'), 'echo 1001')
+  executable(path.join(bin, 'sysctl'), `
+[ "$*" = "-n kernel.apparmor_restrict_unprivileged_userns" ]
+if [ "$FIXTURE_SANDBOX" = unrestricted ]; then echo 0; else echo 1; fi`)
+  executable(path.join(bin, 'apparmor_parser'), 'exit 0')
+  executable(path.join(bin, 'sudo'), `
+if [ "$1" = /bin/sh ]; then
+  printf '%s\\n' "$@" > "$FIXTURE_ROOT/sandbox-command.log"
+  cat > "$FIXTURE_ROOT/sandbox-setup.sh"
+  if [ "$FIXTURE_SANDBOX" = failed ]; then
+    echo 'synthetic AppArmor setup failure' >&2
+    exit 42
+  fi
+else
+  exec "$@"
+fi`)
   // Never discover or stop real host daemons when exercising the Linux installer.
   executable(path.join(bin, 'tr'), 'exit 0')
   executable(path.join(bin, 'readlink'), 'exit 1')
@@ -98,6 +114,7 @@ esac`)
       FIXTURE_QEMU: qemu,
       FIXTURE_QEMU_IMG: qemuImg,
       FIXTURE_IMAGE_TOOL: imageTool ? '1' : '0',
+      FIXTURE_SANDBOX: sandbox,
     },
   })
   assert.ifError(result.error)
@@ -179,4 +196,115 @@ test('the Linux desktop launcher quotes installed paths with spaces and non-ASCI
   assert.equal(result.status, 0, result.stderr)
   const desktop = fs.readFileSync(path.join(result.root, 'home', '.local', 'share', 'applications', 'porto.desktop'), 'utf8')
   assert.equal(desktop.split('\n').find((line) => line.startsWith('Exec=')), `Exec="${result.installRoot}/Porto"`)
+})
+
+test('restricted Linux namespaces request scoped AppArmor setup for the actual installed executable', (t) => {
+  const result = fixture(t, { existing: 'working', sandbox: 'restricted' })
+  assert.equal(result.status, 0, result.stderr)
+  const command = fs.readFileSync(path.join(result.root, 'sandbox-command.log'), 'utf8').trim().split('\n')
+  assert.deepEqual(command, ['/bin/sh', '-s', '--', `${fs.realpathSync(result.installRoot)}/Porto`, '1001'])
+  const setup = fs.readFileSync(path.join(result.root, 'sandbox-setup.sh'), 'utf8')
+  assert.match(setup, /install_linux_sandbox_profile \/etc\/apparmor\.d "\$1" "\$2"/)
+  assert.doesNotMatch(setup, /--no-sandbox|sysctl\s+-w|chown/)
+})
+
+test('sandbox setup failure preserves the previous installation and does not report success', (t) => {
+  const result = fixture(t, { existing: 'working', sandbox: 'failed' })
+  assert.notEqual(result.status, 0)
+  assert.match(result.stderr, /synthetic AppArmor setup failure/)
+  assert.match(result.stderr, /setup incomplete.*sandbox/is)
+  assert.doesNotMatch(result.stdout, /Installed Porto at/)
+  assert.equal(fs.readFileSync(path.join(result.installRoot, 'previous-installation'), 'utf8'), 'synthetic previous installation')
+})
+
+test('unrestricted hosts and explicit prerequisite opt-outs do not change AppArmor policy', (t) => {
+  for (const options of [{ existing: 'working' }, { skip: true, sandbox: 'restricted' }]) {
+    const result = fixture(t, options)
+    assert.equal(result.status, 0, result.stderr)
+    assert.equal(fs.existsSync(path.join(result.root, 'sandbox-command.log')), false)
+  }
+})
+
+function sandboxPolicy(t, { executablePath = '/synthetic/Porto installed 路径/Porto', uid = '1001',
+  existing = '', parserFailure = '', repeat = false } = {}) {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-sandbox-policy-'))
+  t.after(() => fs.rmSync(root, { recursive: true, force: true }))
+  const bin = path.join(root, 'bin')
+  const profiles = path.join(root, 'profiles')
+  fs.mkdirSync(bin)
+  fs.mkdirSync(profiles)
+  for (const name of ['awk', 'chmod', 'cmp', 'ln', 'mktemp', 'rm', 'tr']) {
+    const result = spawnSync('/bin/sh', ['-c', `command -v ${name}`], { encoding: 'utf8' })
+    assert.equal(result.status, 0, result.stderr)
+    fs.symlinkSync(result.stdout.trim(), path.join(bin, name))
+  }
+  executable(path.join(bin, 'sha256sum'), 'exec /usr/bin/shasum -a 256 "$@"')
+  executable(path.join(bin, 'apparmor_parser'), `
+printf '%s\\n' "$1" >> "$POLICY_ROOT/parser.log"
+if [ "$POLICY_FAILURE" = "$1" ]; then echo 'synthetic AppArmor parser failure' >&2; exit 42; fi`)
+  const source = fs.readFileSync(installer, 'utf8')
+  const start = source.indexOf('install_linux_sandbox_profile() {')
+  assert.notEqual(start, -1, 'The same privileged policy function must be exercised without changing this host')
+  const end = source.indexOf('\n}\n', start)
+  assert.notEqual(end, -1)
+  const body = source.slice(start, end + 2)
+  const profile = path.join(profiles, `porto-sandbox-${uid}-${crypto.createHash('sha256').update(executablePath).digest('hex')}`)
+  const unrelated = path.join(root, 'unrelated-admin-policy')
+  fs.writeFileSync(unrelated, 'Synthetic unrelated administrator policy\n')
+  if (existing === 'symlink') fs.symlinkSync(unrelated, profile)
+  if (existing === 'custom') fs.writeFileSync(profile, 'Synthetic custom administrator profile\n')
+  const execute = () => spawnSync('/bin/sh', ['-c', `set -eu\n${body}\ninstall_linux_sandbox_profile "$1" "$2" "$3"`,
+    'sandbox-policy-test', profiles, executablePath, uid], {
+    encoding: 'utf8', timeout: 5000,
+    env: { PATH: bin, POLICY_ROOT: root, POLICY_FAILURE: parserFailure },
+  })
+  const result = execute()
+  assert.ifError(result.error)
+  const inode = fs.existsSync(profile) ? fs.statSync(profile).ino : null
+  const repeated = repeat ? execute() : null
+  if (repeated) assert.ifError(repeated.error)
+  return { ...result, root, profile, unrelated, inode, repeated, profiles }
+}
+
+test('the elevated policy creates only a literal user-namespace permission and reloads it without replacing the file', (t) => {
+  const result = sandboxPolicy(t, { repeat: true })
+  assert.equal(result.status, 0, result.stderr)
+  assert.equal(result.repeated.status, 0, result.repeated.stderr)
+  assert.equal(fs.statSync(result.profile).ino, result.inode)
+  assert.equal(fs.statSync(result.profile).mode & 0o777, 0o644)
+  const policy = fs.readFileSync(result.profile, 'utf8')
+  assert.match(policy, /"\/synthetic\/Porto installed 路径\/Porto" flags=\(unconfined\)/)
+  assert.match(policy, /\{\n  userns,\n\}\n$/)
+  assert.doesNotMatch(policy, /capability|\/\*\*|change_profile/)
+  assert.equal(fs.readFileSync(path.join(result.root, 'parser.log'), 'utf8'), '-Q\n-a\n-Q\n-r\n')
+  assert.deepEqual(fs.readdirSync(result.profiles), [path.basename(result.profile)])
+})
+
+test('the elevated policy refuses symlinks, custom policy contents, unsafe paths and nonnumeric account IDs', (t) => {
+  for (const options of [
+    { existing: 'symlink' }, { existing: 'custom' }, { uid: '1001;unexpected' },
+    ...['relative/Porto', '/synthetic/*/Porto', '/synthetic/[user]/Porto',
+      '/synthetic/" injected/Porto', '/synthetic/line\nbreak/Porto',
+      '/synthetic/line\rbreak/Porto', '/synthetic/back\\slash/Porto'].map((executablePath) => ({ executablePath })),
+  ]) {
+    const result = sandboxPolicy(t, options)
+    assert.notEqual(result.status, 0, JSON.stringify(options))
+    assert.equal(fs.readFileSync(result.unrelated, 'utf8'), 'Synthetic unrelated administrator policy\n')
+    if (options.existing === 'symlink') assert.ok(fs.lstatSync(result.profile).isSymbolicLink())
+    else if (options.existing === 'custom') {
+      assert.equal(fs.readFileSync(result.profile, 'utf8'), 'Synthetic custom administrator profile\n')
+    } else assert.deepEqual(fs.readdirSync(result.profiles), [])
+  }
+})
+
+test('an AppArmor parser failure removes only a newly created policy and retains an existing policy', (t) => {
+  for (const parserFailure of ['-Q', '-a', '-r']) {
+    const result = sandboxPolicy(t, { parserFailure, repeat: parserFailure === '-r' })
+    assert.equal((result.repeated || result).status, parserFailure === '-Q' ? 42 : 1)
+    assert.match((result.repeated || result).stderr, /synthetic AppArmor parser failure/)
+    if (parserFailure === '-r') {
+      assert.equal(fs.statSync(result.profile).ino, result.inode)
+    } else assert.deepEqual(fs.readdirSync(result.profiles), [])
+    assert.equal(fs.readFileSync(result.unrelated, 'utf8'), 'Synthetic unrelated administrator policy\n')
+  }
 })

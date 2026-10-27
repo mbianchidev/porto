@@ -85,7 +85,11 @@ harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
 and dependency-provision fixture. Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
-Linux renders the actual desktop through Xvfb.
+Linux renders the actual desktop through Xvfb. On AppArmor-restricted Linux
+hosts, the real installer also requests the scoped Chromium user-namespace
+permission described in [Linux desktop sandbox setup](installation.md#linux-desktop-sandbox).
+The gate never uses `--no-sandbox` or globally disables the restriction.
+Manual app removal retains this administrator-installed host prerequisite.
 
 "Native" here means native installed **host executables**, not hardware-
 accelerated guests. TCG results do **not** establish default macOS VZ/HVF,

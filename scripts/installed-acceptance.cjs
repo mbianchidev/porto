@@ -10,14 +10,28 @@ const {
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
 const { dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
 
+const WINDOWS_PROCESS_PRELUDE = `
+$ErrorActionPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
+[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+`
+
+function decodeWindowsExecutable(encoded) {
+  const bytes = Buffer.from(encoded, 'base64')
+  assert.ok(bytes.length > 0 && bytes.length % 2 === 0, 'Windows executable encoding is incomplete')
+  assert.equal(bytes.toString('base64'), encoded, 'Windows executable encoding must be canonical')
+  const executable = bytes.toString('utf16le')
+  assert.ok(path.win32.isAbsolute(executable) && !executable.includes('\0'),
+    'Windows process inspection omitted an absolute executable path')
+  return executable
+}
+
 async function hostProcesses(env, { platform = process.platform, runImpl = run } = {}) {
   if (platform !== 'win32') {
     return (await runImpl('/bin/ps', ['-ax', '-o', 'pid=,command='], { env })).stdout
   }
-  const result = await runImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
-$result = @()
+  const result = await runImpl('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_PROCESS_PRELUDE}
+[Console]::Out.WriteLine('PORTO_PROCESS_LIST_V1')
 foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
   try {
     if ($target.ProcessName -ine 'porto') { continue }
@@ -25,7 +39,8 @@ foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
       $executable = $target.MainModule.FileName
       if ($target.HasExited) { continue }
       if ([System.IO.Path]::GetFileName($executable) -ine 'porto.exe') { throw 'Process executable changed during inspection' }
-      $result += @{ ProcessId = $target.Id; Name = 'Porto.exe'; ExecutablePath = $executable }
+      $encoded = [System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($executable))
+      [Console]::Out.WriteLine($target.Id.ToString([System.Globalization.CultureInfo]::InvariantCulture) + [char]9 + $encoded)
     } catch {
       if (-not $target.HasExited) { throw }
     }
@@ -33,9 +48,17 @@ foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
     $target.Dispose()
   }
 }
-ConvertTo-Json -InputObject @($result) -Compress
 `], { env, timeout: 10000 })
-  const processes = JSON.parse(result.stdout)
+  assert.equal(result.status, 0, 'Windows process enumeration failed')
+  assert.ok(!result.signal && !result.stderr.trim(), 'Windows process enumeration was incomplete')
+  const lines = result.stdout.trim().split(/\r?\n/)
+  assert.equal(lines.shift(), 'PORTO_PROCESS_LIST_V1', 'Windows process enumeration omitted its protocol header')
+  const processes = lines.map((line) => {
+    const fields = line.split('\t')
+    assert.equal(fields.length, 2, 'Windows process enumeration returned an incomplete record')
+    assert.match(fields[0], /^[1-9][0-9]{0,9}$/, 'Windows process enumeration omitted a specific PID')
+    return { ProcessId: Number(fields[0]), Name: 'Porto.exe', ExecutablePath: decodeWindowsExecutable(fields[1]) }
+  })
   daemonCandidates(processes, platform)
   return processes
 }
@@ -175,13 +198,13 @@ async function identity(pid, env, {
   try {
     assert.ok(Number.isSafeInteger(pid) && pid > 0, 'Process inspection requires a specific positive PID')
     const command = platform === 'win32'
-      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
-$ErrorActionPreference = 'Stop'
-[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_PROCESS_PRELUDE}
 try {
   $target = [System.Diagnostics.Process]::GetProcessById(${pid})
 } catch [System.ArgumentException] {
-  @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
+  [Console]::Out.WriteLine('PORTO_PROCESS_IDENTITY_V1')
+  [Console]::Out.WriteLine('${pid}')
+  [Console]::Out.WriteLine('missing')
   exit 0
 }
 try {
@@ -189,13 +212,22 @@ try {
     $start = $target.StartTime.ToUniversalTime().Ticks.ToString([System.Globalization.CultureInfo]::InvariantCulture)
     $executable = $target.MainModule.FileName
     if ($target.HasExited) {
-      @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
+      [Console]::Out.WriteLine('PORTO_PROCESS_IDENTITY_V1')
+      [Console]::Out.WriteLine('${pid}')
+      [Console]::Out.WriteLine('missing')
     } else {
-      @{ pid = $target.Id; exists = $true; identity = @{ StartTimeTicks = $start; ExecutablePath = $executable } } | ConvertTo-Json -Compress
+      $encoded = [System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($executable))
+      [Console]::Out.WriteLine('PORTO_PROCESS_IDENTITY_V1')
+      [Console]::Out.WriteLine($target.Id.ToString([System.Globalization.CultureInfo]::InvariantCulture))
+      [Console]::Out.WriteLine('present')
+      [Console]::Out.WriteLine($start)
+      [Console]::Out.WriteLine($encoded)
     }
   } catch {
     if ($target.HasExited) {
-      @{ pid = ${pid}; exists = $false } | ConvertTo-Json -Compress
+      [Console]::Out.WriteLine('PORTO_PROCESS_IDENTITY_V1')
+      [Console]::Out.WriteLine('${pid}')
+      [Console]::Out.WriteLine('missing')
     } else {
       throw
     }
@@ -214,17 +246,13 @@ try {
       assert.ok(stdout, 'ps returned no process identity without its missing-PID status')
       return stdout
     }
-    const document = JSON.parse(stdout)
-    assert.equal(document.pid, pid, 'Windows inspection did not identify the requested PID')
-    if (document.exists === false && document.identity === undefined) return ''
-    assert.equal(document.exists, true, 'Windows inspection did not report whether the process exists')
-    const fields = ['StartTimeTicks', 'ExecutablePath']
-    for (const field of fields) {
-      assert.ok(typeof document.identity?.[field] === 'string' && document.identity[field].trim(),
-        `Windows process identity is unavailable: ${field}`)
-    }
-    assert.match(document.identity.StartTimeTicks, /^[0-9]{1,20}$/, 'Windows process start time must identify its creation')
-    return JSON.stringify(Object.fromEntries(fields.map((field) => [field, document.identity[field]])))
+    const lines = stdout.split(/\r?\n/)
+    assert.equal(lines[0], 'PORTO_PROCESS_IDENTITY_V1', 'Windows inspection omitted its protocol header')
+    assert.equal(lines[1], String(pid), 'Windows inspection did not identify the requested PID')
+    if (lines.length === 3 && lines[2] === 'missing') return ''
+    assert.ok(lines.length === 5 && lines[2] === 'present', 'Windows process identity is incomplete')
+    assert.match(lines[3], /^[0-9]{1,20}$/, 'Windows process start time must identify its creation')
+    return JSON.stringify({ StartTimeTicks: lines[3], ExecutablePath: decodeWindowsExecutable(lines[4]) })
   } catch (error) {
     const failure = new Error(`Process identity inspection unavailable for PID ${pid}: ${error.message}`, { cause: error })
     failure.code = 'PORTO_PROCESS_INSPECTION_UNAVAILABLE'
