@@ -144,10 +144,19 @@ func (m *Manager) migrationSource(ctx context.Context, name string) (*migrationC
 }
 
 func (c *migrationClient) request(ctx context.Context, method, resource string, query url.Values, body io.Reader) (*http.Response, error) {
-	request, err := http.NewRequestWithContext(ctx, method, "http://docker"+resource, body)
+	if !strings.HasPrefix(resource, "/") || strings.HasPrefix(resource, "//") || strings.ContainsAny(resource, "?#") {
+		return nil, fmt.Errorf("%w: source runtime resource must be an absolute path without a query or fragment", datafiles.ErrInvalid)
+	}
+	path, err := url.PathUnescape(resource)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid source runtime path: %v", datafiles.ErrInvalid, err)
+	}
+	request, err := http.NewRequestWithContext(ctx, method, "http://docker", body)
 	if err != nil {
 		return nil, err
 	}
+	request.URL.Path = path
+	request.URL.RawPath = resource
 	request.URL.RawQuery = query.Encode()
 	if body != nil {
 		contentType := "application/json"
@@ -156,7 +165,10 @@ func (c *migrationClient) request(ctx context.Context, method, resource string, 
 		}
 		request.Header.Set("Content-Type", contentType)
 	}
-	response, err := c.client.Do(request)
+	// Reuse the transport without allowing source-controlled redirects or changing shared client policy.
+	client := *c.client
+	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, fmt.Errorf("source runtime request failed: %w", err)
 	}

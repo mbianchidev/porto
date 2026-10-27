@@ -210,6 +210,9 @@ replacement for a missing or retagged image. Sensitive environment transfer
 requires separate explicit local consent; registry credentials and source context authentication material
 are never imported. Selected resources are transferred through local Unix
 sockets or Windows named pipes, not unauthenticated remote endpoints.
+Migration requests use a fixed HTTP origin, with resource names confined to
+escaped API paths and encoded query values. Absolute URLs, malformed resource
+paths and source-controlled redirects are rejected rather than followed.
 Unallocated host ports and rootless internal-network/published-port combinations
 are reported before creation because their source semantics cannot be retained.
 Original sources are never reconfigured to work around those limitations.

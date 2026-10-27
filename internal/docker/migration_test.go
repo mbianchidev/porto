@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -26,6 +28,122 @@ import (
 	imagespec "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
+
+func TestMigrationRequestRejectsNonLocalResourcePaths(t *testing.T) {
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	source := fixtureMigrationClient(server)
+	for _, resource := range []string{
+		"",
+		"volumes/synthetic",
+		"@synthetic.invalid/metadata",
+		":2375/metadata",
+		"http://synthetic.invalid/metadata",
+		"//synthetic.invalid/metadata",
+		"/volumes/synthetic?force=true",
+		"/volumes/synthetic#fragment",
+		"/volumes/%zz",
+	} {
+		t.Run(resource, func(t *testing.T) {
+			before := requests.Load()
+			response, err := source.request(context.Background(), http.MethodGet, resource, nil, nil)
+			if response != nil {
+				response.Body.Close()
+			}
+			if !errors.Is(err, datafiles.ErrInvalid) || requests.Load() != before {
+				t.Fatalf("invalid source path reached the transport: response=%v, error=%v, requests=%d", response, err, requests.Load()-before)
+			}
+		})
+	}
+}
+
+func TestMigrationRequestRejectsSourceRedirects(t *testing.T) {
+	for _, status := range []int{http.StatusMovedPermanently, http.StatusFound, http.StatusSeeOther, http.StatusTemporaryRedirect, http.StatusPermanentRedirect} {
+		for _, location := range []string{"/redirected", "http://synthetic.invalid/redirected", "//synthetic.invalid/redirected"} {
+			t.Run(fmt.Sprintf("%d-%s", status, location), func(t *testing.T) {
+				var requests atomic.Int32
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					requests.Add(1)
+					if r.URL.Path == "/containers/create" {
+						w.Header().Set("Location", location)
+						w.WriteHeader(status)
+						fmt.Fprint(w, `{"message":"synthetic redirect"}`)
+						return
+					}
+					w.WriteHeader(http.StatusNoContent)
+				}))
+				defer server.Close()
+				response, err := fixtureMigrationClient(server).request(context.Background(), http.MethodPost, "/containers/create", nil, strings.NewReader(`{"name":"synthetic"}`))
+				if response != nil {
+					response.Body.Close()
+				}
+				var sourceError *sourceAPIError
+				if !errors.As(err, &sourceError) || sourceError.status != status || requests.Load() != 1 {
+					t.Fatalf("source redirect was followed: response=%v, error=%v, requests=%d", response, err, requests.Load())
+				}
+			})
+		}
+	}
+}
+
+func TestMigrationRequestPreservesEscapedPathsQueriesAndBodies(t *testing.T) {
+	for _, test := range []struct {
+		name, method, resource, path, body, contentType string
+		query                                           url.Values
+	}{
+		{
+			name: "escaped image name", method: http.MethodGet,
+			resource: "/images/" + url.PathEscape("synthetic.invalid/team/synthetic:latest?#%") + "/json",
+			path:     "/images/synthetic.invalid/team/synthetic:latest?#%/json",
+			query:    url.Values{"names": {"http://synthetic.invalid/metadata?force=true#fragment", "synthetic&quiet=false"}},
+		},
+		{
+			name: "container configuration", method: http.MethodPost, resource: "/containers/create", path: "/containers/create",
+			query: url.Values{"name": {"synthetic?name#fragment%/@host:2375"}},
+			body:  `{"Image":"synthetic:latest"}`, contentType: "application/json",
+		},
+		{
+			name: "image archive", method: http.MethodPost, resource: "/images/load", path: "/images/load",
+			query: url.Values{"quiet": {"true"}}, body: "synthetic archive stream", contentType: "application/x-tar",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				expectedURI := test.resource + "?" + test.query.Encode()
+				if r.Host != "docker" || r.Method != test.method || r.RequestURI != expectedURI || r.URL.Path != test.path {
+					t.Errorf("source request target changed: host=%q method=%q URI=%q path=%q", r.Host, r.Method, r.RequestURI, r.URL.Path)
+				}
+				body, err := io.ReadAll(r.Body)
+				if err != nil || string(body) != test.body || r.Header.Get("Content-Type") != test.contentType {
+					t.Errorf("source request body changed: body=%q content-type=%q error=%v", body, r.Header.Get("Content-Type"), err)
+				}
+				fmt.Fprint(w, "synthetic response")
+			}))
+			defer server.Close()
+			source := fixtureMigrationClient(server)
+			var body io.Reader
+			if test.body != "" {
+				body = strings.NewReader(test.body)
+			}
+			response, err := source.request(context.Background(), test.method, test.resource, test.query, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer response.Body.Close()
+			result, err := io.ReadAll(response.Body)
+			if err != nil || string(result) != "synthetic response" {
+				t.Fatalf("source response changed: %q, %v", result, err)
+			}
+			if source.client.CheckRedirect != nil {
+				t.Fatal("migration request changed the shared client's redirect policy")
+			}
+		})
+	}
+}
 
 func TestMigrationRejectsRunningAndUnsupportedContainersBeforeCreation(t *testing.T) {
 	for _, document := range []string{
