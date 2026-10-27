@@ -276,13 +276,34 @@ func testComposeResourceSaverProcessRecovery(t *testing.T, ctx context.Context, 
 	}, "both real Compose members in the owned inventory")
 	direct := fmt.Sprintf("http://127.0.0.1:%d", port)
 	client := &http.Client{Timeout: 30 * time.Second, Transport: &http.Transport{Proxy: nil, DisableKeepAlives: true}}
+	lastReadiness := ""
+	defer func() {
+		if !t.Failed() {
+			return
+		}
+		t.Logf("last synthetic dependency readiness: %s", lastReadiness)
+		inspectionContext, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+		defer cancel()
+		for service, id := range members {
+			document, err := manager.InspectContainer(inspectionContext, id)
+			t.Logf("synthetic Compose readiness member %s inspect=%s error=%v", service, document, err)
+		}
+	}()
 	waitPolicy(t, ctx, func() bool {
 		response, err := client.Get(direct)
 		if err != nil {
+			lastReadiness = err.Error()
 			return false
 		}
 		defer response.Body.Close()
-		return response.StatusCode == http.StatusOK && response.Header.Get("X-Synthetic-Dependency") == "ready"
+		body, readErr := io.ReadAll(io.LimitReader(response.Body, 4096))
+		observation := fmt.Sprintf("status=%d dependency=%q body=%q read-error=%v",
+			response.StatusCode, response.Header.Get("X-Synthetic-Dependency"), body, readErr)
+		if observation != lastReadiness {
+			t.Logf("synthetic dependency readiness: %s", observation)
+			lastReadiness = observation
+		}
+		return readErr == nil && response.StatusCode == http.StatusOK && response.Header.Get("X-Synthetic-Dependency") == "ready"
 	}, "front's actual dependent HTTP readiness")
 	if err := manager.CheckEngineIdle(ctx); err == nil {
 		t.Fatal("real active Compose tasks did not block engine suspension")
