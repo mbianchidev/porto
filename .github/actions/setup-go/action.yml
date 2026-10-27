@@ -26,7 +26,7 @@ runs:
         echo "PORTO_GO_BUILD_CACHE=$build" >> "$GITHUB_ENV"
 
     - name: Cache Go modules
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.PORTO_GO_MODULE_CACHE }}
         key: porto-go-mod-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh') }}
@@ -34,7 +34,7 @@ runs:
           porto-go-mod-v1-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Cache Go build objects
-      uses: actions/cache@caa296126883cff596d87d8935842f9db880ef25 # v5
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.PORTO_GO_BUILD_CACHE }}
         key: porto-go-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-${{ hashFiles('go.sum', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh', 'scripts/patches/*.patch') }}
