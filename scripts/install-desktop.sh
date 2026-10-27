@@ -134,6 +134,56 @@ run_as_root() {
   fi
 }
 
+verify_linux_qemu() {
+  for qemu_executable in "$qemu_command" qemu-img; do
+    if ! command -v "$qemu_executable" >/dev/null 2>&1 || ! "$qemu_executable" --version >/dev/null; then
+      echo "Porto setup incomplete: $qemu_executable is missing or cannot execute. QEMU is required for the managed container engine and virtual machines. Repair it and retry; existing Porto files have not been replaced." >&2
+      exit 1
+    fi
+  done
+}
+
+install_linux_prerequisites() {
+  if [ "${PORTO_SKIP_PREREQS:-0}" = "1" ]; then
+    echo "Linux runtime prerequisite checks explicitly skipped with PORTO_SKIP_PREREQS=1. Managed container engine readiness has not been verified." >&2
+    return
+  fi
+
+  case "$goarch" in
+    amd64) qemu_command="qemu-system-x86_64" ;;
+    arm64) qemu_command="qemu-system-aarch64" ;;
+  esac
+  if command -v "$qemu_command" >/dev/null 2>&1; then
+    verify_linux_qemu
+    return
+  fi
+
+  echo "Installing QEMU for Porto's managed container engine and virtual machines."
+  if command -v apt-get >/dev/null 2>&1; then
+    if run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    if run_as_root dnf install -y qemu-kvm qemu-img; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v pacman >/dev/null 2>&1; then
+    if run_as_root pacman -S --needed qemu-desktop; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v zypper >/dev/null 2>&1; then
+    if run_as_root zypper --non-interactive install qemu; then
+      verify_linux_qemu
+      return
+    fi
+  fi
+  echo "Porto setup incomplete: QEMU is required for the managed container engine and virtual machines. Install $qemu_command and qemu-img, then retry. Existing Porto files have not been replaced." >&2
+  exit 1
+}
+
 daemon_pids() {
   if [ "$goos" = "darwin" ]; then
     processes="$(ps -ax -o pid=,command=)" || return 1
@@ -203,6 +253,7 @@ if [ "$goos" = "darwin" ]; then
     open "$install_root/Porto.app"
   fi
 else
+  install_linux_prerequisites
   install_root="${PORTO_INSTALL_DIR:-$HOME/.local/opt/porto}"
   stop_daemons
   if [ -d "$install_root" ]; then
@@ -228,21 +279,11 @@ Terminal=false
 Categories=Development;
 EOF
 
-  if [ "${PORTO_SKIP_PREREQS:-0}" != "1" ] && ! command -v qemu-system-x86_64 >/dev/null 2>&1 && ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v dnf >/dev/null 2>&1; then
-      run_as_root dnf install -y qemu-kvm qemu-img || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v pacman >/dev/null 2>&1; then
-      run_as_root pacman -S --needed qemu-desktop || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v zypper >/dev/null 2>&1; then
-      run_as_root zypper --non-interactive install qemu || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    else
-      echo "Install QEMU/KVM to use Porto virtual machines on Linux." >&2
-    fi
+  if [ "${PORTO_SKIP_PREREQS:-0}" = "1" ]; then
+    echo "Installed Porto files at $install_root; Linux runtime prerequisite verification was explicitly skipped."
+  else
+    echo "Installed Porto at $install_root"
   fi
-
-  echo "Installed Porto at $install_root"
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
     nohup "$install_root/Porto" >/dev/null 2>&1 &
   fi
