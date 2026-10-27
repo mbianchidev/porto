@@ -28,6 +28,38 @@ type EngineConfiguration struct {
 	Disk         int64  `json:"disk"`
 }
 
+func (m *Manager) beginEngineUpdateTransaction(ctx context.Context) (context.Context, func(), error) {
+	waitContext, cancel := context.WithTimeout(ctx, defaultTimeout)
+	defer cancel()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if err := context.Cause(waitContext); err != nil {
+			if cause := context.Cause(ctx); cause != nil {
+				return ctx, nil, cause
+			}
+			if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+				return ctx, nil, context.DeadlineExceeded
+			}
+			return ctx, nil, fmt.Errorf("%w: runtime file readers are still active; retry update preparation after they finish", ErrConflict)
+		}
+		transactionContext, release, err := m.BeginDataTransaction(ctx)
+		if err == nil {
+			return transactionContext, release, nil
+		}
+		// Metadata probes can overlap an otherwise idle engine. Wait only for
+		// readers; an actual storage writer remains an immediate conflict.
+		if !m.dataMu.TryRLock() {
+			return ctx, nil, err
+		}
+		m.dataMu.RUnlock()
+		select {
+		case <-waitContext.Done():
+		case <-ticker.C:
+		}
+	}
+}
+
 func (m *Manager) CheckEngineIdle(ctx context.Context) error {
 	if m.nativeGuard != nil {
 		for _, kind := range []string{"container", "volume"} {

@@ -78,8 +78,7 @@ docker_source_directory="$temporary/cli-${docker_version}"
 docker_plugin_patch="$script_directory/patches/docker-cli-29.7.2-bundled-plugins.patch"
 (
   cd "$docker_source_directory"
-  git apply --check "$docker_plugin_patch"
-  git apply "$docker_plugin_patch"
+  bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$docker_plugin_patch"
   cp vendor.mod go.mod
   cp vendor.sum go.sum
 )
@@ -308,15 +307,11 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
   (
     cd "$temporary/$lima_source_directory"
-    git apply --check "$lima_pid_patch" "$lima_stop_patch"
-    git apply "$lima_pid_patch" "$lima_stop_patch"
-    git apply --check "$lima_graceful_stop_patch"
-    git apply "$lima_graceful_stop_patch"
-    git apply --check "$lima_arm64_cpu_patch"
-    git apply "$lima_arm64_cpu_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_graceful_stop_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_arm64_cpu_patch"
     if [ "$lima_version" = v2.2.1 ]; then
-      git apply --check "$lima_wsl_mount_patch"
-      git apply "$lima_wsl_mount_patch"
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
       if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
         CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
           -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1

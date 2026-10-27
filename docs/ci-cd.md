@@ -520,6 +520,10 @@ Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
 diagnostics, and disk/configuration preservation without booting a VM.
+Upstream Docker, Lima and synchronization source patches use an isolated Git
+discovery boundary and reverse-application check. This prevents `git apply`
+from silently skipping archive-relative changes when a build's `TMPDIR` is
+inside the Porto checkout; the enclosing repository and index are not used.
 Windows CI repeats these checks against the installed package in a path with
 spaces, rather than only checking that its binaries exist. It also starts
 synthetic consoleless processes and verifies that a forced stop terminates the

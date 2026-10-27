@@ -149,6 +149,7 @@ func TestPrepareEngineUpdateHonorsCancellationWhileWaitingForInstallation(t *tes
 						t.Error(err)
 					}
 				}
+
 			} else {
 				manager.installMu.Lock()
 				release = manager.installMu.Unlock
@@ -186,4 +187,55 @@ func TestPrepareEngineUpdateHonorsCancellationWhileWaitingForInstallation(t *tes
 			}
 		})
 	}
+}
+
+func TestPrepareEngineUpdateWaitsForTransientFileReaders(t *testing.T) {
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	manager.dataMu.RLock()
+	locked := true
+	defer func() {
+		if locked {
+			manager.dataMu.RUnlock()
+		}
+	}()
+	done := make(chan error, 1)
+	go func() {
+		_, err := manager.PrepareEngineUpdate(context.Background())
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		t.Fatalf("a transient metadata reader was treated as a conflicting transfer: %v", err)
+	case <-time.After(60 * time.Millisecond):
+	}
+	manager.dataMu.RUnlock()
+	locked = false
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("update preparation did not resume after the metadata reader finished")
+	}
+	if !manager.dataMu.TryLock() {
+		t.Fatal("completed update retained the runtime data transaction")
+	}
+	manager.dataMu.Unlock()
+}
+
+func TestPrepareEngineUpdateReaderWaitRemainsCancellable(t *testing.T) {
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	manager.dataMu.RLock()
+	defer manager.dataMu.RUnlock()
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+	_, err := manager.PrepareEngineUpdate(ctx)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("reader wait lost caller cancellation: %v", err)
+	}
+	if !manager.dataMu.TryRLock() {
+		t.Fatal("cancelled update left a queued writer blocking other readers")
+	}
+	manager.dataMu.RUnlock()
 }

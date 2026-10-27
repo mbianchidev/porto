@@ -643,7 +643,7 @@ func (m *Manager) StopEngine(ctx context.Context) error {
 }
 
 func (m *Manager) PrepareEngineUpdate(ctx context.Context) (bool, error) {
-	ctx, release, err := m.BeginDataTransaction(ctx)
+	ctx, release, err := m.beginEngineUpdateTransaction(ctx)
 	if err != nil {
 		return false, err
 	}
