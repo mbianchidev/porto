@@ -1451,6 +1451,71 @@ func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
 	}
 }
 
+func TestInstallLimaRuntimeHelperUsesProvisioningBudgetAndCallerCancellation(t *testing.T) {
+	helper := filepath.Join(t.TempDir(), "synthetic-runtime-helper")
+	payload := []byte("synthetic runtime helper payload")
+	if err := os.WriteFile(helper, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name   string
+		caller time.Duration
+		cancel bool
+	}{
+		{name: "provisioning budget"},
+		{name: "longer caller remains bounded", caller: 30 * time.Minute},
+		{name: "shorter caller takes precedence", caller: 5 * time.Second},
+		{name: "cancellation during transfer", cancel: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := engineStartTimeout
+			if scenario.caller > 0 {
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(ctx, scenario.caller)
+				defer deadlineCancel()
+				want = min(want, scenario.caller)
+			}
+			var remaining time.Duration
+			runner := lifecycleDeadlineRunner(func(commandContext context.Context, command runtimes.Command) ([]byte, error) {
+				if command.Name != "limactl" || len(command.Args) == 0 || !bytes.Equal(command.Stdin, payload) ||
+					command.Args[len(command.Args)-1] != limaRuntimeHelperInstallCommand {
+					return nil, errors.New("helper transfer changed its payload or atomic validation command")
+				}
+				deadline, ok := commandContext.Deadline()
+				if !ok {
+					return nil, errors.New("runtime helper transfer has no provisioning deadline")
+				}
+				remaining = time.Until(deadline)
+				if scenario.cancel {
+					cancel()
+					return nil, context.Cause(commandContext)
+				}
+				return nil, nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			manager.lookPath = func(name string) (string, error) {
+				if name != "porto-runtime-helper" {
+					return "", fmt.Errorf("unexpected executable lookup: %s", name)
+				}
+				return helper, nil
+			}
+			err := manager.installLimaRuntimeHelper(ctx, "synthetic-engine")
+			if scenario.cancel {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("helper transfer cancellation = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if remaining <= want-time.Second || remaining > want {
+				t.Fatalf("helper transfer budget = %s, want %s without extending the caller deadline", remaining, want)
+			}
+		})
+	}
+}
+
 func TestInstallLimaRuntimeHelperPreservesPreviousBinaryOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("runtime helper installation runs in the Linux guest")

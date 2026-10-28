@@ -410,6 +410,8 @@ async function startDesktop(fixture, installed, env) {
   try {
     desktop = spawn(installed.desktop, args, { env, cwd: fixture.home, windowsHide: true, stdio: ['ignore', log, log] })
     await new Promise((resolve, reject) => { desktop.once('spawn', resolve); desktop.once('error', reject) })
+    // Unverified cleanup must fail CI, not keep its parent alive indefinitely.
+    desktop.unref()
   } finally {
     fs.closeSync(log)
   }

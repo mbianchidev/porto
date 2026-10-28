@@ -546,7 +546,7 @@ func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string)
 	}
 	_, err = m.runCommand(
 		ctx,
-		30*time.Second,
+		engineStartTimeout,
 		"install Porto runtime helper",
 		binary,
 		"limactl",

@@ -107,6 +107,11 @@ and only a newly created failed guest is eligible for cleanup.
 While a boot or setup command is quiet, the progress stream repeats its last
 actual stage to keep idle transports alive. This does not invent a new stage,
 mark setup complete, or extend the existing installation deadline.
+Uploading and validating the bundled runtime-helper binary uses the existing
+20-minute provisioning command budget rather than a 30-second metadata-probe
+limit. Any shorter remaining caller deadline or cancellation still wins.
+Installation validates a temporary helper before atomic replacement, preserving
+the previous binary if transfer or validation fails.
 
 See [installed-package acceptance](installed-acceptance.md) for the real
 clean-install, upgrade and removal gates, including the distinction between
