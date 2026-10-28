@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"time"
 )
 
@@ -132,24 +133,49 @@ func (m *Manager) invalidateContainerInventory() {
 	}
 }
 
-func (m *Manager) waitForContainerInventory(ctx context.Context, minimumRevision uint64) (ContainerSnapshot, error) {
-	updates, unsubscribe := m.SubscribeContainerSnapshots()
+func (m *Manager) completeContainerCreation(ctx context.Context, id string, creationErr error) (string, error) {
+	if creationErr != nil {
+		return id, creationErr
+	}
+	if id == "" {
+		return "", errors.New("container runtime returned no created container identity")
+	}
+	inventory := m.activeContainerInventory()
+	if inventory == nil || m.IsNativeWindows() {
+		m.invalidateContainerInventory()
+		return id, nil
+	}
+	updates, unsubscribe := inventory.subscribe()
 	defer unsubscribe()
+	inventory.triggerRefresh()
 	timer := time.NewTimer(defaultInventoryOperationTimeout)
 	defer timer.Stop()
+	var err error
 	for {
 		select {
 		case <-ctx.Done():
-			return ContainerSnapshot{}, context.Cause(ctx)
+			err = context.Cause(ctx)
 		case <-timer.C:
-			return ContainerSnapshot{}, errors.New("timed out waiting for container inventory")
+			err = errors.New("timed out waiting for the created container in inventory")
 		case snapshot, ok := <-updates:
 			if !ok {
-				return ContainerSnapshot{}, errors.New("container inventory subscription closed")
+				err = errors.New("container inventory subscription closed")
+				break
 			}
-			if snapshot.Revision > minimumRevision {
-				return snapshot, nil
+			if ctx.Err() != nil {
+				err = context.Cause(ctx)
+				break
 			}
+			if snapshot.Available && !snapshot.Stale {
+				for _, container := range snapshot.Containers {
+					if container.ID == id {
+						return id, nil
+					}
+				}
+			}
+		}
+		if err != nil {
+			return id, fmt.Errorf("container %q was created, but inventory confirmation failed: %w", id, err)
 		}
 	}
 }

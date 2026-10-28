@@ -937,16 +937,10 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", err
 		}
 		id, err := driver.Create(ctx, request)
-		if err == nil {
-			m.invalidateContainerInventory()
-		}
-		return id, err
+		return m.completeContainerCreation(ctx, id, err)
 	}
 	if id, handled, err := m.createContainerDirect(ctx, request); handled {
-		if err == nil {
-			m.invalidateContainerInventory()
-		}
-		return id, err
+		return m.completeContainerCreation(ctx, id, err)
 	}
 	if err := m.checkCompatibilityHealth(ctx, request.Healthcheck); err != nil {
 		return "", err
@@ -1115,8 +1109,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", errors.Join(err, cleanupErr)
 		}
 	}
-	m.invalidateContainerInventory()
-	return id, nil
+	return m.completeContainerCreation(ctx, id, nil)
 }
 
 func (m *Manager) RunContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
