@@ -487,7 +487,7 @@ async function toolSnapshot(installed) {
 
 async function snapshot(fixture, installed) {
   const files = [path.join(fixture.portoHome, 'porto.db'), path.join(fixture.portoHome, 'docker', 'engine.json'),
-    path.join(fixture.limaHome, 'porto-engine', 'diffdisk'),
+    path.join(fixture.limaHome, 'porto-engine', 'disk'),
     path.join(fixture.home, 'Preserved synthetic project', 'package.json')]
   const wal = path.join(fixture.portoHome, 'porto.db-wal')
   if (fs.existsSync(wal)) files.push(wal)
@@ -732,5 +732,5 @@ if (require.main === module) {
 
 module.exports = {
   acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure,
+  removed, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
 }

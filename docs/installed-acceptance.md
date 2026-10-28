@@ -62,6 +62,9 @@ The fixture:
    credential-helper, plugin, command-entry and Buildx sentinels. Windows uses
    the real NSIS uninstaller. macOS/Linux exercise manual removal of the owned
    application and owned command/desktop entries, not a fictional uninstaller.
+   The guest baseline hashes Lima 2.2's canonical `disk` path, including a
+   confined legacy-migration link when present, not the pre-2.1-only `diffdisk`
+   filename.
 
 The Unix package driver, `scripts/installed-package.cjs`, serves the built
 artifact and its checksum on an ephemeral loopback HTTP endpoint to the

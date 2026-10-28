@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure } = require('./installed-acceptance.cjs')
+const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -380,9 +380,24 @@ test('preservation refuses replacement of an unrelated helper with another file 
   assert.throws(() => preserved(current), /different file type/)
 })
 
+test('preservation captures the pinned Lima canonical disk and still verifies its exact data bytes', async (t) => {
+  const current = fixture(t)
+  const installed = packageFixture(current)
+  write(path.join(current.portoHome, 'porto.db'), 'SQLite format 3\0Synthetic populated state\n')
+  write(path.join(current.portoHome, 'docker', 'engine.json'), '{"mode":"lima","ownerId":"synthetic"}\n')
+  write(path.join(current.home, 'Preserved synthetic project', 'package.json'), '{"name":"synthetic"}\n')
+  const disk = path.join(current.limaHome, 'porto-engine', 'disk')
+  write(disk, 'Synthetic retained Lima 2.2 disk bytes\n')
+  await snapshot(current, installed)
+  assert.equal(current.snapshots[path.relative(current.directory, disk)], digest(disk))
+  assert.equal(fs.existsSync(path.join(current.limaHome, 'porto-engine', 'diffdisk')), false)
+  write(disk, 'Changed retained Lima disk bytes\n')
+  await assert.rejects(restored(current), /changed stopped Porto state or real runtime data/)
+})
+
 test('upgrade/uninstall checks hash populated state and guest data rather than file existence', async (t) => {
   const current = fixture(t)
-  const guestData = path.join(current.limaHome, 'porto-engine', 'diffdisk')
+  const guestData = path.join(current.limaHome, 'porto-engine', 'disk')
   write(guestData, 'Synthetic retained disk contents')
   current.snapshots = { [path.relative(current.directory, guestData)]: digest(guestData) }
   await restored(current)
