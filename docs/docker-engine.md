@@ -505,7 +505,7 @@ Porto endpoint automatically.
 BuildKit clients connect through Docker-compatible h2c upgrades. Multi-platform
 builds work with Buildx and Compose Bake:
 
-The proxy coordinates gateway calls with the matching Solve's storage,
+The proxy coordinates gateway and status calls with the matching Solve's storage,
 architecture and exporter preflight. A cold guest must not receive gateway
 `Ping` before that build can be registered upstream. Admission is keyed by the
 original build ID across upgraded connections; other builds stay independent,

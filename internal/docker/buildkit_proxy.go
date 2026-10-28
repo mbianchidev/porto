@@ -229,6 +229,11 @@ func (p *buildKitControlProxy) rememberMobyWorker(response *controlapi.ListWorke
 }
 
 func (p *buildKitControlProxy) Status(request *controlapi.StatusRequest, stream grpc.ServerStreamingServer[controlapi.StatusResponse]) error {
+	if p.admissions != nil && request.Ref != "" {
+		if err := p.admissions.wait(stream.Context(), request.Ref); err != nil {
+			return err
+		}
+	}
 	upstream, err := p.client.Status(outgoingBuildKitContext(stream.Context()), request)
 	if err != nil {
 		return err

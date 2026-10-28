@@ -24,6 +24,7 @@ import (
 type admissionBuildKitState struct {
 	started chan struct{}
 	ping    chan struct{}
+	status  chan struct{}
 	finish  chan struct{}
 	once    sync.Once
 }
@@ -47,6 +48,24 @@ func (s *admissionBuildKitControl) Solve(ctx context.Context, request *controlap
 		return &controlapi.SolveResponse{}, nil
 	case <-ctx.Done():
 		return nil, context.Cause(ctx)
+	}
+}
+
+func (s *admissionBuildKitControl) Status(request *controlapi.StatusRequest, stream grpc.ServerStreamingServer[controlapi.StatusResponse]) error {
+	select {
+	case s.state.status <- struct{}{}:
+	default:
+	}
+	if request.Ref != "synthetic-build" {
+		return errors.New("status lost its synthetic build reference")
+	}
+	select {
+	case <-s.state.started:
+		return stream.Send(&controlapi.StatusResponse{})
+	case <-time.After(time.Second):
+		return status.Error(codes.NotFound, "no such job synthetic-build")
+	case <-stream.Context().Done():
+		return context.Cause(stream.Context())
 	}
 }
 
@@ -75,7 +94,8 @@ func (s *admissionBuildKitGateway) Ping(ctx context.Context, _ *emptypb.Empty) (
 func admissionBuildKitBackend(t *testing.T) (*admissionBuildKitState, func(context.Context) (net.Conn, error)) {
 	t.Helper()
 	state := &admissionBuildKitState{
-		started: make(chan struct{}), ping: make(chan struct{}, 1), finish: make(chan struct{}),
+		started: make(chan struct{}), ping: make(chan struct{}, 1),
+		status: make(chan struct{}, 1), finish: make(chan struct{}),
 	}
 	upstreamListener := bufconn.Listen(1 << 20)
 	upstream := grpc.NewServer()
@@ -234,9 +254,19 @@ func TestBuildKitGatewayWaitsForSolvePreflightWithoutLosingBuildIdentity(t *test
 		pingDone <- gatewayConnection.Invoke(buildid.AppendToOutgoingContext(ctx, "synthetic-build"),
 			"/moby.buildkit.v1.frontend.LLBBridge/Ping", &emptypb.Empty{}, &emptypb.Empty{})
 	}()
+	statusDone := make(chan error, 1)
+	go func() {
+		stream, err := controlapi.NewControlClient(connection).Status(ctx, &controlapi.StatusRequest{Ref: "synthetic-build"})
+		if err == nil {
+			_, err = stream.Recv()
+		}
+		statusDone <- err
+	}()
 	select {
 	case <-state.ping:
 		t.Fatal("gateway reached BuildKit before Solve preflight finished")
+	case <-state.status:
+		t.Fatal("status reached BuildKit before Solve preflight finished")
 	case <-time.After(50 * time.Millisecond):
 	}
 	unblock()
@@ -247,6 +277,14 @@ func TestBuildKitGatewayWaitsForSolvePreflightWithoutLosingBuildIdentity(t *test
 		}
 	case <-ctx.Done():
 		t.Fatal("gateway did not resume after successful preflight")
+	}
+	select {
+	case err := <-statusDone:
+		if err != nil {
+			t.Fatalf("admitted status request failed: %v", err)
+		}
+	case <-ctx.Done():
+		t.Fatal("status did not resume after successful preflight")
 	}
 	close(state.finish)
 	select {
