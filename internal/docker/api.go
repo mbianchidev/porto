@@ -31,23 +31,25 @@ const (
 )
 
 type API struct {
-	lifecycleContext context.Context
-	manager          *Manager
-	socketPath       string
-	mux              *http.ServeMux
-	attachMu         sync.Mutex
-	attaches         map[string]*containerAttachSession
-	execMu           sync.Mutex
-	execs            map[string]*execInstance
-	registryClient   *http.Client
+	lifecycleContext   context.Context
+	manager            *Manager
+	socketPath         string
+	mux                *http.ServeMux
+	attachMu           sync.Mutex
+	attaches           map[string]*containerAttachSession
+	execMu             sync.Mutex
+	execs              map[string]*execInstance
+	registryClient     *http.Client
+	buildKitAdmissions *buildKitSolveAdmissions
 }
 
 func NewAPI(manager *Manager, socketPath string) *API {
 	api := &API{
 		manager: manager, socketPath: socketPath, mux: http.NewServeMux(),
-		attaches:       make(map[string]*containerAttachSession),
-		execs:          make(map[string]*execInstance),
-		registryClient: registryHTTPClientWithTransport(networking.RegistryTransport{Policy: manager.NetworkPolicy}),
+		attaches:           make(map[string]*containerAttachSession),
+		execs:              make(map[string]*execInstance),
+		registryClient:     registryHTTPClientWithTransport(networking.RegistryTransport{Policy: manager.NetworkPolicy}),
+		buildKitAdmissions: newBuildKitSolveAdmissions(),
 	}
 	api.routes()
 	return api

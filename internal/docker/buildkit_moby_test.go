@@ -187,6 +187,38 @@ func TestBuildKitControlProxyRejectsMobyWithoutPortoContainerdWorker(t *testing.
 	}
 }
 
+func TestBuildKitControlProxyReusesOnlyVerifiedWorkerDiscovery(t *testing.T) {
+	for _, compatible := range []bool{false, true} {
+		upstream := &recordingBuildKitSolveServer{workerExecutor: "oci"}
+		if compatible {
+			upstream.workerExecutor = buildKitWorkerContainerdExecutor
+		}
+		connection, err := newBuildKitControlConnection(buildKitControlTestDialer(t, upstream))
+		if err != nil {
+			t.Fatal(err)
+		}
+		proxy := &buildKitControlProxy{
+			client: controlapi.NewControlClient(connection), containerdNamespace: "default",
+		}
+		if _, err := proxy.ListWorkers(context.Background(), &controlapi.ListWorkersRequest{}); err != nil {
+			t.Fatal(err)
+		}
+		_, err = proxy.Solve(context.Background(), &controlapi.SolveRequest{
+			Exporters: []*controlapi.Exporter{{Type: "moby"}},
+		})
+		if compatible {
+			if err != nil || upstream.workerCalls != 1 || upstream.solveCalls != 1 {
+				t.Fatalf("verified discovery repeated slow preflight or lost Solve: %v, workers=%d solves=%d",
+					err, upstream.workerCalls, upstream.solveCalls)
+			}
+		} else if err == nil || upstream.workerCalls != 2 || upstream.solveCalls != 0 {
+			t.Fatalf("incompatible discovery bypassed exporter validation: %v, workers=%d solves=%d",
+				err, upstream.workerCalls, upstream.solveCalls)
+		}
+		_ = connection.Close()
+	}
+}
+
 func TestBuildKitControlProxyCoversControlService(t *testing.T) {
 	const forwardedMethods = 9
 	actual := len(controlapi.Control_ServiceDesc.Methods) + len(controlapi.Control_ServiceDesc.Streams)
@@ -234,7 +266,7 @@ func TestBuildKitProxyForwardsUnknownServices(t *testing.T) {
 	defer upstreamConnection.Close()
 
 	proxyListener := bufconn.Listen(1024 * 1024)
-	proxyServer := grpc.NewServer(grpc.UnknownServiceHandler(transparentBuildKitHandler(upstreamConnection)))
+	proxyServer := grpc.NewServer(grpc.UnknownServiceHandler(transparentBuildKitHandler(upstreamConnection, nil)))
 	go func() {
 		_ = proxyServer.Serve(proxyListener)
 	}()
@@ -285,9 +317,11 @@ type recordingBuildKitSolveServer struct {
 	workerExecutor  string
 	workerNamespace string
 	solveCalls      int
+	workerCalls     int
 }
 
 func (s *recordingBuildKitSolveServer) ListWorkers(context.Context, *controlapi.ListWorkersRequest) (*controlapi.ListWorkersResponse, error) {
+	s.workerCalls++
 	executor := s.workerExecutor
 	if executor == "" {
 		executor = "containerd"

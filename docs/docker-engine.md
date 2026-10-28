@@ -505,6 +505,14 @@ Porto endpoint automatically.
 BuildKit clients connect through Docker-compatible h2c upgrades. Multi-platform
 builds work with Buildx and Compose Bake:
 
+The proxy coordinates gateway calls with the matching Solve's storage,
+architecture and exporter preflight. A cold guest must not receive gateway
+`Ping` before that build can be registered upstream. Admission is keyed by the
+original build ID across upgraded connections; other builds stay independent,
+caller cancellation remains bounded, and actual preflight refusals are not
+replaced with an opaque missing-job error. Verified worker discovery can supply
+the existing namespace/exporter compatibility proof without a duplicate probe.
+
 SDK uploads to the ordinary Docker `/build` endpoint are unpacked into a
 confined temporary context before invoking nerdctl, which does not accept a
 tar context as `-`. Gzip uploads are supported; expanded archives are bounded
