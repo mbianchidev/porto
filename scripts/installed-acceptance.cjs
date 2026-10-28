@@ -428,16 +428,19 @@ async function startDesktop(fixture, installed, env) {
   const diagnosticsTimer = setInterval(retain, 250)
   try {
     assert.ok(record.identity, 'Cannot establish the identity of the installed desktop process')
+    console.log('Installed startup: waiting for the installed daemon health identity')
     const health = await waitFor(async () => {
       assert.equal(desktop.exitCode, null, 'Installed desktop exited before becoming ready')
       const health = await json(`${DAEMON_URL}/api/health`)
       assert.equal(health.daemonIdentity, digest(installed.porto), 'Desktop used a different daemon executable')
       return health.status === 'ok' && health.dashboardReady === true && health
     }, 'installed desktop must launch its own dashboard-serving daemon', 60000)
+    console.log('Installed startup: verifying the installed daemon process ownership')
     const owned = (await daemons(env)).filter((item) => fs.realpathSync(item.executable) === fs.realpathSync(installed.porto))
     assert.equal(owned.length, 1, 'Expected exactly one daemon launched from the installed package')
     daemon = { ...owned[0], identity: await identity(owned[0].pid, env) }
     assert.ok(daemon.identity, 'Cannot establish the identity of the installed daemon process')
+    console.log('Installed startup: waiting for owned backend provisioning')
     await waitFor(async () => {
       const status = await json(`${DAEMON_URL}/api/docker/status`)
       assert.equal(status.enabled, true)
@@ -445,11 +448,13 @@ async function startDesktop(fixture, installed, env) {
       if (!status.available) throw new Error(status.message || 'The installed backend is not available')
       return status
     }, 'real installed first-run Lima/containerd/BuildKit provisioning', 25 * 60 * 1000)
+    console.log('Installed startup: waiting for the packaged dashboard renderer target')
     const page = await waitFor(async () => {
       const pages = await json(`http://127.0.0.1:${debuggerPort}/json/list`)
       return pages.find((item) => item.type === 'page' && new URL(item.url).origin === DAEMON_URL)
     }, 'installed dashboard renderer', 60000)
     renderer = await cdp(page.webSocketDebuggerUrl)
+    console.log('Installed startup: requiring actual packaged dashboard rendering')
     await waitFor(async () => await renderer.evaluate('document.getElementById("root")?.childElementCount > 0'),
       'installed dashboard must actually render')
     return { renderer, health, desktop: record, daemon }
