@@ -9,11 +9,11 @@ const { EventEmitter, once } = require('node:events')
 const { PassThrough } = require('node:stream')
 
 const {
-  EXPECTED, available, digest, environment, failureDiagnostic, inspectPackage, layout, load, nativeHeader,
+  EXPECTED, available, digest, environment, failureDiagnostic, inspectPackage, layout, linuxProcessIdentity, load, nativeHeader,
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, hostProcesses, identity, restored } = require('./installed-acceptance.cjs')
+const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -514,6 +514,7 @@ async function commandTree(t, mode) {
   const root = path.join(process.cwd(), `.installed-unit-${crypto.randomBytes(6).toString('hex')}`)
   const current = prepare(root)
   const env = environment(current)
+  await identity(process.pid, env)
   const script = path.join(current.home, 'owned-process-tree.cjs')
   const record = path.join(current.home, 'owned-pids.json')
   const recordedIdentities = new Map()
@@ -682,21 +683,137 @@ test('native identity works under synthetic HOME and distinguishes an exited or 
   assert.notEqual(await identity(child.pid, env), original)
 })
 
-test('Unix identity accepts only the actual missing-PID status, not inspection failures', async () => {
-  const missing = { status: 1, signal: null, stdout: '', stderr: '' }
-  assert.equal(await identity(123, {}, { platform: 'linux', runImpl: async () => missing }), '')
-  for (const result of [
-    { ...missing, status: 2, stderr: 'ps inspection failed' },
-    { ...missing, stderr: 'ps permission denied' },
-    { ...missing, stdout: 'partial identity' },
-    { ...missing, status: 0 },
-    { ...missing, status: null, signal: 'SIGKILL' },
-  ]) {
+test('Linux kernel identity ignores mutable comm and verifies executable/start generation', () => {
+  const stat = (start, name = 'node', state = 'S') => {
+    const fields = Array(20).fill('0')
+    fields[0] = state
+    fields[19] = start
+    return `123 (${name}) ${fields.join(' ')}\n`
+  }
+  const probe = (states, images = ['/trusted/node', '/trusted/node'], inodes = [2n, 2n]) => {
+    let read = 0
+    let link = 0
+    let metadata = 0
+    return {
+      readFileSync: () => states[Math.min(read++, states.length - 1)],
+      readlinkSync: () => images[link++],
+      statSync: () => ({ dev: 1n, ino: inodes[metadata++], nlink: 1n }),
+    }
+  }
+  const token = linuxProcessIdentity(123, { fsImpl: probe([stat('100'), stat('100', 'Porto) renamed\n title')]) })
+  assert.deepEqual(JSON.parse(token), {
+    PID: 123, StartTimeTicks: '100', ExecutablePath: '/trusted/node', ExecutableDevice: '1', ExecutableInode: '2',
+  })
+  assert.throws(() => linuxProcessIdentity(123, { fsImpl: probe([stat('100'), stat('101')]) }), /generation changed/)
+  assert.throws(() => linuxProcessIdentity(123, { fsImpl: probe([stat('100')], ['/trusted/node', '/different/node']) }), /executable changed/i)
+  assert.throws(() => linuxProcessIdentity(123, { fsImpl: probe([stat('100')], undefined, [2n, 3n]) }), /executable changed/i)
+  assert.equal(linuxProcessIdentity(123, { fsImpl: probe([stat('100', 'node', 'Z')]) }), '')
+})
+
+test('Unix inspection errors and unavailable procfs never become missing-process results', async () => {
+  const missing = Object.assign(new Error('synthetic proc entry absent'), { code: 'ENOENT' })
+  const fsImpl = { readFileSync: () => { throw missing } }
+  assert.equal(linuxProcessIdentity(123, {
+    fsImpl, signalImpl: () => { throw Object.assign(new Error('missing PID'), { code: 'ESRCH' }) },
+  }), '')
+  assert.throws(() => linuxProcessIdentity(123, { fsImpl, signalImpl: () => true }), /proc entry absent/)
+  assert.throws(() => linuxProcessIdentity(123, {
+    fsImpl, signalImpl: () => { throw Object.assign(new Error('permission unavailable'), { code: 'EPERM' }) },
+  }), /permission unavailable/)
+  for (const code of ['EACCES', 'EPERM', 'EIO']) {
     const logs = []
     await assert.rejects(identity(123, {}, {
-      platform: 'linux', runImpl: async () => result, logImpl: (message) => logs.push(message),
+      platform: 'linux', linuxImpl: () => { throw Object.assign(new Error('inspection failed'), { code }) },
+      logImpl: (message) => logs.push(message),
     }), { code: 'PORTO_PROCESS_INSPECTION_UNAVAILABLE' })
     assert.match(logs[0], /Process identity inspection is unavailable/)
+  }
+})
+
+if (process.platform !== 'win32') {
+  test('mutable process.title preserves kernel identity and teardown signals only the owned generation', async (t) => {
+    const current = fixture(t)
+    const env = environment(current)
+    await identity(process.pid, env)
+    const child = spawn(process.execPath, ['-e', `
+process.on('message', () => { process.title = 'Porto'; process.send('renamed') })
+process.send('ready')
+setInterval(() => {}, 1000)
+`], { env, cwd: current.home, stdio: ['ignore', 'ignore', 'ignore', 'ipc'] })
+    const unrelated = spawn(process.execPath, ['-e', 'process.send("ready"); setInterval(() => {}, 1000)'], {
+      env, cwd: current.home, stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
+    })
+    t.after(() => stopSynthetic(child))
+    t.after(() => stopSynthetic(unrelated))
+    await Promise.all([once(child, 'message'), once(unrelated, 'message')])
+    const original = await identity(child.pid, env)
+    assert.equal(fs.realpathSync(JSON.parse(original).ExecutablePath), fs.realpathSync(process.execPath))
+    const signals = []
+    const signalImpl = (pid, signal) => { signals.push([pid, signal]); process.kill(pid, signal) }
+    await stopProcess({ pid: unrelated.pid, identity: original }, env, false, { signalImpl })
+    const wrongPath = JSON.parse(original)
+    wrongPath.ExecutablePath = path.join(current.home, 'unrelated-executable')
+    await stopProcess({ pid: child.pid, identity: JSON.stringify(wrongPath) }, env, false, { signalImpl })
+    assert.deepEqual(signals, [])
+    child.send('rename')
+    await once(child, 'message')
+    assert.equal(await identity(child.pid, env), original, 'A display title must not change native process ownership')
+    const exited = once(child, 'exit')
+    await stopProcess({ pid: child.pid, identity: original }, env, false, { signalImpl })
+    await waitFor(() => child.exitCode !== null || child.signalCode !== null, 'owned titled process exit', 3000)
+    await exited
+    assert.deepEqual(signals, [[child.pid, 'SIGTERM']])
+    assert.equal(unrelated.exitCode, null)
+    assert.equal(unrelated.signalCode, null)
+    assert.equal(await running(unrelated.pid, env), true)
+  })
+}
+
+test('unknown ownership inspection refuses teardown rather than signaling a PID', async () => {
+  const signals = []
+  await assert.rejects(stopProcess({ pid: 123, identity: 'owned-generation' }, {}, false, {
+    identityImpl: async () => { throw new Error('specific process inspection unavailable') },
+    signalImpl: (pid, signal) => signals.push([pid, signal]),
+  }), /inspection unavailable/)
+  assert.deepEqual(signals, [])
+})
+
+test('bounded sanitized Lima/QEMU diagnostics survive instance deletion', (t) => {
+  const current = fixture(t)
+  const instance = path.join(current.limaHome, 'porto-engine')
+  const secret = 'synthetic-runtime-token-must-not-be-retained'
+  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+    write(path.join(instance, name), 'oversized diagnostic prefix '.repeat(1000) +
+      `\nunderlying synthetic QEMU failure\nhttps://user:${secret}@synthetic.invalid/image?token=${secret}\n`)
+  }
+  const descriptors = new Map()
+  t.after(() => {
+    for (const entry of descriptors.values()) fs.closeSync(entry.descriptor)
+  })
+  retainRuntimeDiagnostics(current, descriptors)
+  const snapshots = new Map()
+  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+    const file = path.join(current.directory, 'diagnostics', name)
+    const bytes = fs.readFileSync(file)
+    assert.ok(bytes.length <= 16384)
+    assert.match(bytes.toString(), /underlying synthetic QEMU failure/)
+    assert.ok(!bytes.toString().includes(secret))
+    assert.ok(!bytes.toString().includes('https://'))
+    fs.appendFileSync(path.join(instance, name), 'final underlying QEMU stderr before deletion\n')
+  }
+  fs.rmSync(instance, { recursive: true })
+  retainRuntimeDiagnostics(current, descriptors)
+  assert.equal(descriptors.size, 0)
+  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+    const bytes = fs.readFileSync(path.join(current.directory, 'diagnostics', name))
+    snapshots.set(name, bytes)
+    assert.match(bytes.toString(), /final underlying QEMU stderr before deletion/)
+    assert.ok(bytes.length <= 16384)
+    assert.ok(!bytes.toString().includes(secret))
+  }
+  retainRuntimeDiagnostics(current, descriptors)
+  for (const [name, bytes] of snapshots) {
+    assert.deepEqual(fs.readFileSync(path.join(current.directory, 'diagnostics', name)), bytes)
   }
 })
 
@@ -780,6 +897,7 @@ test('identity inspection timeout remains an unavailable-inspection error rather
   const timedOut = Object.assign(new Error('synthetic inspection timed out: synthetic-secret-must-not-be-logged'), { code: 'PORTO_COMMAND_TIMEOUT' })
   const logs = []
   await assert.rejects(identity(123, {}, {
+    platform: 'win32',
     runImpl: async () => { throw timedOut }, logImpl: (message) => logs.push(message),
   }), (error) => {
     assert.equal(error.code, 'PORTO_PROCESS_INSPECTION_UNAVAILABLE')

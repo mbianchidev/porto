@@ -114,6 +114,16 @@ Porto endpoints/processes instead of borrowing or stopping them. All fixture
 paths must remain below the checkout; use a short checkout path for native
 Unix socket limits.
 
+Process ownership uses kernel executable and creation metadata, not mutable
+command-line titles. Linux reads the owned PID's procfs records; macOS builds
+an invocation-private libproc inspector with the same native Xcode/clang
+toolchain required for packaging. That inspector is test-only and is removed
+on exit, not installed or shipped. Windows retains native executable-path and
+creation-time checks. Unknown or changed ownership never permits signaling.
+Failed startup retains bounded, sanitized Lima/QEMU diagnostics under the
+synthetic fixture's `diagnostics` directory, even if failed-guest cleanup
+removes the original log paths.
+
 Unix CI passes the package it just built:
 
 ```sh

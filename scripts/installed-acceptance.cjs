@@ -4,7 +4,7 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 
 const {
-  DAEMON_URL, EXPECTED, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, load,
+  DAEMON_URL, EXPECTED, darwinProcessIdentity, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, linuxProcessIdentity, load,
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
@@ -194,11 +194,14 @@ async function rendererRequest(renderer, endpoint, method = 'GET') {
 
 async function identity(pid, env, {
   platform = process.platform, runImpl = run, logImpl = console.error,
+  linuxImpl = linuxProcessIdentity, darwinImpl = darwinProcessIdentity,
 } = {}) {
   try {
     assert.ok(Number.isSafeInteger(pid) && pid > 0, 'Process inspection requires a specific positive PID')
-    const command = platform === 'win32'
-      ? ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_PROCESS_PRELUDE}
+    if (platform === 'linux') return await linuxImpl(pid)
+    if (platform === 'darwin') return await darwinImpl(pid, env, runImpl)
+    assert.equal(platform, 'win32', 'Unsupported native process-inspection platform')
+    const command = ['powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `${WINDOWS_PROCESS_PRELUDE}
 try {
   $target = [System.Diagnostics.Process]::GetProcessById(${pid})
 } catch [System.ArgumentException] {
@@ -235,17 +238,11 @@ try {
 } finally {
   $target.Dispose()
 }`]]
-      : ['/bin/ps', ['-p', String(pid), '-o', 'lstart=,command=']]
     const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: 10000 })
     const stdout = result.stdout.trim()
     const stderr = result.stderr.trim()
-    if (platform !== 'win32' && result.status === 1 && !result.signal && !stdout && !stderr) return ''
     assert.equal(result.status, 0, `Process inspection failed (${result.signal || result.status}): ${stderr || stdout}`)
     assert.ok(!result.signal && !stderr, `Process inspection was incomplete: ${result.signal || stderr}`)
-    if (platform !== 'win32') {
-      assert.ok(stdout, 'ps returned no process identity without its missing-PID status')
-      return stdout
-    }
     const lines = stdout.split(/\r?\n/)
     assert.equal(lines[0], 'PORTO_PROCESS_IDENTITY_V1', 'Windows inspection omitted its protocol header')
     assert.equal(lines[1], String(pid), 'Windows inspection did not identify the requested PID')
@@ -261,21 +258,93 @@ try {
   }
 }
 
-async function stopProcess(processRecord, env, tree = false) {
+async function stopProcess(processRecord, env, tree = false, {
+  identityImpl = identity, signalImpl = (pid, signal) => process.kill(pid, signal),
+} = {}) {
   if (!processRecord || !processRecord.identity) return
-  if (await identity(processRecord.pid, env) !== processRecord.identity) return
+  if (await identityImpl(processRecord.pid, env) !== processRecord.identity) return
   if (process.platform === 'win32' && tree) {
     await run('taskkill.exe',
       ['/PID', String(processRecord.pid), '/T', '/F'], { env })
   } else {
-    process.kill(processRecord.pid, 'SIGTERM')
+    try { signalImpl(processRecord.pid, 'SIGTERM') } catch (error) {
+      if (error.code !== 'ESRCH') throw error
+    }
   }
-  await waitFor(async () => await identity(processRecord.pid, env) !== processRecord.identity,
+  await waitFor(async () => await identityImpl(processRecord.pid, env) !== processRecord.identity,
     `owned process ${processRecord.pid} did not exit`, 30000)
+}
+
+function runtimeDiagnosticFiles(fixture) {
+  return [
+    ['Lima host agent', 'ha.stderr.log'],
+    ['QEMU', 'qemu.stderr.log'],
+  ].map(([label, name]) => [label,
+    path.join(fixture.limaHome, 'porto-engine', name),
+    path.join(fixture.directory, 'diagnostics', name)])
+}
+
+function retainRuntimeDiagnostics(fixture, retainedDescriptors) {
+  const maximum = 16384
+  const descriptors = retainedDescriptors || new Map()
+  for (const [, source, destination] of runtimeDiagnosticFiles(fixture)) {
+    let entry = descriptors.get(source)
+    try {
+      if (!entry) {
+        const actual = fs.realpathSync(source)
+        assert.ok(within(fs.realpathSync(fixture.limaHome), actual), 'Runtime diagnostics escaped their owned Lima home')
+        const descriptor = fs.openSync(actual, 'r')
+        entry = { descriptor, stat: null }
+        descriptors.set(source, entry)
+        entry.stat = fs.fstatSync(descriptor)
+      }
+      const stat = fs.fstatSync(entry.descriptor)
+      assert.ok(stat.isFile(), 'Runtime diagnostics must be regular files')
+      const offset = Math.max(0, stat.size - maximum)
+      const bytes = Buffer.alloc(Math.min(stat.size, maximum))
+      const count = fs.readSync(entry.descriptor, bytes, 0, bytes.length, offset)
+      if (count === 0) continue
+      let contents = bytes.subarray(0, count).toString('utf8')
+      if (offset > 0) {
+        const newline = contents.indexOf('\n')
+        contents = newline < 0 ? '[Oversized partial diagnostic line omitted.]' : contents.slice(newline + 1)
+      }
+      const sanitized = runtimeFailureDiagnostic(new Error(contents))
+      const tail = Buffer.from(sanitized, 'utf8').subarray(-maximum)
+      const parent = path.dirname(destination)
+      fs.mkdirSync(parent, { recursive: true, mode: 0o700 })
+      assert.ok(within(fs.realpathSync(fixture.directory), fs.realpathSync(parent)),
+        'Retained diagnostics escaped their owned fixture')
+      const previous = fs.existsSync(destination) ? fs.lstatSync(destination) : null
+      if (previous) assert.ok(previous.isFile(), 'Retained diagnostics must be regular files')
+      if (!previous || previous.size !== tail.length || !fs.readFileSync(destination).equals(tail)) {
+        fs.writeFileSync(destination, tail, { mode: 0o600 })
+      }
+    } catch (error) {
+      if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error
+    } finally {
+      if (entry) {
+        let current
+        try { current = fs.statSync(source) } catch (error) {
+          if (!['ENOENT', 'ENOTDIR'].includes(error.code)) {
+            fs.closeSync(entry.descriptor)
+            descriptors.delete(source)
+            throw error
+          }
+        }
+        if (!retainedDescriptors || !current || !entry.stat ||
+            current.dev !== entry.stat.dev || current.ino !== entry.stat.ino) {
+          fs.closeSync(entry.descriptor)
+          descriptors.delete(source)
+        }
+      }
+    }
+  }
 }
 
 async function startDesktop(fixture, installed, env) {
   await preflight(fixture, env)
+  assert.ok(await identity(process.pid, env), 'Native process inspection must work before launching the desktop')
   const debuggerServer = require('node:net').createServer()
   await new Promise((resolve, reject) => {
     debuggerServer.once('error', reject)
@@ -296,6 +365,16 @@ async function startDesktop(fixture, installed, env) {
   const record = { pid: desktop.pid, identity: await identity(desktop.pid, env) }
   let daemon
   let renderer
+  let diagnosticsUnavailable = false
+  const diagnosticDescriptors = new Map()
+  const retain = () => {
+    try { retainRuntimeDiagnostics(fixture, diagnosticDescriptors) } catch {
+      if (!diagnosticsUnavailable) console.error('Owned Lima/QEMU startup diagnostics could not be retained.')
+      diagnosticsUnavailable = true
+    }
+  }
+  retain()
+  const diagnosticsTimer = setInterval(retain, 250)
   try {
     assert.ok(record.identity, 'Cannot establish the identity of the installed desktop process')
     const health = await waitFor(async () => {
@@ -324,9 +403,11 @@ async function startDesktop(fixture, installed, env) {
       'installed dashboard must actually render')
     return { renderer, health, desktop: record, daemon }
   } catch (error) {
+    retain()
     for (const [label, file] of [
       ['desktop', path.join(fixture.directory, 'desktop-launch.log')],
       ['daemon', path.join(fixture.portoHome, 'logs', 'porto.log')],
+      ...runtimeDiagnosticFiles(fixture).map(([label, , retained]) => [label, retained]),
     ]) {
       try {
         if (!fs.existsSync(file)) continue
@@ -347,13 +428,32 @@ async function startDesktop(fixture, installed, env) {
     }
     renderer?.close()
     // The health check can fail before the detached, owned daemon was recorded.
-    const owned = daemon ? [daemon] : (await daemons(env))
-      .filter((item) => path.resolve(item.executable) === installed.porto)
-    for (const item of owned) {
-      await stopProcess({ ...item, identity: item.identity || await identity(item.pid, env) }, env, true)
+    const failures = [error]
+    try {
+      const owned = daemon ? [daemon] : (await daemons(env))
+        .filter((item) => path.resolve(item.executable) === installed.porto)
+      for (const item of owned) {
+        try {
+          await stopProcess({ ...item, identity: item.identity || await identity(item.pid, env) }, env, true)
+        } catch (cleanupError) {
+          failures.push(cleanupError)
+        }
+      }
+    } catch (inspectionError) {
+      failures.push(inspectionError)
     }
-    await stopProcess(record, env, true)
-    throw error
+    try { await stopProcess(record, env, true) } catch (cleanupError) { failures.push(cleanupError) }
+    if (failures.length > 1) throw new AggregateError(failures, 'Installed startup or owned-process cleanup failed')
+    throw failures[0]
+  } finally {
+    clearInterval(diagnosticsTimer)
+    retain()
+    for (const entry of diagnosticDescriptors.values()) {
+      try { fs.closeSync(entry.descriptor) } catch {
+        console.error('Owned Lima/QEMU diagnostic descriptor cleanup was unavailable.')
+      }
+    }
+    diagnosticDescriptors.clear()
   }
 }
 
@@ -604,4 +704,7 @@ if (require.main === module) {
   })
 }
 
-module.exports = { acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight, removed, restored }
+module.exports = {
+  acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
+  removed, restored, retainRuntimeDiagnostics, stopProcess,
+}

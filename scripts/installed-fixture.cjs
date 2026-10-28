@@ -115,6 +115,7 @@ foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.
     }
   } else {
     if (name === 'ps') return approvedTool('/bin/ps', '/bin')
+    if (process.platform === 'darwin' && name === 'clang') return approvedTool('/usr/bin/clang', '/usr/bin')
     if (!['git', 'qemu-system-x86_64', 'qemu-system-aarch64'].includes(name)) throw untrustedCommand()
     const roots = process.platform === 'darwin'
       ? (process.arch === 'arm64' ? ['/opt/homebrew', '/usr/local', '/usr'] : ['/usr/local', '/opt/homebrew', '/usr'])
@@ -130,7 +131,7 @@ foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.
 
 async function trustedExecutable(file, env) {
   if (file === process.execPath) return process.execPath
-  if (file === 'git' || file === 'powershell.exe' || file === 'taskkill.exe') return systemExecutable(file, env)
+  if (['git', 'powershell.exe', 'taskkill.exe', 'clang'].includes(file)) return systemExecutable(file, env)
   if (process.platform !== 'win32' && file === '/bin/ps') return systemExecutable('ps', env)
   if (process.platform !== 'win32' && ['qemu-system-x86_64', 'qemu-system-aarch64'].includes(path.basename(file))) {
     const expected = await systemExecutable(path.basename(file), env)
@@ -148,6 +149,165 @@ function workspacePath(value) {
   assert.ok(ancestor === workspace || within(workspace, fs.realpathSync(ancestor)),
     'Acceptance paths must not traverse symlinks outside the checkout')
   return resolved
+}
+
+function linuxProcessIdentity(pid, { fsImpl = fs, signalImpl = process.kill } = {}) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'Linux inspection requires a specific positive PID')
+  const directory = `/proc/${pid}`
+  const readState = () => {
+    const text = fsImpl.readFileSync(`${directory}/stat`, 'utf8')
+    // comm can contain parentheses and newlines; the kernel fields follow its final ')'.
+    const end = text.lastIndexOf(')')
+    assert.ok(text.startsWith(`${pid} (`) && end > 0, 'Linux process stat omitted the requested PID')
+    const fields = text.slice(end + 1).trim().split(/\s+/)
+    assert.match(fields[19] || '', /^[0-9]+$/, 'Linux process stat omitted its kernel start time')
+    return { state: fields[0], start: fields[19] }
+  }
+  const exited = (state) => state.state === 'Z' || state.state === 'X'
+  const readImage = () => {
+    let executable = fsImpl.readlinkSync(`${directory}/exe`)
+    const stat = fsImpl.statSync(`${directory}/exe`, { bigint: true })
+    if (stat.nlink === 0n && executable.endsWith(' (deleted)')) executable = executable.slice(0, -10)
+    assert.ok(path.posix.isAbsolute(executable), 'Linux process inspection omitted its kernel executable path')
+    return { executable, device: String(stat.dev), inode: String(stat.ino) }
+  }
+  try {
+    const before = readState()
+    if (exited(before)) return ''
+    const image = readImage()
+    const verifiedImage = readImage()
+    const after = readState()
+    assert.equal(after.start, before.start, 'Linux process generation changed during inspection')
+    if (exited(after)) return ''
+    assert.deepEqual(verifiedImage, image, 'Linux executable changed during inspection')
+    return JSON.stringify({
+      PID: pid, StartTimeTicks: before.start, ExecutablePath: image.executable,
+      ExecutableDevice: image.device, ExecutableInode: image.inode,
+    })
+  } catch (error) {
+    if (['ENOENT', 'ESRCH'].includes(error.code)) {
+      try {
+        if (exited(readState())) return ''
+      } catch (stateError) {
+        if (!['ENOENT', 'ESRCH'].includes(stateError.code)) throw stateError
+        try { signalImpl(pid, 0) } catch (probeError) {
+          if (probeError.code === 'ESRCH') return ''
+          throw probeError
+        }
+      }
+    }
+    throw error
+  }
+}
+
+let darwinInspectorPromise
+async function prepareDarwinInspector() {
+  // Both ps command and comm change with process.title; libproc reads kernel image/start metadata.
+  assert.equal(process.platform, 'darwin', 'The native libproc inspector requires macOS')
+  if (darwinInspectorPromise) return darwinInspectorPromise
+  darwinInspectorPromise = (async () => {
+    const directory = path.join(SOURCE_ROOT, `.installed-inspector-${crypto.randomBytes(8).toString('hex')}`)
+    fs.mkdirSync(directory, { mode: 0o700 })
+    const cleanup = () => fs.rmSync(directory, { recursive: true, force: true })
+    process.once('exit', () => {
+      try { cleanup() } catch {
+        process.exitCode = 1
+        console.error('Owned native process-inspector cache cleanup failed.')
+      }
+    })
+    const source = path.join(directory, 'identity.c')
+    const executable = path.join(directory, 'identity')
+    write(source, `
+#include <errno.h>
+#include <inttypes.h>
+#include <libproc.h>
+#include <limits.h>
+#include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <sys/proc.h>
+#include <sys/proc_info.h>
+#include <unistd.h>
+
+static int missing(pid_t pid) {
+  printf("PORTO_DARWIN_IDENTITY_V1\\n%d\\nmissing\\n", pid);
+  return 0;
+}
+
+static int unavailable(pid_t pid) {
+  struct proc_bsdinfo state = {0};
+  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &state, sizeof(state)) == (int)sizeof(state) &&
+      state.pbi_pid == (uint32_t)pid && state.pbi_status == SZOMB) return missing(pid);
+  if (kill(pid, 0) == -1 && errno == ESRCH) return missing(pid);
+  fputs("Native process inspection unavailable.\\n", stderr);
+  return 2;
+}
+
+int main(int argc, char **argv) {
+  char *end = NULL;
+  if (argc != 2) return 2;
+  errno = 0;
+  long number = strtol(argv[1], &end, 10);
+  if (errno || !end || *end || number <= 0 || number > INT_MAX) return 2;
+  pid_t pid = (pid_t)number;
+  struct proc_bsdinfo before = {0}, after = {0};
+  char first[PROC_PIDPATHINFO_MAXSIZE] = {0}, second[PROC_PIDPATHINFO_MAXSIZE] = {0};
+  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &before, sizeof(before)) != (int)sizeof(before)) return unavailable(pid);
+  if (before.pbi_status == SZOMB) return missing(pid);
+  if (proc_pidpath(pid, first, sizeof(first)) <= 0 || proc_pidpath(pid, second, sizeof(second)) <= 0) return unavailable(pid);
+  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &after, sizeof(after)) != (int)sizeof(after)) return unavailable(pid);
+  if (before.pbi_pid != (uint32_t)pid || after.pbi_pid != (uint32_t)pid ||
+      before.pbi_start_tvsec != after.pbi_start_tvsec || before.pbi_start_tvusec != after.pbi_start_tvusec ||
+      strcmp(first, second) != 0) {
+    fputs("Native process generation changed during inspection.\\n", stderr);
+    return 2;
+  }
+  if (after.pbi_status == SZOMB) return missing(pid);
+  if (first[0] != '/' || before.pbi_start_tvusec >= 1000000) return 2;
+  printf("PORTO_DARWIN_IDENTITY_V1\\n%d\\npresent\\n%" PRIu64 ".%06" PRIu64 "\\n",
+    pid, before.pbi_start_tvsec, before.pbi_start_tvusec);
+  for (const unsigned char *p = (const unsigned char *)first; *p; ++p) printf("%02x", *p);
+  putchar('\\n');
+  return 0;
+}
+`)
+    const env = {
+      PATH: '/usr/bin:/bin:/usr/sbin:/sbin', HOME: directory,
+      TMPDIR: directory, TMP: directory, TEMP: directory, LANG: 'en_US.UTF-8', LC_ALL: 'en_US.UTF-8',
+    }
+    try {
+      await run('clang', ['-std=c11', '-Wall', '-Wextra', '-Werror', '-O2',
+        '-arch', process.arch === 'arm64' ? 'arm64' : 'x86_64',
+        source, '-lproc', '-o', executable], { env, cwd: directory, timeout: 30000 })
+      nativeHeader(executable, target())
+      return executable
+    } catch (error) {
+      cleanup()
+      throw error
+    }
+  })()
+  return darwinInspectorPromise
+}
+
+async function darwinProcessIdentity(pid, env, runImpl = run) {
+  assert.ok(Number.isSafeInteger(pid) && pid > 0, 'macOS inspection requires a specific positive PID')
+  const executable = await prepareDarwinInspector()
+  const result = await runImpl(executable, [String(pid)], { env, timeout: 10000 })
+  assert.equal(result.status, 0, 'Native macOS process inspection failed')
+  assert.ok(!result.signal && !result.stderr.trim(), 'Native macOS process inspection was incomplete')
+  const lines = result.stdout.trim().split(/\r?\n/)
+  assert.equal(lines[0], 'PORTO_DARWIN_IDENTITY_V1', 'Native macOS inspection omitted its protocol header')
+  assert.equal(lines[1], String(pid), 'Native macOS inspection omitted the requested PID')
+  if (lines.length === 3 && lines[2] === 'missing') return ''
+  assert.ok(lines.length === 5 && lines[2] === 'present', 'Native macOS process identity is incomplete')
+  assert.match(lines[3], /^[0-9]{1,20}\.[0-9]{6}$/, 'Native macOS inspection omitted its kernel start time')
+  assert.match(lines[4], /^(?:[0-9a-f]{2})+$/, 'Native macOS executable encoding is incomplete')
+  const bytes = Buffer.from(lines[4], 'hex')
+  const pathValue = bytes.toString('utf8')
+  assert.ok(Buffer.from(pathValue, 'utf8').equals(bytes) && path.posix.isAbsolute(pathValue) && !pathValue.includes('\0'),
+    'Native macOS inspection omitted its kernel executable path')
+  return JSON.stringify({ PID: pid, StartTime: lines[3], ExecutablePath: pathValue })
 }
 
 function target(platform = process.platform, architecture = process.arch) {
@@ -651,7 +811,8 @@ async function waitFor(check, description, timeout = 60000) {
 
 module.exports = {
   DAEMON_URL, EXPECTED, PORTS, available, digest, environment, fileDigest, inspectPackage,
-  failureDiagnostic, layout, load, nativeHeader, noListeners, pluginPaths, prepare, preserved, run, save,
+  darwinProcessIdentity, failureDiagnostic, layout, linuxProcessIdentity, load, nativeHeader,
+  noListeners, pluginPaths, prepare, prepareDarwinInspector, preserved, run, save,
   reportedVersion, runShellFile, systemExecutable, target, trustedExecutable, waitFor,
   windowsSupportEnvironment, windowsSystemDirectoryFromModules, within, workspacePath, write,
 }

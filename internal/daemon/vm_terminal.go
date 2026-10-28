@@ -84,7 +84,10 @@ func bridgeProcessTerminal(
 	connection.SetReadLimit(terminalReadLimit)
 	sessionContext, cancel := context.WithCancel(r.Context())
 	defer cancel()
-	process, err := processFactory(sessionContext)
+	// Process cancellation must leave the transport alive for its final close frame.
+	processContext, cancelProcess := context.WithCancel(sessionContext)
+	defer cancelProcess()
+	process, err := processFactory(processContext)
 	if err != nil {
 		slog.Warn(startFailure, "error", err)
 		_ = connection.Close(websocket.StatusInternalError, startFailure)
@@ -115,7 +118,7 @@ func bridgeProcessTerminal(
 				return
 			}
 			if kind == websocket.MessageText {
-				handled, resizeErr := applyTerminalResize(processTerminalResize{sessionContext, process}, data)
+				handled, resizeErr := applyTerminalResize(processTerminalResize{processContext, process}, data)
 				if resizeErr != nil {
 					inputDone <- resizeErr
 					return
@@ -136,7 +139,7 @@ func bridgeProcessTerminal(
 	interrupt := func(err error) {
 		interruptOnce.Do(func() {
 			sessionErr = err
-			cancel()
+			cancelProcess()
 			sessionErr = errors.Join(sessionErr, process.Kill())
 		})
 	}
@@ -217,12 +220,14 @@ func bridgePTYTerminal(
 
 	sessionContext, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	command, err := commandFactory(sessionContext)
+	processContext, cancelProcess := context.WithCancel(sessionContext)
+	defer cancelProcess()
+	command, err := commandFactory(processContext)
 	if err != nil {
 		_ = connection.Close(websocket.StatusInternalError, err.Error())
 		return
 	}
-	terminal, err := startHostPTY(sessionContext, command)
+	terminal, err := startHostPTY(processContext, command)
 	if err != nil {
 		slog.Warn(startFailure, "error", err)
 		_ = connection.Close(websocket.StatusInternalError, startFailure)
@@ -275,12 +280,12 @@ func bridgePTYTerminal(
 		sessionErr = errors.Join(processErr, <-outputDone)
 	case outputErr := <-outputDone:
 		if outputErr != nil {
-			cancel()
+			cancelProcess()
 			_ = terminal.Close()
 		}
 		sessionErr = errors.Join(outputErr, <-processDone)
 	case inputErr := <-inputDone:
-		cancel()
+		cancelProcess()
 		_ = terminal.Close()
 		sessionErr = errors.Join(inputErr, <-outputDone, <-processDone)
 	}
