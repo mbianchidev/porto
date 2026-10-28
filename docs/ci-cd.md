@@ -624,6 +624,8 @@ measurement. Periodic sampling reads fixed process fields, not every process's
 argument memory, so diagnostics do not add that expensive host-wide scan.
 Unavailable diagnostics are reported without replacing the original failure;
 diagnostics never repair mounts, change guest state or create engine ownership.
+Failed Lima starts also retain bounded kernel fault/stack context before a
+configuration rollback can restart the guest and replace its serial log.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 Linux runners without `/dev/kvm` use the same host-side archive preparation.
 Software-emulated ARM64 guests select `neoverse-n1` for both the destination and

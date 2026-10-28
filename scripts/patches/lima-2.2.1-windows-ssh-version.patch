@@ -1,0 +1,52 @@
+Porto native Windows OpenSSH version detection for Lima v2.2.1 (Apache-2.0).
+
+The OS client reports OpenSSH_for_Windows_ rather than OpenSSH_. Treating it
+as version zero disables Lima's cipher selection, including its AES preference.
+Keep the same version threshold and CPU feature check for both banner forms.
+
+diff --git a/pkg/sshutil/sshutil.go b/pkg/sshutil/sshutil.go
+--- a/pkg/sshutil/sshutil.go
++++ b/pkg/sshutil/sshutil.go
+@@ -633,5 +633,5 @@
+ func ParseOpenSSHVersion(version []byte) *semver.Version {
+-	regex := regexp.MustCompile(`(?m)^OpenSSH_(\d+\.\d+)(?:p(\d+))?\b`)
++	regex := regexp.MustCompile(`(?m)^OpenSSH_(?:for_Windows_)?(\d+\.\d+)(?:p(\d+))?\b`)
+ 	matches := regex.FindSubmatch(version)
+ 	if len(matches) == 3 {
+ 		if len(matches[2]) == 0 {
+diff --git a/pkg/sshutil/sshutil_porto_test.go b/pkg/sshutil/sshutil_porto_test.go
+new file mode 100644
+--- /dev/null
++++ b/pkg/sshutil/sshutil_porto_test.go
+@@ -0,0 +1,31 @@
++// SPDX-FileCopyrightText: Copyright The Lima Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package sshutil
++
++import "testing"
++
++func TestParseNativeWindowsOpenSSHVersion(t *testing.T) {
++	for _, test := range []struct {
++		banner string
++		want   string
++	}{
++		{"OpenSSH_for_Windows_9.5p1, LibreSSL 3.8.2", "9.5.1"},
++		{"OpenSSH_for_Windows_8.1, LibreSSL 2.9.2", "8.1.0"},
++		{"OpenSSH_for_Windows_10.0p2, LibreSSL", "10.0.2"},
++		{"warning: synthetic diagnostic\nOpenSSH_for_Windows_9.5p1, LibreSSL", "9.5.1"},
++		{"OpenSSH_8.4p1 Ubuntu", "8.4.1"},
++		{"OpenSSH_7.6p1 Ubuntu", "7.6.1"},
++		{"OpenSSH_8.1p1, LibreSSL 2.7.3", "8.1.1"},
++		{"OpenSSH_7.0, LibreSSL", "7.0.0"},
++		{"", "0.0.0"},
++		{"unrelated OpenSSH_for_Windows_9.5p1", "0.0.0"},
++		{"OpenSSH_for_Windows_invalid", "0.0.0"},
++	} {
++		t.Run(test.banner, func(t *testing.T) {
++			if got := ParseOpenSSHVersion([]byte(test.banner)).String(); got != test.want {
++				t.Fatalf("OpenSSH version = %s, want %s", got, test.want)
++			}
++		})
++	}
++}

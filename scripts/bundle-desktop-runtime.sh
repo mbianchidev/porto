@@ -285,7 +285,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.2"
+    lima_windows_version="v2.2.1+porto.3"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -305,6 +305,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
+  lima_ssh_version_patch="$script_directory/patches/lima-2.2.1-windows-ssh-version.patch"
   (
     cd "$temporary/$lima_source_directory"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
@@ -312,6 +313,9 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_arm64_cpu_patch"
     if [ "$lima_version" = v2.2.1 ]; then
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"
+      GOWORK=off go test -mod=readonly ./pkg/sshutil \
+        -run '^TestParseNativeWindowsOpenSSHVersion$' -count=1
       if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
         CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
           -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
@@ -333,6 +337,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   cp "$lima_arm64_cpu_patch" "$destination/licenses/lima-windows-arm64-cpu.patch"
   if [ "$lima_version" = v2.2.1 ]; then
     cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
+    cp "$lima_ssh_version_patch" "$destination/licenses/lima-windows-ssh-version.patch"
   fi
 fi
 

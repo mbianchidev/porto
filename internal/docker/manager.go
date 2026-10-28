@@ -526,10 +526,17 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 
 func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
 	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
+	var output []byte
+	var err error
 	if engineObserver(ctx) != nil {
-		return nil, m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: "limactl", Args: arguments})
+		err = m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: "limactl", Args: arguments})
+	} else {
+		output, err = m.runCommand(ctx, engineStartTimeout, action, nil, "limactl", arguments...)
 	}
-	return m.runCommand(ctx, engineStartTimeout, action, nil, "limactl", arguments...)
+	if err != nil {
+		err = withLimaGuestDiagnostics(err)
+	}
+	return output, err
 }
 
 func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string) error {

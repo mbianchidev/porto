@@ -96,6 +96,7 @@ async function systemExecutable(name, env) {
     const directory = windowsSystemDirectory()
     if (name === 'powershell.exe') return approvedTool(path.join(directory, 'WindowsPowerShell', 'v1.0', name), directory)
     if (name === 'taskkill.exe') return approvedTool(path.join(directory, name), directory)
+    if (name === 'ssh') return approvedTool(path.join(directory, 'OpenSSH', 'ssh.exe'), directory)
     if (name !== 'git' && name !== 'bash') throw untrustedCommand()
     if (!windowsGitRoots) {
       const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `

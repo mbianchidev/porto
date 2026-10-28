@@ -296,6 +296,7 @@ function runtimeDiagnosticFiles(fixture) {
   return [
     ['Lima host agent', 'ha.stderr.log'],
     ['QEMU', 'qemu.stderr.log'],
+    ['guest serial', 'serial.log'],
   ].map(([label, name]) => [label,
     path.join(fixture.limaHome, 'porto-engine', name),
     path.join(fixture.directory, 'diagnostics', name)])
@@ -393,6 +394,44 @@ function reportRuntimeDiagnostics(fixture, logImpl = console.error) {
   }
 }
 
+async function guestStartupDiagnostics(installed, env, {
+  platform = process.platform, runImpl = run, executableImpl = systemExecutable, logImpl = console.error,
+} = {}) {
+  const os = require('node:os')
+  logImpl('Installed startup host resources: ' + JSON.stringify({
+    cpus: os.availableParallelism(), totalMemoryMiB: Math.floor(os.totalmem() / 1048576),
+    freeMemoryMiB: Math.floor(os.freemem() / 1048576),
+  }))
+  const diagnosticEnv = { ...env }
+  try {
+    if (platform === 'win32') {
+      const ssh = await executableImpl('ssh', env)
+      diagnosticEnv.SSH = `"${ssh.replaceAll('\\', '/')}" -vvv`
+    }
+    const script = `status=0
+report() {
+  printf '\\nRead-only startup diagnostic: %s\\n' "$*"
+  "$@" || { printf 'Diagnostic failed: %s\\n' "$*" >&2; status=1; }
+}
+report uname -a
+report cat /proc/cpuinfo /proc/meminfo /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory
+report ps -eo pid,stat,comm,wchan:32
+report sudo -n journalctl -b --no-pager -o short-monotonic -n 120 -u ssh.service -u systemd-logind.service -u systemd-user-sessions.service -u "user@$(id -u).service" -u cloud-final.service
+exit "$status"
+`
+    const result = await runImpl(installed.limactl, [
+      '--debug', 'shell', '--workdir=/', 'porto-engine', '--', 'sh', '-c', script,
+    ], { env: diagnosticEnv, allowFailure: true, timeout: 90000 })
+    logImpl(`Installed read-only guest diagnostic status: ${result.signal || result.status}`)
+    for (const [label, output] of [['SSH startup', result.stderr], ['guest startup', result.stdout]]) {
+      if (output) logImpl(`Installed ${label} diagnostics:\n${runtimeFailureDiagnostic(new Error(output))}`)
+    }
+  } catch (error) {
+    reportCommandFailure(error, logImpl)
+    logImpl(`Installed read-only startup diagnostics unavailable: ${failureDiagnostic(error)}`)
+  }
+}
+
 async function startDesktop(fixture, installed, env) {
   await preflight(fixture, env)
   assert.ok(await identity(process.pid, env), 'Native process inspection must work before launching the desktop')
@@ -428,6 +467,10 @@ async function startDesktop(fixture, installed, env) {
   }
   retain()
   const diagnosticsTimer = setInterval(retain, 250)
+  let guestDiagnostics
+  const guestDiagnosticsTimer = fixture.target === 'windows/arm64'
+    ? setTimeout(() => { guestDiagnostics = guestStartupDiagnostics(installed, env) }, 5 * 60 * 1000)
+    : undefined
   try {
     assert.ok(record.identity, 'Cannot establish the identity of the installed desktop process')
     console.log('Installed startup: waiting for the installed daemon health identity')
@@ -480,6 +523,8 @@ async function startDesktop(fixture, installed, env) {
     throw failures[0]
   } finally {
     clearInterval(diagnosticsTimer)
+    clearTimeout(guestDiagnosticsTimer)
+    await guestDiagnostics
     retain()
     for (const entry of diagnosticDescriptors.values()) {
       try { fs.closeSync(entry.descriptor) } catch {
@@ -769,5 +814,5 @@ if (require.main === module) {
 
 module.exports = {
   acceptance, cdp, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
+  removed, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot, guestStartupDiagnostics,
 }

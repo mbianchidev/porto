@@ -140,6 +140,13 @@ Failed startup retains bounded, sanitized Lima/QEMU diagnostics under the
 synthetic fixture's `diagnostics` directory, even if failed-guest cleanup
 removes the original log paths. The same bounded desktop, daemon and guest
 diagnostics are printed for workflow or cleanup failures after startup.
+Guest serial output is retained alongside the host-agent and QEMU logs. A
+Windows ARM64 startup that is still provisioning after five minutes also
+collects one read-only SSH/session diagnostic: native client verbose output,
+guest CPU/memory/pressure and process state, and bounded SSH/logind/cloud-init
+journals. The diagnostic has its own 90-second cap, redacts output, and does not
+repair or restart the guest. Host CPU count and available memory are reported
+separately from guest pressure. No provisioning or acceptance deadline changes.
 Fixed stage labels identify the failing operation, and each original failure
 category is reported before cleanup errors are combined. Raw exception
 messages, arguments and environment values are not printed.

@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { cdp, existingDesktops, hostProcesses, identity, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
+const { cdp, existingDesktops, guestStartupDiagnostics, hostProcesses, identity, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -521,6 +521,46 @@ test('post-startup diagnostics retain bounded redacted owned logs without partia
   assert.ok(logs[0].length < 17000)
 })
 
+test('slow native Windows startup diagnoses SSH and guest sessions without changing the engine or inherited environment', async () => {
+  const env = { LIMA_HOME: 'C:\\Synthetic\\lima', SSH: 'untrusted-inherited-command' }
+  const logs = []
+  const secret = 'synthetic-credential-must-not-be-logged'
+  await guestStartupDiagnostics({ limactl: 'C:\\Synthetic\\limactl.exe' }, env, {
+    platform: 'win32',
+    executableImpl: async (name, environment) => {
+      assert.equal(name, 'ssh')
+      assert.equal(environment, env)
+      return 'C:\\Synthetic OS\\System32\\OpenSSH\\ssh.exe'
+    },
+    runImpl: async (file, args, options) => {
+      assert.equal(file, 'C:\\Synthetic\\limactl.exe')
+      assert.deepEqual(args.slice(0, 7), ['--debug', 'shell', '--workdir=/', 'porto-engine', '--', 'sh', '-c'])
+      assert.match(args[7], /journalctl.*systemd-logind\.service/)
+      assert.doesNotMatch(args[7], /systemctl|reboot|shutdown|kill/)
+      assert.equal(options.env.SSH, '"C:/Synthetic OS/System32/OpenSSH/ssh.exe" -vvv')
+      assert.equal(options.env.LIMA_HOME, env.LIMA_HOME)
+      assert.equal(options.timeout, 90000)
+      assert.equal(options.allowFailure, true)
+      return { status: 0, stdout: 'synthetic session timing', stderr: `https://user:${secret}@synthetic.invalid/` }
+    },
+    logImpl: (message) => logs.push(message),
+  })
+  assert.equal(env.SSH, 'untrusted-inherited-command')
+  assert.ok(logs.some((message) => message.includes('synthetic session timing')))
+  assert.ok(!logs.some((message) => message.includes(secret)))
+})
+
+test('startup diagnostic failure is explicit without replacing the original acceptance failure', async () => {
+  const logs = []
+  await guestStartupDiagnostics({ limactl: 'synthetic limactl' }, {}, {
+    platform: 'linux',
+    runImpl: async () => { throw Object.assign(new Error('synthetic private arguments'), { code: 'ENOENT' }) },
+    logImpl: (message) => logs.push(message),
+  })
+  assert.ok(logs.some((message) => message.includes('diagnostics unavailable')))
+  assert.ok(!logs.some((message) => message.includes('synthetic private arguments')))
+})
+
 test('only renderer POST start uses the existing one-minute lifecycle allowance', async (t) => {
   const timers = new Set()
   let socket
@@ -907,11 +947,12 @@ test('unknown ownership inspection refuses teardown rather than signaling a PID'
   assert.deepEqual(signals, [])
 })
 
-test('bounded sanitized Lima/QEMU diagnostics survive instance deletion', (t) => {
+test('bounded sanitized Lima/QEMU and guest serial diagnostics survive instance deletion', (t) => {
   const current = fixture(t)
   const instance = path.join(current.limaHome, 'porto-engine')
   const secret = 'synthetic-runtime-token-must-not-be-retained'
-  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+  const names = ['ha.stderr.log', 'qemu.stderr.log', 'serial.log']
+  for (const name of names) {
     write(path.join(instance, name), 'oversized diagnostic prefix '.repeat(1000) +
       `\nunderlying synthetic QEMU failure\nhttps://user:${secret}@synthetic.invalid/image?token=${secret}\n`)
   }
@@ -921,7 +962,7 @@ test('bounded sanitized Lima/QEMU diagnostics survive instance deletion', (t) =>
   })
   retainRuntimeDiagnostics(current, descriptors)
   const snapshots = new Map()
-  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+  for (const name of names) {
     const file = path.join(current.directory, 'diagnostics', name)
     const bytes = fs.readFileSync(file)
     assert.ok(bytes.length <= 16384)
@@ -933,7 +974,7 @@ test('bounded sanitized Lima/QEMU diagnostics survive instance deletion', (t) =>
   fs.rmSync(instance, { recursive: true })
   retainRuntimeDiagnostics(current, descriptors)
   assert.equal(descriptors.size, 0)
-  for (const name of ['ha.stderr.log', 'qemu.stderr.log']) {
+  for (const name of names) {
     const bytes = fs.readFileSync(path.join(current.directory, 'diagnostics', name))
     snapshots.set(name, bytes)
     assert.match(bytes.toString(), /final underlying QEMU stderr before deletion/)

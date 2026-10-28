@@ -7,8 +7,11 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 )
+
+var limaKernelRecord = regexp.MustCompile(`^\[\s*\d+(?:\.\d+)?\]`)
 
 func withLimaGuestDiagnostics(cause error) error {
 	if errors.Is(cause, context.Canceled) {
@@ -55,16 +58,39 @@ func readLimaGuestPanic(path string) (string, error) {
 	if err != nil && !errors.Is(err, io.EOF) {
 		return "", err
 	}
-	var diagnostic string
-	for _, line := range strings.Split(string(data[:n]), "\n") {
+	lines := strings.Split(string(data[:n]), "\n")
+	boot, panicIndex := 0, -1
+	for index, line := range lines {
 		if strings.Contains(line, "Linux version ") {
-			diagnostic = ""
+			boot, panicIndex = index, -1
 		}
-		if index := strings.Index(line, "Kernel panic - not syncing:"); index >= 0 &&
-			!strings.Contains(line[:index], "end ") {
-			diagnostic = strings.TrimSpace(line[index:])
-			diagnostic = diagnostic[:min(len(diagnostic), 512)]
+		if offset := strings.Index(line, "Kernel panic - not syncing:"); offset >= 0 &&
+			!strings.Contains(line[:offset], "end ") {
+			panicIndex = index
 		}
+	}
+	if panicIndex < 0 {
+		return "", nil
+	}
+	line := lines[panicIndex]
+	diagnostic := strings.TrimSpace(line[strings.Index(line, "Kernel panic - not syncing:"):])
+	diagnostic = strings.ToValidUTF8(diagnostic[:min(len(diagnostic), 512)], "")
+	var records strings.Builder
+	for _, line := range lines[max(boot, panicIndex-12):min(len(lines), panicIndex+24)] {
+		line = strings.TrimSpace(line)
+		if !limaKernelRecord.MatchString(line) || strings.Contains(line, "Kernel panic - not syncing:") ||
+			strings.Contains(line, "Linux version ") {
+			continue
+		}
+		records.WriteString(line)
+		records.WriteByte('\n')
+		if records.Len() >= 1024 {
+			break
+		}
+	}
+	if records.Len() > 0 {
+		details := records.String()
+		diagnostic += "\nGuest panic context:\n" + strings.ToValidUTF8(details[:min(len(details), 1024)], "")
 	}
 	return diagnostic, nil
 }

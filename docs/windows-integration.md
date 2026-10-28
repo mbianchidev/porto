@@ -28,6 +28,12 @@ A matching native Windows build also creates a Unicode-path image and opens
 Unicode-path firmware in a paused, network-free QEMU process, then requires a
 clean QMP exit. This quick probe does not replace full installed-runtime CI.
 
+The bundled Lima also recognizes the native OS client's
+`OpenSSH_for_Windows_` version banner. Otherwise it treats that client as version
+zero and never applies its existing CPU-aware cipher preferences. The patch
+retains the upstream OpenSSH 8.1 minimum for cipher reordering and the actual
+Windows processor feature check; it does not force AES on unsupported CPUs.
+
 ## Native Windows setup
 
 In **Settings > Native Windows containers**, inspect host capabilities and
