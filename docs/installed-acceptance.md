@@ -6,6 +6,13 @@ needs a successful native CI execution and its `installed-acceptance_*.json`
 artifact. Keep the existing development-client and runtime-data results as
 separate evidence, not replacements for this gate.
 
+The two installed-package matrices collect every platform's result even when
+one sibling fails. A canceled build is not qualification evidence, and
+rebuilding all canceled siblings repeatedly obscures independent defects.
+This diagnostic/release need can consume more minutes in a failing run;
+every row remains required and any failure still fails CI. Other CI matrices
+retain their normal fail-fast policy.
+
 ## What the gate exercises
 
 `scripts/installed-acceptance.cjs` uses the actual installed desktop,

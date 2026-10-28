@@ -240,7 +240,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     timeout-minutes: 90
     strategy:
-      fail-fast: true
+      # Collect independent installed-platform evidence even when a sibling fails.
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
@@ -620,7 +621,8 @@ jobs:
     env:
       CGO_ENABLED: '0'
     strategy:
-      fail-fast: true
+      # Collect independent installed-platform evidence even when a sibling fails.
+      fail-fast: false
       matrix:
         include:
           - os: macos-26-intel
