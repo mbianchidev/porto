@@ -26,6 +26,8 @@ const {
   inspectBundledDockerToolchain,
   inspectDaemon,
   inspectDockerStatus,
+  inspectWindowsDaemonProcesses,
+  inspectWindowsProcessIdentity,
   installDockerContext,
   installDockerEngine,
   mergeExecutablePaths,
@@ -34,7 +36,6 @@ const {
   resolvePortoBinary,
   resolveLoginShellPath,
   runtimeFailureDiagnostic,
-  windowsDaemonProcesses,
   waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
 const {
@@ -577,14 +578,7 @@ async function startDaemon() {
 async function runningDaemonProcesses() {
   let processes
   if (process.platform === 'win32') {
-    const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
-    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      timeout: 10000,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    })
-    if (stdout.trim() === '') return []
-    processes = windowsDaemonProcesses(JSON.parse(stdout))
+    return inspectWindowsDaemonProcesses()
   } else {
     const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
       timeout: 5000,
@@ -600,25 +594,16 @@ async function runningDaemonProcesses() {
 }
 
 async function processIdentity(pid) {
+  if (process.platform === 'win32') return inspectWindowsProcessIdentity(pid)
   try {
-    if (process.platform === 'win32') {
-      const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object CreationDate,CommandLine | ConvertTo-Json -Compress`
-      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true,
-      })
-      if (stdout.trim() === '') return null
-      const processInfo = JSON.parse(stdout)
-      return `${processInfo.CreationDate || ''}|${processInfo.CommandLine || ''}`
-    }
     const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart=,command='], {
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     })
     return stdout.trim() || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error.code === 1 && !error.signal && !error.stdout?.trim() && !error.stderr?.trim()) return null
+    throw new Error('Native daemon process inspection is unavailable; unverified processes will not be stopped.')
   }
 }
 
@@ -629,7 +614,11 @@ async function stopDaemonProcesses(daemons) {
       if (await processIdentity(pid) !== identity) runningProcesses.delete(pid)
     }
   }
-  const signal = (pid, name) => {
+  const signal = async (pid, name) => {
+    if (await processIdentity(pid) !== runningProcesses.get(pid)) {
+      runningProcesses.delete(pid)
+      return true
+    }
     try {
       process.kill(pid, name)
       return true
@@ -638,7 +627,7 @@ async function stopDaemonProcesses(daemons) {
         runningProcesses.delete(pid)
         return true
       }
-      console.error(`Unable to send ${name} to incompatible Porto daemon ${pid}`, error)
+      console.error('Unable to stop a verified incompatible Porto daemon. Check process permissions before retrying.')
       return false
     }
   }
@@ -654,12 +643,12 @@ async function stopDaemonProcesses(daemons) {
   }
   await refresh()
   for (const pid of runningProcesses.keys()) {
-    if (!signal(pid, 'SIGTERM')) return false
+    if (!(await signal(pid, 'SIGTERM'))) return false
   }
   if (await waitForExit(40)) return true
   await refresh()
   for (const pid of runningProcesses.keys()) {
-    if (!signal(pid, 'SIGKILL')) return false
+    if (!(await signal(pid, 'SIGKILL'))) return false
   }
   return waitForExit(20)
 }
@@ -685,8 +674,8 @@ async function ensureDaemonRunning() {
   let processes
   try {
     processes = await runningDaemonProcesses()
-  } catch (error) {
-    console.error('Unable to inspect existing Porto daemons', error)
+  } catch {
+    console.error('Unable to inspect existing Porto daemons. Check native process-query access; unverified processes will not be stopped.')
     return false
   }
   if (existing.ready) {
@@ -710,7 +699,12 @@ async function ensureDaemonRunning() {
         if (existing.reachable) break
       }
     }
-    if (!(await stopDaemonProcesses(processes))) return false
+    try {
+      if (!(await stopDaemonProcesses(processes))) return false
+    } catch {
+      console.error('Unable to recheck existing Porto daemon ownership. Unverified processes will not be stopped.')
+      return false
+    }
   } else if (existing.reachable) {
     return false
   }

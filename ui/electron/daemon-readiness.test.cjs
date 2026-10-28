@@ -4,6 +4,8 @@ const fs = require('node:fs')
 const path = require('node:path')
 const test = require('node:test')
 const vm = require('node:vm')
+const { spawn } = require('node:child_process')
+const { once } = require('node:events')
 
 const {
   bundledExecutablePaths,
@@ -14,6 +16,8 @@ const {
   dockerBootstrapCommand,
   inspectBundledDockerToolchain,
   inspectDaemon,
+  inspectWindowsDaemonProcesses,
+  inspectWindowsProcessIdentity,
   installDockerEngine,
   installDockerContext,
   isDaemonReady,
@@ -152,6 +156,272 @@ test('finds Windows Porto daemon processes', () => {
   assert.deepEqual(windowsDaemonProcesses(processes), [
     { pid: 220, executable: 'C:\\Program Files\\Porto\\porto.exe' },
   ])
+})
+
+function windowsProcessFrame(records) {
+  return 'PORTO_DAEMON_PROCESSES_V1\r\n' + records.map((record) => [
+    String(record.ProcessId), record.StartTimeTicks,
+    Buffer.from(record.ExecutablePath, 'utf16le').toString('base64'),
+    Buffer.from(record.CommandLine, 'utf16le').toString('base64'),
+  ].join('\t') + '\r\n').join('')
+}
+
+function windowsInspection(records, extra = {}) {
+  return {
+    powerShellPathImpl: () => 'Q:\\Native OS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+    execFileImpl: async () => ({ stdout: windowsProcessFrame(records), stderr: '' }),
+    ...extra,
+  }
+}
+
+const windowsDaemonRecord = {
+  ProcessId: 220,
+  StartTimeTicks: '639288576000000001',
+  ExecutablePath: 'C:\\Installed old Porto 路径\\resources\\porto.exe',
+  CommandLine: '"C:\\Installed old Porto 路径\\resources\\porto.exe" daemon start',
+}
+
+test('native Windows discovery recognizes only exact daemon arguments and returns actual executable ownership', async () => {
+  const source = {
+    ...windowsDaemonRecord, ProcessId: 225, ExecutablePath: 'D:\\Source checkout\\porto.exe', CommandLine: 'porto daemon start',
+  }
+  const records = [
+    windowsDaemonRecord,
+    { ...windowsDaemonRecord, ProcessId: 221, CommandLine: '"C:\\Installed old Porto 路径\\Porto.exe" --hidden' },
+    { ...windowsDaemonRecord, ProcessId: 222, CommandLine: '"C:\\Installed old Porto 路径\\resources\\porto.exe" docker cli ps' },
+    { ...windowsDaemonRecord, ProcessId: 223, CommandLine: '"C:\\Installed old Porto 路径\\resources\\porto.exe" inspect C:\\other\\porto.exe daemon start' },
+    { ...windowsDaemonRecord, ProcessId: 224, CommandLine: '"C:\\Installed old Porto 路径\\resources\\porto.exe" daemon start --debug' },
+    source,
+  ]
+  const result = await inspectWindowsDaemonProcesses(windowsInspection(records))
+  assert.deepEqual(result.map(({ pid, executable }) => ({ pid, executable })), [
+    { pid: 220, executable: windowsDaemonRecord.ExecutablePath },
+    { pid: 225, executable: source.ExecutablePath },
+  ])
+  assert.ok(result.every((item) => typeof item.identity === 'string' && item.identity.length > 40))
+  assert.ok(result.every((item) => !item.identity.includes('daemon start')))
+})
+
+test('Windows daemon parsing rejects extra commands, unquoted ambiguous paths and misleading suffixes', () => {
+  const lines = [
+    '"C:\\Porto\\Porto.exe" --hidden',
+    '"C:\\Porto\\porto.exe" docker cli ps',
+    '"C:\\Porto\\porto.exe" inspect C:\\other\\porto.exe daemon start',
+    'C:\\Program Files\\Porto\\porto.exe daemon start',
+    '"C:\\Porto\\porto.exe" daemon start\n',
+    '"C:\\Porto\\porto.exe" daemon start && echo unrelated',
+  ]
+  assert.deepEqual(windowsDaemonProcesses(lines.map((CommandLine, index) => ({ ProcessId: index + 1, CommandLine }))), [])
+})
+
+test('native Windows discovery rejects mismatched command/executable metadata instead of guessing ownership', async () => {
+  await assert.rejects(inspectWindowsDaemonProcesses(windowsInspection([
+    { ...windowsDaemonRecord, ExecutablePath: 'C:\\Different\\porto.exe' },
+  ])), { code: 'PORTO_PROCESS_INSPECTION_UNAVAILABLE' })
+})
+
+test('native Windows process inspection keeps original budgets and the provided isolated environment', async () => {
+  const environment = { HOME: 'D:\\Synthetic home', USERPROFILE: 'D:\\Synthetic home', PATH: 'D:\\Synthetic path' }
+  const options = windowsInspection([], {
+    environment,
+    execFileImpl: async (file, args, settings) => {
+      assert.equal(file, 'Q:\\Native OS\\System32\\WindowsPowerShell\\v1.0\\powershell.exe')
+      assert.deepEqual(args.slice(0, 3), ['-NoProfile', '-NonInteractive', '-Command'])
+      assert.match(args[3], /\$PSModuleAutoLoadingPreference = 'None'/)
+      assert.match(args[3], /System\.Management\.ManagementObjectSearcher/)
+      assert.match(args[3], /\$target\.StartTime\.ToUniversalTime\(\)\.Ticks/)
+      assert.match(args[3], /\$target\.MainModule\.FileName/)
+      assert.doesNotMatch(args[3], /Get-CimInstance|Select-Object|ConvertTo-Json/)
+      assert.equal(settings.timeout, 10000)
+      assert.equal(settings.maxBuffer, 4 * 1024 * 1024)
+      assert.equal(settings.shell, false)
+      assert.equal(settings.env, environment)
+      return { stdout: windowsProcessFrame([]), stderr: '' }
+    },
+  })
+  assert.deepEqual(await inspectWindowsDaemonProcesses(options), [])
+  assert.equal(await inspectWindowsProcessIdentity(220, {
+    ...options,
+    execFileImpl: async (_file, args, settings) => {
+      assert.match(args[3], /GetProcessById\(220\)/)
+      assert.equal(settings.timeout, 5000)
+      assert.equal(settings.maxBuffer, 1024 * 1024)
+      assert.equal(settings.env, environment)
+      return { stdout: windowsProcessFrame([]), stderr: '' }
+    },
+  }), null)
+})
+
+test('Windows process identity changes with PID generation, actual executable or command role', async () => {
+  const original = await inspectWindowsProcessIdentity(220, windowsInspection([windowsDaemonRecord]))
+  for (const changed of [
+    { ...windowsDaemonRecord, StartTimeTicks: '639288576000000002' },
+    { ...windowsDaemonRecord, ExecutablePath: 'C:\\Different\\porto.exe' },
+    { ...windowsDaemonRecord, CommandLine: 'porto.exe docker cli ps' },
+  ]) {
+    assert.notEqual(await inspectWindowsProcessIdentity(220, windowsInspection([changed])), original)
+  }
+  await assert.rejects(inspectWindowsProcessIdentity(221, windowsInspection([windowsDaemonRecord])),
+    { code: 'PORTO_PROCESS_INSPECTION_UNAVAILABLE' })
+})
+
+test('unavailable or partial native Windows inspection never means an empty daemon list or exposes errors', async () => {
+  const secret = 'synthetic-credential-must-not-be-logged'
+  for (const run of [
+    async () => { throw Object.assign(new Error(secret), { stdout: secret, stderr: secret, killed: true }) },
+    async () => ({ stdout: '', stderr: '' }),
+    async () => ({ stdout: '{}', stderr: '' }),
+    async () => ({ stdout: windowsProcessFrame([]), stderr: secret }),
+    async () => ({ stdout: windowsProcessFrame([windowsDaemonRecord, windowsDaemonRecord]), stderr: '' }),
+    async () => ({ stdout: 'PORTO_DAEMON_PROCESSES_V1\n220\tinvalid\tAA==\tAA==\n', stderr: '' }),
+    async () => ({ stdout: windowsProcessFrame([{ ...windowsDaemonRecord, CommandLine: '' }]), stderr: '' }),
+  ]) {
+    for (const inspect of [inspectWindowsDaemonProcesses, (options) => inspectWindowsProcessIdentity(220, options)]) {
+      await assert.rejects(inspect(windowsInspection([], { execFileImpl: run })), (error) => {
+        assert.equal(error.code, 'PORTO_PROCESS_INSPECTION_UNAVAILABLE')
+        assert.ok(!String(error).includes(secret))
+        assert.equal(error.cause, undefined)
+        assert.equal(error.stdout, undefined)
+        assert.equal(error.stderr, undefined)
+        return true
+      })
+    }
+  }
+})
+
+if (process.platform === 'win32') {
+  test('native Windows shipped inspector reads actual PID/start/executable/command metadata', async (t) => {
+    const original = await inspectWindowsProcessIdentity(process.pid)
+    assert.ok(original)
+    const record = JSON.parse(original)
+    assert.equal(record.pid, process.pid)
+    assert.equal(fs.realpathSync(record.executable).toLowerCase(), fs.realpathSync(process.execPath).toLowerCase())
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' })
+    t.after(() => {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL')
+    })
+    const childIdentity = await inspectWindowsProcessIdentity(child.pid)
+    assert.ok(childIdentity)
+    const exited = once(child, 'exit')
+    child.kill('SIGKILL')
+    await exited
+    assert.notEqual(await inspectWindowsProcessIdentity(child.pid), childIdentity)
+  })
+}
+
+function desktopDaemonLifecycle(overrides = {}) {
+  const source = fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8')
+  const start = source.indexOf('async function runningDaemonProcesses()')
+  const end = source.indexOf('async function ensureDockerEngine(', start)
+  assert.ok(start >= 0 && end > start)
+  const signals = []
+  const errors = []
+  let started = 0
+  const context = {
+    app: { isPackaged: true },
+    process: { platform: 'win32', kill: (pid, signal) => signals.push([pid, signal]) },
+    console: { debug() {}, error: (...args) => errors.push(args) },
+    portoBinary: () => 'C:\\New Porto\\resources\\porto.exe',
+    daemonBinaryIdentity: () => 'expected-binary-hash',
+    normalizedExecutablePath: (value) => path.win32.normalize(value).toLowerCase(),
+    inspectWindowsDaemonProcesses: async () => [],
+    inspectWindowsProcessIdentity: async () => null,
+    inspectDaemon: async () => ({ reachable: started > 0, ready: started > 0 }),
+    startDaemon: async () => { started += 1 },
+    delay: async () => {},
+    DAEMON_URL: 'http://127.0.0.1:37623',
+    ...overrides,
+  }
+  const lifecycle = vm.runInNewContext(`${source.slice(start, end)}\n({ ensureDaemonRunning, stopDaemonProcesses })`, context)
+  return { ...lifecycle, context, signals, errors, starts: () => started }
+}
+
+test('Windows first launch starts its daemon only after verified empty native discovery', async () => {
+  const lifecycle = desktopDaemonLifecycle()
+  assert.equal(await lifecycle.ensureDaemonRunning(), true)
+  assert.equal(lifecycle.starts(), 1)
+  assert.deepEqual(lifecycle.signals, [])
+})
+
+test('native discovery failure never becomes an empty list or a daemon launch and logs no raw error', async () => {
+  const secret = 'synthetic-desktop-inspection-credential'
+  const lifecycle = desktopDaemonLifecycle({
+    inspectWindowsDaemonProcesses: async () => { throw new Error(secret) },
+  })
+  assert.equal(await lifecycle.ensureDaemonRunning(), false)
+  assert.equal(lifecycle.starts(), 0)
+  assert.deepEqual(lifecycle.signals, [])
+  assert.ok(lifecycle.errors.length > 0)
+  assert.ok(lifecycle.errors.every((args) => args.every((value) => typeof value === 'string' && !value.includes(secret))))
+})
+
+test('source development still reuses an already-compatible daemon without replacement', async () => {
+  const lifecycle = desktopDaemonLifecycle({
+    app: { isPackaged: false },
+    inspectDaemon: async () => ({ reachable: true, ready: true }),
+    inspectWindowsDaemonProcesses: async () => { throw new Error('Unnecessary source daemon replacement') },
+  })
+  assert.equal(await lifecycle.ensureDaemonRunning(), true)
+  assert.equal(lifecycle.starts(), 0)
+  assert.deepEqual(lifecycle.signals, [])
+})
+
+test('compatible packaged daemon retains its actual executable and is not stopped', async () => {
+  const lifecycle = desktopDaemonLifecycle({
+    inspectDaemon: async () => ({ reachable: true, ready: true }),
+    inspectWindowsDaemonProcesses: async () => [{
+      pid: 220, executable: 'C:\\New Porto\\resources\\porto.exe', identity: 'verified-generation',
+    }],
+  })
+  assert.equal(await lifecycle.ensureDaemonRunning(), true)
+  assert.equal(lifecycle.starts(), 0)
+  assert.deepEqual(lifecycle.signals, [])
+})
+
+test('old incompatible Windows daemon replacement rechecks ownership before signaling only its PID', async () => {
+  let oldAlive = true
+  const lifecycle = desktopDaemonLifecycle({
+    inspectWindowsDaemonProcesses: async () => [{
+      pid: 220, executable: windowsDaemonRecord.ExecutablePath, identity: 'old-verified-generation',
+    }],
+    inspectWindowsProcessIdentity: async (pid) => {
+      assert.equal(pid, 220)
+      return oldAlive ? 'old-verified-generation' : null
+    },
+  })
+  lifecycle.context.inspectDaemon = async () => ({
+    reachable: oldAlive || lifecycle.starts() > 0, ready: lifecycle.starts() > 0,
+  })
+  lifecycle.context.process.kill = (pid, signal) => {
+    lifecycle.signals.push([pid, signal])
+    oldAlive = false
+  }
+  assert.equal(await lifecycle.ensureDaemonRunning(), true)
+  assert.deepEqual(lifecycle.signals, [[220, 'SIGTERM']])
+  assert.equal(lifecycle.starts(), 1)
+})
+
+test('PID reuse or a changed executable/CLI role prevents a signal even after the initial refresh', async () => {
+  let inspections = 0
+  const lifecycle = desktopDaemonLifecycle({
+    inspectWindowsProcessIdentity: async () => ++inspections === 1 ? 'original-generation' : 'different-executable-or-role',
+  })
+  assert.equal(await lifecycle.stopDaemonProcesses([{ pid: 220, identity: 'original-generation' }]), true)
+  assert.deepEqual(lifecycle.signals, [])
+})
+
+test('unavailable replacement ownership prevents both signals and a subsequent daemon launch', async () => {
+  const lifecycle = desktopDaemonLifecycle({
+    inspectWindowsDaemonProcesses: async () => [{
+      pid: 220, executable: windowsDaemonRecord.ExecutablePath, identity: 'original-generation',
+    }],
+    inspectWindowsProcessIdentity: async () => { throw new Error('synthetic-secret-in-inspection-error') },
+    inspectDaemon: async () => ({ reachable: true, ready: false }),
+  })
+  assert.equal(await lifecycle.ensureDaemonRunning(), false)
+  assert.equal(lifecycle.starts(), 0)
+  assert.deepEqual(lifecycle.signals, [])
+  assert.ok(lifecycle.errors.every((args) => args.every((value) => typeof value === 'string' && !value.includes('synthetic-secret'))))
 })
 
 test('reconciles engine provisioning on every packaged desktop launch', () => {

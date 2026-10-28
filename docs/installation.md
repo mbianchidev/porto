@@ -49,6 +49,11 @@ the daemon bundled in the installed app. It gracefully replaces a different
 daemon before opening the dashboard, even when the executable path, product
 version, and API compatibility version are unchanged. This prevents a newly
 installed Porto app from continuing to use code left running by an older build.
+On Windows, discovery reads native executable/creation metadata and actual
+daemon command lines without PowerShell CIM/formatting-module autoload.
+Only exact Porto daemon commands are eligible for replacement, with fresh
+ownership checks before each signal. Unavailable inspection fails explicitly;
+it never means no daemon exists or permits stopping an unrelated desktop/CLI.
 
 Desktop startup failures include the path to the persistent diagnostic log:
 `logs/porto.log` inside the platform's Porto data directory, or under
