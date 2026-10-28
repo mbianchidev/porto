@@ -675,8 +675,11 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
     console.log('Installed acceptance: stopping Compose and preserving its volume')
     await compose('down', '--remove-orphans')
-    assert.equal(await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`), '',
-      'Compose down left synthetic containers behind')
+    console.log('Installed acceptance: verifying Compose removal in the event-backed inventory')
+    await waitFor(async () =>
+      await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`) === '',
+    'Compose down must leave no synthetic containers in the event-backed inventory')
+    console.log('Installed acceptance: verifying retained volume and unrelated data')
     await cli('volume', 'inspect', `${project}-retained`)
     preserved(fixture)
     fixture.evidence ||= {}

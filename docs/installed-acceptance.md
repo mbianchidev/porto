@@ -51,7 +51,10 @@ The fixture:
    volume token unchanged. No real user project or workload participates.
 6. Runs real Compose down, retaining the synthetic volume. It stops only the
    owned fixture engine and recorded desktop/daemon processes, checking process
-   identity again before signaling.
+   identity again before signaling. The normal bounded state-convergence wait
+   requires the event-backed inventory to contain no remaining synthetic
+   containers; a successful remove is not confused with an asynchronously
+   published, older inventory snapshot.
 7. Reapplies the same already-built package, checks that owned executables were
    replaced with the shipped bytes, and reopens the installed desktop. The
    existing image, engine ownership and real volume token must survive. No
