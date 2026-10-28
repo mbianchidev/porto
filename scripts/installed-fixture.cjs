@@ -100,6 +100,7 @@ async function systemExecutable(name, env) {
     if (!windowsGitRoots) {
       const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
 $ErrorActionPreference = 'Stop'
+$PSModuleAutoLoadingPreference = 'None'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.Environment+SpecialFolder]::ProgramFilesX86)) {
   [Console]::WriteLine([System.Environment]::GetFolderPath($folder))

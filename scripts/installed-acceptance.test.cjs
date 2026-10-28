@@ -163,10 +163,11 @@ test('Windows OS tool roots come from loaded KnownDLLs rather than environment p
 })
 
 if (process.platform === 'win32') {
-  test('native PowerShell startup works with only the isolated Windows capabilities', async (t) => {
+  test('native PowerShell startup works with isolated Windows capabilities and no module autoload', async (t) => {
     const current = fixture(t)
     const result = await run('powershell.exe', [
-      '-NoProfile', '-NonInteractive', '-Command', '[Console]::Out.Write("installed-native-startup-ready")',
+      '-NoProfile', '-NonInteractive', '-Command',
+      '$PSModuleAutoLoadingPreference = "None"; [Console]::Out.Write("installed-native-startup-ready")',
     ], { env: environment(current), timeout: 10000 })
     assert.equal(result.stdout, 'installed-native-startup-ready')
     assert.equal(result.stderr, '')

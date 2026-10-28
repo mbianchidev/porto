@@ -666,6 +666,9 @@ jobs:
         run: |
           node -e "require('node:assert/strict').equal(require('./scripts/installed-fixture.cjs').target(), process.env.EXPECTED_TARGET)"
           node --test scripts/installed-acceptance.test.cjs
+          if [ "$RUNNER_OS" = Windows ]; then
+            node --test ui/electron/daemon-readiness.test.cjs
+          fi
 
       - name: Build desktop inputs
         shell: bash
