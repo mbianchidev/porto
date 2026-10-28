@@ -95,7 +95,7 @@ if ! binfmt_ready; then
 fi
 `
 
-func (m *Manager) installLimaBinfmt(ctx context.Context) error {
+func (m *Manager) installLimaBinfmt(ctx context.Context, ownerID string) error {
 	command := runtimes.Command{
 		Name: "limactl",
 		Args: []string{"shell", "--workdir=/", engineInstanceName, "--", "sudo", "-n", "sh", "-c", limaBinfmtInstallCommand},
@@ -112,5 +112,5 @@ func (m *Manager) installLimaBinfmt(ctx context.Context) error {
 	if err := m.configureAMD64Handler(ctx); err != nil {
 		return err
 	}
-	return m.refreshLimaBuildKitPlatforms(ctx)
+	return m.refreshLimaBuildKitPlatforms(ctx, ownerID)
 }

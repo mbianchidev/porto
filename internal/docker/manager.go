@@ -474,7 +474,7 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 	if err := reportEngineInstall(ctx, "configuring", "multi-platform", "Checking guest QEMU / binfmt support; missing multi-platform packages must download."); err != nil {
 		return Status{}, err
 	}
-	if err := m.installLimaBinfmt(ctx); err != nil {
+	if err := m.installLimaBinfmt(ctx, ownerID); err != nil {
 		return Status{}, err
 	}
 	if err := reportEngineInstall(ctx, "configuring", "runtime-helper", "Installing and checking the bundled guest runtime helper."); err != nil {
@@ -631,7 +631,7 @@ func (m *Manager) StartEngine(ctx context.Context) (err error) {
 		_, stopErr := m.runCommand(context.Background(), 5*time.Minute, "stop unowned Lima instance", nil, "limactl", "stop", state.Instance)
 		return errors.Join(ownershipErr, stopErr)
 	}
-	if err := m.installLimaBinfmt(ctx); err != nil {
+	if err := m.installLimaBinfmt(ctx, state.OwnerID); err != nil {
 		return err
 	}
 	return m.applyGuestNetworking(ctx, commandBackend{name: "limactl", limaInstance: state.Instance, ownerID: state.OwnerID}, false)

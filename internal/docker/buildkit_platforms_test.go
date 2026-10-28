@@ -131,7 +131,7 @@ func TestRefreshLimaBuildKitPlatforms(t *testing.T) {
 			manager.dialBuildKit = buildKitControlTestDialer(t, service)
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
-			err := manager.refreshLimaBuildKitPlatforms(ctx)
+			err := manager.refreshLimaBuildKitPlatforms(ctx, "synthetic-owner")
 			if test.wantError != "" {
 				if err == nil || !strings.Contains(err.Error(), test.wantError) {
 					t.Fatalf("refresh = %v, want %q", err, test.wantError)
@@ -153,6 +153,18 @@ func TestRefreshLimaBuildKitPlatforms(t *testing.T) {
 					t.Fatal("already current worker unnecessarily inspected active builds")
 				}
 			}
+
 		})
+	}
+}
+
+func TestBuildKitPlatformRefreshRequiresTheProvisionedOwnerBeforeDialing(t *testing.T) {
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	manager.dialBuildKit = func(context.Context) (net.Conn, error) {
+		t.Fatal("an unowned platform refresh attempted to dial BuildKit")
+		return nil, errors.New("unexpected BuildKit dial")
+	}
+	if err := manager.refreshLimaBuildKitPlatforms(context.Background(), ""); !errors.Is(err, ErrUnavailable) {
+		t.Fatalf("unowned platform refresh = %v", err)
 	}
 }

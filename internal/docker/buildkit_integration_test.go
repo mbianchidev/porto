@@ -38,7 +38,7 @@ func TestDockerMultiPlatformBuildIntegration(t *testing.T) {
 	if err := manager.StartEngine(ctx); err != nil {
 		t.Fatalf("reconcile multi-platform support without restarting the VM: %v", err)
 	}
-	if missing, err := manager.limaBuildKitMissingPlatforms(ctx, false); err != nil || len(missing) != 0 {
+	if missing, err := manager.limaBuildKitMissingPlatforms(ctx, state.OwnerID, false); err != nil || len(missing) != 0 {
 		t.Fatalf("BuildKit platform listing remains incomplete: missing=%v, error=%v", missing, err)
 	}
 
