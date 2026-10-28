@@ -967,21 +967,22 @@ test('resolves the packaged dashboard beside the bundled daemon', () => {
   const dashboard = resolvePackagedDashboard({
     isPackaged: true,
     resourcesPath,
-    existsImpl: (candidate) => candidate === `${resourcesPath}/dist/index.html`,
+    existsImpl: (candidate) => candidate === path.join(resourcesPath, 'dist', 'index.html'),
   })
 
-  assert.equal(dashboard, `${resourcesPath}/dist`)
+  assert.equal(dashboard, path.join(resourcesPath, 'dist'))
   assert.equal(resolvePackagedDashboard({ isPackaged: false, resourcesPath }), '')
 })
 
 test('packaged apps always use the bundled Porto binary', () => {
+  const resourcesPath = '/Applications/Porto.app/Contents/Resources'
   const resolved = resolvePortoBinary({
     isPackaged: true,
     platform: 'darwin',
-    resourcesPath: '/Applications/Porto.app/Contents/Resources',
+    resourcesPath,
     environment: { PORTO_BINARY: '/tmp/old-porto' },
     existsImpl: () => false,
   })
 
-  assert.equal(resolved, '/Applications/Porto.app/Contents/Resources/porto')
+  assert.equal(resolved, path.join(resourcesPath, 'porto'))
 })
