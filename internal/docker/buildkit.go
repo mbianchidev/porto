@@ -30,7 +30,7 @@ exit 1
 `
 
 func (m *Manager) DialBuildKit(ctx context.Context) (net.Conn, error) {
-	backend, err := m.backend(ctx)
+	backend, err := m.backendForCommand(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -47,7 +47,10 @@ func (m *Manager) dialBuildKitBackend(ctx context.Context, backend commandBacken
 	if backend.limaInstance == "" {
 		return nil, errors.New("Porto Lima backend configuration is incomplete")
 	}
-	return dialLimaBuildKit(ctx, backend.limaInstance)
+	if backend.ownerID == "" {
+		return nil, fmt.Errorf("%w: Porto Lima BuildKit ownership identity is missing", ErrUnavailable)
+	}
+	return dialLimaBuildKit(ctx, backend)
 }
 
 func dialLocalBuildKit(ctx context.Context) (net.Conn, error) {
@@ -95,19 +98,24 @@ func dialBuildKitAddress(ctx context.Context, address string) (net.Conn, error) 
 	}
 }
 
-func dialLimaBuildKit(ctx context.Context, instance string) (net.Conn, error) {
-	command := limaBuildKitStdioCommand(ctx, instance)
+func dialLimaBuildKit(ctx context.Context, backend commandBackend) (net.Conn, error) {
+	command := limaBuildKitStdioCommand(ctx, backend)
 	return dialCommandConn(ctx, "BuildKit tunnel", command, buildKitAddr("porto"), buildKitAddr("buildkit"))
 }
 
-func limaBuildKitStdioCommand(ctx context.Context, instance string) *exec.Cmd {
+func limaBuildKitStdioCommand(ctx context.Context, backend commandBackend) *exec.Cmd {
 	return newTunnelCommand(
 		ctx,
 		"limactl",
 		"shell",
 		"--workdir=/",
-		instance,
+		backend.limaInstance,
 		"--",
+		"sh",
+		"-c",
+		limaOwnedRuntimeCommand,
+		"porto-runtime-command",
+		backend.ownerID,
 		"sh",
 		"-lc",
 		limaBuildKitCommand,

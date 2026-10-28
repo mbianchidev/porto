@@ -1584,7 +1584,7 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 		{name: "changed owner", owner: "new-synthetic-owner", instance: engineInstanceName, available: true},
 		{name: "changed instance", owner: "synthetic-owner", instance: "another-synthetic-engine", available: true},
 	} {
-		for _, operation := range []string{"nerdctl", "files"} {
+		for _, operation := range []string{"nerdctl", "files", "buildkit"} {
 			t.Run(scenario.name+"/"+operation, func(t *testing.T) {
 				runner := &fakeRunner{}
 				manager := NewWithStateDir(runner, t.TempDir())
@@ -1600,8 +1600,14 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 					}},
 				}
 				var err error
+				buildKitDial := errors.New("synthetic BuildKit tunnel dial reached")
+				manager.dialBuildKit = func(context.Context) (net.Conn, error) {
+					return nil, buildKitDial
+				}
 				want := []string{"shell", engineInstanceName, "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls"}
-				if operation == "files" {
+				if operation == "buildkit" {
+					_, err = manager.DialBuildKit(context.Background())
+				} else if operation == "files" {
 					descriptor := runtimefiles.Descriptor{Resource: datafiles.Resource{Kind: "volume", Name: "synthetic-volume", ID: "synthetic-identity"}}
 					err = manager.RunFileRequest(context.Background(), descriptor, datafiles.Request{
 						Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
@@ -1620,6 +1626,12 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 					}
 					return
 				}
+				if operation == "buildkit" {
+					if !errors.Is(err, buildKitDial) || len(runner.commands) != 0 {
+						t.Fatalf("the healthy BuildKit origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
+					}
+					return
+				}
 				if err != nil || len(runner.commands) != 1 {
 					t.Fatalf("the healthy origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
 				}
@@ -1628,6 +1640,25 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBuildKitTunnelChecksGuestOwnershipBeforeProtocolTraffic(t *testing.T) {
+	backend := commandBackend{name: "limactl", limaInstance: "synthetic-engine", ownerID: "synthetic-owner"}
+	command := limaBuildKitStdioCommand(context.Background(), backend)
+	want := []string{
+		"limactl", "shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+		limaOwnedRuntimeCommand, "porto-runtime-command", backend.ownerID, "sh", "-lc",
+		limaBuildKitCommand,
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("BuildKit tunnel omitted its in-channel ownership check: %q", command.Args)
+	}
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	backend.ownerID = ""
+	connection, err := manager.dialBuildKitBackend(context.Background(), backend)
+	if connection != nil || !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("BuildKit accepted an unowned tunnel: connection=%v err=%v", connection, err)
 	}
 }
 

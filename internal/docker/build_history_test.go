@@ -156,7 +156,7 @@ func buildHistoryTunnelFixture(t *testing.T, delay time.Duration) (*Manager, fun
 	var tunnels []*commandConn
 	manager := New(&fakeRunner{})
 	manager.dialBuildKit = func(ctx context.Context) (net.Conn, error) {
-		command := limaBuildKitStdioCommand(ctx, "test-engine")
+		command := limaBuildKitStdioCommand(ctx, commandBackend{limaInstance: "test-engine", ownerID: "test-owner"})
 		command.Path = os.Args[0]
 		command.Args = []string{os.Args[0], "-test.run=^TestCommandConnHelperProcess$"}
 		command.Err = nil

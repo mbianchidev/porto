@@ -67,6 +67,12 @@ never changes the disk or image of an existing instance.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 
+BuildKit tunnels reuse an available inventory's engine origin only when its
+instance and owner still match the saved state. The same tunnel checks the
+guest ownership marker before `buildctl` can consume protocol input. This
+avoids redundant cold SSH discovery/ownership processes for concurrent Buildx
+connections without removing the ownership check or extending client deadlines.
+
 ## Live container inventory
 
 The daemon maintains one authoritative, revisioned container snapshot for both
