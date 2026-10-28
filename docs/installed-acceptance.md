@@ -135,7 +135,11 @@ on exit, not installed or shipped. Windows retains native executable-path and
 creation-time checks. Unknown or changed ownership never permits signaling.
 Failed startup retains bounded, sanitized Lima/QEMU diagnostics under the
 synthetic fixture's `diagnostics` directory, even if failed-guest cleanup
-removes the original log paths.
+removes the original log paths. The same bounded desktop, daemon and guest
+diagnostics are printed for workflow or cleanup failures after startup.
+Fixed stage labels identify the failing operation, and each original failure
+category is reported before cleanup errors are combined. Raw exception
+messages, arguments and environment values are not printed.
 
 Unix CI passes the package it just built:
 

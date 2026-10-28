@@ -358,6 +358,40 @@ function retainRuntimeDiagnostics(fixture, retainedDescriptors) {
   }
 }
 
+function reportRuntimeDiagnostics(fixture, logImpl = console.error) {
+  try { retainRuntimeDiagnostics(fixture) } catch (error) {
+    logImpl(`Owned Lima/QEMU diagnostics could not be retained: ${failureDiagnostic(error)}`)
+  }
+  for (const [label, file] of [
+    ['desktop', path.join(fixture.directory, 'desktop-launch.log')],
+    ['daemon', path.join(fixture.portoHome, 'logs', 'porto.log')],
+    ...runtimeDiagnosticFiles(fixture).map(([label, , retained]) => [label, retained]),
+  ]) {
+    try {
+      if (!fs.existsSync(file)) continue
+      const descriptor = fs.openSync(file, 'r')
+      let contents
+      try {
+        const size = fs.fstatSync(descriptor).size
+        const offset = Math.max(0, size - 16384)
+        const bytes = Buffer.alloc(Math.min(size, 16384))
+        const count = fs.readSync(descriptor, bytes, 0, bytes.length, offset)
+        contents = bytes.subarray(0, count).toString('utf8')
+        if (offset > 0) {
+          const newline = contents.indexOf('\n')
+          contents = newline < 0 ? '[Oversized partial diagnostic line omitted.]' : contents.slice(newline + 1)
+        }
+        contents = runtimeFailureDiagnostic(new Error(contents))
+      } finally {
+        fs.closeSync(descriptor)
+      }
+      logImpl(`Installed ${label} diagnostics:\n${contents}`)
+    } catch (error) {
+      logImpl(`Installed ${label} diagnostics unavailable: ${failureDiagnostic(error)}`)
+    }
+  }
+}
+
 async function startDesktop(fixture, installed, env) {
   await preflight(fixture, env)
   assert.ok(await identity(process.pid, env), 'Native process inspection must work before launching the desktop')
@@ -420,28 +454,7 @@ async function startDesktop(fixture, installed, env) {
     return { renderer, health, desktop: record, daemon }
   } catch (error) {
     retain()
-    for (const [label, file] of [
-      ['desktop', path.join(fixture.directory, 'desktop-launch.log')],
-      ['daemon', path.join(fixture.portoHome, 'logs', 'porto.log')],
-      ...runtimeDiagnosticFiles(fixture).map(([label, , retained]) => [label, retained]),
-    ]) {
-      try {
-        if (!fs.existsSync(file)) continue
-        const descriptor = fs.openSync(file, 'r')
-        let contents
-        try {
-          const size = fs.fstatSync(descriptor).size
-          const bytes = Buffer.alloc(Math.min(size, 16384))
-          fs.readSync(descriptor, bytes, 0, bytes.length, Math.max(0, size - bytes.length))
-          contents = runtimeFailureDiagnostic(new Error(bytes.toString('utf8')))
-        } finally {
-          fs.closeSync(descriptor)
-        }
-        console.error(`Installed ${label} startup diagnostics:\n${contents}`)
-      } catch (diagnosticError) {
-        console.error(`Installed ${label} startup diagnostics unavailable: ${failureDiagnostic(diagnosticError)}`)
-      }
-    }
+    reportRuntimeDiagnostics(fixture)
     renderer?.close()
     // The health check can fail before the detached, owned daemon was recorded.
     const failures = [error]
@@ -562,6 +575,7 @@ async function acceptance(fixture, reopen = false) {
   const statePath = path.join(fixture.portoHome, 'docker', 'engine.json')
   let failed
   try {
+    console.log('Installed acceptance: verifying the preserved synthetic project')
     const projectPath = path.join(fixture.home, 'Preserved synthetic project')
     if (!reopen) {
       write(path.join(projectPath, 'package.json'), JSON.stringify({
@@ -579,6 +593,7 @@ async function acceptance(fixture, reopen = false) {
     assert.ok(storedProject,
       'A real registered synthetic Porto project must survive the package upgrade')
     assert.equal(storedProject.pid, 0, 'Preservation must never start a host project process')
+    console.log('Installed acceptance: verifying engine ownership and shipped CLI versions')
     const engine = JSON.parse(fs.readFileSync(statePath, 'utf8'))
     assert.equal(engine.mode, 'lima', 'Never accept a host containerd/Docker fallback as the disposable owned backend')
     assert.equal(engine.instance, 'porto-engine')
@@ -595,6 +610,7 @@ async function acceptance(fixture, reopen = false) {
       reportedVersion(output, expected)
       process.stdout.write(`${name}: ${output}\n`)
     }
+    console.log('Installed acceptance: checking Docker transport and installed plugin selection')
     const info = JSON.parse(await cli('info', '--format', '{{json .}}'))
     pluginPaths(info, installed.tools)
     assert.equal(info.OSType, 'linux', 'The named pipe/socket must reach the disposable Linux engine')
@@ -607,6 +623,7 @@ async function acceptance(fixture, reopen = false) {
     write(path.join(workspace, 'fixture.txt'), `Synthetic installed image ${fixture.id}\n`)
     write(path.join(workspace, 'Dockerfile'),
       'FROM busybox:1.37.0\nCOPY fixture.txt /porto-installed.txt\nCMD ["sh", "-c", "sleep 3600"]\n')
+    console.log('Installed acceptance: building and inspecting the loaded image')
     if (!reopen) {
       await cli('buildx', 'build', '--builder', 'default', '--load', '--tag', image,
         '--label', `porto.test.suite=${project}`, workspace)
@@ -625,13 +642,16 @@ async function acceptance(fixture, reopen = false) {
       },
       volumes: { retained: { name: `${project}-retained`, labels: { 'porto.test.suite': project } } },
     }))
+    console.log('Installed acceptance: starting and inspecting the real Compose project')
     await compose('up', '--detach', '--no-build')
     const id = await compose('ps', '--status', 'running', '--quiet')
     assert.match(id, /^[a-f0-9]{12,64}$/, 'Compose must start exactly one real synthetic container')
     const inspect = async () => JSON.parse(await cli('container', 'inspect', id))[0]
     assert.equal((await inspect()).Config.Labels['com.docker.compose.project'], project)
+    console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
     assert.equal(await cli('exec', id, 'cat', '/porto-installed.txt'), `Synthetic installed image ${fixture.id}`)
+    console.log('Installed acceptance: exercising renderer-origin container stop and start')
     const listing = await rendererRequest(session.renderer, '/api/docker/containers')
     assert.equal(listing.status, 200, listing.body)
     assert.ok(JSON.parse(listing.body).some((item) => item.id === id || id.startsWith(item.id)),
@@ -641,6 +661,7 @@ async function acceptance(fixture, reopen = false) {
       assert.equal(response.status, 200, response.body)
       await waitFor(async () => (await inspect()).State.Running === running, `real desktop ${action}`)
     }
+    console.log('Installed acceptance: verifying active-workload update refusal')
     const before = await inspect()
     assert.ok(before.State.Pid > 0, 'The running synthetic workload must have a real guest PID')
     const refusal = await rendererRequest(session.renderer, '/api/docker/engine/prepare-update', 'POST')
@@ -651,6 +672,7 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(after.State.Pid, before.State.Pid, 'Update preparation replaced the workload task')
     assert.equal(after.State.StartedAt, before.State.StartedAt, 'Update preparation restarted the workload')
     assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
+    console.log('Installed acceptance: stopping Compose and preserving its volume')
     await compose('down', '--remove-orphans')
     assert.equal(await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`), '',
       'Compose down left synthetic containers behind')
@@ -667,8 +689,10 @@ async function acceptance(fixture, reopen = false) {
       preservedRegisteredProject: projectPath, runningWorkloadPID: before.State.Pid,
     }
   } catch (error) {
+    console.error(`Installed workflow failed: ${failureDiagnostic(error)}`)
     failed = error
   } finally {
+    console.log('Installed acceptance: stopping the owned runtime and desktop')
     session.renderer.close()
     try {
       if (fs.existsSync(path.join(workspace, 'compose.json'))) await compose('down', '--remove-orphans')
@@ -678,15 +702,21 @@ async function acceptance(fixture, reopen = false) {
       assert.equal(instances.length, 1)
       assert.equal(instances[0].status, 'Stopped', 'Never uninstall or remove a fixture with a running backend')
     } catch (error) {
+      console.error(`Installed runtime cleanup failed: ${failureDiagnostic(error)}`)
       failed = new AggregateError([failed, error].filter(Boolean), 'Installed acceptance or owned runtime cleanup failed')
     }
-    for (const [record, tree] of [[session.desktop, true], [session.daemon, true]]) {
+    for (const [label, record, tree] of [['desktop', session.desktop, true], ['daemon', session.daemon, true]]) {
       try { await stopProcess(record, env, tree) } catch (error) {
+        console.error(`Installed ${label} cleanup failed: ${failureDiagnostic(error)}`)
         failed = new AggregateError([failed, error].filter(Boolean), 'Unable to stop an owned acceptance process')
       }
     }
   }
-  if (failed) throw failed
+  if (failed) {
+    reportRuntimeDiagnostics(fixture)
+    throw failed
+  }
+  console.log('Installed acceptance: hashing the stopped runtime preservation baseline')
   await snapshot(fixture, installed)
   process.stdout.write(`Installed ${fixture.target}: real desktop, Compose, Buildx, retained volume and safe update refusal passed (${fixture.backend}).\n`)
 }
@@ -732,5 +762,5 @@ if (require.main === module) {
 
 module.exports = {
   acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
+  removed, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
 }

@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
+const { existingDesktops, hostProcesses, identity, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -502,6 +502,22 @@ test('owned command diagnostics redact output before truncation and never serial
   assert.match(logs[0], /Synthetic tool error E123/)
   assert.ok(!logs[0].includes(secret))
   assert.ok(!logs[0].includes('synthetic-private-argument'))
+  assert.ok(logs[0].length < 17000)
+})
+
+test('post-startup diagnostics retain bounded redacted owned logs without partial lines', (t) => {
+  const current = fixture(t)
+  const secret = 'synthetic-credential-must-not-be-logged'
+  write(path.join(current.directory, 'desktop-launch.log'),
+    `discarded partial line ${'x'.repeat(20000)}\nSynthetic workflow error E456\n` +
+    `https://user:${secret}@synthetic.invalid/?token=${secret}\n{"auth":"${secret}"}\n`)
+  const logs = []
+  reportRuntimeDiagnostics(current, (message) => logs.push(message))
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /Synthetic workflow error E456/)
+  assert.ok(!logs[0].includes(secret))
+  assert.ok(!logs[0].includes('discarded partial line'))
+  assert.ok(!logs[0].includes('x'.repeat(100)))
   assert.ok(logs[0].length < 17000)
 })
 
