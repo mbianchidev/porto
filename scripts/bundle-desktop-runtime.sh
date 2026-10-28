@@ -393,6 +393,9 @@ if [ "$goos" = "windows" ]; then
   find "$destination/qemu" -maxdepth 1 -type f -iname 'qemu-system-*.exe' ! -iname "$qemu_system" -delete
   test -f "$destination/qemu/qemu-img.exe"
   test -f "$destination/qemu/$qemu_system"
+  node "$script_directory/windows-qemu-manifest.cjs" "$destination/qemu" "$goarch"
+  cp "$script_directory/patches/qemu-windows-utf8.manifest" "$destination/licenses/qemu-windows-utf8.manifest"
+  cp "$script_directory/windows-qemu-manifest.cjs" "$destination/licenses/qemu-windows-utf8.cjs"
   qemu_bundled=true
 fi
 
@@ -450,7 +453,7 @@ dive ${dive_version} (${dive_asset}, sha256:${dive_checksum})
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_runtime_version}
-qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
+qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s; Porto UTF-8 manifest)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF

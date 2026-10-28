@@ -9,6 +9,25 @@ Docker context or the dashboard's **Container backend view**.
 These are separate endpoints and stores, not an image conversion or a switch to
 Lima's WSL driver. Both API endpoints report their actual backend OS.
 
+## Bundled QEMU and Unicode paths
+
+The Windows bundle adds a per-process UTF-8 manifest to `qemu-img.exe` and its
+architecture-matched `qemu-system-*.exe` before packaging or signing. This lets
+their narrow Windows file APIs open firmware and disks in paths containing
+non-ASCII characters on Windows 10 version 1903 or later, without changing the
+host's locale/code-page settings or substituting an ASCII installation path.
+See Microsoft's [UTF-8 process code-page documentation](https://learn.microsoft.com/en-us/windows/apps/design/globalizing/use-utf8-code-page).
+
+The downloaded vendor archive is checksum-verified and left unchanged; only
+isolated build copies are edited. Native code, image addressing, version/icon
+resources and unrelated data are verified unchanged. Editing removes the
+vendor Authenticode signature, which would otherwise be invalid; any signing
+of these modified copies must happen after bundling. `runtime/VERSIONS` records
+the change, and its manifest/build helper are retained under `runtime/licenses`.
+A matching native Windows build also creates a Unicode-path image and opens
+Unicode-path firmware in a paused, network-free QEMU process, then requires a
+clean QMP exit. This quick probe does not replace full installed-runtime CI.
+
 ## Native Windows setup
 
 In **Settings > Native Windows containers**, inspect host capabilities and
