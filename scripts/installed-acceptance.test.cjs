@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess } = require('./installed-acceptance.cjs')
+const { existingDesktops, hostProcesses, identity, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -473,6 +473,21 @@ if (process.platform !== 'win32') {
     })
   })
 }
+
+test('owned command diagnostics redact output before truncation and never serialize arguments', () => {
+  const secret = 'synthetic-credential-must-not-be-logged'
+  const logs = []
+  reportCommandFailure(Object.assign(new Error('synthetic-private-argument'), {
+    code: 'PORTO_COMMAND_FAILED',
+    stderr: `failed synthetic build: https://user:${secret}@synthetic.invalid/?token=${secret}\n{"auth":"${secret}"}\n`,
+    stdout: `Synthetic tool error E123\n${'x'.repeat(20000)}`,
+  }), (message) => logs.push(message))
+  assert.equal(logs.length, 1)
+  assert.match(logs[0], /Synthetic tool error E123/)
+  assert.ok(!logs[0].includes(secret))
+  assert.ok(!logs[0].includes('synthetic-private-argument'))
+  assert.ok(logs[0].length < 17000)
+})
 
 test('unsuccessful commands retain only a fixed public tool category and numeric exit status', async () => {
   const secret = 'synthetic-argument-must-not-be-logged'

@@ -802,6 +802,7 @@ async function captureCommand(child, file, args, options, terminateImpl) {
       ]).get(path.basename(file).toLowerCase()) || 'tool'
       throw Object.assign(new Error(`${file} ${args.join(' ')} failed (${result.signal || result.status}):\n${result.stdout}\n${result.stderr}`), {
         code: 'PORTO_COMMAND_FAILED', commandKind, status: result.status,
+        stdout: result.stdout, stderr: result.stderr,
       })
     }
     return result

@@ -10,6 +10,14 @@ const {
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
 const { dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
 
+function reportCommandFailure(error, logImpl = console.error) {
+  if (error?.code !== 'PORTO_COMMAND_FAILED') return
+  const output = [error.stderr, error.stdout].filter((value) => typeof value === 'string').join('\n')
+  if (output.trim()) {
+    logImpl(`Installed tool failure diagnostics:\n${runtimeFailureDiagnostic(new Error(output))}`)
+  }
+}
+
 const WINDOWS_PROCESS_PRELUDE = `
 $ErrorActionPreference = 'Stop'
 $PSModuleAutoLoadingPreference = 'None'
@@ -117,9 +125,15 @@ async function configureLima(fixture, env) {
     : `${quotedQemu} -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb`
   if (fixture.snapshots) return
   console.log('Installed acceptance: preparing checksum-verified guest tools')
-  const archive = await run(process.execPath, [
-    path.join(__dirname, 'lima-containerd-archive.cjs'), arch, path.join(fixture.directory, 'containerd-bootstrap'),
-  ], { env, timeout: 8 * 60 * 1000 })
+  let archive
+  try {
+    archive = await run(process.execPath, [
+      path.join(__dirname, 'lima-containerd-archive.cjs'), arch, path.join(fixture.directory, 'containerd-bootstrap'),
+    ], { env, timeout: 8 * 60 * 1000 })
+  } catch (error) {
+    reportCommandFailure(error)
+    throw error
+  }
   const prefix = '.containerd.archives = '
   assert.ok(archive.stdout.trim().startsWith(prefix), 'Expected the existing checksum-verified Lima archive fixture')
   const archives = JSON.parse(archive.stdout.trim().slice(prefix.length))
@@ -531,9 +545,15 @@ async function acceptance(fixture, reopen = false) {
   const project = `porto-installed-${fixture.id}`
   const image = `${project}:acceptance`
   const cli = async (...args) => {
-    const result = await run(installed.porto, ['docker', 'cli', ...args], {
-      env: cliEnv, cwd: workspace, timeout: 8 * 60 * 1000,
-    })
+    let result
+    try {
+      result = await run(installed.porto, ['docker', 'cli', ...args], {
+        env: cliEnv, cwd: workspace, timeout: 8 * 60 * 1000,
+      })
+    } catch (error) {
+      reportCommandFailure(error)
+      throw error
+    }
     assert.ok(!`${result.stdout}\n${result.stderr}`.includes('UNRELATED-SYNTHETIC-PLUGIN-MUST-NOT-RUN'),
       'Docker invoked an unrelated plugin instead of the installed plugin')
     return result.stdout.trim()
@@ -712,5 +732,5 @@ if (require.main === module) {
 
 module.exports = {
   acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, restored, retainRuntimeDiagnostics, stopProcess,
+  removed, restored, retainRuntimeDiagnostics, stopProcess, reportCommandFailure,
 }
