@@ -146,6 +146,11 @@ messages, arguments and environment values are not printed.
 Renderer-origin container start requests use the existing one-minute
 start-command allowance rather than the debugger's shorter 30-second default.
 Other debugger requests and all production operation deadlines are unchanged.
+Backend availability alone does not complete startup: the actual packaged
+dashboard target must appear within the same existing 25-minute provisioning
+wait. The fixture does not start a premature one-minute page timer while
+Electron is still completing its normal provisioning sequence. Actual DOM
+rendering remains required afterward.
 
 Unix CI passes the package it just built:
 
