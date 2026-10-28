@@ -175,18 +175,18 @@ async function cdp(url) {
     pending.clear()
   }
   socket.addEventListener('close', closePending)
-  const send = async (method, params = {}) => await new Promise((resolve, reject) => {
+  const send = async (method, params = {}, timeout = 30000) => await new Promise((resolve, reject) => {
     const id = ++sequence
     const timer = setTimeout(() => {
       pending.delete(id)
       reject(new Error(`Installed desktop debugger timed out: ${method}`))
-    }, 30000)
+    }, timeout)
     pending.set(id, { resolve, reject, timer })
     socket.send(JSON.stringify({ id, method, params }))
   })
   return {
-    async evaluate(expression) {
-      const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
+    async evaluate(expression, { timeout = 30000 } = {}) {
+      const result = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true }, timeout)
       assert.equal(result.exceptionDetails, undefined, JSON.stringify(result.exceptionDetails))
       return result.result.value
     },
@@ -202,10 +202,11 @@ async function json(url) {
 
 async function rendererRequest(renderer, endpoint, method = 'GET') {
   assert.ok(endpoint.startsWith('/api/docker/'), 'Only synthetic Docker operations belong in installed acceptance')
+  const timeout = method === 'POST' && /^\/api\/docker\/containers\/[^/]+\/start$/.test(endpoint) ? 60000 : 30000
   return await renderer.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(endpoint)}, { method: ${JSON.stringify(method)} })
     return { status: response.status, body: await response.text() }
-  })()`)
+  })()`, { timeout })
 }
 
 async function identity(pid, env, {
@@ -761,6 +762,6 @@ if (require.main === module) {
 }
 
 module.exports = {
-  acceptance, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
+  acceptance, cdp, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
+  removed, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot,
 }

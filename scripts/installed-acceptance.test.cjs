@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { existingDesktops, hostProcesses, identity, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
+const { cdp, existingDesktops, hostProcesses, identity, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -519,6 +519,55 @@ test('post-startup diagnostics retain bounded redacted owned logs without partia
   assert.ok(!logs[0].includes('discarded partial line'))
   assert.ok(!logs[0].includes('x'.repeat(100)))
   assert.ok(logs[0].length < 17000)
+})
+
+test('only renderer POST start uses the existing one-minute lifecycle allowance', async (t) => {
+  const timers = new Set()
+  let socket
+  t.mock.method(globalThis, 'setTimeout', (callback, delay) => {
+    const timer = { callback, delay }
+    timers.add(timer)
+    return timer
+  })
+  t.mock.method(globalThis, 'clearTimeout', (timer) => timers.delete(timer))
+  const previousWebSocket = globalThis.WebSocket
+  t.after(() => { globalThis.WebSocket = previousWebSocket })
+  globalThis.WebSocket = class extends EventTarget {
+    constructor() {
+      super()
+      socket = this
+      queueMicrotask(() => this.dispatchEvent(new Event('open')))
+    }
+    send(message) { this.request = JSON.parse(message) }
+    close() { this.dispatchEvent(new Event('close')) }
+  }
+  const renderer = await cdp('ws://synthetic.invalid')
+  t.after(() => renderer.close())
+  for (const [endpoint, method, expected] of [
+    ['/api/docker/containers/synthetic/start', 'POST', 60000],
+    ['/api/docker/containers/synthetic/start', 'GET', 30000],
+    ['/api/docker/containers/synthetic/stop', 'POST', 30000],
+    ['/api/docker/containers/synthetic/restart', 'POST', 30000],
+    ['/api/docker/containers', 'GET', 30000],
+    ['/api/docker/engine/prepare-update', 'POST', 30000],
+  ]) {
+    const pending = rendererRequest(renderer, endpoint, method)
+    const failure = assert.rejects(pending, /Installed desktop debugger timed out: Runtime\.evaluate/)
+    assert.equal(timers.size, 1)
+    const [timer] = timers
+    assert.equal(timer.delay, expected)
+    assert.equal(socket.request.method, 'Runtime.evaluate')
+    assert.equal(socket.request.params.awaitPromise, true)
+    timers.delete(timer)
+    timer.callback()
+    await failure
+  }
+  const pending = rendererRequest(renderer, '/api/docker/containers/synthetic/start', 'POST')
+  socket.dispatchEvent(new MessageEvent('message', {
+    data: JSON.stringify({ id: socket.request.id, result: { result: { value: { status: 200, body: 'synthetic' } } } }),
+  }))
+  assert.deepEqual(await pending, { status: 200, body: 'synthetic' })
+  assert.equal(timers.size, 0)
 })
 
 test('unsuccessful commands retain only a fixed public tool category and numeric exit status', async () => {

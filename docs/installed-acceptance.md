@@ -140,6 +140,9 @@ diagnostics are printed for workflow or cleanup failures after startup.
 Fixed stage labels identify the failing operation, and each original failure
 category is reported before cleanup errors are combined. Raw exception
 messages, arguments and environment values are not printed.
+Renderer-origin container start requests use the existing one-minute
+start-command allowance rather than the debugger's shorter 30-second default.
+Other debugger requests and all production operation deadlines are unchanged.
 
 Unix CI passes the package it just built:
 
