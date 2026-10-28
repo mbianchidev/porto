@@ -209,7 +209,10 @@ boundaries are in [Windows development integration](windows-integration.md).
 The `cross-build` matrix compiles `./cmd/porto` with `CGO_ENABLED=0` in six
 independent jobs, one for each release target (`linux`, `darwin`, and `windows`
 on `amd64` and `arm64`). All targets remain mandatory; a broken platform build
-fails the pull request instead of the release.
+fails the pull request instead of the release. Each job resolves its locked Go
+modules before the crypto import-graph check, so a cold cache's network downloads
+do not consume that check's unchanged two-minute metadata budget. The import
+policy and overall cross-build job limit remain unchanged.
 
 Generic Linux x64 jobs use `ubuntu-latest`, including native containerd and
 KVM-backed Lima acceptance. ARM macOS jobs use `macos-latest`, including the
