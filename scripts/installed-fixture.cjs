@@ -96,7 +96,7 @@ async function systemExecutable(name, env) {
     const directory = windowsSystemDirectory()
     if (name === 'powershell.exe') return approvedTool(path.join(directory, 'WindowsPowerShell', 'v1.0', name), directory)
     if (name === 'taskkill.exe') return approvedTool(path.join(directory, name), directory)
-    if (name !== 'git') throw untrustedCommand()
+    if (name !== 'git' && name !== 'bash') throw untrustedCommand()
     if (!windowsGitRoots) {
       const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', `
 $ErrorActionPreference = 'Stop'
@@ -107,7 +107,7 @@ foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.
       windowsGitRoots = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((folder) => path.join(folder, 'Git'))
     }
     for (const root of windowsGitRoots) {
-      for (const relative of ['bin/git.exe', 'cmd/git.exe']) {
+      for (const relative of name === 'bash' ? ['bin/bash.exe'] : ['bin/git.exe', 'cmd/git.exe']) {
         try { return approvedTool(path.join(root, relative), root) } catch (error) {
           if (!['ENOENT', 'ENOTDIR'].includes(error.code)) throw error
         }

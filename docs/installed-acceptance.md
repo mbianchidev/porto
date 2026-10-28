@@ -85,6 +85,9 @@ harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
 and dependency-provision fixture. Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
+The host-only Windows archive download uses verified Git for Windows Bash
+without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.
+No WSL distribution is needed to prepare the installed Lima guest archive.
 Linux renders the actual desktop through Xvfb. On AppArmor-restricted Linux
 hosts, the real installer also requests the scoped Chromium user-namespace
 permission described in [Linux desktop sandbox setup](installation.md#linux-desktop-sandbox).

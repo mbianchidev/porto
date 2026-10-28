@@ -4,8 +4,9 @@ const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { gzipSync } = require('node:zlib')
+const crypto = require('node:crypto')
 
-const { selectArchive, decompressArchive, dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
+const { selectArchive, decompressArchive, dependencyProvisionOverride, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
 const { sha256 } = require('./verify-runtime-checksum.cjs')
 
 function fixture(t) {
@@ -101,4 +102,39 @@ test('does not overwrite or delete an existing destination', async (t) => {
   fs.writeFileSync(destination, 'Synthetic existing destination')
   await assert.rejects(decompressArchive(source, destination, sha256(source)), { code: 'EEXIST' })
   assert.equal(fs.readFileSync(destination, 'utf8'), 'Synthetic existing destination')
+})
+
+test('Windows archive preparation selects verified Git Bash, never the PATH WSL shim or a user profile', async (t) => {
+  const { source } = fixture(t)
+  const content = Buffer.from('Synthetic native CI guest tools\n')
+  const compressed = gzipSync(content)
+  const expected = crypto.createHash('sha256').update(compressed).digest('hex')
+  const shell = 'C:\\Program Files\\Git\\bin\\bash.exe'
+  const directory = path.join(path.dirname(source), 'prepared')
+  let downloaded = false
+  const expression = await prepareContainerdArchive('arm64', directory, {
+    platform: 'win32',
+    resolveShell: async () => shell,
+    runImpl: (command, args, capture, env) => {
+      if (command === 'limactl') {
+        assert.deepEqual(args, ['info'])
+        assert.equal(capture, true)
+        return JSON.stringify({ defaultTemplate: { containerd: { archives: [{
+          arch: 'aarch64', location: 'https://synthetic.invalid/runtime.gz', digest: `sha256:${expected}`,
+        }] } } })
+      }
+      assert.equal(command, shell)
+      assert.deepEqual(args.slice(0, 2), ['--noprofile', '--norc'])
+      assert.equal(path.basename(args[2]), 'download-file.sh')
+      assert.equal(args[5], expected)
+      assert.equal(env.PATH.split(';')[0], 'C:\\Program Files\\Git\\usr\\bin')
+      fs.writeFileSync(args[4], compressed)
+      downloaded = true
+    },
+  })
+  assert.ok(downloaded)
+  const [archive] = JSON.parse(expression.slice('.containerd.archives = '.length))
+  assert.equal(archive.arch, 'aarch64')
+  assert.deepEqual(fs.readFileSync(archive.location), content)
+  assert.equal(archive.digest, `sha256:${sha256(archive.location)}`)
 })

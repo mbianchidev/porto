@@ -44,9 +44,9 @@ async function decompressArchive(source, destination, expected) {
   }
 }
 
-function run(command, args, capture = false) {
+function run(command, args, capture = false, env = process.env) {
   const result = spawnSync(command, args, {
-    encoding: 'utf8', stdio: ['ignore', capture ? 'pipe' : 2, 2],
+    env, encoding: 'utf8', stdio: ['ignore', capture ? 'pipe' : 2, 2],
     timeout: capture ? 30000 : 360000, killSignal: 'SIGKILL',
   })
   if (result.error) throw new Error(`Unable to run ${command}: ${result.error.message}`, { cause: result.error })
@@ -81,14 +81,29 @@ function dependencyProvisionOverride(date = new Date()) {
   return `.provision += ${JSON.stringify([{ mode: 'dependency', script }])}`
 }
 
-async function prepareContainerdArchive(goarch, directory) {
-  const archive = selectArchive(JSON.parse(run('limactl', ['info'], true)), goarch)
+async function prepareContainerdArchive(goarch, directory, {
+  platform = process.platform,
+  runImpl = run,
+  resolveShell = () => require('./installed-fixture.cjs').systemExecutable('bash', process.env),
+} = {}) {
+  const archive = selectArchive(JSON.parse(runImpl('limactl', ['info'], true)), goarch)
   const destination = path.resolve(directory)
   fs.mkdirSync(destination, { mode: 0o700 })
   const compressed = path.join(destination, 'nerdctl-full.tar.gz')
   const uncompressed = path.join(destination, 'nerdctl-full.tar')
   console.error('Preparing checksum-verified containerd files on the host for software-emulated Lima.')
-  run('bash', [path.join(__dirname, 'download-file.sh'), archive.location, compressed, archive.digest.slice('sha256:'.length)])
+  if (platform === 'win32') {
+    const shell = await resolveShell()
+    const gitRoot = path.win32.dirname(path.win32.dirname(shell))
+    const env = {
+      ...process.env,
+      PATH: [path.win32.join(gitRoot, 'usr', 'bin'), process.env.PATH || process.env.Path || ''].join(';'),
+    }
+    runImpl(shell, ['--noprofile', '--norc', path.join(__dirname, 'download-file.sh'),
+      archive.location, compressed, archive.digest.slice('sha256:'.length)], false, env)
+  } else {
+    runImpl('bash', [path.join(__dirname, 'download-file.sh'), archive.location, compressed, archive.digest.slice('sha256:'.length)])
+  }
   const digest = await decompressArchive(compressed, uncompressed, archive.digest.slice('sha256:'.length))
   fs.unlinkSync(compressed)
   return `.containerd.archives = ${JSON.stringify([{ location: uncompressed, arch: archive.arch, digest }])}`
@@ -111,4 +126,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride }
+module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride, prepareContainerdArchive }

@@ -4,7 +4,7 @@ const fs = require('node:fs')
 const net = require('node:net')
 const path = require('node:path')
 const test = require('node:test')
-const { spawn } = require('node:child_process')
+const { spawn, spawnSync } = require('node:child_process')
 const { EventEmitter, once } = require('node:events')
 const { PassThrough } = require('node:stream')
 
@@ -230,6 +230,26 @@ $executable = '${fields.ExecutablePath}'
       assert.equal(result.stderr, '')
       assert.equal(await identity(123, env, { platform: 'win32', runImpl: async () => result }), JSON.stringify(fields))
     })
+  })
+}
+
+if (process.platform === 'win32') {
+  test('native archive shell uses protected Git Bash rather than WSL or user profiles', async (t) => {
+    const current = fixture(t)
+    const env = environment(current)
+    const shell = await systemExecutable('bash', env)
+    const root = path.dirname(path.dirname(shell))
+    assert.equal(path.basename(root).toLowerCase(), 'git')
+    env.PATH = [path.join(root, 'usr', 'bin'), env.PATH].join(path.delimiter)
+    const script = path.join(current.home, 'native shell probe é.sh')
+    write(script, 'set -eu\n[ -n "$(dirname "$0")" ]\nprintf native-archive-shell-ready\n')
+    const result = spawnSync(shell, ['--noprofile', '--norc', script], {
+      env, cwd: current.home, encoding: 'utf8', windowsHide: true, shell: false, timeout: 10000,
+    })
+    assert.ifError(result.error)
+    assert.equal(result.status, 0, 'The protected native download shell must work under the isolated environment')
+    assert.equal(result.stdout, 'native-archive-shell-ready')
+    assert.equal(result.stderr, '')
   })
 }
 
