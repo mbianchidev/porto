@@ -454,12 +454,25 @@ if (process.platform !== 'win32') {
   })
 }
 
+test('unsuccessful commands retain only a fixed public tool category and numeric exit status', async () => {
+  const secret = 'synthetic-argument-must-not-be-logged'
+  await assert.rejects(run(process.execPath, ['-e', 'process.exit(42)', secret]), (error) => {
+    assert.equal(error.code, 'PORTO_COMMAND_FAILED')
+    assert.equal(error.commandKind, 'node')
+    assert.equal(error.status, 42)
+    const message = failureDiagnostic(error)
+    assert.match(message, /Node acceptance helper.*42/)
+    assert.ok(!message.includes(secret))
+    return true
+  })
+})
+
 test('public failure diagnostics use fixed actionable categories without serializing errors or credentials', () => {
   const secret = 'synthetic-credential-must-not-be-logged'
   for (const code of [
     'PORTO_COMMAND_TIMEOUT', 'PORTO_COMMAND_OUTPUT_LIMIT', 'PORTO_COMMAND_IO',
     'PORTO_COMMAND_SHELL_FORBIDDEN', 'PORTO_PROCESS_INSPECTION_UNAVAILABLE',
-    'PORTO_COMMAND_UNTRUSTED_EXECUTABLE',
+    'PORTO_COMMAND_UNTRUSTED_EXECUTABLE', 'PORTO_COMMAND_FAILED',
     'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ERR_ASSERTION', secret, undefined,
   ]) {
     const error = Object.assign(new Error(`https://user:${secret}@synthetic.invalid/?token=${secret}`), {

@@ -550,6 +550,18 @@ function failureDiagnostic(error) {
   let code
   try { code = error?.code } catch { return fallback }
   switch (code) {
+    case 'PORTO_COMMAND_FAILED': {
+      let kind
+      let status
+      try { kind = error.commandKind; status = error.status } catch { return fallback }
+      const tool = new Map([
+        ['node', 'Node acceptance helper'], ['qemu', 'Selected QEMU executable'],
+        ['porto', 'Installed Porto executable'], ['lima', 'Installed Lima executable'],
+        ['powershell', 'Native PowerShell inspector'], ['shell', 'Installer shell'],
+      ]).get(kind) || 'An acceptance tool'
+      const exit = Number.isSafeInteger(status) ? `exit status ${status}` : 'no verifiable numeric exit status'
+      return `${tool} failed with ${exit}. Check the last reported acceptance stage and the isolated runner prerequisites; command arguments and output are omitted to protect credentials.`
+    }
     case 'PORTO_COMMAND_TIMEOUT':
       return 'An acceptance command timed out. Check guest download connectivity and backend readiness, verify owned-process cleanup, then retry the disposable CI fixture.'
     case 'PORTO_COMMAND_OUTPUT_LIMIT':
@@ -782,7 +794,15 @@ async function captureCommand(child, file, args, options, terminateImpl) {
       stderr: Buffer.concat(output.stderr.chunks).toString('utf8'),
     }
     if (result.status !== 0 && !allowFailure) {
-      throw new Error(`${file} ${args.join(' ')} failed (${result.signal || result.status}):\n${result.stdout}\n${result.stderr}`)
+      const commandKind = file === process.execPath ? 'node' : new Map([
+        ['qemu-system-x86_64', 'qemu'], ['qemu-system-x86_64.exe', 'qemu'],
+        ['qemu-system-aarch64', 'qemu'], ['qemu-system-aarch64.exe', 'qemu'],
+        ['porto', 'porto'], ['porto.exe', 'porto'], ['limactl', 'lima'], ['limactl.exe', 'lima'],
+        ['powershell.exe', 'powershell'], ['sh', 'shell'],
+      ]).get(path.basename(file).toLowerCase()) || 'tool'
+      throw Object.assign(new Error(`${file} ${args.join(' ')} failed (${result.signal || result.status}):\n${result.stdout}\n${result.stderr}`), {
+        code: 'PORTO_COMMAND_FAILED', commandKind, status: result.status,
+      })
     }
     return result
   } finally {

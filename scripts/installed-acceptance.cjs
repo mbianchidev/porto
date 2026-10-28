@@ -105,6 +105,7 @@ async function configureLima(fixture, env) {
   const qemu = process.platform === 'win32'
     ? path.join(layout(fixture.installRoot).runtime, 'qemu', `${name}.exe`)
     : await systemExecutable(name, env)
+  console.log('Installed acceptance: verifying the selected QEMU executable')
   await run(qemu, ['--version'], { env })
   if (fixture.target.startsWith('windows/')) {
     assert.ok(qemu.startsWith(path.join(layout(fixture.installRoot).runtime, 'qemu') + path.sep),
@@ -115,6 +116,7 @@ async function configureLima(fixture, env) {
     ? `${quotedQemu} -machine virt,accel=tcg -cpu neoverse-n1`
     : `${quotedQemu} -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb`
   if (fixture.snapshots) return
+  console.log('Installed acceptance: preparing checksum-verified guest tools')
   const archive = await run(process.execPath, [
     path.join(__dirname, 'lima-containerd-archive.cjs'), arch, path.join(fixture.directory, 'containerd-bootstrap'),
   ], { env, timeout: 8 * 60 * 1000 })
@@ -511,13 +513,17 @@ async function restored(fixture, { replaced = false } = {}) {
 }
 
 async function acceptance(fixture, reopen = false) {
+  console.log('Installed acceptance: verifying native package and preservation baseline')
   if (reopen) await restored(fixture, { replaced: true })
   else assert.equal(fixture.snapshots, undefined, 'Initial acceptance must begin with fresh Porto state')
   const installed = inspectPackage(fixture.installRoot, fixture.target)
   const env = environment(fixture, installed)
   fs.mkdirSync(env.XDG_RUNTIME_DIR, { mode: 0o700, recursive: true })
+  console.log('Installed acceptance: checking isolated endpoints and process ownership')
   await preflight(fixture, env)
+  console.log('Installed acceptance: configuring the supported guest backend')
   await configureLima(fixture, env)
+  console.log('Installed acceptance: starting the actual installed desktop')
   const session = await startDesktop(fixture, installed, env)
   const cliEnv = { ...env, PATH: path.join(installed.runtime, 'bin'), BUILDKIT_HOST: '' }
   const workspace = path.join(fixture.home, 'Synthetic Compose 项目')
