@@ -257,7 +257,9 @@ install_linux_sandbox_profile() {
   apparmor_parser -Q "$profile_temporary"
   profile_operation="-a"
   if [ -e "$profile_path" ] || [ -L "$profile_path" ]; then
-    if [ -L "$profile_path" ] || [ ! -f "$profile_path" ] || ! cmp -s "$profile_temporary" "$profile_path"; then
+    if [ -L "$profile_path" ] || [ ! -f "$profile_path" ] ||
+      [ "$(stat -c '%u:%a' -- "$profile_path")" != "0:644" ] ||
+      ! cmp -s "$profile_temporary" "$profile_path"; then
       echo "Refusing to overwrite an existing administrator AppArmor policy: $profile_path" >&2
       return 1
     fi

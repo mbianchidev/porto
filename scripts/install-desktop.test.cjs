@@ -226,7 +226,7 @@ test('unrestricted hosts and explicit prerequisite opt-outs do not change AppArm
 })
 
 function sandboxPolicy(t, { executablePath = '/synthetic/Porto installed 路径/Porto', uid = '1001',
-  existing = '', parserFailure = '', repeat = false } = {}) {
+  existing = '', parserFailure = '', repeat = false, ownership = '0:644' } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-sandbox-policy-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const bin = path.join(root, 'bin')
@@ -239,6 +239,7 @@ function sandboxPolicy(t, { executablePath = '/synthetic/Porto installed 路径/
     fs.symlinkSync(result.stdout.trim(), path.join(bin, name))
   }
   executable(path.join(bin, 'sha256sum'), 'exec /usr/bin/shasum -a 256 "$@"')
+  executable(path.join(bin, 'stat'), 'printf "%s\\n" "$POLICY_OWNERSHIP"')
   executable(path.join(bin, 'apparmor_parser'), `
 printf '%s\\n' "$1" >> "$POLICY_ROOT/parser.log"
 if [ "$POLICY_FAILURE" = "$1" ]; then echo 'synthetic AppArmor parser failure' >&2; exit 42; fi`)
@@ -256,7 +257,7 @@ if [ "$POLICY_FAILURE" = "$1" ]; then echo 'synthetic AppArmor parser failure' >
   const execute = () => spawnSync('/bin/sh', ['-c', `set -eu\n${body}\ninstall_linux_sandbox_profile "$1" "$2" "$3"`,
     'sandbox-policy-test', profiles, executablePath, uid], {
     encoding: 'utf8', timeout: 5000,
-    env: { PATH: bin, POLICY_ROOT: root, POLICY_FAILURE: parserFailure },
+    env: { PATH: bin, POLICY_ROOT: root, POLICY_FAILURE: parserFailure, POLICY_OWNERSHIP: ownership },
   })
   const result = execute()
   assert.ifError(result.error)
@@ -306,5 +307,15 @@ test('an AppArmor parser failure removes only a newly created policy and retains
       assert.equal(fs.statSync(result.profile).ino, result.inode)
     } else assert.deepEqual(fs.readdirSync(result.profiles), [])
     assert.equal(fs.readFileSync(result.unrelated, 'utf8'), 'Synthetic unrelated administrator policy\n')
+  }
+})
+
+test('an existing matching sandbox policy must remain root-owned and non-writable by other accounts', (t) => {
+  for (const ownership of ['1001:644', '0:664', '0:666']) {
+    const result = sandboxPolicy(t, { repeat: true, ownership })
+    assert.equal(result.status, 0, result.stderr)
+    assert.notEqual(result.repeated.status, 0, `unsafe policy metadata accepted: ${ownership}`)
+    assert.equal(fs.statSync(result.profile).ino, result.inode)
+    assert.equal(fs.readFileSync(path.join(result.root, 'parser.log'), 'utf8'), '-Q\n-a\n-Q\n')
   }
 })
