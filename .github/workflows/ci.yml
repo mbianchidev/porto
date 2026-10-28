@@ -755,7 +755,13 @@ jobs:
             }
           }
           $installRoot = Join-Path $fixture 'Porto installé 路径'
-          $desktopShortcut = Join-Path ([Environment]::GetFolderPath('Desktop')) 'Porto.lnk'
+          $desktopDirectory = [Environment]::GetFolderPath(
+            [Environment+SpecialFolder]::DesktopDirectory,
+            [Environment+SpecialFolderOption]::DoNotVerify)
+          if ([string]::IsNullOrWhiteSpace($desktopDirectory)) {
+            throw 'The native runner did not expose its Desktop known-folder path.'
+          }
+          $desktopShortcut = Join-Path $desktopDirectory 'Porto.lnk'
           $desktopShortcutExisted = Test-Path $desktopShortcut
           $process = Start-Process $installer.FullName -ArgumentList "/S /D=$installRoot" -Wait -PassThru
           if ($process.ExitCode -ne 0) {
