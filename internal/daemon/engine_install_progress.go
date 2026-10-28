@@ -10,13 +10,17 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/diagnostics"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 )
 
-const engineInstallProgressMediaType = "application/x-ndjson"
+const (
+	engineInstallProgressMediaType = "application/x-ndjson"
+	engineInstallHeartbeatInterval = 10 * time.Second
+)
 
 var (
 	engineInstallDiagnosticURL    = regexp.MustCompile(`(?i)\b[a-z][a-z0-9+.-]*://[^\s"'<>]+`)
@@ -47,7 +51,7 @@ func requestsEngineInstallProgress(r *http.Request) bool {
 	return false
 }
 
-func (s *Server) streamEngineInstallProgress(w http.ResponseWriter, r *http.Request) {
+func (s *Server) streamEngineInstallProgress(w http.ResponseWriter, r *http.Request, heartbeatInterval time.Duration) {
 	ctx, cancel := context.WithCancelCause(r.Context())
 	defer cancel(nil)
 	if s.runtimeContext != nil {
@@ -67,6 +71,7 @@ func (s *Server) streamEngineInstallProgress(w http.ResponseWriter, r *http.Requ
 	var transportError, installError error
 	var progress portodocker.EngineInstallProgress
 	var eventType string
+	var streamMu sync.Mutex
 	defer func() {
 		if installError != nil {
 			logEngineInstallFailure(installError)
@@ -81,8 +86,11 @@ func (s *Server) streamEngineInstallProgress(w http.ResponseWriter, r *http.Requ
 				"error", safeEngineInstallDiagnostic(cause))
 		}
 	}()
-	send := func(event engineInstallEvent) error {
+	sendLocked := func(event engineInstallEvent) error {
 		eventType = event.Type
+		if event.Progress != nil {
+			progress = *event.Progress
+		}
 		err := context.Cause(ctx)
 		if err == nil {
 			err = controller.SetWriteDeadline(time.Now().Add(15 * time.Second))
@@ -102,10 +110,43 @@ func (s *Server) streamEngineInstallProgress(w http.ResponseWriter, r *http.Requ
 		}
 		return err
 	}
+	send := func(event engineInstallEvent) error {
+		streamMu.Lock()
+		defer streamMu.Unlock()
+		return sendLocked(event)
+	}
+	heartbeatStop := make(chan struct{})
+	heartbeatDone := make(chan struct{})
+	ticker := time.NewTicker(heartbeatInterval)
+	go func() {
+		defer close(heartbeatDone)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-heartbeatStop:
+				return
+			case <-ticker.C:
+				streamMu.Lock()
+				if progress.Stage != "" {
+					current := progress
+					_ = sendLocked(engineInstallEvent{Type: "progress", Progress: &current})
+				}
+				streamMu.Unlock()
+			}
+		}
+	}()
+	var stopOnce sync.Once
+	stopHeartbeat := func() {
+		stopOnce.Do(func() { close(heartbeatStop) })
+		<-heartbeatDone
+	}
+	defer stopHeartbeat()
 	status, err := s.docker.InstallEngineWithProgress(ctx, func(update portodocker.EngineInstallProgress) error {
-		progress = update
 		return send(engineInstallEvent{Type: "progress", Progress: &update})
 	})
+	stopHeartbeat()
 	installError = err
 	if transportError != nil || ctx.Err() != nil {
 		return

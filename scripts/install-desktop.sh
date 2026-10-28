@@ -160,7 +160,7 @@ install_linux_prerequisites() {
 
   echo "Installing QEMU for Porto's managed container engine and virtual machines."
   if command -v apt-get >/dev/null 2>&1; then
-    if run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils; then
+    if run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils ipxe-qemu; then
       verify_linux_qemu
       return
     fi

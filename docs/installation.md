@@ -71,6 +71,10 @@ verify both prerequisites. A failed package installation, missing executable or
 broken executable stops setup before stopping daemons or replacing an existing
 Porto installation. QEMU is required for the managed Linux container engine,
 not only standalone VMs.
+Minimal Debian/Ubuntu QEMU setups also need the `ipxe-qemu` option-ROM files,
+including `efi-virtio.rom`; an executable that prints its version is not a
+replacement for those firmware resources. The installer's APT setup includes
+that package explicitly.
 
 Set `PORTO_SKIP_PREREQS=1` only when intentionally managing the runtime and
 desktop sandbox prerequisites yourself, for example when using an existing
@@ -95,6 +99,9 @@ DNS/proxy/trust failures, missing or broken local executables, ownership
 conflicts and unavailable backends have distinct retry guidance. Closing the
 preparation window cancels provisioning; existing engines and data are retained,
 and only a newly created failed guest is eligible for cleanup.
+While a boot or setup command is quiet, the progress stream repeats its last
+actual stage to keep idle transports alive. This does not invent a new stage,
+mark setup complete, or extend the existing installation deadline.
 
 See [installed-package acceptance](installed-acceptance.md) for the real
 clean-install, upgrade and removal gates, including the distinction between

@@ -185,7 +185,7 @@ func (s *Server) installDockerEngine(w http.ResponseWriter, r *http.Request) {
 	}
 	defer s.endRuntimeOperation()
 	if requestsEngineInstallProgress(r) {
-		s.streamEngineInstallProgress(w, r)
+		s.streamEngineInstallProgress(w, r, engineInstallHeartbeatInterval)
 		return
 	}
 	status, err := s.docker.InstallEngine(r.Context())

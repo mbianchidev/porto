@@ -284,7 +284,7 @@ jobs:
           esac
           sudo apt-get update -qq
           sudo apt-get install -y --no-install-recommends \
-            "$qemu_package" "$firmware_package" qemu-utils openssh-client \
+            "$qemu_package" "$firmware_package" ipxe-qemu qemu-utils openssh-client \
             xvfb xauth libgbm1 libgtk-3-0t64 libnss3 libasound2t64
 
       - name: Build checksum-pinned runtime once
