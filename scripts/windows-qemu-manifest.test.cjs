@@ -1,7 +1,8 @@
 const assert = require('node:assert/strict')
 const test = require('node:test')
+const { spawn } = require('node:child_process')
 
-const { addUtf8Manifest, loadPE, manifest } = require('./windows-qemu-manifest.cjs')
+const { addUtf8Manifest, loadPE, manifest, probeFirmware } = require('./windows-qemu-manifest.cjs')
 
 async function fixture(architecture, customManifest) {
   const { NtExecutable, NtExecutableResource } = await loadPE()
@@ -79,4 +80,67 @@ test('invalid, 32-bit and mismatched native executables never receive a manifest
   await assert.rejects(addUtf8Manifest(Buffer.from(NtExecutable.createEmpty(true, false).generate()), 'amd64'),
     /native 64-bit executable/)
   await assert.rejects(addUtf8Manifest(await fixture('amd64'), 'unknown'), /requires amd64 or arm64/)
+})
+
+function qmpPeer(mode) {
+  let child
+  const script = `
+    const readline = require('node:readline')
+    const send = (message) => process.stdout.write(JSON.stringify(message) + '\\n')
+    const lines = readline.createInterface({ input: process.stdin })
+    const [mode, firmware] = process.argv.slice(1)
+    let expected = 'qmp_capabilities'
+    send({ QMP: { version: { qemu: { major: 11 } } } })
+    lines.on('line', (line) => {
+      const request = JSON.parse(line)
+      if (mode === 'hang') return
+      if (request.execute !== expected) process.exit(43)
+      if (expected === 'qmp_capabilities') {
+        expected = 'query-block'
+        send({ id: request.id, return: {} })
+      } else if (expected === 'query-block') {
+        expected = 'quit'
+        send({ id: request.id, return: [{
+          device: 'porto-unicode-firmware',
+          inserted: { file: mode === 'wrong-file' ? firmware + '.unrelated' : firmware },
+        }] })
+      } else {
+        process.stdout.write(JSON.stringify({ id: request.id, return: {} }) + '\\n', () => process.exit(0))
+      }
+    })
+    process.stdin.on('end', () => process.exit(42))
+  `
+  return {
+    spawnImpl(_program, args, options) {
+      child = spawn(process.execPath, ['-e', script, mode, args[0]], options)
+      return child
+    },
+    get child() { return child },
+  }
+}
+
+test('native QMP probe keeps stdin open through negotiation, firmware verification and clean exit', async () => {
+  const peer = qmpPeer('success')
+  const firmware = 'Synthetic \u00e9 \u8def\u5f84 firmware.fd'
+  await probeFirmware('unused', [firmware], firmware, { spawnImpl: peer.spawnImpl })
+  assert.equal(peer.child.exitCode, 0)
+  assert.equal(peer.child.stdout.destroyed, true)
+})
+
+test('native QMP probe rejects unrelated firmware and reaps its owned child', async () => {
+  const peer = qmpPeer('wrong-file')
+  await assert.rejects(probeFirmware('unused', ['synthetic.fd'], 'synthetic.fd', { spawnImpl: peer.spawnImpl }),
+    /did not open the actual Unicode-path firmware/)
+  assert.ok(peer.child.exitCode !== null || peer.child.signalCode !== null)
+})
+
+test('an unresponsive QMP peer fails within its deadline and is reaped', async () => {
+  const peer = qmpPeer('hang')
+  const started = Date.now()
+  await assert.rejects(probeFirmware('unused', ['synthetic.fd'], 'synthetic.fd', {
+    spawnImpl: peer.spawnImpl, timeout: 100,
+  }), /timed out/)
+  assert.ok(Date.now() - started >= 100)
+  assert.ok(Date.now() - started < 3000)
+  assert.ok(peer.child.exitCode !== null || peer.child.signalCode !== null)
 })
