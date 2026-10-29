@@ -11,7 +11,7 @@ const { validateToolchainLayout } = require('./docker-toolchain-smoke.cjs')
 const SOURCE_ROOT = fs.realpathSync(path.join(__dirname, '..'))
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const PORTS = [37623, 37680, 37681]
-const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1', syft: '1.55.0' }
+const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1', syft: '1.55.0', helm: '4.3.1' }
 
 function within(root, candidate) {
   const relative = path.relative(root, candidate)

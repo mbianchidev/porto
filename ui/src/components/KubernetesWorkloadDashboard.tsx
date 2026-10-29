@@ -8,10 +8,11 @@ import { Inspector } from './Inspector'
 import { InventoryList } from './InventoryList'
 import type { InventoryColumn } from './InventoryList'
 import { KubernetesContextSelect } from './KubernetesContextSelect'
+import { KubernetesAdminLink } from './KubernetesAdminLink'
 import { StatusLamp } from './StatusLamp'
 import { RuntimeGate } from './SectionChrome'
 
-type KubernetesWorkloadDashboardProps<T extends { namespace: string }> = {
+type KubernetesWorkloadDashboardProps<T extends { namespace: string; name: string }> = {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
@@ -34,7 +35,7 @@ type KubernetesWorkloadDashboardProps<T extends { namespace: string }> = {
   renderInspector: (item: T) => ReactNode
 }
 
-export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
+export function KubernetesWorkloadDashboard<T extends { namespace: string; name: string }>({
   context,
   contexts,
   onContextChange,
@@ -144,6 +145,7 @@ export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
             onClose={closeInspector}
           >
             {renderInspector(selected)}
+            <section className="drawerPanel"><KubernetesAdminLink target={{ context, namespace: selected.namespace, group: endpoint === 'deployments' ? 'apps' : 'batch', version: 'v1', resource: endpoint, name: selected.name }} /></section>
           </Inspector>
         )}
       </div>

@@ -20,6 +20,7 @@ import (
 	"github.com/mbianchidev/porto/internal/datafiles"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/mbianchidev/porto/internal/operations"
 	"github.com/mbianchidev/porto/internal/vm"
 )
 
@@ -1102,6 +1103,16 @@ func (s *Server) beginKubernetesClusterOperation(
 	action string,
 	relatedNames ...string,
 ) (func(), error) {
+	shared, err := s.reserveKubernetesAdministration(ctx, append([]string{clusterName}, relatedNames...)...)
+	if err != nil {
+		return nil, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			shared()
+		}
+	}()
 	if s.autoscaling != nil {
 		switch action {
 		case "start", "stop", "upgrade", "upgrade-recover", "rename", "delete":
@@ -1150,8 +1161,10 @@ func (s *Server) beginKubernetesClusterOperation(
 		}
 	}
 	var once sync.Once
+	retained = true
 	return func() {
 		once.Do(func() {
+			defer shared()
 			releaseKubernetesOperationGates(gates)
 			s.kubeOperationMu.Lock()
 			for _, operationKey := range operationKeys {
@@ -1166,6 +1179,19 @@ func (s *Server) tryBeginKubernetesClusterReconcile(
 	ctx context.Context,
 	clusterName string,
 ) (func(), bool, error) {
+	shared, err := s.reserveKubernetesAdministration(ctx, clusterName)
+	if errors.Is(err, operations.ErrBusy) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, err
+	}
+	retained := false
+	defer func() {
+		if !retained {
+			shared()
+		}
+	}()
 	operationKeys, err := s.kubernetesClusterOperationKeys(clusterName)
 	if err != nil {
 		return nil, false, err
@@ -1205,7 +1231,9 @@ func (s *Server) tryBeginKubernetesClusterReconcile(
 		releaseKubernetesOperationGates(gates)
 		return nil, false, nil
 	}
+	retained = true
 	return func() {
+		defer shared()
 		releaseKubernetesOperationGates(gates)
 	}, true, nil
 }
@@ -1438,7 +1466,7 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict):
+	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict), errors.Is(err, operations.ErrBusy):
 		status = http.StatusConflict
 	case errors.Is(err, datafiles.ErrInvalid), errors.Is(err, datafiles.ErrLimit):
 		status = http.StatusBadRequest

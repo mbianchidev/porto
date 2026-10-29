@@ -2304,6 +2304,7 @@ button:disabled {
 .inspectorForm input[type="text"],
 .inspectorForm input:not([type]),
 .inspectorForm input[type="password"],
+.inspectorForm input[type="url"],
 .inspectorForm input[type="number"],
 .inspectorForm textarea,
 .inspectorForm select {

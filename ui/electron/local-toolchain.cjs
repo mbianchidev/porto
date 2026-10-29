@@ -7,7 +7,7 @@ function localToolchain(runtimeRoot, versions, {
 } = {}) {
   const suffix = platform === 'win32' ? '.exe' : ''
   const commands = []
-  for (const name of ['syft', 'grype']) {
+  for (const name of ['syft', 'grype', 'helm']) {
     const expected = versions.get(name)
     if (!expected) throw new Error(`Bundled local tool ${name} has no version metadata`)
     const executable = path.join(runtimeRoot, 'bin', `${name}${suffix}`)
@@ -18,7 +18,7 @@ function localToolchain(runtimeRoot, versions, {
     if (!existsImpl(executable) || !existsImpl(path.join(runtimeRoot, 'licenses', `${name}.txt`))) {
       throw new Error(`Bundled local tool ${name} is missing its executable or license`)
     }
-    commands.push([name, executable, ['version', '-o', 'json'], expected])
+    commands.push([name, executable, name === 'helm' ? ['version', '--template', '{{.Version}}'] : ['version', '-o', 'json'], expected])
   }
   return commands
 }

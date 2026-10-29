@@ -64,6 +64,7 @@ func inspect(
 		{name: "dive", manifestName: "dive", binary: "dive", command: "dive", args: []string{"--version"}},
 		{name: "syft", manifestName: "syft", binary: "syft", command: "syft", args: []string{"version", "-o", "json"}},
 		{name: "grype", manifestName: "grype", binary: "grype", command: "grype", args: []string{"version", "-o", "json"}},
+		{name: "helm", manifestName: "helm", binary: "helm", command: "helm", args: []string{"version", "--template", "{{.Version}}"}},
 	}
 	statuses := make([]Status, 0, len(components))
 	for _, component := range components {

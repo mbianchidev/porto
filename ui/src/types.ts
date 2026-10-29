@@ -837,6 +837,8 @@ export type RouteID =
   | 'docker-storage'
   | 'migration'
   | 'kubernetes'
+  | 'kubernetes-admin'
+  | 'helm'
   | 'deployments'
   | 'pods'
   | 'services'

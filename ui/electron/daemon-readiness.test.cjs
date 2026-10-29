@@ -893,7 +893,7 @@ test('validates bundled Docker plugins from paths with spaces and non-ASCII char
     path.join(runtimeRoot, 'VERSIONS'),
     path.join(runtimeRoot, 'bin', 'docker'),
     path.join(runtimeRoot, 'bin', 'dive'),
-    ...['syft', 'grype'].flatMap((name) => [path.join(runtimeRoot, 'bin', name), path.join(runtimeRoot, 'licenses', `${name}.txt`)]),
+    ...['syft', 'grype', 'helm'].flatMap((name) => [path.join(runtimeRoot, 'bin', name), path.join(runtimeRoot, 'licenses', `${name}.txt`)]),
     path.join(runtimeRoot, 'docker', 'cli-plugins', 'docker-compose'),
     path.join(runtimeRoot, 'docker', 'cli-plugins', 'docker-buildx'),
   ])
@@ -910,6 +910,7 @@ test('validates bundled Docker plugins from paths with spaces and non-ASCII char
       'dive v0.13.1 (asset)',
       'syft v1.55.0 (asset)',
       'grype v0.121.0 (asset)',
+      'helm v4.3.1 (asset)',
     ].join('\n'),
     execFileImpl: async (file, args, options) => {
       calls.push({ file, args, options })
@@ -917,6 +918,7 @@ test('validates bundled Docker plugins from paths with spaces and non-ASCII char
       if (file.endsWith('dive')) return { stdout: 'dive 0.13.1', stderr: '' }
       if (file.endsWith('syft')) return { stdout: '{"version":"1.55.0"}', stderr: '' }
       if (file.endsWith('grype')) return { stdout: '{"version":"0.121.0"}', stderr: '' }
+      if (file.endsWith('helm')) return { stdout: 'v4.3.1', stderr: '' }
       if (command === '--version') return { stdout: 'Docker version 29.7.2', stderr: '' }
       if (command === 'compose version --short') return { stdout: '5.5.1', stderr: '' }
       if (command === 'buildx version') return { stdout: 'github.com/docker/buildx v0.37.1', stderr: '' }
@@ -925,7 +927,7 @@ test('validates bundled Docker plugins from paths with spaces and non-ASCII char
   })
 
   assert.equal(status.supported, true)
-  assert.equal(calls.length, 6)
+  assert.equal(calls.length, 7)
   assert.equal(calls[0].file, path.join(runtimeRoot, 'bin', 'docker'))
   assert.equal(calls[0].options.env.PATH, '/clean/path')
 })
@@ -956,18 +958,20 @@ test('validates the source-built Windows ARM64 Docker toolchain', async () => {
       'dive v0.13.1 (asset)',
       'syft v1.55.0 (asset)',
       'grype not available for windows/arm64',
+      'helm v4.3.1 (asset)',
     ].join('\n'),
     execFileImpl: async (file, args) => {
       commands.push(args.join(' '))
       if (file.toLowerCase().endsWith('dive.exe')) return { stdout: 'dive 0.13.1', stderr: '' }
       if (file.toLowerCase().endsWith('syft.exe')) return { stdout: '{"version":"1.55.0"}', stderr: '' }
+      if (file.toLowerCase().endsWith('helm.exe')) return { stdout: 'v4.3.1', stderr: '' }
       if (args[0] === '--version') return { stdout: 'Docker version 29.7.2', stderr: '' }
       if (args[0] === 'compose') return { stdout: '5.5.1', stderr: '' }
       return { stdout: 'github.com/docker/buildx v0.37.1', stderr: '' }
     },
   })
   assert.equal(status.supported, true)
-  assert.deepEqual(commands, ['--version', 'compose version --short', 'buildx version', '--version', 'version -o json'])
+  assert.deepEqual(commands, ['--version', 'compose version --short', 'buildx version', '--version', 'version -o json', 'version --template {{.Version}}'])
 })
 
 test('resolves the packaged dashboard beside the bundled daemon', () => {

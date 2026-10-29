@@ -35,7 +35,7 @@ function writeLicenses(root) {
 
 function writeAnalysisTools(root, platform) {
   const suffix = platform === 'win32' ? '.exe' : ''
-  for (const [tool, version] of [['syft', '1.55.0'], ['grype', '0.121.0']]) {
+  for (const [tool, version] of [['syft', '1.55.0'], ['grype', '0.121.0'], ['helm', '4.3.1']]) {
     fs.mkdirSync(path.join(root, 'bin'), { recursive: true })
     fs.writeFileSync(path.join(root, 'bin', tool + suffix), 'synthetic', { mode: 0o700 })
     fs.writeFileSync(path.join(root, 'licenses', `${tool}.txt`), 'license')
@@ -86,10 +86,10 @@ test('requires analysis provenance and refuses an x64 Grype fallback on Windows 
   const root = temporaryRuntime(t)
   assert.throws(() => localToolchain(root, new Map()), /no version metadata/)
   writeAnalysisTools(root, 'win32')
-  const versions = new Map([['syft', 'v1.55.0'], ['grype', 'not available for windows/arm64']])
+  const versions = new Map([['syft', 'v1.55.0'], ['grype', 'not available for windows/arm64'], ['helm', 'v4.3.1']])
   assert.throws(() => localToolchain(root, versions, { platform: 'win32' }), /unexpectedly contains/)
   fs.unlinkSync(path.join(root, 'bin', 'grype.exe'))
-  assert.equal(localToolchain(root, versions, { platform: 'win32' }).length, 1)
+  assert.equal(localToolchain(root, versions, { platform: 'win32' }).length, 2)
 })
 
 test('WSL tools require native Linux ELF artifacts for each selected architecture', (t) => {

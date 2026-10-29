@@ -5,6 +5,7 @@ import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
+import { KubernetesAdminLink } from '../components/KubernetesAdminLink'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
 import type { KubernetesContext, KubernetesSecret } from '../types'
@@ -107,7 +108,8 @@ export function Secrets({
               </dl>
               <h3>Data keys</h3>
               <p className="hintLine">{selected.keys.join(', ') || 'No data keys are defined.'}</p>
-              <p className="hintLine">Secret values are never returned by Porto.</p>
+              <p className="hintLine">This inventory remains metadata-only. Explicit authorized reveal/edit is available through native resource administration; values are never included in cached previews or Activity.</p>
+              <KubernetesAdminLink target={{ context, namespace: selected.namespace, group: '', version: 'v1', resource: 'secrets', name: selected.name }} />
             </section>
           </Inspector>
         )}

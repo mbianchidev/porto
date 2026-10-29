@@ -8,6 +8,7 @@ import { ActionButton } from '../components/ActionButton'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
+import { KubernetesAdminLink } from '../components/KubernetesAdminLink'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
 import type { KubernetesConfigMap, KubernetesConfigMapDetail, KubernetesContext } from '../types'
@@ -152,6 +153,7 @@ export function ConfigMaps({
 
         {ready && selected && (
           <Inspector title={selected.name} subtitle={`${selected.namespace} · ConfigMap`} onClose={() => setSelectedKey(null)}>
+            <section className="drawerPanel"><KubernetesAdminLink target={{ context, namespace: selected.namespace, group: '', version: 'v1', resource: 'configmaps', name: selected.name }} /></section>
             <section className="drawerPanel">
               <div className="drawerPanelHeading">
                 <h3>Config map detail</h3>

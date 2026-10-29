@@ -206,6 +206,7 @@ fi
 mv "$temporary/dive/dive${binary_suffix}" "$destination/bin/dive${binary_suffix}"
 cp "$temporary/dive/LICENSE" "$destination/licenses/dive.txt"
 bash "$script_directory/bundle-image-analysis.sh" "$goos" "$goarch" "$destination"
+bash "$script_directory/bundle-helm.sh" "$goos" "$goarch" "$destination"
 
 kind_bundled=false
 if [ "$goos/$goarch" != "windows/arm64" ]; then
@@ -469,6 +470,7 @@ porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, co
 EOF
 
 cat "$destination/licenses/image-analysis-VERSIONS.txt" >> "$destination/VERSIONS"
+cat "$destination/licenses/helm-VERSIONS.txt" >> "$destination/VERSIONS"
 
 if [ "$goos" != "windows" ]; then
   cat "$destination/licenses/mutagen-build.txt" >> "$destination/VERSIONS"

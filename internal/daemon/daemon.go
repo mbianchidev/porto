@@ -39,6 +39,7 @@ import (
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/imageanalysis"
 	"github.com/mbianchidev/porto/internal/killswitch"
+	"github.com/mbianchidev/porto/internal/kubeadmin"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/nativefiles"
 	"github.com/mbianchidev/porto/internal/networking"
@@ -123,6 +124,7 @@ type Server struct {
 	runtimeClosing     bool
 	runtimeActive      int
 	kubernetes         *kubernetes.Manager
+	kubeAdmin          *kubeadmin.Manager
 	clusters           *kubernetes.ClusterProvisioner
 	autoscaling        kubernetesAutoscalingService
 	kubeconfigErr      error
@@ -249,6 +251,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 	server.imageAnalysis = imageanalysis.New(filepath.Join(syncRoot, "image-analysis"), dockerManager, nil)
 	server.operations = operations.New(filepath.Join(syncRoot, "operations"))
 	server.delivery = delivery.New(filepath.Join(syncRoot, "delivery"), st, deliveryBackend{server}, server.operations, nil, nil)
+	server.kubeAdmin = kubeadmin.New(filepath.Join(syncRoot, "kubernetes-administration"), server.kubernetes, server.operations, nil, nil)
 	if integration, ok := server.compose.(*compose.Integration); ok {
 		integration.SetDefinitionResolver(server.delivery.DefinitionPath)
 	}
@@ -784,6 +787,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	s.runtimeRoutes(mux)
 	s.imageAnalysisRoutes(mux)
 	s.deliveryRoutes(mux)
+	s.kubernetesAdminRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
 }
 

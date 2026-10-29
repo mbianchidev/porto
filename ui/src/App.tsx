@@ -46,13 +46,15 @@ const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
-  'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
+  'kubernetes', 'kubernetes-admin', 'helm', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
 
 const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
 const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
 const Applications = lazy(async () => ({ default: (await import('./pages/Applications')).Applications }))
+const KubernetesAdmin = lazy(async () => ({ default: (await import('./pages/KubernetesAdmin')).KubernetesAdmin }))
+const Helm = lazy(async () => ({ default: (await import('./pages/Helm')).Helm }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 
 function routeFromHash(): RouteID {
@@ -173,6 +175,8 @@ function AppShell() {
           />
         )}
         {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
+        {route === 'helm' && <Suspense fallback={<p role="status">Loading Helm administration...</p>}><Helm key={`helm:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
         {route === 'pods' && (
           <Pods
             key={`pods:${activeKubeContext}`}
