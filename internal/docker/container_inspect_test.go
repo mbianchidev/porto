@@ -2,12 +2,42 @@ package docker
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+func TestContainerInspectionAndIdentityRequestUncontaminatedStdout(t *testing.T) {
+	document := []byte(`[{"Id":"synthetic-container","Name":"/synthetic-app","Config":{"Labels":{}},"State":{"Status":"running","Running":true,"Pid":42}}]`)
+	captured := 0
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "nerdctl" || strings.Join(command.Args, " ") != "container inspect synthetic-container" {
+			return nil, fmt.Errorf("unexpected synthetic inspection command")
+		}
+		if !command.StdoutOnly {
+			return append([]byte("mesg: synthetic advisory\n"), document...), nil
+		}
+		captured++
+		return document, nil
+	}}
+	manager := New(runner)
+	response := httptest.NewRecorder()
+	NewAPI(manager, "/synthetic/socket").ServeHTTP(response,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic-container/json", nil))
+	if response.Code != http.StatusOK || !json.Valid(response.Body.Bytes()) {
+		t.Fatalf("Compose inspection was contaminated by diagnostics: %d: %s", response.Code, response.Body.String())
+	}
+	name, err := manager.ContainerName(context.Background(), "synthetic-container")
+	if err != nil || name != "synthetic-app" || captured != 2 {
+		t.Fatalf("container identity did not use independent structured stdout: name=%q captured=%d err=%v", name, captured, err)
+	}
+}
 
 func TestManagedContainerInspectRetainsHealthcheckForComposeReadiness(t *testing.T) {
 	document, err := json.Marshal([]any{map[string]any{

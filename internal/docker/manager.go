@@ -1720,7 +1720,7 @@ func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (stri
 		}
 		return value.ID, strings.TrimPrefix(value.Name, "/"), nil
 	}
-	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
+	output, err := m.runStdout(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
 		return "", "", err
 	}
@@ -2406,7 +2406,7 @@ func (m *Manager) inspect(ctx context.Context, kind, id string, options ...strin
 	args := []string{kind, "inspect"}
 	args = append(args, options...)
 	args = append(args, id)
-	output, err := m.run(ctx, "inspect Porto "+kind, args...)
+	output, err := m.runStdout(ctx, "inspect Porto "+kind, args...)
 	if err != nil {
 		if missingDockerObject(err, kind) {
 			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
@@ -2494,6 +2494,20 @@ func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 
 func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byte, error) {
 	return m.runWithTimeout(ctx, m.timeout, action, nil, args...)
+}
+
+func (m *Manager) runStdout(ctx context.Context, action string, args ...string) ([]byte, error) {
+	backend, err := m.backendForCommand(ctx)
+	if err != nil {
+		return nil, err
+	}
+	commandArgs, err := m.networkCommandArgs(backend, append(append([]string(nil), backend.prefix...), args...))
+	if err != nil {
+		return nil, err
+	}
+	return m.runBufferedCommand(ctx, m.timeout, action, runtimes.Command{
+		Name: backend.name, Args: commandArgs, StdoutOnly: true,
+	})
 }
 
 func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error) {
@@ -2727,15 +2741,16 @@ func (m *Manager) runCommandWithEnv(
 	name string,
 	args ...string,
 ) ([]byte, error) {
+	return m.runBufferedCommand(ctx, timeout, action, runtimes.Command{
+		Name: name, Args: args, Env: environment, Stdin: stdin,
+	})
+}
+
+func (m *Manager) runBufferedCommand(ctx context.Context, timeout time.Duration, action string, command runtimes.Command) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{
-		Name:          name,
-		Args:          args,
-		Env:           environment,
-		Stdin:         stdin,
-		NetworkPolicy: m.NetworkPolicy(),
-	})
+	command.NetworkPolicy = m.NetworkPolicy()
+	output, err := m.runner.Run(commandContext, command)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, runtimes.CommandError(
 			fmt.Sprintf("%s timed out after %s", action, timeout),
