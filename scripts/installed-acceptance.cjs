@@ -722,10 +722,10 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(worker.Config.Labels['com.docker.compose.service'], 'worker')
     const network = `${project}-stack`
     await waitFor(async () => {
-      const appNetwork = (await inspect()).NetworkSettings.Networks[network]?.NetworkID
-      const workerNetwork = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]?.NetworkID
-      return appNetwork && workerNetwork === appNetwork
-    }, 'both services attached to the same actual stack network')
+      const appAddress = (await inspect()).NetworkSettings.Networks[network]?.IPAddress
+      const workerAddress = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]?.IPAddress
+      return appAddress && workerAddress && workerAddress !== appAddress
+    }, 'distinct live endpoints on the selected named stack network')
     console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
     assert.equal(await cli('exec', workerID, 'cat', '/data/token'), fixture.id,

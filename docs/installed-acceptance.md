@@ -47,6 +47,10 @@ The fixture:
    through a read-only mount. Real container exec reads both
    the built image fixture and retained token. Missing downloads, tools, backend
    or named-pipe/socket support fail.
+   Network inspection must report distinct live endpoint addresses under the
+   selected named network; the pinned CNI-based nerdctl inspection does not
+   expose Docker's opaque `NetworkID`. Actual service DNS/HTTP communication,
+   not an invented network ID, is the connectivity gate.
 5. Connects to that installed dashboard's loopback DevTools endpoint and uses
    its ordinary renderer-origin container APIs to observe, stop and start the
    same Compose container. With the workload running, ordinary desktop update
