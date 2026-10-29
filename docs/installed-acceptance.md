@@ -47,6 +47,10 @@ The fixture:
    through a read-only mount. Real container exec reads both
    the built image fixture and retained token. Missing downloads, tools, backend
    or named-pipe/socket support fail.
+   The synthetic HTTP check uses Porto's default 30-second probe timeout,
+   including exec/SSH setup on software-emulated hosted guests. It must still
+   fetch the actual token successfully; stack command deadlines and production
+   operation timeouts are unchanged.
    Network inspection must report distinct live endpoint addresses under the
    selected named network; the pinned CNI-based nerdctl inspection does not
    itself expose Docker's `NetworkID`. Porto resolves canonical IDs from the

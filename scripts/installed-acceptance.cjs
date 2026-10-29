@@ -695,7 +695,7 @@ async function acceptance(fixture, reopen = false) {
           environment: { PORTO_SYNTHETIC_REVISION: 'one' },
           volumes: ['retained:/data'],
           command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec httpd -f -p 8080 -h /data`],
-          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token'], interval: '1s', timeout: '5s', retries: 20 },
+          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token'], interval: '1s', timeout: '30s', retries: 20 },
         },
         worker: {
           image, pull_policy: 'never', networks: ['stack'],
