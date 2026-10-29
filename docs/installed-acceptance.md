@@ -61,7 +61,10 @@ The fixture:
    volume token unchanged. No real user project or workload participates.
 6. Updates the stack to remove its worker with `up --remove-orphans`, requiring
    the obsolete service to disappear while the app container and shared data
-   remain unchanged. It then runs real Compose down, retaining the synthetic
+   remain unchanged. It then changes a synthetic environment revision and
+   restores the previous revision: both operations must replace the selected
+   service, expose the actual selected environment, remain HTTP-ready, and
+   retain the same named-volume data. It runs real Compose down, retaining the synthetic
    volume. It stops only the
    owned fixture engine and recorded desktop/daemon processes, checking process
    identity again before signaling. The normal bounded state-convergence wait

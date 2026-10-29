@@ -692,6 +692,7 @@ async function acceptance(fixture, reopen = false) {
         app: {
           image, pull_policy: 'never', networks: ['stack'],
           labels: { 'porto.test.suite': project },
+          environment: { PORTO_SYNTHETIC_REVISION: 'one' },
           volumes: ['retained:/data'],
           command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec httpd -f -p 8080 -h /data`],
           healthcheck: { test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token'], interval: '1s', timeout: '5s', retries: 20 },
@@ -770,9 +771,28 @@ async function acceptance(fixture, reopen = false) {
       await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`,
         '--filter', 'label=com.docker.compose.service=worker') === '',
     'Updating the Compose stack must remove its obsolete service')
-    assert.equal(await composeRunningContainer(compose), id,
+    const reconciledID = await composeRunningContainer(compose)
+    if (reconciledID !== id) console.error('Installed stack reconciliation replaced an unchanged app container.')
+    assert.equal(reconciledID, id,
       'Removing another service must not replace the unchanged app')
     assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
+    let previousID = id
+    for (const revision of ['two', 'one']) {
+      console.log(`Installed acceptance: applying recorded synthetic configuration revision ${revision}`)
+      stack.services.app.environment.PORTO_SYNTHETIC_REVISION = revision
+      write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+      await compose('up', '--detach', '--no-build', '--remove-orphans')
+      const currentID = await composeRunningContainer(compose)
+      assert.notEqual(currentID, previousID, 'A real configuration update must replace the selected service')
+      const current = JSON.parse(await cli('container', 'inspect', currentID))[0]
+      assert.ok(current.Config.Env.includes(`PORTO_SYNTHETIC_REVISION=${revision}`),
+        'The actual container must run the selected configuration revision')
+      assert.equal(await cli('exec', currentID, 'cat', '/data/token'), fixture.id,
+        'Update and configuration rollback must retain the original named-volume data')
+      await waitFor(async () => await cli('exec', currentID, 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token') === fixture.id,
+        'updated application HTTP readiness and retained data')
+      previousID = currentID
+    }
     console.log('Installed acceptance: stopping Compose and preserving its volume')
     await compose('down', '--remove-orphans')
     console.log('Installed acceptance: verifying Compose removal in the event-backed inventory')
@@ -790,6 +810,7 @@ async function acceptance(fixture, reopen = false) {
       versions: EXPECTED, image: built[0].Id, ownedEngine: engine.ownerId,
       realComposeUpDown: true, realBuildxLoadInspect: !reopen || fixture.evidence.cleanInstall?.realBuildxLoadInspect === true,
       realComposeStackDependencies: true, realComposeStackNetworking: true, realComposeStackServiceRemoval: true,
+      realComposeStackConfigurationUpdateRollback: true,
       renderedDesktopControl: true, runningWorkloadUpdateRefused: true, retainedVolume: true,
       preservedRegisteredProject: projectPath, runningWorkloadPID: before.State.Pid,
     }

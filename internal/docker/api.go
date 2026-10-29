@@ -374,6 +374,11 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 	}
 	response := make([]map[string]any, 0, len(matching))
 	for _, container := range matching {
+		mounts, err := dockerContainerMounts(container)
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
 		name := container.Name
 		if name != "" && !strings.HasPrefix(name, "/") {
 			name = "/" + name
@@ -393,7 +398,7 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 				"NetworkMode": strings.Split(firstNonEmpty(container.Networks, "default"), ",")[0],
 			},
 			"NetworkSettings": map[string]any{"Networks": dockerContainerNetworkSettings(container, networkIDs)},
-			"Mounts":          dockerContainerMounts(container),
+			"Mounts":          mounts,
 		}
 		if dockerBool(r, "size") {
 			rw, root, err := a.manager.containerDiskUsage(r.Context(), container.ID)
@@ -1333,7 +1338,7 @@ func dockerContainerPorts(container Container) []map[string]any {
 	return ports
 }
 
-func dockerContainerMounts(container Container) []map[string]any {
+func dockerContainerMounts(container Container) ([]map[string]any, error) {
 	mounts := make([]map[string]any, 0, len(container.MountDetails))
 	for _, mount := range container.MountDetails {
 		readOnly := false
@@ -1363,7 +1368,38 @@ func dockerContainerMounts(container Container) []map[string]any {
 		}
 		mounts = append(mounts, item)
 	}
-	return mounts
+	recorded, err := containerMountMetadata(container.Labels)
+	if err != nil {
+		return nil, err
+	}
+	for _, metadata := range recorded {
+		if metadata.Type != "volume" {
+			continue
+		}
+		if metadata.Name != "" {
+			if err := validateObjectID(metadata.Name); err != nil {
+				return nil, fmt.Errorf("%w: invalid recorded volume identity", ErrUnavailable)
+			}
+		}
+		found := false
+		for _, mounted := range mounts {
+			if mounted["Destination"] != metadata.Destination {
+				continue
+			}
+			if mounted["Source"] != metadata.Source {
+				return nil, fmt.Errorf("%w: recorded volume source does not match its actual OCI mount", ErrConflict)
+			}
+			mounted["Type"] = "volume"
+			mounted["Name"] = metadata.Name
+			mounted["Driver"] = firstNonEmpty(metadata.Driver, "local")
+			found = true
+			break
+		}
+		if !found {
+			return nil, fmt.Errorf("%w: recorded volume does not have a matching OCI mount", ErrUnavailable)
+		}
+	}
+	return mounts, nil
 }
 
 func dockerTimestamp(value string) string {

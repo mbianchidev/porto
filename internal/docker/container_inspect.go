@@ -4,8 +4,48 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
+
+type recordedContainerMount struct {
+	Type, Name, Source, Destination, Driver string
+}
+
+func containerMountMetadata(labels map[string]string) ([]recordedContainerMount, error) {
+	const key = "nerdctl/mounts"
+	var mounts []recordedContainerMount
+	if legacy := labels[key]; legacy != "" {
+		if err := json.Unmarshal([]byte(legacy), &mounts); err != nil {
+			return nil, fmt.Errorf("%w: invalid recorded container mount metadata", ErrUnavailable)
+		}
+		return mounts, nil
+	}
+	parts := map[int]string{}
+	for label, value := range labels {
+		suffix, found := strings.CutPrefix(label, key+".")
+		if !found {
+			continue
+		}
+		index, err := strconv.Atoi(suffix)
+		if err != nil || index < 0 || strconv.Itoa(index) != suffix {
+			return nil, fmt.Errorf("%w: invalid indexed container mount metadata", ErrUnavailable)
+		}
+		parts[index] = value
+	}
+	for index := 0; index < len(parts); index++ {
+		value, found := parts[index]
+		if !found {
+			return nil, fmt.Errorf("%w: indexed container mount metadata is incomplete", ErrUnavailable)
+		}
+		var mount recordedContainerMount
+		if err := json.Unmarshal([]byte(value), &mount); err != nil {
+			return nil, fmt.Errorf("%w: invalid indexed container mount metadata", ErrUnavailable)
+		}
+		mounts = append(mounts, mount)
+	}
+	return mounts, nil
+}
 
 func containerNetworkNames(container Container) []string {
 	names := map[string]string{}

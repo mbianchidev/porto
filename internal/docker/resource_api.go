@@ -13,8 +13,22 @@ func (a *API) networks(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
+	names := []string{}
+	for _, network := range networks {
+		if network.ID != "" {
+			names = append(names, network.Name)
+		}
+	}
+	identities, err := a.manager.containerNetworkIdentities(r.Context(), names)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	response := make([]map[string]any, 0, len(networks))
 	for _, network := range networks {
+		if id := identities[network.Name]; id != "" {
+			network.ID = id
+		}
 		if !filters.matchesID(network.ID) ||
 			!filters.matchesName(network.Name) ||
 			!filters.matchesValue("driver", network.Driver) ||

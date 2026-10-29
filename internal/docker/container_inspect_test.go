@@ -126,6 +126,60 @@ func TestDockerContainerSummaryReportsCanonicalNetworkIdentityForCompose(t *test
 	}
 }
 
+func TestDockerNetworkListUsesTheSameCanonicalIDAsNetworkInspection(t *testing.T) {
+	id := strings.Repeat("c", 64)
+	runner := &fakeRunner{outputs: map[string][]byte{
+		"nerdctl network ls --format {{json .}}":  []byte(`{"Name":"synthetic-stack","ID":"` + id[:12] + `","Driver":"bridge","Labels":"com.docker.compose.project=synthetic"}` + "\n"),
+		"nerdctl network inspect synthetic-stack": []byte(`[{"Name":"synthetic-stack","Id":"` + id + `"}]`),
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/v1.47/networks", nil))
+	var networks []struct{ ID, Name string }
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &networks) != nil || len(networks) != 1 || networks[0].ID != id {
+		t.Fatalf("Compose would compare a display-shortened network ID with a canonical container endpoint ID: %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerSummaryRetainsNamedVolumeIdentityAfterOCIBindLowering(t *testing.T) {
+	for _, key := range []string{"nerdctl/mounts", "nerdctl/mounts.0"} {
+		t.Run(key, func(t *testing.T) {
+			raw := `{"Type":"volume","Name":"synthetic-data","Source":"/synthetic/volumes/data/_data","Destination":"/data","Driver":"local","RW":false}`
+			if key == "nerdctl/mounts" {
+				raw = "[" + raw + "]"
+			}
+			mounts, err := dockerContainerMounts(Container{
+				Labels: map[string]string{key: raw},
+				MountDetails: []ContainerMount{
+					{Type: "bind", Source: "/synthetic/volumes/data/_data", Destination: "/data", Options: []string{"rbind", "ro"}},
+					{Type: "bind", Source: "/synthetic/config", Destination: "/config", Options: []string{"rbind", "rw"}},
+				},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(mounts) != 2 || mounts[0]["Type"] != "volume" || mounts[0]["Name"] != "synthetic-data" || mounts[0]["Source"] != "/synthetic/volumes/data/_data" || mounts[0]["RW"] != false || mounts[1]["Type"] != "bind" || mounts[1]["Name"] != "" {
+				t.Fatalf("Compose would recreate an unchanged service because a named volume became an anonymous bind: %+v", mounts)
+			}
+		})
+	}
+}
+
+func TestDockerSummaryRejectsIncompleteOrMismatchedVolumeMetadata(t *testing.T) {
+	for _, labels := range []map[string]string{
+		{"nerdctl/mounts": `invalid`},
+		{"nerdctl/mounts.1": `{"Type":"volume","Name":"synthetic-data","Source":"/synthetic/data","Destination":"/data"}`},
+		{"nerdctl/mounts.0": `invalid`},
+		{"nerdctl/mounts.0": `{"Type":"volume","Name":"synthetic-data","Source":"/unrelated/data","Destination":"/data"}`},
+	} {
+		if _, err := dockerContainerMounts(Container{
+			Labels:       labels,
+			MountDetails: []ContainerMount{{Type: "bind", Source: "/synthetic/data", Destination: "/data"}},
+		}); err == nil {
+			t.Fatal("invalid volume metadata was accepted as an actual mounted volume")
+		}
+	}
+}
+
 func TestDockerContainerInspectPreservesStateAndCompletesActualNetworkIdentity(t *testing.T) {
 	networkID := strings.Repeat("b", 64)
 	runner := &fakeRunner{outputs: map[string][]byte{

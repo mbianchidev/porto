@@ -130,7 +130,11 @@ accepted as successful inspection.
 Docker-compatible summaries and inspection resolve full network IDs from actual
 backend network metadata. This lets Compose retain an unchanged service during
 stack reconciliation rather than recreating it because CNI inspection omitted
-an opaque ID. Runtime helper teardown stops its owned process group, including
+an opaque ID. Network lists expose the same full identities, not display-shortened
+IDs. Recorded native mount annotations retain named-volume identity in Docker
+summaries while preserving the actual OCI source and read-only flags; ordinary
+bind mounts are not guessed to be volumes. Runtime helper teardown stops its
+owned process group, including
 SSH descendants, so repeated health checks and lifecycle operations release
 their transport sessions.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
