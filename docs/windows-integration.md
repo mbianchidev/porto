@@ -62,10 +62,14 @@ complete installation path establishes ownership, and PID creation time and path
 are rechecked before stopping a process. A running owned QEMU executable still
 refuses the update before readiness. Unknown inspection fails explicitly, and
 the existing 15-second helper-readiness limit is unchanged.
-Both native Windows CI rows exercise the actual helper with CIM unavailable,
-an owned QEMU-shaped synthetic process, and an unrelated same-name executable.
-The fixture checks the real readiness handshake and preserves the unrelated
-process before the separate full NSIS update/uninstall acceptance runs.
+Both native Windows CI rows exercise cold `-File` launches and the actual helper
+with CIM unavailable, an owned QEMU-shaped synthetic process, and an unrelated
+same-name executable. The fixture checks the real readiness handshake and
+preserves the unrelated process before the separate full NSIS update/uninstall
+acceptance runs. The helper's adjacent installer log timestamps path validation,
+executable cataloging, native process inspection and readiness. A failed installed
+readiness gate retains its bounded log and error message without dumping settings
+or credentials.
 
 ## Native Windows setup
 

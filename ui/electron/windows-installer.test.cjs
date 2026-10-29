@@ -39,13 +39,16 @@ test('Windows updater uses native executable and creation metadata without a CIM
   assert.match(updater, /StartTime\.ToUniversalTime\(\)\.Ticks/)
 })
 
-test('native Windows updater refuses QEMU and stops only the owned executable without CIM', {
+test('native Windows updater preflights cold file launches and unavailable CIM safely', {
   skip: process.platform !== 'win32',
 }, async (t) => {
   const { environment, layout, prepare, systemExecutable, waitFor } = require('../../scripts/installed-fixture.cjs')
-  for (const blocked of [true, false]) {
-    await t.test(blocked ? 'live QEMU remains untouched' : 'same-name unrelated process survives', async () => {
-      const directory = path.join(process.cwd(), `.installed-update-${process.pid}-${blocked}`)
+  for (const [mode, blocked] of [
+    ['unavailable-cim', true], ['unavailable-cim', false],
+    ['cold-file', true], ['cold-file', false],
+  ]) {
+    await t.test(`${mode}: ${blocked ? 'live QEMU remains untouched' : 'same-name unrelated process survives'}`, async () => {
+      const directory = path.join(process.cwd(), `.installed-update-${process.pid}-${mode}-${blocked}`)
       const fixture = prepare(directory)
       const env = environment(fixture, layout(fixture.installRoot))
       const children = []
@@ -53,6 +56,7 @@ test('native Windows updater refuses QEMU and stops only the owned executable wi
       const executable = path.join(root, 'Porto.exe')
       const unrelated = path.join(directory, 'unrelated', 'Porto.exe')
       const packagePath = path.join(directory, 'synthetic-invalid-installer.exe')
+      const installedHelper = path.join(root, 'resources', 'apply-update.ps1')
       const errorFile = path.join(directory, 'update.error')
       const readyFile = path.join(directory, 'update.ready')
       const proceedFile = path.join(directory, 'update.proceed')
@@ -76,16 +80,23 @@ test('native Windows updater refuses QEMU and stops only the owned executable wi
         const foreign = await start(unrelated)
         const qemu = blocked ? await start(path.join(root, 'runtime', 'qemu-system-synthetic.exe')) : null
         fs.copyFileSync(process.execPath, packagePath)
+        fs.mkdirSync(path.dirname(installedHelper), { recursive: true })
+        fs.copyFileSync(path.join(__dirname, 'apply-update.ps1'), installedHelper)
         const powershell = await systemExecutable('powershell.exe', env)
         const command = `
 $ErrorActionPreference = 'Stop'
 Import-Module Microsoft.PowerShell.Management, Microsoft.PowerShell.Utility
 $PSModuleAutoLoadingPreference = 'None'
 function Get-CimInstance { throw 'Synthetic CIM provider is unavailable' }
-& ${literal(path.join(__dirname, 'apply-update.ps1'))} -ParentPid 2147483647 -PackagePath ${literal(packagePath)} -InstallDirectory ${literal(root)} -ExecutablePath ${literal(executable)} -ErrorFile ${literal(errorFile)} -ReadyFile ${literal(readyFile)} -ProceedFile ${literal(proceedFile)} -SkipRestart
+& ${literal(installedHelper)} -ParentPid 2147483647 -PackagePath ${literal(packagePath)} -InstallDirectory ${literal(root)} -ExecutablePath ${literal(executable)} -ErrorFile ${literal(errorFile)} -ReadyFile ${literal(readyFile)} -ProceedFile ${literal(proceedFile)} -SkipRestart
 exit $LASTEXITCODE
 `
-        helper = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', command],
+        const invocation = mode === 'cold-file'
+          ? ['-File', installedHelper, '-ParentPid', '2147483647', '-PackagePath', packagePath,
+            '-InstallDirectory', root, '-ExecutablePath', executable, '-ErrorFile', errorFile,
+            '-ReadyFile', readyFile, '-ProceedFile', proceedFile, '-SkipRestart']
+          : ['-Command', command]
+        helper = spawn(powershell, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', ...invocation],
           { env, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] })
         children.push(helper)
         for (const stream of [helper.stdout, helper.stderr]) {
@@ -110,7 +121,10 @@ exit $LASTEXITCODE
         }
         assert.equal(foreign.exitCode, null, 'unrelated same-name executable must survive')
       } catch (error) {
-        throw new Error(`Native updater fixture failed: ${error.message}\n${diagnostics}`, { cause: error })
+        const log = fs.existsSync(packagePath + '.install.log')
+          ? fs.readFileSync(packagePath + '.install.log', 'utf8').slice(-16384)
+          : 'Native helper did not create its startup log.'
+        throw new Error(`Native updater fixture failed: ${error.message}\n${log}\n${diagnostics}`, { cause: error })
       } finally {
         for (const child of children) {
           if (!child.pid) continue

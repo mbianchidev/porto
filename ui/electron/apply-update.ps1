@@ -36,12 +36,14 @@ function Get-InstalledPortoProcesses(
     [System.Collections.Generic.HashSet[string]]$ExecutableNames
 ) {
     try {
+        Write-UpdateLog "Taking a native process snapshot."
         foreach ($Target in [System.Diagnostics.Process]::GetProcesses()) {
             try {
                 try {
                     if (-not $ExecutableNames.Contains($Target.ProcessName)) {
                         continue
                     }
+                    Write-UpdateLog "Inspecting candidate native process $($Target.Id)."
                     $Start = $Target.StartTime.ToUniversalTime().Ticks
                     $Executable = $Target.MainModule.FileName
                     if ($Target.HasExited) { continue }
@@ -64,6 +66,7 @@ function Get-InstalledPortoProcesses(
                 $Target.Dispose()
             }
         }
+        Write-UpdateLog "Finished inspecting native processes."
     }
     catch {
         throw "Unable to inspect running Porto processes. $($_.Exception.Message)"
@@ -114,6 +117,7 @@ function Format-PortoProcesses([object[]]$Processes) {
 }
 
 try {
+    Write-UpdateLog "Validating downloaded installer and installation paths."
     if (-not [System.IO.Path]::IsPathRooted($InstallDirectory)) {
         throw "Refusing to replace a relative Porto installation path."
     }
@@ -122,7 +126,7 @@ try {
     }
 
     $InstallPrefix = [System.IO.Path]::GetFullPath($InstallDirectory).TrimEnd("\") + "\"
-    Write-UpdateLog "Inspecting installed Porto executable ownership."
+    Write-UpdateLog "Cataloging installed Porto executable names."
     $ExecutableNames = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     foreach ($File in (Get-ChildItem -LiteralPath $InstallDirectory -Filter '*.exe' -Recurse -File)) {
         [void]$ExecutableNames.Add([System.IO.Path]::GetFileNameWithoutExtension($File.Name))
@@ -130,6 +134,7 @@ try {
     if ($ExecutableNames.Count -eq 0) {
         throw "Installed Porto executable metadata is unavailable."
     }
+    Write-UpdateLog "Inspecting installed Porto executable ownership ($($ExecutableNames.Count) names)."
     $BlockingProcesses = @(
         Get-InstalledPortoProcesses $InstallPrefix $ExecutableNames | Where-Object {
             $_.Name -like "qemu-system-*.exe"
