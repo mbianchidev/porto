@@ -5,6 +5,7 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
+import { ImageAnalysis } from '../components/ImageAnalysis'
 import { RuntimeFiles } from '../components/RuntimeFiles'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
@@ -145,6 +146,7 @@ export function Images() {
               tabs={[
                 { id: 'overview', label: 'Overview' },
                 { id: 'layers', label: 'Layers' },
+                { id: 'analysis', label: 'SBOM and vulnerabilities' },
                 { id: 'files', label: 'Files (read-only)' },
               ]}
               activeID={imageTab}
@@ -171,6 +173,9 @@ export function Images() {
               </>
             )}
             {imageTab === 'layers' && <DiveTerminal image={imageReference(selected)} />}
+            {imageTab === 'analysis' && (mode === 'linux'
+              ? <ImageAnalysis key={selected.digest} image={selected} reference={imageReference(selected)} />
+              : <p role="status">Local Syft/Grype analysis currently supports Linux OCI images. Native Windows image coverage is unavailable, not clean.</p>)}
             {imageTab === 'files' && (mode === 'linux'
               ? <RuntimeFiles key={selected.id} kind="image" name={imageReference(selected)} />
               : <p role="status">Linux snapshot/file helpers are not used for native Windows images. Inspect the image metadata or use a supported Windows bind mount.</p>)}

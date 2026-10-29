@@ -33,6 +33,16 @@ function writeLicenses(root) {
   }
 }
 
+function writeAnalysisTools(root, platform) {
+  const suffix = platform === 'win32' ? '.exe' : ''
+  for (const [tool, version] of [['syft', '1.55.0'], ['grype', '0.121.0']]) {
+    fs.mkdirSync(path.join(root, 'bin'), { recursive: true })
+    fs.writeFileSync(path.join(root, 'bin', tool + suffix), 'synthetic', { mode: 0o700 })
+    fs.writeFileSync(path.join(root, 'licenses', `${tool}.txt`), 'license')
+    fs.appendFileSync(path.join(root, 'VERSIONS'), `${tool} v${version}\n`)
+  }
+}
+
 test('parses version metadata with platform limitation details', () => {
   const versions = parseVersions('docker 29.7.2\ndocker-compose not available because Docker CLI is not bundled for windows/arm64\ndive v0.13.1\n')
   assert.equal(versions.get('docker'), '29.7.2')
@@ -43,6 +53,7 @@ test('parses version metadata with platform limitation details', () => {
 test('rejects a supported bundle with a missing plugin', (t) => {
   const root = temporaryRuntime(t)
   fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker 29.7.2\ndive v0.13.1\n')
+  writeAnalysisTools(root, 'linux')
   const layout = toolchainLayout(root, 'linux')
   for (const file of [layout.launcher, layout.compose, layout.dive]) {
     fs.mkdirSync(path.dirname(file), { recursive: true })
@@ -58,6 +69,7 @@ test('rejects a supported bundle with a missing plugin', (t) => {
 test('rejects Docker files on an explicitly unsupported platform', (t) => {
   const root = temporaryRuntime(t)
   fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker not available for windows/arm64\ndive v0.13.1\n')
+  writeAnalysisTools(root, 'win32')
   const layout = toolchainLayout(root, 'win32')
   fs.mkdirSync(path.dirname(layout.dive), { recursive: true })
   fs.writeFileSync(layout.dive, 'dive')
@@ -67,6 +79,17 @@ test('rejects Docker files on an explicitly unsupported platform', (t) => {
     () => validateToolchainLayout(root, { platform: 'win32' }),
     /unexpectedly contains/,
   )
+})
+
+test('requires analysis provenance and refuses an x64 Grype fallback on Windows ARM64', (t) => {
+  const { localToolchain } = require('../ui/electron/local-toolchain.cjs')
+  const root = temporaryRuntime(t)
+  assert.throws(() => localToolchain(root, new Map()), /no version metadata/)
+  writeAnalysisTools(root, 'win32')
+  const versions = new Map([['syft', 'v1.55.0'], ['grype', 'not available for windows/arm64']])
+  assert.throws(() => localToolchain(root, versions, { platform: 'win32' }), /unexpectedly contains/)
+  fs.unlinkSync(path.join(root, 'bin', 'grype.exe'))
+  assert.equal(localToolchain(root, versions, { platform: 'win32' }).length, 1)
 })
 
 test('WSL tools require native Linux ELF artifacts for each selected architecture', (t) => {

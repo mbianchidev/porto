@@ -36,6 +36,7 @@ import (
 	"github.com/mbianchidev/porto/internal/discovery"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/gitutil"
+	"github.com/mbianchidev/porto/internal/imageanalysis"
 	"github.com/mbianchidev/porto/internal/killswitch"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/nativefiles"
@@ -101,6 +102,7 @@ type Server struct {
 	tlsCertificates    *certificates.Manager
 	userHomeDir        func() (string, error)
 	docker             *portodocker.Manager
+	imageAnalysis      *imageanalysis.Manager
 	windowsWorker      bool
 	windowsTransport   http.RoundTripper
 	dockerAPI          *portodocker.APIServer
@@ -240,6 +242,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		syncRoot = st.Directory()
 	}
 	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
+	server.imageAnalysis = imageanalysis.New(filepath.Join(syncRoot, "image-analysis"), dockerManager, nil)
 	dockerManager.SetSynchronizedShareResolver(server.syncShares.Resolve)
 	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
 	server.nativeFiles = nativefiles.New(nativeRoot, runner)
@@ -496,6 +499,9 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	}
 	cancelHTTP()
 	operationContext, cancelOperations := context.WithTimeout(context.Background(), runtimeOperationTimeout)
+	if s.imageAnalysis != nil {
+		shutdownErrors = append(shutdownErrors, s.imageAnalysis.Close(operationContext))
+	}
 	if err := s.waitForRuntimeOperations(operationContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
 	}
@@ -743,6 +749,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
 	s.runtimeRoutes(mux)
+	s.imageAnalysisRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
 }
 

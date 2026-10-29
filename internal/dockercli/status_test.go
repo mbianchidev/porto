@@ -51,7 +51,8 @@ func TestInspectChecksBundledPluginVersions(t *testing.T) {
 		"docker 29.7.2\n"+
 			"docker-compose v5.5.1 (asset)\n"+
 			"docker-buildx v0.37.1 (asset)\n"+
-			"dive v0.13.1 (asset)\n",
+			"dive v0.13.1 (asset)\n"+
+			"syft v1.55.0\ngrype v0.121.0\n",
 	), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -62,6 +63,12 @@ func TestInspectChecksBundledPluginVersions(t *testing.T) {
 		func(_ context.Context, name string, args ...string) ([]byte, error) {
 			if strings.HasSuffix(name, "/dive") {
 				return []byte("dive 0.13.1"), nil
+			}
+			if strings.HasSuffix(name, "/syft") {
+				return []byte(`{"version":"1.55.0"}`), nil
+			}
+			if strings.HasSuffix(name, "/grype") {
+				return []byte(`{"version":"0.121.0"}`), nil
 			}
 			switch strings.Join(args, " ") {
 			case "--version":

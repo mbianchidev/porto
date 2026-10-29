@@ -62,6 +62,8 @@ func inspect(
 		{name: "compose", manifestName: "docker-compose", binary: "docker", command: "docker compose", args: []string{"compose", "version", "--short"}},
 		{name: "buildx", manifestName: "docker-buildx", binary: "docker", command: "docker buildx", args: []string{"buildx", "version"}},
 		{name: "dive", manifestName: "dive", binary: "dive", command: "dive", args: []string{"--version"}},
+		{name: "syft", manifestName: "syft", binary: "syft", command: "syft", args: []string{"version", "-o", "json"}},
+		{name: "grype", manifestName: "grype", binary: "grype", command: "grype", args: []string{"version", "-o", "json"}},
 	}
 	statuses := make([]Status, 0, len(components))
 	for _, component := range components {

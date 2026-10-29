@@ -12,10 +12,17 @@ import (
 )
 
 func (m *Manager) StartImageSave(ctx context.Context, images []string) (runtimes.Process, error) {
+	return m.startImageSave(ctx, images, "")
+}
+
+func (m *Manager) startImageSave(ctx context.Context, images []string, platform string) (runtimes.Process, error) {
 	if len(images) == 0 {
 		return nil, errors.New("at least one image is required")
 	}
 	args := []string{"save"}
+	if platform != "" {
+		args = append(args, "--platform", platform)
+	}
 	for _, image := range images {
 		if err := validateObjectID(image); err != nil {
 			return nil, err

@@ -330,6 +330,7 @@ export type DockerImage = {
   repository: string
   tag: string
   digest: string
+  platform?: string
   size: string
   createdAt: string
 }

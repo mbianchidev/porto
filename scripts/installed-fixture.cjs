@@ -11,7 +11,7 @@ const { validateToolchainLayout } = require('./docker-toolchain-smoke.cjs')
 const SOURCE_ROOT = fs.realpathSync(path.join(__dirname, '..'))
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const PORTS = [37623, 37680, 37681]
-const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1' }
+const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1', syft: '1.55.0' }
 
 function within(root, candidate) {
   const relative = path.relative(root, candidate)
@@ -379,7 +379,8 @@ function inspectPackage(root, expectedTarget) {
     nativeHeader(file, expected)
   }
   for (const file of [result.desktop, result.porto, result.limactl,
-    toolchain.layout.launcher, toolchain.layout.compose, toolchain.layout.buildx]) {
+    toolchain.layout.launcher, toolchain.layout.compose, toolchain.layout.buildx,
+    ...toolchain.localTools.map(([, executable]) => executable)]) {
     nativeFile(file, expectedTarget)
   }
   const arch = expectedTarget.split('/')[1]

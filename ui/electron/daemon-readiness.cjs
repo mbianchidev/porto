@@ -382,6 +382,7 @@ async function inspectBundledDockerToolchain({
     ['compose', launcher, ['compose', 'version', '--short'], versions.get('docker-compose')],
     ['buildx', launcher, ['buildx', 'version'], versions.get('docker-buildx')],
     ['dive', dive, ['--version'], versions.get('dive')],
+    ...require('./local-toolchain.cjs').localToolchain(runtimeRoot, versions, { platform, existsImpl }),
   ]
   const reported = {}
   for (const [name, executable, args, expected] of commands) {
