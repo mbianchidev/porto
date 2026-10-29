@@ -10,15 +10,15 @@ import { LocalOperations } from '../components/LocalOperations'
 import { RuntimeGate } from '../components/SectionChrome'
 import { StatusLamp } from '../components/StatusLamp'
 import { adminQuery, resourceActions, resourceKey } from '../kubeAdminTypes'
-import { useKubernetesAdminTarget } from '../kubeAdminTarget'
+import { useKubernetesAdminTarget } from '../kubeAdminTargetContext'
 import type { AdminAccess, AdminDiscovery, AdminObject, AdminObjectList, AdminPreview, AdminSchema, AdminTarget, RolloutRevision } from '../kubeAdminTypes'
 import type { KubernetesContext } from '../types'
 
 export function KubernetesAdmin({ context, contexts, onContextChange }: { context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void }) {
   const { notifyError, notifyNotice } = useMessages()
-  const selection = useKubernetesAdminTarget()
-  const [incoming] = useState(selection.target)
-  useEffect(() => selection.setTarget(null), [selection.setTarget])
+  const { target: pendingTarget, setTarget } = useKubernetesAdminTarget()
+  const [incoming] = useState(pendingTarget)
+  useEffect(() => setTarget(null), [setTarget])
   const initial = incoming?.context === context ? incoming : null
   const [namespace, setNamespace] = useState(initial?.namespace ?? 'default')
   const [chosenResource, setChosenResource] = useState(initial ? `${initial.group}/${initial.version}/${initial.resource}` : 'apps/v1/deployments')

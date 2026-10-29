@@ -1,5 +1,5 @@
 import type { AdminTarget } from '../kubeAdminTypes'
-import { useKubernetesAdminTarget } from '../kubeAdminTarget'
+import { useKubernetesAdminTarget } from '../kubeAdminTargetContext'
 
 export function KubernetesAdminLink({ target }: { target: AdminTarget }) {
   const { setTarget } = useKubernetesAdminTarget()
