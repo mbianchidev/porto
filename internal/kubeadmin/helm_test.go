@@ -22,14 +22,16 @@ import (
 const syntheticHelmManifest = "apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: synthetic-release-config\n  namespace: default\ndata:\n  setting: synthetic\n---\napiVersion: v1\nkind: Secret\nmetadata:\n  name: synthetic-release-secret\n  namespace: default\nstringData:\n  password: synthetic-private-value\n"
 
 type helmRunner struct {
-	t         *testing.T
-	mu        sync.Mutex
-	revision  int
-	status    string
-	failHook  bool
-	mutations int
-	calls     []runtimes.Command
-	api       *fakeAPI
+	t                *testing.T
+	mu               sync.Mutex
+	revision         int
+	status           string
+	failHook         bool
+	mutations        int
+	calls            []runtimes.Command
+	api              *fakeAPI
+	currentManifest  string
+	retainedManifest string
 }
 
 func option(arguments []string, name string) string {
@@ -66,7 +68,11 @@ func (r *helmRunner) Run(_ context.Context, command runtimes.Command) (localtool
 		return localtools.Output{Stdout: data}, nil
 	}
 	document := func() map[string]any {
-		return map[string]any{"name": "synthetic-release", "namespace": "default", "version": r.revision, "manifest": syntheticHelmManifest, "chart": map[string]any{"metadata": map[string]any{"name": "synthetic", "version": "1.0.0", "appVersion": "1"}}, "info": map[string]any{"status": r.status, "last_deployed": "2026-01-01T00:00:00Z"}, "hooks": []any{map[string]any{"name": "synthetic-hook", "kind": "Job", "manifest": "", "last_run": map[string]any{"phase": "Succeeded"}}}}
+		manifest := r.currentManifest
+		if manifest == "" {
+			manifest = syntheticHelmManifest
+		}
+		return map[string]any{"name": "synthetic-release", "namespace": "default", "version": r.revision, "manifest": manifest, "chart": map[string]any{"metadata": map[string]any{"name": "synthetic", "version": "1.0.0", "appVersion": "1"}}, "info": map[string]any{"status": r.status, "last_deployed": "2026-01-01T00:00:00Z"}, "hooks": []any{map[string]any{"name": "synthetic-hook", "kind": "Job", "manifest": "", "last_run": map[string]any{"phase": "Succeeded"}}}}
 	}
 	switch command.Args[0] {
 	case "status":
@@ -103,6 +109,9 @@ func (r *helmRunner) Run(_ context.Context, command runtimes.Command) (localtool
 		if command.Args[1] == "values" {
 			return output(map[string]any{"password": "synthetic-private-value"})
 		}
+		if r.retainedManifest != "" {
+			return localtools.Output{Stdout: []byte(r.retainedManifest)}, nil
+		}
 		return localtools.Output{Stdout: []byte(syntheticHelmManifest)}, nil
 	case "rollback":
 		r.mutations++
@@ -119,6 +128,50 @@ func (r *helmRunner) Run(_ context.Context, command runtimes.Command) (localtool
 		return output([]any{map[string]any{"name": "synthetic-release", "namespace": "default", "revision": "1", "status": r.status, "chart": "synthetic-1.0.0", "app_version": "1", "updated": "2026-01-01T00:00:00Z"}})
 	}
 	return localtools.Output{}, errors.New("unexpected synthetic Helm command")
+}
+
+func TestHelmRollbackKeepsCurrentAndRetainedStorageAcknowledgement(t *testing.T) {
+	const currentPVC = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: synthetic-current-data\n  namespace: default\n"
+	const retainedPVC = "apiVersion: v1\nkind: PersistentVolumeClaim\nmetadata:\n  name: synthetic-retained-data\n  namespace: default\n"
+	for _, test := range []struct {
+		name, current, retained string
+		warnings                []string
+	}{
+		{"removed-current-pvc", currentPVC, syntheticHelmManifest, []string{"synthetic-current-data"}},
+		{"added-retained-pvc", syntheticHelmManifest, retainedPVC, []string{"synthetic-retained-data"}},
+		{"changed-pvc", currentPVC, retainedPVC, []string{"synthetic-current-data", "synthetic-retained-data"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			manager, api, ops := adminFixture(t)
+			runner := &helmRunner{t: t, api: api, revision: 2, status: "deployed",
+				currentManifest: test.current, retainedManifest: test.retained}
+			manager.runner = runner
+			request := HelmRequest{HelmScope: HelmScope{Context: "porto-synthetic", Namespace: "default"},
+				Release: "synthetic-release", Action: "rollback", Revision: 1, SecretConsent: true}
+			preview, err := manager.PreviewHelm(context.Background(), request)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, name := range test.warnings {
+				if !strings.Contains(strings.Join(preview.StorageConsequences, "\n"), name) {
+					t.Errorf("rollback omitted the storage consequence for %s: %v", name, preview.StorageConsequences)
+				}
+			}
+			if _, err := manager.ApplyHelm(context.Background(), request.HelmScope, preview.Token, true, false); err == nil {
+				t.Fatal("rollback accepted a storage lifecycle change without acknowledgement")
+			}
+			op, err := manager.ApplyHelm(context.Background(), request.HelmScope, preview.Token, true, true)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if result := waitAdmin(t, ops, op.ID); result.Status != "succeeded" {
+				t.Fatal(result)
+			}
+			if runner.mutations != 1 {
+				t.Fatalf("rollback acknowledgement did not guard the actual mutation: %d", runner.mutations)
+			}
+		})
+	}
 }
 
 func TestHelmLifecyclePinnedScopeHistoryAndSecretRedaction(t *testing.T) {

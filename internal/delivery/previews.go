@@ -93,6 +93,6 @@ func (m *Manager) PreviewRollback(ctx context.Context, id int64, revisionID stri
 	if err != nil {
 		return Preview{}, err
 	}
-	preview := Preview{Token: token, ProjectID: id, BaseRevision: current.CurrentRevision, Commit: selected.Commit, Before: m.Redact(id, publicConfiguration(runtime)), After: m.Redact(id, publicConfiguration(selected.Effective)), Warnings: []string{"Rollback restores the recorded definition and available immutable images, not database schemas or persistent data. Automatic polling and webhooks will be paused."}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339Nano)}
+	preview := Preview{Token: token, ProjectID: id, BaseRevision: current.CurrentRevision, Commit: selected.Commit, Profiles: selected.Request.Profiles, Before: m.Redact(id, publicConfiguration(runtime)), After: m.Redact(id, publicConfiguration(selected.Effective)), Warnings: []string{"Rollback restores the recorded definition and available immutable images, not database schemas or persistent data. Automatic polling and webhooks will be paused."}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339Nano)}
 	return m.rememberPreview(preview, selected, digestBytes(runtime), revisionID)
 }

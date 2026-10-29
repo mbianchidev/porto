@@ -230,7 +230,7 @@ func (m *Manager) Preview(ctx context.Context, request Request) (Preview, error)
 	if err != nil {
 		return Preview{}, err
 	}
-	preview := Preview{Token: token, ProjectID: project.ID, BaseRevision: current.CurrentRevision, Commit: definition.Commit, After: m.Redact(project.ID, publicConfiguration(definition.Effective)), Before: "No recorded deployment.", Warnings: []string{"Applying may recreate selected Compose services. Persistent volumes are never deleted; application/database schema changes are not rolled back."}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339Nano)}
+	preview := Preview{Token: token, ProjectID: project.ID, BaseRevision: current.CurrentRevision, Commit: definition.Commit, Profiles: definition.Request.Profiles, After: m.Redact(project.ID, publicConfiguration(definition.Effective)), Before: "No recorded deployment.", Warnings: []string{"Applying may recreate selected Compose services. Persistent volumes are never deleted; application/database schema changes are not rolled back."}, ExpiresAt: time.Now().UTC().Add(10 * time.Minute).Format(time.RFC3339Nano)}
 	if current.CurrentRevision != "" {
 		old, err := m.loadDefinition(current.CurrentRevision)
 		if err != nil {
@@ -269,6 +269,9 @@ func (m *Manager) prepare(ctx context.Context, project app.Project, current Appl
 		if request.Variables == nil {
 			request.Variables = old.Request.Variables
 		}
+		if request.Profiles == nil {
+			request.Profiles = old.Request.Profiles
+		}
 		merged := map[string]string{}
 		for key, value := range old.Request.Secrets {
 			merged[key] = value
@@ -281,6 +284,11 @@ func (m *Manager) prepare(ctx context.Context, project app.Project, current Appl
 			request.Compose = old.Request.Compose
 		}
 	}
+	profiles, err := compose.NormalizeProfiles(request.Profiles)
+	if err != nil {
+		return definition{}, fmt.Errorf("%w: %s", ErrInvalid, err)
+	}
+	request.Profiles = profiles
 	environment := map[string]string{}
 	for _, values := range []map[string]string{request.Variables, request.Secrets} {
 		for key, value := range values {
@@ -360,7 +368,7 @@ func (m *Manager) prepare(ctx context.Context, project app.Project, current Appl
 	if request.Source.Kind == "git" {
 		directory = filepath.Join(directory, filepath.Dir(filepath.FromSlash(request.Source.Git.Path)))
 	}
-	effective, err := m.backend.Validate(ctx, project, directory, []byte(result.Request.Compose), environment)
+	effective, err := m.backend.Validate(ctx, project, directory, []byte(result.Request.Compose), environment, request.Profiles...)
 	if err != nil {
 		return result, err
 	}
@@ -538,8 +546,9 @@ func (m *Manager) execute(ctx context.Context, id int64, selected definition, op
 	if err := m.vault.Set("revision-"+revisionID, data); err != nil {
 		return operations.Partial("Deployment was applied but its encrypted revision could not be saved; recover the credential store before retrying.")
 	}
-	revision := Revision{ID: revisionID, OperationID: operationID, Commit: selected.Commit, ConfigDigest: digestBytes(selected.Effective), EffectiveDigest: digestBytes(applied), Images: images, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), RollbackOf: rollbackOf, Warnings: warnings}
+	revision := Revision{ID: revisionID, OperationID: operationID, Commit: selected.Commit, Profiles: selected.Request.Profiles, ConfigDigest: digestBytes(selected.Effective), EffectiveDigest: digestBytes(applied), Images: images, CreatedAt: time.Now().UTC().Format(time.RFC3339Nano), RollbackOf: rollbackOf, Warnings: warnings}
 	current.Source, current.CurrentRevision, current.LastOperation = selected.Request.Source, revisionID, operationID
+	current.Profiles = slices.Clone(selected.Request.Profiles)
 	current.PollSeconds, current.WebhookEnabled = selected.Request.PollSeconds, selected.Request.WebhookEnabled
 	current.Failures, current.LastError, current.Drift = 0, "", false
 	current.Revisions = append(current.Revisions, revision)
@@ -568,6 +577,28 @@ func (m *Manager) loadDefinition(revision string) (definition, error) {
 	var value definition
 	err = json.Unmarshal(data, &value)
 	return value, err
+}
+
+func (m *Manager) Configuration(id int64) (Configuration, error) {
+	current, err := m.Get(id)
+	if err != nil {
+		return Configuration{}, err
+	}
+	result := Configuration{Variables: map[string]string{}, Profiles: []string{}}
+	if current.CurrentRevision == "" {
+		return result, nil
+	}
+	value, err := m.loadDefinition(current.CurrentRevision)
+	if err != nil {
+		return Configuration{}, err
+	}
+	result.Profiles = append(result.Profiles, value.Request.Profiles...)
+	for name, variable := range value.Request.Variables {
+		if _, secret := value.Request.Secrets[name]; !secret {
+			result.Variables[name] = variable
+		}
+	}
+	return result, nil
 }
 
 func (m *Manager) Definition(id int64) (Request, error) {

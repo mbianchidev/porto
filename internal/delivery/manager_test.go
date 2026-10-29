@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -66,7 +67,7 @@ func (b *fixtureBackend) AppliedDefinition(_ context.Context, project app.Projec
 	return os.ReadFile(b.current(project.ID))
 }
 
-func (b *fixtureBackend) Validate(_ context.Context, _ app.Project, _ string, raw []byte, environment map[string]string) ([]byte, error) {
+func (b *fixtureBackend) Validate(_ context.Context, _ app.Project, _ string, raw []byte, environment map[string]string, _ ...string) ([]byte, error) {
 	var definition struct {
 		Services map[string]struct {
 			Image string `yaml:"image"`
@@ -157,6 +158,99 @@ func deployFixture(t *testing.T, manager *Manager, ops *operations.Manager, requ
 		t.Fatal(err)
 	}
 	return current, result
+}
+
+func TestSavedConfigurationReturnsOnlyNonSecretVariables(t *testing.T) {
+	manager, _, ops := deliveryFixture(t)
+	request := Request{Name: "synthetic-configuration", Source: Source{Kind: "editor"},
+		Compose:   "services:\n  app:\n    image: registry.invalid/synthetic:one\n    environment:\n      INLINE: synthetic-inline-private-value\n",
+		Variables: map[string]string{"APP_IMAGE": "registry.invalid/synthetic:saved", "SHADOWED": "synthetic-old-public-value"},
+		Secrets:   map[string]string{"TOKEN": "synthetic-private-value", "SHADOWED": "synthetic-shadowed-private-value"}}
+	current, result := deployFixture(t, manager, ops, request)
+	if result.Status != "succeeded" {
+		t.Fatal(result)
+	}
+	settings, err := manager.Configuration(current.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(settings.Variables) != 1 || settings.Variables["APP_IMAGE"] != request.Variables["APP_IMAGE"] {
+		t.Fatalf("saved non-secret variables were dropped or mixed with secret-backed keys: %+v", settings)
+	}
+	public, err := json.Marshal(settings)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, private := range []string{"synthetic-inline-private-value", "synthetic-private-value", "synthetic-shadowed-private-value", "SHADOWED", "TOKEN", `"compose"`} {
+		if bytes.Contains(public, []byte(private)) {
+			t.Fatalf("configuration metadata revealed private source or credentials: %s", private)
+		}
+	}
+	if err := manager.vault.Delete("revision-" + current.CurrentRevision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.Configuration(current.ProjectID); err == nil {
+		t.Fatal("unavailable saved configuration became an empty variable map")
+	}
+}
+
+func TestComposeProfileSelectionIsValidatedRecordedInheritedClearedAndRolledBack(t *testing.T) {
+	manager, backend, ops := deliveryFixture(t)
+	validation := &sourceDirectoryBackend{Backend: backend}
+	manager.backend = validation
+	request := Request{Name: "synthetic-profile-history", Source: Source{Kind: "editor"},
+		Compose: "services:\n  app:\n    image: registry.invalid/synthetic:one\n", Profiles: []string{"tools", "dev", "tools"}}
+	expected := []string{"dev", "tools"}
+	preview, err := manager.Preview(context.Background(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(preview.Profiles, expected) || !slices.Equal(validation.profiles, expected) {
+		t.Fatalf("profile selection was not bound to native validation and preview: %v / %v", preview.Profiles, validation.profiles)
+	}
+	op, err := manager.Deploy(context.Background(), preview.ProjectID, preview.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := awaitOperation(t, ops, op.ID); result.Status != "succeeded" {
+		t.Fatal(result)
+	}
+	current, err := manager.Get(preview.ProjectID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := current.CurrentRevision
+	settings, err := manager.Configuration(current.ProjectID)
+	if err != nil || !slices.Equal(settings.Profiles, expected) || !slices.Equal(current.Profiles, expected) ||
+		!slices.Equal(current.Revisions[0].Profiles, expected) {
+		t.Fatalf("deployment forgot its profile selection: %+v / %+v / %v", settings, current, err)
+	}
+	request.ProjectID = current.ProjectID
+	request.Profiles = nil
+	inherited, err := manager.Preview(context.Background(), request)
+	if err != nil || !slices.Equal(inherited.Profiles, expected) {
+		t.Fatalf("omitted profiles silently reset a saved selection: %+v, %v", inherited.Profiles, err)
+	}
+	request.Profiles = []string{}
+	current, result := deployFixture(t, manager, ops, request)
+	if result.Status != "succeeded" || len(current.Profiles) != 0 || len(validation.profiles) != 0 {
+		t.Fatalf("explicit empty profiles did not restore default selection: %+v, %+v", current, result)
+	}
+	rollback, err := manager.PreviewRollback(context.Background(), current.ProjectID, first)
+	if err != nil || !slices.Equal(rollback.Profiles, expected) {
+		t.Fatalf("rollback lost the retained profile selection: %+v, %v", rollback.Profiles, err)
+	}
+	op, err = manager.Deploy(context.Background(), current.ProjectID, rollback.Token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := awaitOperation(t, ops, op.ID); result.Status != "succeeded" {
+		t.Fatal(result)
+	}
+	settings, err = manager.Configuration(current.ProjectID)
+	if err != nil || !slices.Equal(settings.Profiles, expected) {
+		t.Fatalf("rollback did not restore saved profiles: %+v, %v", settings, err)
+	}
 }
 
 func TestEditorUploadTemplateAndRecordedRollbackPreserveSecretBoundaries(t *testing.T) {
@@ -303,11 +397,13 @@ func gitFixture(t *testing.T) (string, func(string) string) {
 type sourceDirectoryBackend struct {
 	Backend
 	directory string
+	profiles  []string
 }
 
-func (b *sourceDirectoryBackend) Validate(ctx context.Context, project app.Project, directory string, raw []byte, variables map[string]string) ([]byte, error) {
+func (b *sourceDirectoryBackend) Validate(ctx context.Context, project app.Project, directory string, raw []byte, variables map[string]string, profiles ...string) ([]byte, error) {
 	b.directory = directory
-	return b.Backend.Validate(ctx, project, directory, raw, variables)
+	b.profiles = slices.Clone(profiles)
+	return b.Backend.Validate(ctx, project, directory, raw, variables, profiles...)
 }
 
 func TestGitStackResolvesRelativeFilesFromItsComposeDirectory(t *testing.T) {

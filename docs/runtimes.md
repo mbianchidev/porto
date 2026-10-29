@@ -389,8 +389,11 @@ Workload controls support:
 - Explicit UID/resourceVersion-bound deletion for served resources, with
   additional storage/namespace/CRD consequence acknowledgement where applicable.
 
-Rollout observation uses actual ready/updated replicas, observed generation and
-failure conditions, with a three-minute bound. Paused/OnDelete policies,
+Rollout observation uses actual ready, updated and available replicas, observed
+generation and failure conditions, with a three-minute bound. Deployment,
+StatefulSet and DaemonSet availability must reach the desired count; readiness
+alone does not complete a rollout while the controller is still enforcing
+`minReadySeconds`. Paused/OnDelete policies,
 ProgressDeadlineExceeded, cancellation, API outages and incomplete rollout stay
 visible instead of claiming full completion. Controller history is filtered by
 the actual owning UID, never just a reused name. Rollback restores a retained pod
@@ -470,6 +473,9 @@ namespace and CRD consequences require additional acknowledgement. Helm/chart
 policies can delete PVCs or dependent resources. Neither chart rollback nor
 uninstall is a persistent-data/database rollback, and retained release history
 does not recreate deleted data.
+Rollback warnings include resources in both the current release and the retained
+target revision. A PVC present only in the current release still requires storage
+acknowledgement before rollback, even when the target manifest contains no PVC.
 
 Kubernetes-native GitOps application delivery with Flux and Argo CD is tracked
 separately in [#174](https://github.com/mbianchidev/porto/issues/174). The current

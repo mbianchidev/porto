@@ -352,10 +352,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			replicas = 1
 		}
-		next.Object["status"] = map[string]any{"observedGeneration": int64(1), "readyReplicas": replicas, "updatedReplicas": replicas, "replicas": replicas}
+		next.Object["status"] = map[string]any{"observedGeneration": int64(1), "readyReplicas": replicas, "updatedReplicas": replicas, "availableReplicas": replicas, "replicas": replicas}
 		next.SetGeneration(1)
 		if f.holdRollout {
-			next.Object["status"] = map[string]any{"observedGeneration": int64(0), "readyReplicas": int64(0), "updatedReplicas": int64(0)}
+			next.Object["status"] = map[string]any{"observedGeneration": int64(0), "readyReplicas": int64(0), "updatedReplicas": int64(0), "availableReplicas": int64(0)}
 		}
 	}
 	if r.URL.Query().Get("dryRun") != "All" {

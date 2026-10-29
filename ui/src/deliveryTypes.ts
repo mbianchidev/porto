@@ -23,6 +23,7 @@ export type DeliveryRequest = {
   source: DeliverySource
   compose: string
   variables: Record<string, string>
+  profiles?: string[]
   secrets?: Record<string, string>
   gitToken?: string
   pollSeconds: number
@@ -30,6 +31,11 @@ export type DeliveryRequest = {
   webhookSecret?: string
   detachGit?: boolean
   confirmDrift?: boolean
+}
+
+export type DeliveryConfiguration = {
+  variables: Record<string, string>
+  profiles?: string[]
 }
 
 export type DeliveryRevision = {
@@ -42,6 +48,7 @@ export type DeliveryRevision = {
   createdAt: string
   rollbackOf?: string
   warnings?: string[]
+  profiles?: string[]
 }
 
 export type DeliveryApplication = {
@@ -49,6 +56,7 @@ export type DeliveryApplication = {
   name: string
   target: string
   source: DeliverySource
+  profiles?: string[]
   currentRevision: string
   lastOperation?: string
   pollSeconds: number
@@ -69,6 +77,7 @@ export type DeliveryPreview = {
   before: string
   after: string
   warnings: string[]
+  profiles?: string[]
   expiresAt: string
 }
 

@@ -30,14 +30,14 @@ func (b deliveryBackend) AppliedDefinition(ctx context.Context, project app.Proj
 	return integration.EffectiveDefinition(ctx, project)
 }
 
-func (b deliveryBackend) Validate(ctx context.Context, project app.Project, directory string, definition []byte, variables map[string]string) ([]byte, error) {
+func (b deliveryBackend) Validate(ctx context.Context, project app.Project, directory string, definition []byte, variables map[string]string, profiles ...string) ([]byte, error) {
 	integration, ok := b.server.compose.(interface {
-		ValidateDefinition(context.Context, app.Project, string, []byte, map[string]string) ([]byte, error)
+		ValidateDefinition(context.Context, app.Project, string, []byte, map[string]string, ...string) ([]byte, error)
 	})
 	if !ok {
 		return nil, operations.Failure("Compose validation is unavailable in this runtime.")
 	}
-	return integration.ValidateDefinition(ctx, project, directory, definition, variables)
+	return integration.ValidateDefinition(ctx, project, directory, definition, variables, profiles...)
 }
 
 func (b deliveryBackend) Apply(ctx context.Context, project app.Project, activate func() error, progress func(string) error) error {
@@ -274,6 +274,14 @@ func (s *Server) deliveryRoutes(mux *http.ServeMux) {
 			return
 		}
 		value, err := s.delivery.Definition(id)
+		writeDeliveryResult(w, value, err)
+	})
+	mux.HandleFunc("GET /api/delivery/{id}/configuration", func(w http.ResponseWriter, r *http.Request) {
+		id, ok := deliveryProjectID(w, r)
+		if !ok {
+			return
+		}
+		value, err := s.delivery.Configuration(id)
 		writeDeliveryResult(w, value, err)
 	})
 	mux.HandleFunc("POST /api/delivery/{id}/deployments", s.requireRuntime("docker", func(w http.ResponseWriter, r *http.Request) {

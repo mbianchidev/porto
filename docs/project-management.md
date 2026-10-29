@@ -113,10 +113,24 @@ until Porto's environment abstraction provides them.
 Applications are whole Compose stacks, not single-container shortcuts. Multiple
 services, dependency health/completion conditions, shared networks, named
 volumes, builds and published ports remain in the effective definition.
-Readiness checks every enabled service and every configured replica, including
-successful completion jobs; intentionally zero-scaled services do not block
-deployment. Services behind inactive Compose profiles are not started or
-assigned ports. The delivery UI currently uses the default profile selection.
+Readiness checks every enabled service and every configured replica. Long-running
+services must stay running and satisfy declared or observed health checks; an
+exit code of zero is not a substitute for health. A service is treated as a
+completion job only when an enabled, nonzero-scaled consumer declares
+`depends_on: {job: {condition: service_completed_successfully}}`. Every job replica
+must actually exit with an observed zero exit code, not merely start running.
+Intentionally zero-scaled services do not block deployment.
+
+Use **Compose profiles (comma-separated)** to select named profiles. Blank selects
+default services only; `*` selects every declared profile. Unknown profile names
+fail validation instead of silently falling back to defaults. Services behind
+inactive profiles are not started or assigned ports. Native Compose resolves the
+selected service set, which Porto freezes into the effective runtime definition;
+later starts, builds, readiness checks and rollbacks do not depend on inherited
+host `COMPOSE_PROFILES`. The selected profiles appear in previews and recorded
+revisions. Editing an application restores its selection, and rollback restores
+the retained revision's selection.
+
 Updates remove obsolete containers only inside that project's Compose ownership;
 they never delete retained volumes. Git-based relative build, bind-mount and
 configuration paths resolve from the selected Compose file's directory, including
@@ -157,7 +171,15 @@ literals out of reusable templates and supply them through secret variables.
 
 Supply non-secret variables as a JSON object and sensitive variables through
 the password-protected secret JSON input. Omitted secret keys retain their
-stored values. Host-control environment variables such as `PATH`, `DOCKER_*`,
+stored values. Reopening any recorded application, including Git sources, loads
+saved non-secret variables and profiles without revealing its Compose source or
+secret values. If those settings cannot be loaded, preview is blocked until an
+explicit retry succeeds; unavailable configuration never becomes empty defaults.
+The read-only `GET /api/delivery/{id}/configuration` endpoint exposes only these
+editable non-secret settings. For JSON preview requests, omitted `variables` or
+`profiles` retain their saved values; an explicit empty object or array clears
+that selection.
+Host-control environment variables such as `PATH`, `DOCKER_*`,
 `COMPOSE_*`, `GIT_*` and loader settings are not application variables.
 **Validate and preview** runs maintained Compose configuration validation without
 starting services. The preview shows image/resource/port/storage changes and an

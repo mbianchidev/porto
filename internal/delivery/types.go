@@ -27,6 +27,7 @@ type Request struct {
 	Source         Source            `json:"source"`
 	Compose        string            `json:"compose"`
 	Variables      map[string]string `json:"variables"`
+	Profiles       []string          `json:"profiles"`
 	Secrets        map[string]string `json:"secrets"`
 	GitToken       *string           `json:"gitToken,omitempty"`
 	PollSeconds    int               `json:"pollSeconds"`
@@ -34,6 +35,11 @@ type Request struct {
 	WebhookSecret  *string           `json:"webhookSecret,omitempty"`
 	DetachGit      bool              `json:"detachGit"`
 	ConfirmDrift   bool              `json:"confirmDrift"`
+}
+
+type Configuration struct {
+	Variables map[string]string `json:"variables"`
+	Profiles  []string          `json:"profiles"`
 }
 
 type Revision struct {
@@ -46,6 +52,7 @@ type Revision struct {
 	CreatedAt       string            `json:"createdAt"`
 	RollbackOf      string            `json:"rollbackOf,omitempty"`
 	Warnings        []string          `json:"warnings,omitempty"`
+	Profiles        []string          `json:"profiles,omitempty"`
 }
 
 type Application struct {
@@ -53,6 +60,7 @@ type Application struct {
 	Name            string     `json:"name"`
 	Target          string     `json:"target"`
 	Source          Source     `json:"source"`
+	Profiles        []string   `json:"profiles,omitempty"`
 	CurrentRevision string     `json:"currentRevision"`
 	LastOperation   string     `json:"lastOperation,omitempty"`
 	PollSeconds     int        `json:"pollSeconds"`
@@ -73,6 +81,7 @@ type Preview struct {
 	Before       string   `json:"before"`
 	After        string   `json:"after"`
 	Warnings     []string `json:"warnings"`
+	Profiles     []string `json:"profiles"`
 	ExpiresAt    string   `json:"expiresAt"`
 }
 
@@ -92,7 +101,7 @@ type pending struct {
 }
 
 type Backend interface {
-	Validate(context.Context, app.Project, string, []byte, map[string]string) ([]byte, error)
+	Validate(context.Context, app.Project, string, []byte, map[string]string, ...string) ([]byte, error)
 	Apply(context.Context, app.Project, func() error, func(string) error) error
 	PinImages(context.Context, app.Project) (map[string]string, error)
 	AppliedDefinition(context.Context, app.Project) ([]byte, error)

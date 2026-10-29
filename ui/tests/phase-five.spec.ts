@@ -148,3 +148,140 @@ test('Compose editor requires a redacted preview and explicit apply consent', as
   await page.keyboard.press('Escape')
   await expect(create).toBeFocused()
 })
+
+test('reopening a Git application restores saved variables without revealing its definition or secrets', async ({ page }) => {
+  const saved = { APP_IMAGE: 'registry.invalid/synthetic:saved', MODE: 'synthetic-mode' }
+  const requests: Array<{ path: string; body: unknown }> = []
+  const application: DeliveryApplication = {
+    projectId: 9, name: 'synthetic-git', target: 'local',
+    source: { kind: 'git', git: { repository: 'https://example.invalid/synthetic/app.git', ref: 'main', path: 'compose.yaml' } },
+    currentRevision: 'e'.repeat(32), pollSeconds: 0, webhookEnabled: false, failures: 0, drift: false, revisions: [],
+  }
+  const reads: string[] = []
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    let value: unknown = baseline(path)
+    if (path === '/api/delivery') value = [application]
+    if (path === '/api/projects') value = [{ id: 9, name: application.name, strategy: 'compose', path: '/synthetic/git', status: 'stopped' }]
+    if (path === '/api/delivery/9/configuration') { reads.push(path); value = { variables: saved, profiles: ['dev', 'tools'] } }
+    if (path.includes('/definition')) reads.push(path)
+    if (path === '/api/delivery/previews' && request.method() === 'POST') {
+      requests.push({ path, body: request.postDataJSON() })
+      value = { token: 'f'.repeat(32), projectId: 9, baseRevision: application.currentRevision, before: '{}', after: '{}', warnings: [], expiresAt: '2099-01-01T00:00:00Z' }
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/applications')
+  await page.getByRole('option', { name: /synthetic-git/ }).click()
+  await expect(page.getByLabel('Non-secret variables (JSON)')).toHaveValue(JSON.stringify(saved, null, 2))
+  await expect(page.getByLabel('Compose profiles (comma-separated)')).toHaveValue('dev, tools')
+  await expect(page.getByLabel('Secret variables (JSON, omitted keys keep stored values)')).toHaveValue('{}')
+  await page.getByRole('button', { name: 'Validate and preview', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0].body).toMatchObject({ projectId: 9, source: application.source, variables: saved, secrets: {}, profiles: ['dev', 'tools'] })
+  expect(reads).toEqual(['/api/delivery/9/configuration'])
+})
+
+test('unavailable saved variables block preview instead of replacing configuration with defaults', async ({ page }) => {
+  let unavailable = true
+  let previews = 0
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    let value: unknown = baseline(path)
+    if (path === '/api/delivery') value = [{
+      projectId: 10, name: 'synthetic-locked-git', target: 'local',
+      source: { kind: 'git', git: { repository: 'https://example.invalid/synthetic/locked.git', ref: 'main', path: 'compose.yaml' } },
+      currentRevision: 'a'.repeat(32), pollSeconds: 0, webhookEnabled: false, failures: 0, drift: false, revisions: [],
+    }]
+    if (path === '/api/delivery/10/configuration') {
+      if (unavailable) {
+        await route.fulfill({ status: 503, contentType: 'application/json', body: JSON.stringify({ message: 'Synthetic saved configuration is unavailable.' }) })
+        return
+      }
+      value = { variables: { APP_IMAGE: 'registry.invalid/synthetic:retained' } }
+    }
+    if (path === '/api/delivery/previews' && request.method() === 'POST') previews++
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/applications')
+  await page.getByRole('option', { name: /synthetic-locked-git/ }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'Synthetic saved configuration is unavailable.' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Validate and preview', exact: true })).toBeDisabled()
+  expect(previews).toBe(0)
+  unavailable = false
+  await page.getByRole('button', { name: 'Retry loading saved configuration', exact: true }).click()
+  await expect(page.getByLabel('Non-secret variables (JSON)')).toHaveValue(JSON.stringify({ APP_IMAGE: 'registry.invalid/synthetic:retained' }, null, 2))
+  await expect(page.getByRole('button', { name: 'Validate and preview', exact: true })).toBeEnabled()
+})
+
+test('switching applications cannot apply a previous application settings response', async ({ page }) => {
+  let releaseFirst = () => {}
+  let completeFirst = () => {}
+  let startFirst = () => {}
+  const firstGate = new Promise<void>((resolve) => { releaseFirst = resolve })
+  const firstCompleted = new Promise<void>((resolve) => { completeFirst = resolve })
+  const firstStarted = new Promise<void>((resolve) => { startFirst = resolve })
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    let value: unknown = baseline(path)
+    if (path === '/api/delivery') value = [12, 13].map((projectId) => ({
+      projectId, name: `synthetic-git-${projectId}`, target: 'local',
+      source: { kind: 'git', git: { repository: `https://example.invalid/synthetic/${projectId}.git`, ref: 'main', path: 'compose.yaml' } },
+      currentRevision: String(projectId).repeat(16), pollSeconds: 0, webhookEnabled: false, failures: 0, drift: false, revisions: [],
+    }))
+    if (path === '/api/delivery/12/configuration') {
+      startFirst()
+      await firstGate
+      value = { variables: { OWNER: 'synthetic-first' }, profiles: ['first'] }
+    }
+    if (path === '/api/delivery/13/configuration') value = { variables: { OWNER: 'synthetic-second' }, profiles: ['second'] }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+    if (path === '/api/delivery/12/configuration') completeFirst()
+  })
+  await page.goto('/#/applications')
+  await page.getByRole('option', { name: /synthetic-git-12/ }).click()
+  await expect(page.getByRole('button', { name: 'Validate and preview', exact: true })).toBeDisabled()
+  await firstStarted
+  await page.getByRole('option', { name: /synthetic-git-13/ }).click()
+  const second = JSON.stringify({ OWNER: 'synthetic-second' }, null, 2)
+  await expect(page.getByLabel('Non-secret variables (JSON)')).toHaveValue(second)
+  releaseFirst()
+  await firstCompleted
+  await expect(page.getByLabel('Non-secret variables (JSON)')).toHaveValue(second)
+  await expect(page.getByLabel('Compose profiles (comma-separated)')).toHaveValue('second')
+  await expect(page.getByRole('button', { name: 'Validate and preview', exact: true })).toBeEnabled()
+})
+
+test('Compose profile selection is explicit and clearing it restores the default service selection', async ({ page }) => {
+  const requests: unknown[] = []
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    let value: unknown = baseline(path)
+    if (path === '/api/delivery') value = []
+    if (path === '/api/delivery/previews' && request.method() === 'POST') {
+      const body = request.postDataJSON()
+      requests.push(body)
+      value = { token: 'b'.repeat(32), projectId: 11, baseRevision: '', profiles: body.profiles, before: '{}', after: '{}', warnings: [], expiresAt: '2099-01-01T00:00:00Z' }
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/applications')
+  await page.getByRole('button', { name: 'Create application', exact: true }).click()
+  await page.getByLabel('Application name', { exact: true }).fill('synthetic-profiles')
+  await page.getByLabel('Compose YAML editor').fill('services:\n  web:\n    image: registry.invalid/synthetic:web\n  tools:\n    image: registry.invalid/synthetic:tools\n    profiles: [dev, tools]\n')
+  await page.getByLabel('Non-secret variables (JSON)').fill('{}')
+  const profiles = page.getByLabel('Compose profiles (comma-separated)')
+  await profiles.fill('dev, tools')
+  await page.getByRole('button', { name: 'Validate and preview', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0]).toMatchObject({ profiles: ['dev', 'tools'] })
+  await expect(page.getByRole('region', { name: 'Application deployment preview' })).toContainText('Selected Compose profiles: dev, tools')
+  await profiles.fill('')
+  await page.getByRole('button', { name: 'Validate and preview', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(2)
+  expect(requests[1]).toMatchObject({ profiles: [] })
+  await expect(page.getByRole('region', { name: 'Application deployment preview' })).toContainText('Selected Compose profiles: default services only')
+})

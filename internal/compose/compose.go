@@ -61,9 +61,16 @@ type PortPlan struct {
 }
 
 type serviceConfiguration struct {
-	Profiles []string `json:"profiles"`
-	Scale    *int     `json:"scale"`
-	Deploy   struct {
+	Profiles  []string `json:"profiles"`
+	Scale     *int     `json:"scale"`
+	DependsOn map[string]struct {
+		Condition string `json:"condition"`
+	} `json:"depends_on"`
+	Healthcheck *struct {
+		Disable bool     `json:"disable"`
+		Test    []string `json:"test"`
+	} `json:"healthcheck"`
+	Deploy struct {
 		Replicas *int `json:"replicas"`
 	} `json:"deploy"`
 	Ports []struct {
@@ -71,6 +78,11 @@ type serviceConfiguration struct {
 		Published string `json:"published"`
 		Protocol  string `json:"protocol"`
 	} `json:"ports"`
+}
+
+func (s serviceConfiguration) requiresHealth() bool {
+	return s.Healthcheck != nil && !s.Healthcheck.Disable &&
+		(len(s.Healthcheck.Test) == 0 || s.Healthcheck.Test[0] != "NONE")
 }
 
 func (s serviceConfiguration) desiredReplicas() int {

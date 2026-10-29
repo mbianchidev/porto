@@ -2,11 +2,59 @@ package kubeadmin
 
 import (
 	"context"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
+
+func TestRolloutWaitsForControllerAvailabilityIncludingMinReadySeconds(t *testing.T) {
+	for _, test := range []struct {
+		resource, kind, ready, updated, available string
+	}{
+		{"deployments", "Deployment", "readyReplicas", "updatedReplicas", "availableReplicas"},
+		{"statefulsets", "StatefulSet", "readyReplicas", "updatedReplicas", "availableReplicas"},
+		{"daemonsets", "DaemonSet", "numberReady", "updatedNumberScheduled", "numberAvailable"},
+	} {
+		t.Run(test.resource, func(t *testing.T) {
+			manager, api, _ := adminFixture(t)
+			current := object(t, fmt.Sprintf(`{"apiVersion":"apps/v1","kind":%q,"metadata":{"name":"synthetic-availability","namespace":"default","uid":"synthetic-availability-uid","resourceVersion":"1","generation":2},"spec":{"replicas":1,"minReadySeconds":30},"status":{}}`, test.kind))
+			current.Object["status"] = map[string]any{
+				"observedGeneration": int64(2), "replicas": int64(1), "desiredNumberScheduled": int64(1),
+				test.ready: int64(1), test.updated: int64(1), test.available: int64(0),
+			}
+			key := "apps/" + test.resource + "/default/synthetic-availability"
+			api.objects[key] = current
+			client, err := manager.client("porto-synthetic")
+			if err != nil {
+				t.Fatal(err)
+			}
+			target := Target{Context: "porto-synthetic", Namespace: "default", Group: "apps", Version: "v1",
+				Resource: test.resource, Name: "synthetic-availability", UID: "synthetic-availability-uid"}
+			observations := 0
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer cancel()
+			err = client.waitRollout(ctx, target, func(message string) error {
+				if strings.HasPrefix(message, "observing rollout:") {
+					observations++
+					if !strings.Contains(message, "0/1 available") {
+						t.Errorf("rollout progress omitted unavailable replicas: %s", message)
+					}
+					api.mu.Lock()
+					err := unstructured.SetNestedField(api.objects[key].Object, int64(1), "status", test.available)
+					api.mu.Unlock()
+					return err
+				}
+				return nil
+			})
+			if err != nil || observations == 0 {
+				t.Fatalf("rollout completed before the controller satisfied minReadySeconds availability: observations=%d err=%v", observations, err)
+			}
+		})
+	}
+}
 
 func TestDeletionFinalizersAndCanceledRolloutStayExplicitlyPartial(t *testing.T) {
 	manager, api, ops := adminFixture(t)

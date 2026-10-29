@@ -74,7 +74,7 @@ func TestDeliveryReadinessChecksEveryEnabledStackReplica(t *testing.T) {
 	}{
 		{
 			name:          "all services and replicas ready with a completed dependency",
-			configuration: `{"services":{"web":{"deploy":{"replicas":2}},"worker":{"scale":2},"migrate":{},"disabled":{"deploy":{"replicas":0}},"optional":{"profiles":["tools"]}}}`,
+			configuration: `{"services":{"web":{"deploy":{"replicas":2},"depends_on":{"migrate":{"condition":"service_completed_successfully"}}},"worker":{"scale":2},"migrate":{},"disabled":{"deploy":{"replicas":0}},"optional":{"profiles":["tools"]}}}`,
 			processes:     `[{"Service":"web","State":"running","Health":"healthy"},{"Service":"web","State":"running","Health":"healthy"},{"Service":"worker","State":"running"},{"Service":"worker","State":"running"},{"Service":"migrate","State":"exited","ExitCode":0}]`,
 		},
 		{
@@ -125,6 +125,84 @@ func TestDeliveryReadinessChecksEveryEnabledStackReplica(t *testing.T) {
 			err := integration.WaitHealthy(ctx, project)
 			if (err != nil) != test.wantError {
 				t.Fatalf("stack readiness = %v, wantError = %v", err, test.wantError)
+			}
+		})
+	}
+}
+
+func TestDeliveryReadinessDistinguishesCompletionJobsFromLongRunningServices(t *testing.T) {
+	const completionStack = `{"services":{"web":{"depends_on":{"migrate":{"condition":"service_completed_successfully"}}},"migrate":{}}}`
+	for _, test := range []struct {
+		name          string
+		configuration string
+		processes     []string
+		wantError     bool
+	}{
+		{
+			name:          "a health-checked service cannot complete before passing health",
+			configuration: `{"services":{"web":{"healthcheck":{"test":["CMD","true"]}}}}`,
+			processes:     []string{`[{"Service":"web","State":"exited","Health":"starting","ExitCode":0}]`},
+			wantError:     true,
+		},
+		{
+			name:          "a long-running service does not become a job by exiting successfully",
+			configuration: `{"services":{"web":{}}}`,
+			processes:     []string{`[{"Service":"web","State":"exited","ExitCode":0}]`},
+			wantError:     true,
+		},
+		{
+			name:          "completion jobs must actually finish rather than just run",
+			configuration: completionStack,
+			processes: []string{
+				`[{"Service":"web","State":"running"},{"Service":"migrate","State":"running"}]`,
+				`[{"Service":"web","State":"running"},{"Service":"migrate","State":"exited","ExitCode":0}]`,
+			},
+		},
+		{
+			name:          "declared health must be observed before readiness",
+			configuration: `{"services":{"web":{"healthcheck":{"test":["CMD","true"]}}}}`,
+			processes: []string{
+				`[{"Service":"web","State":"running"}]`,
+				`[{"Service":"web","State":"running","Health":"healthy"}]`,
+			},
+		},
+		{
+			name:          "inactive consumers do not turn a running service into a completion job",
+			configuration: `{"services":{"web":{},"optional":{"profiles":["tools"],"depends_on":{"web":{"condition":"service_completed_successfully"}}}}}`,
+			processes:     []string{`[{"Service":"web","State":"exited","ExitCode":0}]`},
+			wantError:     true,
+		},
+		{
+			name:          "successful completion requires an explicitly observed exit code",
+			configuration: completionStack,
+			processes:     []string{`[{"Service":"web","State":"running"},{"Service":"migrate","State":"exited"}]`},
+			wantError:     true,
+		},
+		{
+			name:          "disabled healthchecks do not require a health result",
+			configuration: `{"services":{"web":{"healthcheck":{"disable":true}}}}`,
+			processes:     []string{`[{"Service":"web","State":"running"}]`},
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("PORTO_HOME", t.TempDir())
+			observations := 0
+			runner := &fakeRunner{run: func(_ context.Context, command Command) ([]byte, error) {
+				if slices.Contains(command.Args, "config") {
+					return []byte(test.configuration), nil
+				}
+				result := test.processes[min(observations, len(test.processes)-1)]
+				observations++
+				return []byte(result), nil
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			err := New(runner).WaitHealthy(ctx, app.Project{ID: 98, Name: "synthetic-intent", Path: t.TempDir(), Command: "docker compose -f compose.yaml up"})
+			if (err != nil) != test.wantError {
+				t.Fatalf("readiness = %v, wantError = %v", err, test.wantError)
+			}
+			if !test.wantError && observations < len(test.processes) {
+				t.Fatalf("readiness was acknowledged before the required observation: %d of %d", observations, len(test.processes))
 			}
 		})
 	}
@@ -268,5 +346,101 @@ configs:
 	web := services["web"].(map[string]any)
 	if web["build"].(map[string]any)["context"] != filepath.Join(directory, "web") {
 		t.Fatal("relative stack build context resolved outside the selected source")
+	}
+}
+
+func TestComposeProfilesAreExplicitBoundedAndCanonical(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		profiles []string
+		want     []string
+		invalid  bool
+	}{
+		{"default services", nil, []string{}, false},
+		{"deduplicated sorted names", []string{"tools", "dev", "tools"}, []string{"dev", "tools"}, false},
+		{"all profiles", []string{"tools", "*"}, []string{"*"}, false},
+		{"flag is not a profile", []string{"--profile"}, nil, true},
+		{"environment is not a profile", []string{"COMPOSE_PROFILES=tools"}, nil, true},
+		{"empty explicit name", []string{""}, nil, true},
+		{"overlong name", []string{strings.Repeat("a", 129)}, nil, true},
+		{"bounded count", make([]string, 65), nil, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := NormalizeProfiles(test.profiles)
+			if (err != nil) != test.invalid || !slices.Equal(got, test.want) {
+				t.Fatalf("profile normalization = %v, %v; want %v, invalid=%t", got, err, test.want, test.invalid)
+			}
+		})
+	}
+}
+
+func TestNativeComposeProfilesFreezeExactlyTheSelectedServicesForRestartAndRollback(t *testing.T) {
+	if os.Getenv("PORTO_TEST_COMPOSE") != "1" {
+		t.Skip("set PORTO_TEST_COMPOSE=1 for native profile selection without an engine")
+	}
+	t.Setenv("PORTO_HOME", t.TempDir())
+	t.Setenv("COMPOSE_PROFILES", "debug")
+	directory := t.TempDir()
+	project := app.Project{ID: 99, Name: "synthetic-profiles", Path: directory, Strategy: "compose"}
+	raw := []byte(`services:
+  web:
+    image: registry.invalid/synthetic-web:one
+  tools:
+    image: registry.invalid/synthetic-tools:one
+    profiles: [tools]
+    depends_on:
+      web:
+        condition: service_started
+    deploy:
+      replicas: 2
+  debug:
+    image: registry.invalid/synthetic-debug:one
+    profiles: [debug]
+`)
+	for _, test := range []struct {
+		name     string
+		profiles []string
+		services []string
+	}{
+		{"default ignores host profiles", nil, []string{"web"}},
+		{"explicit tools", []string{"tools"}, []string{"web", "tools"}},
+		{"explicit debug", []string{"debug"}, []string{"web", "debug"}},
+		{"all declared profiles", []string{"*"}, []string{"web", "tools", "debug"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+			defer cancel()
+			integration := NewWithDockerHost(nil, "unix:///synthetic/not-a-real-engine.sock")
+			effective, err := integration.ValidateDefinition(ctx, project, directory, raw, nil, test.profiles...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var selected struct {
+				Services map[string]map[string]json.RawMessage `json:"services"`
+			}
+			if err := json.Unmarshal(effective, &selected); err != nil {
+				t.Fatal(err)
+			}
+			if len(selected.Services) != len(test.services) {
+				t.Fatalf("wrong active service count: %d, want %d", len(selected.Services), len(test.services))
+			}
+			for _, name := range test.services {
+				service, found := selected.Services[name]
+				if !found || service["profiles"] != nil {
+					t.Fatalf("selected service %s was lost or still depends on host profile activation", name)
+				}
+			}
+			reloaded, err := integration.ValidateDefinition(ctx, project, directory, effective, nil)
+			if err != nil {
+				t.Fatalf("recorded selection cannot restart without profile/environment inheritance: %v", err)
+			}
+			var before, after map[string]any
+			if json.Unmarshal(effective, &before) != nil || json.Unmarshal(reloaded, &after) != nil || !reflect.DeepEqual(before, after) {
+				t.Fatal("restart or rollback changed the frozen selected service model")
+			}
+		})
+	}
+	if _, err := New(nil).ValidateDefinition(context.Background(), project, directory, raw, nil, "not-declared"); err == nil {
+		t.Fatal("an unknown profile silently fell back to the default services")
 	}
 }

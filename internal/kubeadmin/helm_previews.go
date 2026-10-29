@@ -249,10 +249,12 @@ func (m *Manager) PreviewHelm(ctx context.Context, request HelmRequest) (HelmPre
 		if err != nil {
 			return HelmPreview{}, err
 		}
-		after, storage, err = renderedPublic(string(output))
+		var afterStorage []string
+		after, afterStorage, err = renderedPublic(string(output))
 		if err != nil {
 			return HelmPreview{}, err
 		}
+		storage = append(storage, afterStorage...)
 		warnings = append(warnings, "Rollback restores a retained Helm chart/configuration revision, not database schemas or persistent data. Native hooks and current API compatibility still apply.")
 	case "uninstall":
 		if _, err := m.helm(ctx, request.HelmScope, nil, "uninstall", request.Release, "--dry-run", "--keep-history"); err != nil {

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -20,6 +21,27 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"gopkg.in/yaml.v3"
 )
+
+var profileName = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$`)
+
+func NormalizeProfiles(profiles []string) ([]string, error) {
+	if len(profiles) > 64 {
+		return nil, errors.New("select at most 64 Compose profiles")
+	}
+	result := make([]string, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile != "*" && !profileName.MatchString(profile) {
+			return nil, errors.New("Compose profiles must be names of up to 128 letters, digits, dots, underscores or hyphens, beginning with a letter or digit, or *")
+		}
+		result = append(result, profile)
+	}
+	slices.Sort(result)
+	result = slices.Compact(result)
+	if slices.Contains(result, "*") {
+		return []string{"*"}, nil
+	}
+	return result, nil
+}
 
 func (i *Integration) SetDefinitionResolver(resolve func(app.Project) (string, error)) {
 	i.resolveDefinition = resolve
@@ -58,7 +80,11 @@ func UpArguments(project app.Project, plan PortPlan, reconcile bool) []string {
 	return args
 }
 
-func (i *Integration) ValidateDefinition(ctx context.Context, project app.Project, directory string, definition []byte, variables map[string]string) ([]byte, error) {
+func (i *Integration) ValidateDefinition(ctx context.Context, project app.Project, directory string, definition []byte, variables map[string]string, profiles ...string) ([]byte, error) {
+	profiles, err := NormalizeProfiles(profiles)
+	if err != nil {
+		return nil, err
+	}
 	root, err := config.RuntimeDir()
 	if err != nil {
 		return nil, err
@@ -86,29 +112,60 @@ func (i *Integration) ValidateDefinition(ctx context.Context, project app.Projec
 	environment = append(environment, i.dockerEnvironment("COMPOSE_PROJECT_NAME="+ProjectName(project), "DOCKER_CONFIG="+dockerConfig)...)
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	output, err := (localtools.ExecRunner{}).Run(ctx, runtimes.Command{Name: "docker", Dir: directory, Args: []string{"compose", "--project-directory", directory, "-p", ProjectName(project), "-f", path, "config", "--format", "json"}, Env: environment})
+	arguments := []string{"compose", "--project-directory", directory, "-p", ProjectName(project), "-f", path}
+	for _, profile := range profiles {
+		arguments = append(arguments, "--profile", profile)
+	}
+	run := func(options ...string) (localtools.Output, error) {
+		return (localtools.ExecRunner{}).Run(ctx, runtimes.Command{Name: "docker", Dir: directory, Args: append(slices.Clone(arguments), options...), Env: environment})
+	}
+	if len(profiles) > 0 && !slices.Contains(profiles, "*") {
+		catalog, err := run("config", "--profiles")
+		if err != nil {
+			return nil, operations.Failure("Unable to discover declared Compose profiles. Check YAML, required variables and referenced files; no definition was applied.")
+		}
+		available := strings.Fields(string(catalog.Stdout))
+		for _, profile := range profiles {
+			if !slices.Contains(available, profile) {
+				return nil, operations.Failure("A selected Compose profile is not declared by this definition. Check the selected profile names; no definition was applied.")
+			}
+		}
+	}
+	output, err := run("config", "--format", "json")
 	if err != nil {
 		if ctx.Err() != nil {
 			return nil, ctx.Err()
 		}
 		return nil, operations.Failure("Compose validation failed. Check YAML, required variables, referenced files and the installed Compose client; no definition was applied.")
 	}
-	var document struct {
-		Services map[string]struct {
-			Image string `json:"image"`
-		} `json:"services"`
-	}
-	if json.Unmarshal(output.Stdout, &document) != nil || len(document.Services) == 0 {
+	var document map[string]json.RawMessage
+	var services map[string]map[string]json.RawMessage
+	if json.Unmarshal(output.Stdout, &document) != nil || json.Unmarshal(document["services"], &services) != nil || len(services) == 0 {
 		return nil, operations.Failure("Compose definition has no valid services.")
 	}
-	for _, service := range document.Services {
-		if service.Image != "" {
-			if _, err := reference.ParseAnyReference(service.Image); err != nil {
+	for _, service := range services {
+		if service == nil {
+			return nil, operations.Failure("Compose returned an invalid effective service.")
+		}
+		var image string
+		if encoded, found := service["image"]; found {
+			if err := json.Unmarshal(encoded, &image); err != nil {
+				return nil, operations.Failure("Compose definition has an invalid image reference.")
+			}
+		}
+		if image != "" {
+			if _, err := reference.ParseAnyReference(image); err != nil {
 				return nil, operations.Failure("Compose definition has an invalid image reference; use a credential-free image name, tag or digest.")
 			}
 		}
+		// Native config already selected the active services. Freeze that set for later starts and rollbacks.
+		delete(service, "profiles")
 	}
-	return output.Stdout, nil
+	document["services"], err = json.Marshal(services)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(document)
 }
 
 func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) error {
@@ -143,6 +200,7 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 		return operations.Failure("Compose returned invalid service configuration during readiness checks.")
 	}
 	expected := map[string]int{}
+	completionJobs := map[string]bool{}
 	for name, service := range document.Services {
 		if len(service.Profiles) == 0 {
 			replicas := service.desiredReplicas()
@@ -150,6 +208,13 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 				return operations.Failure("Compose returned an invalid service replica count during readiness checks.")
 			}
 			expected[name] = replicas
+			if replicas > 0 {
+				for dependency, requirement := range service.DependsOn {
+					if requirement.Condition == "service_completed_successfully" {
+						completionJobs[dependency] = true
+					}
+				}
+			}
 		}
 	}
 	if len(expected) == 0 {
@@ -179,10 +244,16 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 				}
 				continue
 			}
-			if process.Health == "unhealthy" || process.State == "dead" || process.State == "exited" && process.ExitCode != 0 {
+			if process.Health == "unhealthy" || process.State == "dead" {
 				return operations.Failure("A selected Compose service failed or is unhealthy. Inspect its container health and redacted project logs before retrying.")
 			}
-			if process.State == "running" && (process.Health == "" || process.Health == "healthy") || process.State == "exited" && process.ExitCode == 0 {
+			if process.State == "exited" {
+				if !completionJobs[process.Service] || process.ExitCode == nil || *process.ExitCode != 0 {
+					return operations.Failure("A selected Compose service exited without satisfying its declared readiness. Only an explicit service_completed_successfully dependency with an observed zero exit code counts as a completed job.")
+				}
+				ready[process.Service]++
+			} else if process.State == "running" && !completionJobs[process.Service] &&
+				(process.Health == "healthy" || process.Health == "" && !document.Services[process.Service].requiresHealth()) {
 				ready[process.Service]++
 			}
 		}
@@ -208,7 +279,7 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 
 type deliveryProcess struct {
 	Service, State, Health string
-	ExitCode               int
+	ExitCode               *int
 }
 
 func decodeDeliveryProcesses(output []byte) ([]deliveryProcess, error) {

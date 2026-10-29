@@ -225,21 +225,23 @@ func (s *session) waitRollout(parent context.Context, target Target, progress fu
 		}
 		ready, _, _ := unstructured.NestedInt64(object.Object, "status", "readyReplicas")
 		updated, _, _ := unstructured.NestedInt64(object.Object, "status", "updatedReplicas")
+		available, _, _ := unstructured.NestedInt64(object.Object, "status", "availableReplicas")
 		if target.Resource == "daemonsets" {
 			desired, _, _ = unstructured.NestedInt64(object.Object, "status", "desiredNumberScheduled")
 			ready, _, _ = unstructured.NestedInt64(object.Object, "status", "numberReady")
 			updated, _, _ = unstructured.NestedInt64(object.Object, "status", "updatedNumberScheduled")
+			available, _, _ = unstructured.NestedInt64(object.Object, "status", "numberAvailable")
 		}
 		observed, _, _ := unstructured.NestedInt64(object.Object, "status", "observedGeneration")
-		complete := observed >= object.GetGeneration() && ready == desired && updated == desired
+		complete := observed >= object.GetGeneration() && ready == desired && updated == desired && available == desired
 		if target.Resource == "deployments" {
 			total, _, _ := unstructured.NestedInt64(object.Object, "status", "replicas")
 			complete = complete && total == desired
 		}
 		if complete {
-			return progress("controller rollout is ready; this does not prove application-level health")
+			return progress("controller rollout is ready and available; this does not prove application-level health")
 		}
-		if err := progress(fmt.Sprintf("observing rollout: %d/%d ready, %d/%d updated", ready, desired, updated, desired)); err != nil {
+		if err := progress(fmt.Sprintf("observing rollout: %d/%d ready, %d/%d updated, %d/%d available", ready, desired, updated, desired, available, desired)); err != nil {
 			return err
 		}
 		select {

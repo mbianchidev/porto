@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -7,7 +7,7 @@ import { LocalOperations } from '../components/LocalOperations'
 import { Inspector } from '../components/Inspector'
 import { StatusLamp } from '../components/StatusLamp'
 import type { Project } from '../types'
-import type { DeliveryApplication, DeliveryPreview, DeliveryRequest, DeliverySource, DeliveryTemplate, LocalOperation } from '../deliveryTypes'
+import type { DeliveryApplication, DeliveryConfiguration, DeliveryPreview, DeliveryRequest, DeliverySource, DeliveryTemplate, LocalOperation } from '../deliveryTypes'
 
 function stringMap(text: string): Record<string, string> {
   const value: unknown = JSON.parse(text)
@@ -30,6 +30,7 @@ export function Applications() {
   const [git, setGit] = useState(EMPTY_GIT)
   const [compose, setCompose] = useState(INITIAL_COMPOSE)
   const [variables, setVariables] = useState('{"APP_IMAGE": ""}')
+  const [profiles, setProfiles] = useState('')
   const [secrets, setSecrets] = useState('{}')
   const [gitToken, setGitToken] = useState('')
   const [publicGit, setPublicGit] = useState(false)
@@ -43,13 +44,40 @@ export function Applications() {
   const [templateVersion, setTemplateVersion] = useState(1)
   const [preview, setPreview] = useState<DeliveryPreview | null>(null)
   const [busy, setBusy] = useState(false)
+  const [loadingConfiguration, setLoadingConfiguration] = useState(false)
+  const [configurationError, setConfigurationError] = useState('')
+  const configurationRequest = useRef<AbortController | null>(null)
   const fileInput = useRef<HTMLInputElement>(null)
   const inspectorTrigger = useRef<HTMLElement | null>(null)
   const selected = (applications.data ?? []).find((application) => application.projectId === projectID)
   const selectedTemplate = (templates.data ?? []).find((template) => `${template.name}:${template.version}` === templateKey)
   const project = (projects.data ?? []).find((entry) => entry.id === projectID)
 
+  useEffect(() => () => configurationRequest.current?.abort(), [])
+
+  async function loadConfiguration(id: number) {
+    configurationRequest.current?.abort()
+    const controller = new AbortController()
+    configurationRequest.current = controller
+    setLoadingConfiguration(true)
+    setConfigurationError('')
+    try {
+      const result = await apiGet<DeliveryConfiguration>(`/api/delivery/${id}/configuration`, controller.signal)
+      if (!controller.signal.aborted) {
+        setVariables(JSON.stringify(result.variables, null, 2))
+        setProfiles((result.profiles ?? []).join(', '))
+      }
+    } catch (error) {
+      if (!controller.signal.aborted) setConfigurationError(errorMessage(error, 'Saved application configuration could not be loaded. Retry before previewing changes.'))
+    } finally {
+      if (!controller.signal.aborted) setLoadingConfiguration(false)
+    }
+  }
+
   function select(application?: DeliveryApplication) {
+    configurationRequest.current?.abort()
+    setLoadingConfiguration(false)
+    setConfigurationError('')
     if (document.activeElement instanceof HTMLElement) inspectorTrigger.current = document.activeElement
     setProjectID(application?.projectId ?? 0)
     setName(application?.name ?? '')
@@ -59,6 +87,7 @@ export function Applications() {
     setWebhookEnabled(application?.webhookEnabled ?? false)
     setCompose(application ? '' : INITIAL_COMPOSE)
     setVariables(application ? '{}' : '{"APP_IMAGE": ""}')
+    setProfiles('')
     setSecrets('{}')
     setGitToken('')
     setPublicGit(false)
@@ -67,9 +96,11 @@ export function Applications() {
     setConfirmDrift(false)
     setPreview(null)
     setEditing(true)
+    if (application) void loadConfiguration(application.projectId)
   }
 
   function closeInspector() {
+    configurationRequest.current?.abort()
     setEditing(false)
     requestAnimationFrame(() => { if (inspectorTrigger.current?.isConnected) inspectorTrigger.current.focus() })
   }
@@ -81,11 +112,13 @@ export function Applications() {
 
   function prepare() {
     void run(async () => {
+      if (loadingConfiguration || configurationError) throw new Error('Load the saved application configuration before previewing changes.')
       const source: DeliverySource = { kind: sourceKind, git: sourceKind === 'git' ? git : EMPTY_GIT }
       if (sourceKind === 'template' && selectedTemplate) { source.template = selectedTemplate.name; source.templateVersion = selectedTemplate.version }
       const request: DeliveryRequest = {
         projectId: projectID, name, target: 'local', source, compose,
         variables: stringMap(variables), secrets: stringMap(secrets),
+        profiles: profiles.split(',').map((profile) => profile.trim()).filter(Boolean),
         gitToken: publicGit ? '' : gitToken || undefined, pollSeconds: sourceKind === 'git' ? pollSeconds : 0,
         webhookEnabled: sourceKind === 'git' && webhookEnabled, webhookSecret: webhookSecret || undefined, detachGit, confirmDrift,
       }
@@ -116,6 +149,7 @@ export function Applications() {
       const result = await apiGet<DeliveryRequest>(`/api/delivery/${projectID}/definition?reveal=true`)
       setCompose(result.compose)
       setVariables(JSON.stringify(result.variables ?? {}, null, 2))
+      setProfiles((result.profiles ?? []).join(', '))
       setPreview(null)
     })
   }
@@ -142,6 +176,11 @@ export function Applications() {
           <h3>Source and configuration</h3>
           <p>Compose services use the existing project controller and stable loopback port plan. Preview hides environment values; deployment logs redact stored secret-variable values.</p>
           <form className="inspectorForm" onChange={() => setPreview(null)} onSubmit={(event) => { event.preventDefault(); prepare() }}>
+            {loadingConfiguration && <p role="status">Loading saved application configuration...</p>}
+            {configurationError && <>
+              <p role="alert">{configurationError}</p>
+              <button type="button" disabled={busy || loadingConfiguration} onClick={() => void loadConfiguration(projectID)}>Retry loading saved configuration</button>
+            </>}
             {!selected && <label>Existing Compose project<select value={projectID} onChange={(event) => {
               const id = Number(event.target.value)
               setProjectID(id)
@@ -153,6 +192,8 @@ export function Applications() {
             <label>Source<select value={sourceKind} onChange={(event) => setSourceKind(event.target.value as DeliverySource['kind'])}>
               <option value="editor">Compose editor</option><option value="upload">Compose file upload</option><option value="template">Versioned template</option><option value="git">Git repository</option>
             </select></label>
+            <label>Compose profiles (comma-separated)<input value={profiles} maxLength={8192} disabled={loadingConfiguration || !!configurationError} onChange={(event) => setProfiles(event.target.value)} placeholder="dev, tools" /></label>
+            <p>Blank selects default services only. Named profiles add their services; * enables every declared profile. The selection is recorded with each deployment.</p>
             {sourceKind === 'git' && <>
               <label>Repository HTTPS URL or selected local repository<input required value={git.repository} onChange={(event) => setGit({ ...git, repository: event.target.value })} /></label>
               <label>Explicit branch, tag or commit<input required value={git.ref} onChange={(event) => setGit({ ...git, ref: event.target.value })} /></label>
@@ -188,9 +229,9 @@ export function Applications() {
             </>}
             {selected?.source.kind === 'git' && sourceKind !== 'git' && <label><input type="checkbox" checked={detachGit} onChange={(event) => setDetachGit(event.target.checked)} />Detach Git ownership and disable automatic updates before applying this edit</label>}
             {selected?.drift && <label><input type="checkbox" checked={confirmDrift} onChange={(event) => setConfirmDrift(event.target.checked)} />Replace the externally changed or partially applied definition after this preview</label>}
-            <label>Non-secret variables (JSON)<textarea rows={4} value={variables} onChange={(event) => setVariables(event.target.value)} spellCheck={false} /></label>
+            <label>Non-secret variables (JSON)<textarea rows={4} value={variables} disabled={loadingConfiguration || !!configurationError} onChange={(event) => setVariables(event.target.value)} spellCheck={false} /></label>
             <label>Secret variables (JSON, omitted keys keep stored values)<input type="password" autoComplete="new-password" value={secrets} onChange={(event) => setSecrets(event.target.value)} /></label>
-            <button type="submit" disabled={busy}>{busy ? 'Preparing operation...' : 'Validate and preview'}</button>
+            <button type="submit" disabled={busy || loadingConfiguration || !!configurationError}>{busy ? 'Preparing operation...' : 'Validate and preview'}</button>
           </form>
           {sourceKind === 'editor' && <details><summary>Save a reusable template</summary>
             <form className="inspectorForm" onSubmit={(event) => {
@@ -210,6 +251,7 @@ export function Applications() {
         {preview && <section className="drawerPanel" aria-label="Application deployment preview">
           <h3>Configuration preview</h3>
           <p>Selected Git commit: <span className="mono">{preview.commit || 'Not a Git source'}</span>. Expires {preview.expiresAt}.</p>
+          <p>Selected Compose profiles: {preview.profiles?.join(', ') || 'default services only'}.</p>
           {preview.warnings.map((warning) => <p role="status" key={warning}>{warning}</p>)}
           <h4>Before</h4><pre className="definitionText">{preview.before}</pre><h4>After</h4><pre className="definitionText">{preview.after}</pre>
           <button type="button" disabled={busy} onClick={apply}>Apply preview</button>
@@ -242,6 +284,7 @@ export function Applications() {
             })}>Pause automatic updates</button>
           </div>}
           {[...selected.revisions].reverse().map((revision) => <details key={revision.id}><summary>{revision.createdAt} / {revision.commit?.slice(0, 12) || revision.id.slice(0, 12)}{revision.id === selected.currentRevision ? ' / current' : ''}{revision.rollbackOf ? ' / rollback' : ''}</summary>
+            <p>Compose profiles: {revision.profiles?.join(', ') || 'default services only'}.</p>
             <p className="mono">Configuration: {revision.configDigest}</p>
             <p className="mono">Effective configuration: {revision.effectiveDigest}</p>
             <pre className="definitionText">{JSON.stringify(revision.images, null, 2)}</pre>
