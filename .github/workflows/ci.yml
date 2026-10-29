@@ -683,7 +683,10 @@ jobs:
       - name: Validate Windows update helper
         if: runner.os == 'Windows'
         shell: pwsh
-        run: '[scriptblock]::Create((Get-Content -Raw ui/electron/apply-update.ps1)) | Out-Null'
+        run: |
+          [scriptblock]::Create((Get-Content -Raw ui/electron/apply-update.ps1)) | Out-Null
+          & node --test ui/electron/windows-installer.test.cjs
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Build native installers
         id: installers

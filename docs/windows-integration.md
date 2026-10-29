@@ -56,6 +56,17 @@ can still race. The definitive fixes are in newer guest systemd versions
 The existing Windows Ubuntu 24.04 image selection and existing guest disks are
 unchanged; no systemd binary, kernel, PAM policy or host configuration is patched.
 
+The standalone Windows updater uses native process executable/creation metadata,
+not the CIM provider. Installed executable names only select candidates; the
+complete installation path establishes ownership, and PID creation time and path
+are rechecked before stopping a process. A running owned QEMU executable still
+refuses the update before readiness. Unknown inspection fails explicitly, and
+the existing 15-second helper-readiness limit is unchanged.
+Both native Windows CI rows exercise the actual helper with CIM unavailable,
+an owned QEMU-shaped synthetic process, and an unrelated same-name executable.
+The fixture checks the real readiness handshake and preserves the unrelated
+process before the separate full NSIS update/uninstall acceptance runs.
+
 ## Native Windows setup
 
 In **Settings > Native Windows containers**, inspect host capabilities and

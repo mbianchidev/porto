@@ -144,6 +144,18 @@ func (m *Manager) recordContainerExecution(ctx context.Context, id string, selec
 	if selection.Execution == "" {
 		return nil
 	}
+	updates := map[string]string{
+		acceleration.ExecutionLabel: selection.Execution,
+		acceleration.PlatformLabel:  selection.Platform,
+	}
+	if handled, operationErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.UpdateLabels(ctx, id, updates)
+	}); handled {
+		if operationErr == nil {
+			m.invalidateContainerInventory()
+		}
+		return operationErr
+	}
 	backend, close, err := m.resourceSaverRuntime(ctx)
 	if err != nil {
 		return err
@@ -157,9 +169,7 @@ func (m *Manager) recordContainerExecution(ctx context.Context, id string, selec
 	if err != nil {
 		return err
 	}
-	_, err = container.SetLabels(withContainerdNamespace(ctx, backend.namespace), map[string]string{
-		acceleration.ExecutionLabel: selection.Execution, acceleration.PlatformLabel: selection.Platform,
-	})
+	_, err = container.SetLabels(withContainerdNamespace(ctx, backend.namespace), updates)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}

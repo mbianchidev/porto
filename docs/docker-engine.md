@@ -73,6 +73,12 @@ guest ownership marker before `buildctl` can consume protocol input. This
 avoids redundant cold SSH discovery/ownership processes for concurrent Buildx
 connections without removing the ownership check or extending client deadlines.
 
+Container lifecycle execution labels use the same direct metadata operations
+and healthy inventory connection as the lifecycle action. Successful start or
+resume no longer opens another cold Lima/containerd connection just to record
+its selected architecture. Architecture validation, namespace/label ownership,
+caller cancellation and operation deadlines remain unchanged.
+
 ## Live container inventory
 
 The daemon maintains one authoritative, revisioned container snapshot for both

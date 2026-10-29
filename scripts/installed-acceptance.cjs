@@ -706,8 +706,10 @@ async function acceptance(fixture, reopen = false) {
     assert.ok(JSON.parse(listing.body).some((item) => item.id === id || id.startsWith(item.id)),
       'The real installed renderer must observe the Compose container')
     for (const [action, running] of [['stop', false], ['start', true]]) {
+      console.log(`Installed lifecycle: requesting renderer ${action}`)
       const response = await rendererRequest(session.renderer, `/api/docker/containers/${id}/${action}`, 'POST')
       assert.equal(response.status, 200, response.body)
+      console.log(`Installed lifecycle: confirming real task state after ${action}`)
       await waitFor(async () => (await inspect()).State.Running === running, `real desktop ${action}`)
     }
     console.log('Installed acceptance: verifying active-workload update refusal')
