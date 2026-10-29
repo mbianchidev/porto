@@ -30,6 +30,10 @@ func (s *Server) kubernetesAdminRoutes(mux *http.ServeMux) {
 		value, err := s.kubeAdmin.List(r.Context(), adminTarget(r), r.URL.Query().Get("continue"))
 		writeKubernetesAdmin(w, value, err)
 	})
+	register("GET /api/kubernetes/admin/resource-names", func(w http.ResponseWriter, r *http.Request) {
+		value, err := s.kubeAdmin.ListNames(r.Context(), adminTarget(r), r.URL.Query().Get("continue"))
+		writeKubernetesAdmin(w, value, err)
+	})
 	register("GET /api/kubernetes/admin/resource", func(w http.ResponseWriter, r *http.Request) {
 		value, err := s.kubeAdmin.Get(r.Context(), adminTarget(r), r.URL.Query().Get("reveal") == "true")
 		writeKubernetesAdmin(w, value, err)

@@ -60,6 +60,32 @@ type PortPlan struct {
 	Ports        []PlannedPort
 }
 
+type serviceConfiguration struct {
+	Profiles []string `json:"profiles"`
+	Scale    *int     `json:"scale"`
+	Deploy   struct {
+		Replicas *int `json:"replicas"`
+	} `json:"deploy"`
+	Ports []struct {
+		Target    int    `json:"target"`
+		Published string `json:"published"`
+		Protocol  string `json:"protocol"`
+	} `json:"ports"`
+}
+
+func (s serviceConfiguration) desiredReplicas() int {
+	if len(s.Profiles) > 0 {
+		return 0
+	}
+	if s.Scale != nil {
+		return *s.Scale
+	}
+	if s.Deploy.Replicas != nil {
+		return *s.Deploy.Replicas
+	}
+	return 1
+}
+
 type Runner interface {
 	Run(ctx context.Context, command Command) ([]byte, error)
 }
@@ -225,7 +251,7 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		Dir:  project.Path,
 		Name: "docker",
 		Args: append(composeArguments(project, file), "config", "--format", "json"),
-		Env:  i.dockerEnvironment("COMPOSE_PROJECT_NAME=" + ProjectName(project)),
+		Env:  i.dockerEnvironment("COMPOSE_PROJECT_NAME="+ProjectName(project), "COMPOSE_PROFILES="),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return PortPlan{}, fmt.Errorf("Docker Compose port planning for %s timed out", project.Name)
@@ -234,13 +260,7 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		return PortPlan{}, commandError("inspect Docker Compose ports for "+project.Name, output, err)
 	}
 	var composeConfig struct {
-		Services map[string]struct {
-			Ports []struct {
-				Target    int    `json:"target"`
-				Published string `json:"published"`
-				Protocol  string `json:"protocol"`
-			} `json:"ports"`
-		} `json:"services"`
+		Services map[string]serviceConfiguration `json:"services"`
 	}
 	if err := json.Unmarshal(output, &composeConfig); err != nil {
 		return PortPlan{}, fmt.Errorf("decode Docker Compose configuration for %s: %w", project.Name, err)
@@ -263,6 +283,13 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		return PortPlan{}, err
 	}
 	for _, service := range serviceNames {
+		replicas := composeConfig.Services[service].desiredReplicas()
+		if replicas < 0 {
+			return PortPlan{}, fmt.Errorf("invalid Docker Compose replica count for %s/%s", project.Name, service)
+		}
+		if replicas == 0 {
+			continue
+		}
 		for _, configured := range composeConfig.Services[service].Ports {
 			protocol := strings.ToLower(configured.Protocol)
 			if protocol == "" {

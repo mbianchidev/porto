@@ -1406,7 +1406,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	var cmd *exec.Cmd
 	var stdout, stderr io.ReadCloser
 	if p.Strategy == "compose" && composePlan.ConfigFile != "" {
-		cmd, stdout, stderr, err = process.Command(context.Background(), p.Path, "docker", compose.UpArguments(p, composePlan)...)
+		cmd, stdout, stderr, err = process.Command(context.Background(), p.Path, "docker", compose.UpArguments(p, composePlan, recordedDelivery)...)
 		if err == nil {
 			cmd.Env = process.WithEnvironment(os.Environ(), "PORT="+strconv.Itoa(port), "PORTO_PORT="+strconv.Itoa(port), "COMPOSE_PROFILES=")
 		}

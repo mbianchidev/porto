@@ -82,6 +82,7 @@ func (m *Manager) Access(ctx context.Context, target Target) (Access, error) {
 }
 
 func (m *Manager) List(ctx context.Context, target Target, continuation string) (ObjectList, error) {
+	target.Name = ""
 	client, err := m.client(target.Context)
 	if err != nil {
 		return ObjectList{}, err
@@ -96,13 +97,7 @@ func (m *Manager) List(ctx context.Context, target Target, continuation string) 
 	query := metav1.ListOptions{Limit: 200, Continue: continuation}
 	result := ObjectList{Resource: resource, Items: []Object{}}
 	if resource.Kind == "Secret" {
-		objects := client.metadata.Resource(gvr(target))
-		var list *metav1.PartialObjectMetadataList
-		if target.Namespace != "" {
-			list, err = objects.Namespace(target.Namespace).List(ctx, query)
-		} else {
-			list, err = objects.List(ctx, query)
-		}
+		list, err := client.metadataObjects(target).List(ctx, query)
 		if err != nil {
 			return result, apiError(err)
 		}
@@ -120,6 +115,29 @@ func (m *Manager) List(ctx context.Context, target Target, continuation string) 
 	result.Continue = list.GetContinue()
 	for index := range list.Items {
 		result.Items = append(result.Items, objectView(target, &list.Items[index], false))
+	}
+	return result, nil
+}
+
+func (m *Manager) ListNames(ctx context.Context, target Target, continuation string) (NameList, error) {
+	target.Name = ""
+	client, err := m.client(target.Context)
+	if err != nil {
+		return NameList{}, err
+	}
+	if _, err := client.resource(target); err != nil {
+		return NameList{}, err
+	}
+	if err := client.require(ctx, target, "list", ""); err != nil {
+		return NameList{}, err
+	}
+	list, err := client.metadataObjects(target).List(ctx, metav1.ListOptions{Limit: 200, Continue: continuation})
+	if err != nil {
+		return NameList{}, apiError(err)
+	}
+	result := NameList{Names: make([]string, 0, len(list.Items)), Continue: list.Continue}
+	for _, item := range list.Items {
+		result.Names = append(result.Names, item.Name)
 	}
 	return result, nil
 }
@@ -155,7 +173,7 @@ func (m *Manager) Get(ctx context.Context, target Target, reveal bool) (Object, 
 		return Object{}, err
 	}
 	if resource.Kind == "Secret" && !reveal {
-		metadata, err := client.metadata.Resource(gvr(target)).Namespace(target.Namespace).Get(ctx, target.Name, metav1.GetOptions{})
+		metadata, err := client.metadataObjects(target).Get(ctx, target.Name, metav1.GetOptions{})
 		if err != nil {
 			return Object{}, apiError(err)
 		}

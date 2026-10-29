@@ -67,6 +67,21 @@ test('local image analysis filters real finding fields and exports machine-reada
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true)
 })
 
+test('image resource suggestions remain searchable and accept names outside the inventory', async ({ page }) => {
+  await mockAnalysis(page, fixtureReport)
+  await page.getByRole('button', { name: 'Close inspector', exact: true }).click()
+  const input = page.getByLabel('Filter images', { exact: true })
+  await expect.poll(() => input.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('Expected image resource filter')
+    return Array.from(element.list?.options ?? [], (option) => option.value)
+  })).toEqual(['synthetic/image:one'])
+  await input.fill('synthetic/image:one')
+  await expect(page.getByRole('listbox', { name: 'Docker images', exact: true }).getByRole('option')).toHaveCount(1)
+  await input.fill('synthetic/not-listed:two')
+  await expect(input).toHaveValue('synthetic/not-listed:two')
+  await expect(page.getByRole('listbox', { name: 'Docker images', exact: true }).getByRole('option')).toHaveCount(0)
+})
+
 test('failed or unavailable analysis never becomes a clean zero', async ({ page }) => {
   const requests = await mockAnalysis(page, { ...fixtureReport, status: 'partial', findings: [], warnings: ['Synthetic OS package coverage is unavailable.'] })
   await expect(page.getByText('Incomplete, stale or failed analysis is not evidence of zero vulnerabilities.')).toBeVisible()

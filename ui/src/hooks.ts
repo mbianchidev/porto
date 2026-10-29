@@ -81,6 +81,7 @@ export function usePolledResource<T>(
         }
       } catch (err) {
         if (active && !isAbortError(err)) {
+          setResource((current) => current.cacheKey === cacheKey ? current : { cacheKey, data: cachedResource<T>(cacheKey) })
           setError(errorMessage(err, 'Request failed'))
         }
       } finally {

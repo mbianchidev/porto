@@ -7,6 +7,8 @@ import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import type { KubernetesContext, KubernetesService } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(90px,0.6fr) minmax(120px,0.9fr) minmax(150px,1fr) minmax(70px,0.4fr)'
@@ -36,7 +38,7 @@ export function KubernetesServices({
   )
   const items = (services.data ?? []).filter((service) => matchesNamespace(service.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((service) => normalizedQuery === '' || [service.name, service.namespace, service.type]
+  const filtered = items.filter((service) => normalizedQuery === '' || [service.name, service.namespace, `${service.namespace}/${service.name}`, service.type]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const key = (service: KubernetesService) => `${service.namespace}/${service.name}`
   const selected = items.find((service) => key(service) === selectedKey) ?? null
@@ -53,13 +55,14 @@ export function KubernetesServices({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter services</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter services by name or type" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((service) => `${service.namespace}/${service.name}`)} type="search" value={query} placeholder="Filter services by name or type" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="namespaceField">
           <span>Namespace</span>
-          <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+          <ResourceInput options={(services.data ?? []).map((service) => service.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup target={{ context, namespace, group: '', version: 'v1', resource: 'services', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} services</span>
         <button className="refreshControl" type="button" onClick={() => { status.reload(); services.reload() }}>Refresh</button>
       </div>

@@ -110,6 +110,18 @@ Native-process projects and managed Kubernetes containers cannot be adopted.
 Only the local Linux/WSL Compose target is supported; other targets are rejected
 until Porto's environment abstraction provides them.
 
+Applications are whole Compose stacks, not single-container shortcuts. Multiple
+services, dependency health/completion conditions, shared networks, named
+volumes, builds and published ports remain in the effective definition.
+Readiness checks every enabled service and every configured replica, including
+successful completion jobs; intentionally zero-scaled services do not block
+deployment. Services behind inactive Compose profiles are not started or
+assigned ports. The delivery UI currently uses the default profile selection.
+Updates remove obsolete containers only inside that project's Compose ownership;
+they never delete retained volumes. Git-based relative build, bind-mount and
+configuration paths resolve from the selected Compose file's directory, including
+files in repository subdirectories.
+
 Choose **Compose editor**, upload a YAML/JSON file (at most 1 MiB), select an
 immutable template version, or provide an explicit Git repository/ref/file.
 Built-in HTTP and worker templates declare required image/port/secret variables

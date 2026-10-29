@@ -300,6 +300,52 @@ func gitFixture(t *testing.T) (string, func(string) string) {
 	return root, commit
 }
 
+type sourceDirectoryBackend struct {
+	Backend
+	directory string
+}
+
+func (b *sourceDirectoryBackend) Validate(ctx context.Context, project app.Project, directory string, raw []byte, variables map[string]string) ([]byte, error) {
+	b.directory = directory
+	return b.Backend.Validate(ctx, project, directory, raw, variables)
+}
+
+func TestGitStackResolvesRelativeFilesFromItsComposeDirectory(t *testing.T) {
+	manager, backend, _ := deliveryFixture(t)
+	repository, _ := gitFixture(t)
+	if err := os.Mkdir(filepath.Join(repository, "deploy"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repository, "deploy", "compose.yaml"), []byte("services:\n  app:\n    image: registry.invalid/synthetic:one\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, arguments := range [][]string{{"add", "deploy/compose.yaml"}, {"-c", "user.name=Synthetic Fixture", "-c", "user.email=synthetic@example.invalid", "commit", "--no-gpg-sign", "-m", "Synthetic nested stack"}} {
+		if output, err := exec.Command("git", append([]string{"-C", repository}, arguments...)...).CombinedOutput(); err != nil {
+			t.Fatalf("commit synthetic nested stack: %s %v", output, err)
+		}
+	}
+	recorder := &sourceDirectoryBackend{Backend: backend}
+	manager.backend = recorder
+	preview, err := manager.Preview(context.Background(), Request{Name: "synthetic-nested-stack", Source: Source{Kind: "git", Git: deliverysource.Git{Repository: repository, Ref: "main", Path: "deploy/compose.yaml"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := manager.vault.Get(manager.previews[preview.Token].Definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var selected definition
+	if err := json.Unmarshal(stored, &selected); err != nil {
+		t.Fatal(err)
+	}
+	if recorder.directory != filepath.Join(selected.Directory, "deploy") {
+		t.Fatalf("Compose working directory = %q, want nested source %q", recorder.directory, filepath.Join(selected.Directory, "deploy"))
+	}
+	if err := deliverysource.Verify(context.Background(), selected.Directory, selected.Commit, manager.runner); err != nil {
+		t.Fatalf("immutable verification no longer uses the complete repository: %v", err)
+	}
+}
+
 func TestGitUpdatesAuthenticatedWebhooksAndDurableReplay(t *testing.T) {
 	manager, backend, ops := deliveryFixture(t)
 	repository, commit := gitFixture(t)

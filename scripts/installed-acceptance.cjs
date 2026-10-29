@@ -687,26 +687,51 @@ async function acceptance(fixture, reopen = false) {
     const built = JSON.parse(await cli('image', 'inspect', image))
     assert.match(built[0].Id, /^sha256:[a-f0-9]{64}$/)
     assert.equal(built[0].Config.Labels['porto.test.suite'], project)
-    write(path.join(workspace, 'compose.json'), JSON.stringify({
+    const stack = {
       services: {
         app: {
-          image, pull_policy: 'never', network_mode: 'none',
+          image, pull_policy: 'never', networks: ['stack'],
           labels: { 'porto.test.suite': project },
           volumes: ['retained:/data'],
-          command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec sleep 3600`],
+          command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec httpd -f -p 8080 -h /data`],
+          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token'], interval: '1s', timeout: '5s', retries: 20 },
+        },
+        worker: {
+          image, pull_policy: 'never', networks: ['stack'],
+          labels: { 'porto.test.suite': project },
+          depends_on: { app: { condition: 'service_healthy' } },
+          volumes: ['retained:/data:ro'],
+          command: ['sh', '-c', `test "$(cat /data/token)" = '${fixture.id}' && test "$(wget -q -O - http://app:8080/token)" = '${fixture.id}' && exec sleep 3600`],
         },
       },
       volumes: { retained: { name: `${project}-retained`, labels: { 'porto.test.suite': project } } },
-    }))
-    console.log('Installed acceptance: starting and inspecting the real Compose project')
+      networks: { stack: { name: `${project}-stack`, labels: { 'porto.test.suite': project } } },
+    }
+    write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+    console.log('Installed acceptance: starting the real multi-service Compose stack with a healthy dependency')
     await compose('up', '--detach', '--no-build')
     console.log('Installed acceptance: confirming the running-only Compose inventory')
-    const id = await composeRunningContainer(compose)
+    const id = await composeRunningContainer((...args) => compose(...args, 'app'))
+    const workerID = await composeRunningContainer((...args) => compose(...args, 'worker'))
+    assert.notEqual(workerID, id, 'The Compose stack must contain two independently running services')
     const inspect = async () => JSON.parse(await cli('container', 'inspect', id))[0]
     console.log('Installed acceptance: verifying the real Compose project labels')
     assert.equal((await inspect()).Config.Labels['com.docker.compose.project'], project)
+    const worker = JSON.parse(await cli('container', 'inspect', workerID))[0]
+    assert.equal(worker.Config.Labels['com.docker.compose.project'], project)
+    assert.equal(worker.Config.Labels['com.docker.compose.service'], 'worker')
+    const network = `${project}-stack`
+    await waitFor(async () => {
+      const appNetwork = (await inspect()).NetworkSettings.Networks[network]?.NetworkID
+      const workerNetwork = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]?.NetworkID
+      return appNetwork && workerNetwork === appNetwork
+    }, 'both services attached to the same actual stack network')
     console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
+    assert.equal(await cli('exec', workerID, 'cat', '/data/token'), fixture.id,
+      'The dependent service must observe the retained shared-volume contents')
+    assert.equal(await cli('exec', workerID, 'wget', '-q', '-O', '-', 'http://app:8080/token'), fixture.id,
+      'Compose service DNS and HTTP must work across the actual stack network')
     assert.equal(await cli('exec', id, 'cat', '/porto-installed.txt'), `Synthetic installed image ${fixture.id}`)
     console.log('Installed acceptance: exercising renderer-origin container stop and start')
     const listing = await rendererRequest(session.renderer, '/api/docker/containers')
@@ -731,6 +756,17 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(after.State.Pid, before.State.Pid, 'Update preparation replaced the workload task')
     assert.equal(after.State.StartedAt, before.State.StartedAt, 'Update preparation restarted the workload')
     assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
+    console.log('Installed acceptance: reconciling a removed stack service without deleting shared data')
+    delete stack.services.worker
+    write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+    await compose('up', '--detach', '--no-build', '--remove-orphans')
+    await waitFor(async () =>
+      await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`,
+        '--filter', 'label=com.docker.compose.service=worker') === '',
+    'Updating the Compose stack must remove its obsolete service')
+    assert.equal(await composeRunningContainer(compose), id,
+      'Removing another service must not replace the unchanged app')
+    assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
     console.log('Installed acceptance: stopping Compose and preserving its volume')
     await compose('down', '--remove-orphans')
     console.log('Installed acceptance: verifying Compose removal in the event-backed inventory')
@@ -747,6 +783,7 @@ async function acceptance(fixture, reopen = false) {
       compose: installed.tools.compose, buildx: installed.tools.buildx,
       versions: EXPECTED, image: built[0].Id, ownedEngine: engine.ownerId,
       realComposeUpDown: true, realBuildxLoadInspect: !reopen || fixture.evidence.cleanInstall?.realBuildxLoadInspect === true,
+      realComposeStackDependencies: true, realComposeStackNetworking: true, realComposeStackServiceRemoval: true,
       renderedDesktopControl: true, runningWorkloadUpdateRefused: true, retainedVolume: true,
       preservedRegisteredProject: projectPath, runningWorkloadPID: before.State.Pid,
     }

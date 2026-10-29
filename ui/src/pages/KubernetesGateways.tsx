@@ -7,6 +7,8 @@ import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import type {
   KubernetesContext,
   KubernetesGateway,
@@ -91,12 +93,14 @@ export function KubernetesGateways({
   const filteredGateways = gatewayItems.filter((item) => normalizedQuery === '' || [
     item.name,
     item.namespace,
+    `${item.namespace}/${item.name}`,
     item.className,
     ...item.addresses,
   ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const filteredRoutes = routeItems.filter((item) => normalizedQuery === '' || [
     item.name,
     item.namespace,
+    `${item.namespace}/${item.name}`,
     ...item.hostnames,
     ...item.parentRefs,
     ...item.backendRefs,
@@ -136,15 +140,16 @@ export function KubernetesGateways({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter Gateway API resources</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter Gateway API resources" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={tab === 'classes' ? classItems.map((item) => item.name) : tab === 'gateways' ? gatewayItems.map((item) => `${item.namespace}/${item.name}`) : routeItems.map((item) => `${item.namespace}/${item.name}`)} type="search" value={query} placeholder="Filter Gateway API resources" onChange={(event) => setQuery(event.target.value)} />
         </label>
         {tab !== 'classes' && (
           <label className="namespaceField">
             <span>Namespace</span>
-            <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+            <ResourceInput options={(tab === 'gateways' ? gateways.data ?? [] : routes.data ?? []).map((item) => item.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
           </label>
         )}
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup namespaced={tab !== 'classes'} target={{ context, namespace, group: 'gateway.networking.k8s.io', version: 'v1', resource: tab === 'classes' ? 'gatewayclasses' : tab === 'gateways' ? 'gateways' : 'httproutes', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filteredCount} / {activeItems.length}</span>
         <button className="refreshControl" type="button" onClick={() => {
           status.reload()

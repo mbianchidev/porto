@@ -8,6 +8,7 @@ import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type { DockerCreateNetworkRequest, DockerNetwork, DockerStatus } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(170px,1.2fr) minmax(100px,0.6fr) minmax(80px,0.4fr) minmax(80px,0.4fr) minmax(70px,0.4fr)'
@@ -69,7 +70,7 @@ export function Networks() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter networks</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter networks by name" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((network) => network.name)} type="search" value={query} placeholder="Filter networks by name" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} networks</span>
         <button className="refreshControl" type="button" onClick={networks.reload}>Refresh</button>

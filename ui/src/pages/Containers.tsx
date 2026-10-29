@@ -13,6 +13,7 @@ import { InventoryList, type InventoryColumn } from '../components/InventoryList
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type {
   DockerContainer,
   DockerContainerAction,
@@ -87,6 +88,7 @@ function healthLabel(status: string) {
 function containerMatches(container: DockerContainer, query: string) {
   return query === '' || [
     container.name,
+    container.id,
     container.image,
     container.status,
     container.composeProject ?? '',
@@ -287,7 +289,7 @@ export function Containers() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter containers</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.flatMap((container) => [container.name.replace(/^\//, ''), ...(container.composeProject ? [container.composeProject] : [])])} type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filteredCount} / {items.length} containers</span>
         <button className="refreshControl" type="button" disabled={!available} onClick={() => setCreateOpen((value) => !value)}>

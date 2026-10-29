@@ -7,6 +7,8 @@ import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import type {
   KubernetesContext,
   KubernetesPersistentVolume,
@@ -80,6 +82,7 @@ export function KubernetesStorage({
   const filteredClaims = claimItems.filter((claim) => normalizedQuery === '' || [
     claim.name,
     claim.namespace,
+    `${claim.namespace}/${claim.name}`,
     claim.phase,
     claim.storageClass,
     claim.volume,
@@ -122,15 +125,16 @@ export function KubernetesStorage({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter Kubernetes storage</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter by name, phase, class, or binding" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={tab === 'volumes' ? volumeItems.map((volume) => volume.name) : claimItems.map((claim) => `${claim.namespace}/${claim.name}`)} type="search" value={query} placeholder="Filter by name, phase, class, or binding" onChange={(event) => setQuery(event.target.value)} />
         </label>
         {tab === 'claims' && (
           <label className="namespaceField">
             <span>Namespace</span>
-            <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+            <ResourceInput options={(claims.data ?? []).map((claim) => claim.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
           </label>
         )}
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup namespaced={tab === 'claims'} target={{ context, namespace, group: '', version: 'v1', resource: tab === 'claims' ? 'persistentvolumeclaims' : 'persistentvolumes', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filteredCount} / {activeCount}</span>
         <button className="refreshControl" type="button" onClick={() => {
           status.reload()

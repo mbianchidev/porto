@@ -11,6 +11,8 @@ import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { KubernetesAdminLink } from '../components/KubernetesAdminLink'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import type { KubernetesConfigMap, KubernetesConfigMapDetail, KubernetesContext } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(80px,0.4fr) minmax(80px,0.4fr) minmax(90px,0.5fr) minmax(70px,0.4fr)'
@@ -44,6 +46,7 @@ export function ConfigMaps({
   const filtered = items.filter((configMap) => normalizedQuery === '' || [
     configMap.name,
     configMap.namespace,
+    `${configMap.namespace}/${configMap.name}`,
     ...configMap.keys,
     ...configMap.binaryKeys,
   ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
@@ -110,13 +113,14 @@ export function ConfigMaps({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter config maps</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter configs by name or key" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((configMap) => `${configMap.namespace}/${configMap.name}`)} type="search" value={query} placeholder="Filter configs by name or key" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="namespaceField">
           <span>Namespace</span>
-          <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+          <ResourceInput options={(configMaps.data ?? []).map((configMap) => configMap.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup target={{ context, namespace, group: '', version: 'v1', resource: 'configmaps', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} configs</span>
         <button className="refreshControl" type="button" onClick={() => {
           status.reload()

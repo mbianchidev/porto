@@ -11,6 +11,7 @@ import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type { DockerImage, DockerStatus, RegistryProfile } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(200px,1.4fr) minmax(90px,0.5fr) minmax(200px,1.3fr) minmax(90px,0.5fr)'
@@ -37,7 +38,7 @@ export function Images() {
   const items = images.data ?? []
   const verifiedRegistries = (registries.data ?? []).filter((registry) => registry.enabled && registry.verified)
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest]
+  const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest, imageReference(image)]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const imageKey = (image: DockerImage) => `${image.repository}:${image.tag}:${image.digest || image.id}`
   const selected = items.find((image) => imageKey(image) === selectedID) ?? null
@@ -98,7 +99,7 @@ export function Images() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter images</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter images by repository or tag" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map(imageReference)} type="search" value={query} placeholder="Filter images by repository or tag" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <form className="pullForm" onSubmit={pullImage}>
           <input

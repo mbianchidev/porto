@@ -10,6 +10,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +67,7 @@ type apiRequest struct {
 	Method, Path string
 	Query        url.Values
 	Body         []byte
+	Accept       string
 }
 type fakeAPI struct {
 	mu               sync.Mutex
@@ -78,6 +81,7 @@ type fakeAPI struct {
 	holdRollout      bool
 	mutated          chan struct{}
 	concurrentCreate bool
+	listPageSize     int
 }
 
 func object(t *testing.T, document string) *unstructured.Unstructured {
@@ -107,7 +111,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	body, _ := io.ReadAll(r.Body)
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.requests = append(f.requests, apiRequest{r.Method, r.URL.Path, r.URL.Query(), body})
+	f.requests = append(f.requests, apiRequest{Method: r.Method, Path: r.URL.Path, Query: r.URL.Query(), Body: body, Accept: r.Header.Get("Accept")})
 	w.Header().Set("Content-Type", "application/json")
 	respond := func(value any) { _ = json.NewEncoder(w).Encode(value) }
 	if r.URL.Path == "/apis/authorization.k8s.io/v1/selfsubjectaccessreviews" {
@@ -193,13 +197,33 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	current := f.objects[key]
 	if r.Method == "GET" && name == "" {
 		items := []any{}
-		for objectKey, value := range f.objects {
+		keys := []string{}
+		for objectKey := range f.objects {
 			if strings.HasPrefix(objectKey, group+"/"+resource+"/"+namespace+"/") {
-				if strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadata") {
-					items = append(items, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": value.Object["metadata"]})
-				} else {
-					items = append(items, value.Object)
-				}
+				keys = append(keys, objectKey)
+			}
+		}
+		sort.Strings(keys)
+		start := 0
+		if token := r.URL.Query().Get("continue"); token != "" {
+			parsed, err := strconv.Atoi(token)
+			if err != nil || parsed < 0 || parsed > len(keys) {
+				status(w, 400, "BadRequest")
+				return
+			}
+			start = parsed
+		}
+		end, continuation := len(keys), ""
+		if f.listPageSize > 0 && end-start > f.listPageSize {
+			end = start + f.listPageSize
+			continuation = strconv.Itoa(end)
+		}
+		for _, objectKey := range keys[start:end] {
+			value := f.objects[objectKey]
+			if strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadata") {
+				items = append(items, map[string]any{"apiVersion": "meta.k8s.io/v1", "kind": "PartialObjectMetadata", "metadata": value.Object["metadata"]})
+			} else {
+				items = append(items, value.Object)
 			}
 		}
 		kind, apiVersion := "List", version
@@ -209,7 +233,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		if strings.Contains(r.Header.Get("Accept"), "PartialObjectMetadata") {
 			kind, apiVersion = "PartialObjectMetadataList", "meta.k8s.io/v1"
 		}
-		respond(map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"resourceVersion": "1"}, "items": items})
+		respond(map[string]any{"apiVersion": apiVersion, "kind": kind, "metadata": map[string]any{"resourceVersion": "1", "continue": continuation}, "items": items})
 		return
 	}
 	if r.Method == "GET" {
@@ -389,6 +413,43 @@ func waitAdmin(t *testing.T, ops *operations.Manager, id string) operations.Oper
 		t.Fatal(err)
 	}
 	return result
+}
+
+func TestResourceNameSuggestionsUseScopedPaginatedMetadataAndKeepDirectGetIndependent(t *testing.T) {
+	manager, api, _ := adminFixture(t)
+	api.listPageSize = 2
+	for _, name := range []string{"synthetic-one", "synthetic-two", "synthetic-three"} {
+		api.objects["/secrets/default/"+name] = object(t, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"`+name+`","namespace":"default","uid":"synthetic-uid","annotations":{"sensitive":"synthetic-private-value"}},"data":{"token":"c3ludGhldGljLXByaXZhdGUtdmFsdWU="}}`)
+	}
+	api.objects["/secrets/other/hidden"] = object(t, `{"apiVersion":"v1","kind":"Secret","metadata":{"name":"hidden","namespace":"other"}}`)
+	target := Target{Context: "porto-synthetic", Namespace: "default", Version: "v1", Resource: "secrets"}
+	first, err := manager.ListNames(context.Background(), target, "")
+	if err != nil || len(first.Names) != 2 || first.Continue == "" {
+		t.Fatalf("name suggestions did not preserve pagination: %+v %v", first, err)
+	}
+	second, err := manager.ListNames(context.Background(), target, first.Continue)
+	if err != nil || len(second.Names) != 1 || second.Continue != "" {
+		t.Fatalf("remaining name suggestions were lost: %+v %v", second, err)
+	}
+	encoded, err := json.Marshal([]any{first, second})
+	if err != nil || bytes.Contains(encoded, []byte("synthetic-private-value")) || bytes.Contains(encoded, []byte("c3ludGhldGljLXByaXZhdGUtdmFsdWU=")) || bytes.Contains(encoded, []byte("hidden")) {
+		t.Fatal("name suggestions exposed Secret payloads or another namespace")
+	}
+	api.mu.Lock()
+	for _, request := range api.requests {
+		if request.Path == "/api/v1/namespaces/default/secrets" && (!strings.Contains(request.Accept, "PartialObjectMetadata") || request.Query.Get("limit") != "200") {
+			t.Errorf("name suggestions requested full resources or unbounded pages: %+v", request)
+		}
+	}
+	api.denied["list/secrets"] = true
+	api.mu.Unlock()
+	if _, err := manager.ListNames(context.Background(), target, ""); err == nil {
+		t.Fatal("resource name suggestions bypassed native list permission")
+	}
+	target.Name = "synthetic-one"
+	if _, err := manager.Get(context.Background(), target, false); err != nil {
+		t.Fatalf("an unavailable suggestion list blocked explicitly named inspection: %v", err)
+	}
 }
 
 func TestManifestDryRunRBACConflictAndPartialApply(t *testing.T) {

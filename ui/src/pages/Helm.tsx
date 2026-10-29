@@ -2,12 +2,14 @@ import { useRef, useState } from 'react'
 import { apiGet, apiSend, apiUpload, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useKubernetesStatus } from '../kubernetes'
+import { useKubernetesResourceNames } from '../kubernetesResourceNames'
 import { useMessages } from '../useMessages'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { LocalOperations } from '../components/LocalOperations'
 import { StatusLamp } from '../components/StatusLamp'
+import { ResourceInput } from '../components/ResourceInput'
 import { adminQuery } from '../kubeAdminTypes'
 import type { AdminAccess, HelmPreview, HelmRelease, HelmRepository } from '../kubeAdminTypes'
 import type { KubernetesContext } from '../types'
@@ -42,6 +44,7 @@ export function Helm({ context, contexts, onContextChange }: { context: string; 
   const scopeQuery = new URLSearchParams({ context, namespace }).toString()
   const repositories = usePolledResource<HelmRepository[]>((signal) => apiGet('/api/kubernetes/helm/repositories', signal), 0, [])
   const releases = usePolledResource<HelmRelease[]>((signal) => ready ? apiGet(`/api/kubernetes/helm/releases?${scopeQuery}`, signal) : Promise.resolve([]), 6000, [ready, scopeQuery])
+  const namespaces = useKubernetesResourceNames({ context, namespace: '', group: '', version: 'v1', resource: 'namespaces' }, Boolean(context && status.data?.available))
   const detail = usePolledResource<HelmRelease | null>((signal) => ready && inspected ? apiGet(`/api/kubernetes/helm/release?${scopeQuery}&release=${encodeURIComponent(inspected)}`, signal) : Promise.resolve(null), 3000, [ready, scopeQuery, inspected])
   const history = usePolledResource<HelmRelease[]>((signal) => ready && inspected ? apiGet(`/api/kubernetes/helm/history?${scopeQuery}&release=${encodeURIComponent(inspected)}`, signal) : Promise.resolve([]), 0, [ready, scopeQuery, inspected])
   const access = usePolledResource<AdminAccess | null>((signal) => ready ? apiGet(`/api/kubernetes/admin/access?${adminQuery({ context, namespace, group: '', version: 'v1', resource: 'secrets', name: '' })}`, signal) : Promise.resolve(null), 10000, [ready, context, namespace])
@@ -88,15 +91,16 @@ export function Helm({ context, contexts, onContextChange }: { context: string; 
     </section>
     <div className="controlBar">
       <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} disabled={busy} />
-      <label className="namespaceField">Namespace<input type="text" required value={namespace} onChange={(event) => { setNamespace(event.target.value); setPreview(null); setRevealedValues(null); setValues('{}'); setInspected(''); setOpen(false) }} /></label>
+      <label className="namespaceField">Namespace<ResourceInput options={namespaces.error ? [] : namespaces.data ?? []} type="text" required value={namespace} onChange={(event) => { setNamespace(event.target.value); setPreview(null); setRevealedValues(null); setValues('{}'); setInspected(''); setOpen(false) }} /></label>
       <button type="button" disabled={!ready || busy || !permitted('create')} onClick={() => openRelease()}>Install or upgrade release</button>
-      <button type="button" onClick={() => { status.reload(); releases.reload(); access.reload(); history.reload(); detail.reload() }}>Refresh Helm state</button>
+      <button type="button" onClick={() => { status.reload(); releases.reload(); namespaces.reload(); access.reload(); history.reload(); detail.reload() }}>Refresh Helm state</button>
     </div>
     <div className="workArea">
       {status.error && <p role="alert">{status.error}</p>}
       {access.error && <p role="alert">{access.error}</p>}
       {access.data && <p>Release-store permissions: {Object.entries(access.data.verbs).map(([verb, permission]) => `${verb}: ${permission.allowed ? 'allowed' : 'denied'}`).join(' / ')}. Chart resources have their own native RBAC/admission checks.</p>}
       {releases.error && <p role="alert">{releases.error}</p>}
+      {namespaces.error && <p role="alert">Namespace suggestions unavailable: {namespaces.error} You can still enter an explicit namespace.</p>}
       <InventoryList items={releases.data ?? []} getKey={(entry) => entry.name} selectedKey={inspected} onSelect={openRelease} columnsTemplate="minmax(160px,1fr) minmax(100px,.6fr) minmax(160px,1fr) minmax(70px,.4fr)" ariaLabel="Helm releases in selected namespace" emptyMessage={releases.error || 'No Helm releases in this explicit namespace.'} columns={[
         { header: 'Release', render: (entry) => <strong>{entry.name}</strong> }, { header: 'Status', render: (entry) => entry.status }, { header: 'Chart', render: (entry) => entry.chart }, { header: 'Revision', render: (entry) => entry.revision },
       ]} />
@@ -129,7 +133,7 @@ export function Helm({ context, contexts, onContextChange }: { context: string; 
           {detail.error && <p role="alert">{detail.error}</p>}
           {detail.data && <><p>{detail.data.status} / revision {detail.data.revision} / {detail.data.chart}</p>{detail.data.hooks?.map((hook) => <p key={`${hook.kind}/${hook.name}`}>{hook.kind} {hook.name}: {hook.phase || 'not observed'}</p>)}</>}
           <form className="inspectorForm" onSubmit={(event) => { event.preventDefault(); prepare() }} onChange={() => setPreview(null)}>
-            <label>Release name<input required pattern="[a-z0-9][a-z0-9-]{0,52}" value={release} onChange={(event) => setRelease(event.target.value)} /></label>
+            <label>Release name<ResourceInput options={(releases.data ?? []).map((entry) => entry.name)} required pattern="[a-z0-9][a-z0-9-]{0,52}" value={release} onChange={(event) => setRelease(event.target.value)} /></label>
             <label>Helm action<select value={action} onChange={(event) => setAction(event.target.value)}><option value="upgrade">Install / upgrade selected chart</option><option value="rollback">Rollback retained revision</option><option value="uninstall">Uninstall, retaining release history</option></select></label>
             {action === 'upgrade' && <>
               <label>Chart repository<select value={repository} onChange={(event) => setRepository(event.target.value)}><option value="">Select a configured source</option>{(repositories.data ?? []).map((entry) => <option key={entry.name} value={entry.name}>{entry.name}</option>)}</select></label>

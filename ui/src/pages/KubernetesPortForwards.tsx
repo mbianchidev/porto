@@ -4,6 +4,7 @@ import { apiGet, apiSend, errorMessage } from '../api'
 import { formatRelativeTime } from '../format'
 import { usePolledResource } from '../hooks'
 import { useKubernetesStatus } from '../kubernetes'
+import { useKubernetesResourceNames } from '../kubernetesResourceNames'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector } from '../components/Inspector'
@@ -11,6 +12,7 @@ import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type {
   KubernetesContext,
   KubernetesPortForward,
@@ -77,6 +79,12 @@ export function KubernetesPortForwards({
   const selected = items.find((forward) => forward.id === selectedID) ?? null
   const loading = status.loading || (available && forwards.loading)
   const ready = available && !forwards.loading && !forwards.error
+  const resourceNames = useKubernetesResourceNames({
+    context, namespace: draft.namespace.trim(), version: 'v1',
+    group: draft.resourceType === 'deployment' ? 'apps' : '',
+    resource: `${draft.resourceType}s`,
+  }, available && createOpen && Boolean(draft.namespace.trim()))
+  const namespaces = useKubernetesResourceNames({ context, namespace: '', group: '', version: 'v1', resource: 'namespaces' }, available && createOpen)
 
   function updateDraft<K extends keyof ForwardDraft>(key: K, value: ForwardDraft[K]) {
     setDraft((current) => ({ ...current, [key]: value }))
@@ -162,7 +170,7 @@ export function KubernetesPortForwards({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter port forwards</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter forwards by target or port" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((forward) => forward.resourceName)} type="search" value={query} placeholder="Filter forwards by target or port" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} forwards</span>
@@ -176,7 +184,7 @@ export function KubernetesPortForwards({
         >
           {createOpen ? 'Close' : 'New forward'}
         </button>
-        <button className="refreshControl" type="button" onClick={() => { status.reload(); forwards.reload() }}>Refresh</button>
+        <button className="refreshControl" type="button" onClick={() => { status.reload(); forwards.reload(); resourceNames.reload(); namespaces.reload() }}>Refresh</button>
       </div>
 
       <section className="drawerPanel portForwardPanel" id="port-forward-create" hidden={!createOpen}>
@@ -189,11 +197,11 @@ export function KubernetesPortForwards({
         <form className="inspectorForm portForwardForm" onSubmit={startForward}>
           <label>
             Namespace
-            <input type="text" value={draft.namespace} required onChange={(event) => updateDraft('namespace', event.target.value)} />
+            <ResourceInput options={namespaces.error ? [] : namespaces.data ?? []} type="text" value={draft.namespace} required onChange={(event) => updateDraft('namespace', event.target.value)} />
           </label>
           <label>
             Target type
-            <select value={draft.resourceType} onChange={(event) => updateDraft('resourceType', event.target.value as KubernetesPortForwardResource)}>
+            <select value={draft.resourceType} onChange={(event) => setDraft((current) => ({ ...current, resourceType: event.target.value as KubernetesPortForwardResource, resourceName: '' }))}>
               <option value="service">Service</option>
               <option value="pod">Pod</option>
               <option value="deployment">Deployment</option>
@@ -201,7 +209,7 @@ export function KubernetesPortForwards({
           </label>
           <label>
             Resource name
-            <input type="text" value={draft.resourceName} required placeholder="api" onChange={(event) => updateDraft('resourceName', event.target.value)} />
+            <ResourceInput options={resourceNames.error ? [] : resourceNames.data ?? []} type="text" value={draft.resourceName} required placeholder="Choose a current name or type any name" onChange={(event) => updateDraft('resourceName', event.target.value)} />
           </label>
           <label>
             Local port
@@ -216,6 +224,8 @@ export function KubernetesPortForwards({
             <button type="button" disabled={submitting} onClick={() => { setDraft(EMPTY_DRAFT); setCreateOpen(false) }}>Cancel</button>
           </div>
         </form>
+        {resourceNames.error && <p role="alert">Resource suggestions unavailable: {resourceNames.error} You can still type a resource name manually.</p>}
+        {namespaces.error && <p role="alert">Namespace suggestions unavailable: {namespaces.error} You can still enter an explicit namespace.</p>}
       </section>
 
       <div className="workArea">

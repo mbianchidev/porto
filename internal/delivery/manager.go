@@ -356,7 +356,11 @@ func (m *Manager) prepare(ctx context.Context, project app.Project, current Appl
 			return result, errors.New("store a webhook secret before enabling authenticated webhooks")
 		}
 	}
-	effective, err := m.backend.Validate(ctx, project, result.Directory, []byte(result.Request.Compose), environment)
+	directory := result.Directory
+	if request.Source.Kind == "git" {
+		directory = filepath.Join(directory, filepath.Dir(filepath.FromSlash(request.Source.Git.Path)))
+	}
+	effective, err := m.backend.Validate(ctx, project, directory, []byte(result.Request.Compose), environment)
 	if err != nil {
 		return result, err
 	}

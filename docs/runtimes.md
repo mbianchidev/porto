@@ -338,6 +338,14 @@ cluster/context store or administrator fallback: an unavailable managed
 kubeconfig, missing selected context or changed identity stops the operation.
 External-cluster onboarding remains a separate environment concern.
 
+Named-target inputs offer searchable current-resource suggestions while still
+accepting a manually typed name. Metadata-only name discovery follows every
+200-object API page without exposing Secret values. List permissions and
+failures affect suggestions only; native authorized get/actions can still
+target an unlisted name. Inventory filters also offer **Inspect typed resource**
+for an explicit namespace/name, without requiring the row to be visible.
+See [resource targeting](daily-use.md#find-and-target-resources).
+
 Discovery inventories actual served group/version/resource/kind combinations,
 including CRDs/custom resources, ServiceAccounts, Roles, ClusterRoles and their
 bindings. A failed API group produces a visible partial inventory rather than
@@ -462,6 +470,11 @@ namespace and CRD consequences require additional acknowledgement. Helm/chart
 policies can delete PVCs or dependent resources. Neither chart rollback nor
 uninstall is a persistent-data/database rollback, and retained release history
 does not recreate deleted data.
+
+Kubernetes-native GitOps application delivery with Flux and Argo CD is tracked
+separately in [#174](https://github.com/mbianchidev/porto/issues/174). The current
+direct administration/Helm workflow and local Compose Git polling are not a
+Flux or Argo CD reconciliation controller.
 
 Synthetic API fixtures exercise served schemas/version changes, context/
 namespace isolation, native RBAC denial, Secret redaction/reveal, concurrent
@@ -914,6 +927,7 @@ GET    /api/kubernetes/persistent-volume-claims
 GET    /api/kubernetes/gateway-classes
 GET    /api/kubernetes/gateways
 GET    /api/kubernetes/http-routes
+GET    /api/kubernetes/admin/resource-names
 
 GET    /api/vms/status
 GET    /api/vms/images

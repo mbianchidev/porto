@@ -14,6 +14,7 @@ function baseline(path: string): unknown {
     '/api/kubernetes/contexts': [{ name: context, cluster: context, namespace: 'default' }],
     '/api/kubernetes/clusters': [{ name: 'synthetic', provider: 'kind', state: 'running', context }],
     '/api/kubernetes/status': { available: true, enabled: true, context },
+    '/api/kubernetes/admin/resource-names': { names: ['default'] },
     '/api/docker/status': { enabled: false, available: false },
     '/api/docker/cleanup': { enabled: false, dockerEnabled: false, runs: [] },
     '/api/operations': [],
@@ -37,8 +38,10 @@ async function mockAdmin(page: Page, resource: AdminResource, writable = true) {
     let value: unknown = baseline(path)
     if (path === '/api/kubernetes/admin/discovery') value = { resources: [resource], partial: false }
     if (path === '/api/kubernetes/admin/resources') value = { resource, items: [object] }
+    if (path === '/api/kubernetes/admin/resource-names') value = { names: url.searchParams.get('resource') === 'namespaces' ? ['default', 'synthetic-other'] : [target.name] }
     if (path === '/api/kubernetes/admin/resource') {
-      value = url.searchParams.get('reveal') === 'true' ? { ...object, revealed: true, manifest: { ...object.manifest, data: { token: secretValue } } } : object
+      const named = { ...object, target: { ...target, name: url.searchParams.get('name') || target.name } }
+      value = url.searchParams.get('reveal') === 'true' ? { ...named, revealed: true, manifest: { ...object.manifest, data: { token: secretValue } } } : named
       if (url.searchParams.get('reveal') === 'true') requests.push({ path: `${path}?reveal=true`, body: {} })
     }
     if (path === '/api/kubernetes/admin/access') value = { target, verbs: Object.fromEntries(['get', 'list', 'create', 'patch', 'update', 'delete', 'scale'].map((verb) => [verb, { allowed: ['get', 'list'].includes(verb) || writable }])) }
@@ -118,6 +121,105 @@ test('workload operations carry exact UID and resourceVersion instead of retarge
   await page.getByRole('button', { name: 'Run resource action', exact: true }).click()
   await expect.poll(() => requests.length).toBe(1)
   expect(requests[0]).toEqual({ path: '/api/kubernetes/admin/actions', body: { ...target, action: 'scale', replicas: 2, confirm: true, acknowledgeStorage: false } })
+})
+
+test('resource dropdown follows every name page and permits an unlisted manual target', async ({ page }) => {
+  const { requests, target } = await mockAdmin(page, deployment)
+  await page.route('**/api/kubernetes/admin/resource-names?*', async (route) => {
+    const query = new URL(route.request().url()).searchParams
+    const value = query.get('resource') === 'namespaces' ? { names: ['default'] }
+      : query.get('continue') === 'synthetic-next' ? { names: ['synthetic-last'] }
+        : { names: ['synthetic-resource', 'synthetic-second'], continue: 'synthetic-next' }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.getByRole('button', { name: 'Refresh discovery', exact: true }).click()
+  const input = page.getByLabel('Resource name (optional)', { exact: true })
+  await expect.poll(() => input.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('Expected resource-name input')
+    return Array.from(element.list?.options ?? [], (option) => option.value)
+  })).toEqual(['synthetic-last', 'synthetic-resource', 'synthetic-second'])
+  await input.fill('synthetic-not-listed')
+  await page.getByRole('button', { name: 'Inspect named resource', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'synthetic-not-listed', exact: true })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Run resource action', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0].body).toMatchObject({ ...target, name: 'synthetic-not-listed', action: 'scale' })
+})
+
+test('suggestion-list failures do not block inspection or authorized named actions', async ({ page }) => {
+  const { requests } = await mockAdmin(page, deployment)
+  await page.route('**/api/kubernetes/admin/resource-names?*', (route) => route.fulfill({ status: 403, body: 'Synthetic list permission denied; named get is still authorized.' }))
+  await page.getByRole('button', { name: 'Refresh discovery', exact: true }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'type a resource name manually' })).toBeVisible()
+  await page.getByLabel('Resource name (optional)', { exact: true }).fill('synthetic-direct')
+  await page.getByRole('button', { name: 'Inspect named resource', exact: true }).click()
+  await expect(page.getByRole('heading', { name: 'synthetic-direct', exact: true })).toBeVisible()
+  page.once('dialog', (dialog) => dialog.accept())
+  await page.getByRole('button', { name: 'Run resource action', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0].body.name).toBe('synthetic-direct')
+})
+
+test('a failed manual lookup never leaves actions bound to the previously inspected resource', async ({ page }) => {
+  await mockAdmin(page, deployment)
+  await page.getByText('synthetic-resource', { exact: true }).click()
+  await page.getByRole('button', { name: 'Close inspector', exact: true }).click()
+  await page.route('**/api/kubernetes/admin/resource?*', (route) => route.fulfill({ status: 404, body: 'Synthetic named resource does not exist.' }))
+  await page.getByLabel('Resource name (optional)', { exact: true }).fill('synthetic-missing')
+  await page.getByRole('button', { name: 'Inspect named resource', exact: true }).click()
+  await expect(page.getByRole('alert').filter({ hasText: 'Synthetic named resource does not exist.' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Run resource action', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('complementary', { name: 'synthetic-missing inspector' })).toBeVisible()
+})
+
+test('pod filters can inspect a typed namespace/name absent from the pod inventory', async ({ page }) => {
+  const pod: AdminResource = { group: '', version: 'v1', resource: 'pods', kind: 'Pod', namespaced: true, verbs: ['get', 'list', 'delete'] }
+  await mockAdmin(page, pod)
+  await page.goto('/#/pods')
+  await page.getByLabel('Filter pods', { exact: true }).fill('default/synthetic-unlisted-pod')
+  const lookup = page.getByRole('link', { name: 'Inspect typed resource', exact: true })
+  await lookup.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { name: 'synthetic-unlisted-pod', exact: true })).toBeVisible()
+  await expect(page.getByLabel('Resource name (optional)', { exact: true })).toHaveValue('synthetic-unlisted-pod')
+  await expect(page.getByRole('combobox', { name: 'Served API resource', exact: true })).toHaveValue('/v1/pods')
+})
+
+test('port forwarding suggests current pods and services while accepting unlisted names', async ({ page }) => {
+  const requests: Record<string, unknown>[] = []
+  await page.route('**/api/**', async (route) => {
+    const request = route.request()
+    const url = new URL(request.url())
+    let value = baseline(url.pathname)
+    if (url.pathname === '/api/kubernetes/admin/resource-names') {
+      value = { names: url.searchParams.get('resource') === 'namespaces' ? ['default', 'synthetic-other']
+        : url.searchParams.get('namespace') === 'synthetic-other' ? ['synthetic-other-pod']
+          : url.searchParams.get('resource') === 'pods' ? ['synthetic-current-pod'] : ['synthetic-current-service'] }
+    }
+    if (url.pathname === '/api/kubernetes/port-forwards' && request.method() === 'POST') {
+      const body: Record<string, unknown> = request.postDataJSON()
+      requests.push(body)
+      value = { ...body, id: 'synthetic-forward', context, address: '127.0.0.1', localPort: 41000, remotePort: 80, status: 'running', startedAt: '2026-01-01T00:00:00Z' }
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/port-forwards')
+  await page.getByRole('button', { name: 'New forward', exact: true }).click()
+  const input = page.getByLabel('Resource name', { exact: true })
+  const suggestions = () => input.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('Expected a port-forward target input')
+    return Array.from(element.list?.options ?? [], (option) => option.value)
+  })
+  await expect.poll(suggestions).toEqual(['synthetic-current-service'])
+  await page.getByRole('combobox', { name: 'Target type', exact: true }).selectOption('pod')
+  await expect.poll(suggestions).toEqual(['synthetic-current-pod'])
+  await page.getByLabel('Namespace', { exact: true }).fill('synthetic-other')
+  await expect.poll(suggestions).toEqual(['synthetic-other-pod'])
+  await input.fill('synthetic-unlisted-pod')
+  await page.getByRole('button', { name: 'Start forward', exact: true }).click()
+  await expect.poll(() => requests.length).toBe(1)
+  expect(requests[0]).toMatchObject({ namespace: 'synthetic-other', resourceType: 'pod', resourceName: 'synthetic-unlisted-pod' })
 })
 
 test('Helm previews hide values and gate explicit storage consequences before activation', async ({ page }) => {

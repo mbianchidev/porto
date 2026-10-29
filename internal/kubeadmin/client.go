@@ -223,6 +223,14 @@ func (s *session) objects(target Target) dynamic.ResourceInterface {
 	return resource
 }
 
+func (s *session) metadataObjects(target Target) metadata.ResourceInterface {
+	resource := s.metadata.Resource(gvr(target))
+	if target.Namespace != "" {
+		return resource.Namespace(target.Namespace)
+	}
+	return resource
+}
+
 func (s *session) permission(ctx context.Context, target Target, verb, subresource string) (Permission, error) {
 	review, err := s.core.AuthorizationV1().SelfSubjectAccessReviews().Create(ctx, &authorization.SelfSubjectAccessReview{Spec: authorization.SelfSubjectAccessReviewSpec{ResourceAttributes: &authorization.ResourceAttributes{Namespace: target.Namespace, Verb: verb, Group: target.Group, Version: target.Version, Resource: target.Resource, Subresource: subresource, Name: target.Name}}}, metav1.CreateOptions{})
 	if err != nil {

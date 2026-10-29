@@ -41,24 +41,32 @@ The fixture:
    real Porto-owned Lima engine, and render its packaged dashboard.
 4. Uses **`porto docker cli buildx build --builder default --load`** to build a
    synthetic BusyBox-based image, then inspects its loaded ID and label.
-   The installed Compose plugin starts a synthetic project with a named volume.
-   Real container exec reads both the built image fixture and retained volume
-   token. Missing downloads, tools, backend or named-pipe/socket support fail.
+   The installed Compose plugin starts two services on the same named network.
+   The worker depends on the app's native HTTP health check, reaches its
+   `app` service DNS name over HTTP, and reads its shared named-volume token
+   through a read-only mount. Real container exec reads both
+   the built image fixture and retained token. Missing downloads, tools, backend
+   or named-pipe/socket support fail.
 5. Connects to that installed dashboard's loopback DevTools endpoint and uses
    its ordinary renderer-origin container APIs to observe, stop and start the
    same Compose container. With the workload running, ordinary desktop update
    preparation must refuse with HTTP 409, leaving its PID, start time and
    volume token unchanged. No real user project or workload participates.
-6. Runs real Compose down, retaining the synthetic volume. It stops only the
+6. Updates the stack to remove its worker with `up --remove-orphans`, requiring
+   the obsolete service to disappear while the app container and shared data
+   remain unchanged. It then runs real Compose down, retaining the synthetic
+   volume. It stops only the
    owned fixture engine and recorded desktop/daemon processes, checking process
    identity again before signaling. The normal bounded state-convergence wait
    requires the event-backed inventory to contain no remaining synthetic
    containers; a successful remove is not confused with an asynchronously
    published, older inventory snapshot.
    The same bounded convergence wait is used after Compose up before requiring
-   its running-only list to contain exactly one real container ID. Faster lifecycle
-   metadata acknowledgment may precede that event snapshot; a nonempty malformed
-   or multi-container response still fails immediately.
+   each selected service's running-only list to contain exactly one real
+   container ID. After worker removal, the whole project's running-only list
+   must contain exactly the unchanged app ID. Faster lifecycle metadata
+   acknowledgment may precede that event snapshot; a nonempty malformed or
+   multi-container response to a single-service query still fails immediately.
 7. Reapplies the same already-built package, checks that owned executables were
    replaced with the shipped bytes, and reopens the installed desktop. The
    existing image, engine ownership and real volume token must survive. No

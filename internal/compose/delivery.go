@@ -46,12 +46,16 @@ func composeArguments(project app.Project, file string) []string {
 	return append(args, "-f", file)
 }
 
-func UpArguments(project app.Project, plan PortPlan) []string {
+func UpArguments(project app.Project, plan PortPlan, reconcile bool) []string {
 	args := []string{"compose", "--project-directory", project.Path, "-p", ProjectName(project), "-f", plan.ConfigFile}
 	if plan.OverridePath != "" {
 		args = append(args, "-f", plan.OverridePath)
 	}
-	return append(args, "up")
+	args = append(args, "up")
+	if reconcile {
+		args = append(args, "--remove-orphans")
+	}
+	return args
 }
 
 func (i *Integration) ValidateDefinition(ctx context.Context, project app.Project, directory string, definition []byte, variables map[string]string) ([]byte, error) {
@@ -133,17 +137,19 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 		return operations.Failure("Unable to inspect effective Compose services while checking deployment health.")
 	}
 	var document struct {
-		Services map[string]struct {
-			Profiles []string `json:"profiles"`
-		} `json:"services"`
+		Services map[string]serviceConfiguration `json:"services"`
 	}
 	if json.Unmarshal(output, &document) != nil {
 		return operations.Failure("Compose returned invalid service configuration during readiness checks.")
 	}
-	expected := map[string]bool{}
+	expected := map[string]int{}
 	for name, service := range document.Services {
 		if len(service.Profiles) == 0 {
-			expected[name] = true
+			replicas := service.desiredReplicas()
+			if replicas < 0 {
+				return operations.Failure("Compose returned an invalid service replica count during readiness checks.")
+			}
+			expected[name] = replicas
 		}
 	}
 	if len(expected) == 0 {
@@ -160,19 +166,36 @@ func (i *Integration) WaitHealthy(ctx context.Context, project app.Project) erro
 		if err != nil {
 			return err
 		}
-		ready := map[string]bool{}
+		ready := map[string]int{}
+		scalingDown := false
 		for _, process := range processes {
-			if !expected[process.Service] {
+			replicas, tracked := expected[process.Service]
+			if !tracked {
+				continue
+			}
+			if replicas == 0 {
+				if process.State != "exited" && process.State != "dead" {
+					scalingDown = true
+				}
 				continue
 			}
 			if process.Health == "unhealthy" || process.State == "dead" || process.State == "exited" && process.ExitCode != 0 {
 				return operations.Failure("A selected Compose service failed or is unhealthy. Inspect its container health and redacted project logs before retrying.")
 			}
 			if process.State == "running" && (process.Health == "" || process.Health == "healthy") || process.State == "exited" && process.ExitCode == 0 {
-				ready[process.Service] = true
+				ready[process.Service]++
 			}
 		}
-		if len(ready) == len(expected) {
+		complete := !scalingDown
+		for service, replicas := range expected {
+			if ready[service] != replicas {
+				complete = false
+			}
+		}
+		if complete {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			return nil
 		}
 		select {

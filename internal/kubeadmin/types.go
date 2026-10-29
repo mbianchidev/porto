@@ -71,6 +71,11 @@ type ObjectList struct {
 	Continue string   `json:"continue,omitempty"`
 }
 
+type NameList struct {
+	Names    []string `json:"names"`
+	Continue string   `json:"continue,omitempty"`
+}
+
 type Schema struct {
 	State      string          `json:"state"`
 	Version    string          `json:"version,omitempty"`
