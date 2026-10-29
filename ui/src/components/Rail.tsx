@@ -7,7 +7,7 @@ type NavItem = { id: RouteID; label: string; icon: IconName; badge?: string }
 type NavGroup = { id: string; title: string; items: NavItem[]; collapsible?: boolean }
 
 const NAV_GROUPS: NavGroup[] = [
-  { id: 'local-development', title: 'Local development', items: [{ id: 'localhost-ing', label: 'localhost-ing', icon: 'localhost' }] },
+  { id: 'local-development', title: 'Local development', items: [{ id: 'localhost-ing', label: 'localhost-ing', icon: 'localhost' }, { id: 'applications', label: 'Applications', icon: 'deployments' }] },
   {
     id: 'containers',
     title: 'Containers',

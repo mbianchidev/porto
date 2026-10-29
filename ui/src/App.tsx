@@ -43,7 +43,7 @@ import type {
 } from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
-  'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
+  'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
   'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
@@ -52,6 +52,7 @@ const KNOWN_ROUTES: RouteID[] = [
 
 const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
 const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
+const Applications = lazy(async () => ({ default: (await import('./pages/Applications')).Applications }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 
 function routeFromHash(): RouteID {
@@ -155,6 +156,7 @@ function AppShell() {
           {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
         {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={activeKubeContext} />}
+        {route === 'applications' && <Suspense fallback={<p role="status">Loading application delivery...</p>}><Applications /></Suspense>}
         {route === 'containers' && <Containers key={`containers:${dockerMode}`} />}
         {route === 'images' && <Images key={`images:${dockerMode}`} />}
         {route === 'builds' && (dockerMode === 'linux' ? <Builds /> : <NativeWindowsBoundary title="Windows image builds" />)}

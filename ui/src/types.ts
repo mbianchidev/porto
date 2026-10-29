@@ -828,6 +828,7 @@ export type VMCreateRequest = {
 
 export type RouteID =
   | 'localhost-ing'
+  | 'applications'
   | 'containers'
   | 'images'
   | 'builds'

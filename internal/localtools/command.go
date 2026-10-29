@@ -78,12 +78,15 @@ func CopyBounded(destination io.Writer, source io.Reader, limit int64) (int64, e
 }
 
 func IsolatedEnvironment(home string, additions ...string) []string {
-	environment := []string{"HOME=" + home, "USERPROFILE=" + home, "XDG_CONFIG_HOME=" + home, "XDG_CACHE_HOME=" + home}
+	environment := []string{}
 	for _, entry := range os.Environ() {
 		key, _, _ := strings.Cut(entry, "=")
-		if strings.HasPrefix(key, "SYFT_") || strings.HasPrefix(key, "GRYPE_") || strings.HasPrefix(key, "DOCKER_") {
+		switch strings.ToUpper(key) {
+		case "PATH", "SYSTEMROOT", "WINDIR", "COMSPEC", "PATHEXT", "TMP", "TEMP", "TMPDIR", "LANG", "LC_ALL", "LC_CTYPE":
+		default:
 			environment = append(environment, key+"=")
 		}
 	}
+	environment = append(environment, "HOME="+home, "USERPROFILE="+home, "XDG_CONFIG_HOME="+home, "XDG_CACHE_HOME="+home)
 	return append(environment, additions...)
 }

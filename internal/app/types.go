@@ -8,6 +8,7 @@ type Project struct {
 	Path              string    `json:"path"`
 	Strategy          string    `json:"strategy"`
 	Command           string    `json:"command"`
+	ComposeFile       string    `json:"-"`
 	Port              int       `json:"port"`
 	PinnedPort        int       `json:"pinnedPort"`
 	Hostname          string    `json:"hostname"`

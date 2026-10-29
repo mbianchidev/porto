@@ -17,6 +17,7 @@ Porto runs its own containerd backends rather than proxying another Docker engin
 ## What you can do
 
 - **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
+- **Deliver local applications.** Create or edit Compose stacks, upload definitions, use versioned templates or explicit Git refs, preview changes, and record controlled updates/rollback. Polling and signed webhooks are opt-in. See [application delivery](docs/project-management.md#application-delivery).
 - **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect layers with Dive and generate local Syft SBOMs with Grype vulnerability matching, browse runtime files and stats, create local volume backups, and preview protected cleanup.
 - **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
 - **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).

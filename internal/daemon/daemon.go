@@ -33,6 +33,7 @@ import (
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/mbianchidev/porto/internal/delivery"
 	"github.com/mbianchidev/porto/internal/discovery"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/gitutil"
@@ -41,6 +42,7 @@ import (
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/nativefiles"
 	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/mbianchidev/porto/internal/operations"
 	"github.com/mbianchidev/porto/internal/ports"
 	"github.com/mbianchidev/porto/internal/process"
 	"github.com/mbianchidev/porto/internal/providers"
@@ -103,6 +105,8 @@ type Server struct {
 	userHomeDir        func() (string, error)
 	docker             *portodocker.Manager
 	imageAnalysis      *imageanalysis.Manager
+	delivery           *delivery.Manager
+	operations         *operations.Manager
 	windowsWorker      bool
 	windowsTransport   http.RoundTripper
 	dockerAPI          *portodocker.APIServer
@@ -243,6 +247,11 @@ func New(st *store.Store, ui fs.FS) *Server {
 	}
 	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
 	server.imageAnalysis = imageanalysis.New(filepath.Join(syncRoot, "image-analysis"), dockerManager, nil)
+	server.operations = operations.New(filepath.Join(syncRoot, "operations"))
+	server.delivery = delivery.New(filepath.Join(syncRoot, "delivery"), st, deliveryBackend{server}, server.operations, nil, nil)
+	if integration, ok := server.compose.(*compose.Integration); ok {
+		integration.SetDefinitionResolver(server.delivery.DefinitionPath)
+	}
 	dockerManager.SetSynchronizedShareResolver(server.syncShares.Resolve)
 	nativeRoot := filepath.Join(filepath.Dir(dockerEngineDir), "files")
 	server.nativeFiles = nativefiles.New(nativeRoot, runner)
@@ -388,6 +397,23 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("listen Porto daemon on %s: %w", config.DaemonAddr, err)
 	}
 	defer daemonListener.Close()
+	var webhookServer *http.Server
+	if s.delivery != nil {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return fmt.Errorf("listen authenticated application webhooks: %w", err)
+		}
+		defer listener.Close()
+		s.delivery.SetWebhookAddress(listener.Addr().String())
+		webhookServer = &http.Server{Handler: s.delivery.WebhookHandler(ctx), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 10 * time.Second, WriteTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 8192}
+		go func() {
+			if err := webhookServer.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				s.delivery.SetWebhookAddress("")
+				log.Printf("authenticated application webhook listener stopped: %v", err)
+			}
+		}()
+		go s.delivery.Run(ctx)
+	}
 	if err := s.store.RecoverDockerCleanup(ctx, s.dockerCleanupTime()); err != nil {
 		return fmt.Errorf("recover interrupted Docker cleanup: %w", err)
 	}
@@ -453,7 +479,11 @@ func (s *Server) Run(ctx context.Context) error {
 	}
 
 	cancel()
-	shutdownErr := s.shutdown(srv, router, tlsRouter)
+	servers := []*http.Server{srv, router, tlsRouter}
+	if webhookServer != nil {
+		servers = append(servers, webhookServer)
+	}
+	shutdownErr := s.shutdown(servers...)
 	if !serveReturned {
 		serveResult = <-serveErr
 	}
@@ -501,6 +531,9 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	operationContext, cancelOperations := context.WithTimeout(context.Background(), runtimeOperationTimeout)
 	if s.imageAnalysis != nil {
 		shutdownErrors = append(shutdownErrors, s.imageAnalysis.Close(operationContext))
+	}
+	if s.operations != nil {
+		shutdownErrors = append(shutdownErrors, s.operations.Close(operationContext))
 	}
 	if err := s.waitForRuntimeOperations(operationContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
@@ -733,23 +766,24 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/tls/renew", s.renewTLS)
 	s.platformRoutes(mux)
 	mux.HandleFunc("POST /api/scan", s.scan)
-	mux.HandleFunc("POST /api/projects/{name}/start", s.start)
-	mux.HandleFunc("POST /api/projects/{name}/stop", s.stop(false))
-	mux.HandleFunc("POST /api/projects/{name}/kill", s.stop(true))
-	mux.HandleFunc("POST /api/projects/{name}/restart", s.restart)
-	mux.HandleFunc("POST /api/projects/{name}/setup", s.setupProject)
+	mux.HandleFunc("POST /api/projects/{name}/start", s.guardProjectOperation(s.start))
+	mux.HandleFunc("POST /api/projects/{name}/stop", s.guardProjectOperation(s.stop(false)))
+	mux.HandleFunc("POST /api/projects/{name}/kill", s.guardProjectOperation(s.stop(true)))
+	mux.HandleFunc("POST /api/projects/{name}/restart", s.guardProjectOperation(s.restart))
+	mux.HandleFunc("POST /api/projects/{name}/setup", s.guardProjectOperation(s.setupProject))
 	mux.HandleFunc("GET /api/projects/{name}/branches", s.branches)
-	mux.HandleFunc("POST /api/projects/{name}/branch", s.branch)
-	mux.HandleFunc("POST /api/projects/{name}/instances", s.createInstance)
-	mux.HandleFunc("DELETE /api/projects/{name}/instance", s.removeInstance)
-	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.cleanupBranches)
-	mux.HandleFunc("POST /api/projects/{name}/port", s.pinPort)
-	mux.HandleFunc("POST /api/projects/{name}/sendbox/start", s.startSendbox)
-	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.stopSendbox)
+	mux.HandleFunc("POST /api/projects/{name}/branch", s.guardProjectOperation(s.branch))
+	mux.HandleFunc("POST /api/projects/{name}/instances", s.guardProjectOperation(s.createInstance))
+	mux.HandleFunc("DELETE /api/projects/{name}/instance", s.guardProjectOperation(s.removeInstance))
+	mux.HandleFunc("POST /api/projects/{name}/cleanup-branches", s.guardProjectOperation(s.cleanupBranches))
+	mux.HandleFunc("POST /api/projects/{name}/port", s.guardProjectOperation(s.pinPort))
+	mux.HandleFunc("POST /api/projects/{name}/sendbox/start", s.guardProjectOperation(s.startSendbox))
+	mux.HandleFunc("POST /api/projects/{name}/sendbox/stop", s.guardProjectOperation(s.stopSendbox))
 	mux.HandleFunc("GET /api/projects/{name}/logs", s.logs)
 	mux.HandleFunc("POST /api/projects/{name}/logs/clear", s.clearLogs)
 	s.runtimeRoutes(mux)
 	s.imageAnalysisRoutes(mux)
+	s.deliveryRoutes(mux)
 	mux.HandleFunc("/", s.uiHandler)
 }
 
@@ -1249,10 +1283,20 @@ func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (proj
 	}()
 
 	setupContext := context.WithoutCancel(ctx)
+	if s.delivery != nil && project.Strategy == "compose" {
+		definition, err := s.delivery.DefinitionPath(project)
+		if err != nil {
+			return projectsetup.Result{}, err
+		}
+		project.ComposeFile = definition
+	}
 	var logMu sync.Mutex
 	emit := func(stream, line string) error {
 		logMu.Lock()
 		defer logMu.Unlock()
+		if s.delivery != nil {
+			line = s.delivery.Redact(project.ID, line)
+		}
 		return s.store.AddLog(setupContext, project.ID, stream, line)
 	}
 	if err := emit("system", "Dependency setup started."); err != nil {
@@ -1281,6 +1325,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	p, err := s.store.GetProject(ctx, name)
 	if err != nil {
 		return p, err
+	}
+	if s.operations != nil && s.operations.BusyFor(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
+		return p, errors.New("another operation owns this project")
 	}
 	if s.settingUp[p.ID] {
 		return p, fmt.Errorf("%s dependency setup is running", p.Name)
@@ -1341,7 +1388,8 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			return p, err
 		}
 	}
-	if !noPull {
+	recordedDelivery := s.delivery != nil && s.delivery.OwnsDefinition(p.ID, composePlan.ConfigFile)
+	if !noPull && !recordedDelivery {
 		if out, err := gitutil.Pull(p.Path); err != nil {
 			_ = s.store.AddLog(ctx, p.ID, "git", strings.TrimSpace(out))
 			return p, fmt.Errorf("git pull failed: %w", err)
@@ -1351,7 +1399,16 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	if composePlan.OverridePath != "" {
 		command = compose.UpCommandWithOverride(composePlan.ConfigFile, composePlan.OverridePath)
 	}
-	cmd, stdout, stderr, err := process.ShellCommand(context.Background(), p.Path, command, port)
+	var cmd *exec.Cmd
+	var stdout, stderr io.ReadCloser
+	if p.Strategy == "compose" && composePlan.ConfigFile != "" {
+		cmd, stdout, stderr, err = process.Command(context.Background(), p.Path, "docker", compose.UpArguments(p, composePlan)...)
+		if err == nil {
+			cmd.Env = process.WithEnvironment(os.Environ(), "PORT="+strconv.Itoa(port), "PORTO_PORT="+strconv.Itoa(port), "COMPOSE_PROFILES=")
+		}
+	} else {
+		cmd, stdout, stderr, err = process.ShellCommand(context.Background(), p.Path, command, port)
+	}
 	if err != nil {
 		delete(s.composePorts, p.ID)
 		return p, err
@@ -1384,7 +1441,13 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
 	go s.waitForProject(runtimeProject, running)
-	go s.waitForProjectReady(runtimeProject, running, port)
+	if recordedDelivery {
+		if s.operations == nil || !s.operations.InJob(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
+			go s.waitForDeliveryReady(runtimeProject, running)
+		}
+	} else {
+		go s.waitForProjectReady(runtimeProject, running, port)
+	}
 	return s.store.GetProject(ctx, name)
 }
 
@@ -1538,6 +1601,9 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 	if err != nil {
 		return p, err
 	}
+	if s.operations != nil && s.operations.BusyFor(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
+		return p, errors.New("another operation owns this project")
+	}
 
 	s.mu.Lock()
 	if s.stopping[p.ID] {
@@ -1587,6 +1653,22 @@ func (s *Server) stopProject(ctx context.Context, name string, force bool) (app.
 		}
 		if err != nil {
 			return p, err
+		}
+	} else if !force && s.delivery != nil {
+		definition, err := s.delivery.DefinitionPath(p)
+		if err != nil {
+			return p, err
+		}
+		if definition != "" {
+			integration, ok := s.compose.(interface {
+				StopServices(context.Context, app.Project) error
+			})
+			if !ok {
+				return p, errors.New("recorded Compose service control is unavailable")
+			}
+			if err := integration.StopServices(ctx, p); err != nil {
+				return p, err
+			}
 		}
 	}
 	if err := s.store.SetRuntime(ctx, p.ID, "stopped", 0, p.Port); err != nil {
@@ -2059,6 +2141,9 @@ func (s *Server) captureLogs(project app.Project, stream string, reader io.ReadC
 	defer reader.Close()
 	storeErrorLogged := false
 	if err := process.Stream(reader, func(line string) error {
+		if s.delivery != nil {
+			line = s.delivery.Redact(project.ID, line)
+		}
 		if err := s.store.AddLog(context.Background(), project.ID, stream, line); err != nil {
 			if !storeErrorLogged {
 				log.Printf("store %s logs for %s: %v", stream, project.Name, err)

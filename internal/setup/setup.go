@@ -58,11 +58,20 @@ func (ExecRunner) Run(ctx context.Context, project app.Project, emit func(stream
 func Plan(project app.Project) ([]Command, error) {
 	switch project.Strategy {
 	case "compose":
-		file, ok := compose.FindFile(project.Path)
-		if !ok {
-			return nil, fmt.Errorf("no Docker Compose file found for %s", project.Name)
+		file := project.ComposeFile
+		if file == "" {
+			var ok bool
+			file, ok = compose.FindFile(project.Path)
+			if !ok {
+				return nil, fmt.Errorf("no Docker Compose file found for %s", project.Name)
+			}
 		}
-		return []Command{{Name: "docker", Args: []string{"compose", "-f", file, "build", "--no-cache"}}}, nil
+		args := []string{"compose"}
+		if filepath.IsAbs(file) {
+			args = append(args, "--project-directory", project.Path, "-p", compose.ProjectName(project))
+		}
+		args = append(args, "-f", file, "build", "--no-cache")
+		return []Command{{Name: "docker", Args: args}}, nil
 	case "make":
 		if target := makeSetupTarget(project.Path); target != "" {
 			return []Command{{Name: "make", Args: []string{target}}}, nil
