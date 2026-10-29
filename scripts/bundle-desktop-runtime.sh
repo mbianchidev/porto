@@ -285,7 +285,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.4"
+    lima_windows_version="v2.2.1+porto.5"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -316,7 +316,8 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
-      GOWORK=off go test -mod=readonly ./pkg/sshutil ./pkg/cidata \
+      GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOWORK=off \
+        go test -mod=readonly ./pkg/sshutil ./pkg/cidata \
         -run '^(TestParseNativeWindowsOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions)$' -count=1
       if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
         CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \

@@ -7,21 +7,36 @@ Ubuntu 24.04's systemd v255 can deadlock when terminate-user races an opening
 SSH session. Preserve the existing environment refresh and wait for currently
 opening sessions before resetting them. Unlike the upstream mitigation, fail
 explicitly when inspection fails or sessions remain opening after 30 seconds.
+Accept a session that ends during inspection only after a fresh session list
+confirms its removal; an unknown state for a still-listed session remains fatal.
 No boot budget is extended. A new login after the final snapshot can still race;
 this is not a replacement for the definitive systemd fixes.
 
 diff --git a/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh b/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
-index 86bee85..b3ba606 100644
+index 86bee85..cf4cdca 100644
 --- a/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
 +++ b/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
-@@ -18,7 +18,30 @@ cat "${LIMA_CIDATA_MNT}/etc_environment" >>/etc/environment
+@@ -18,7 +18,43 @@ cat "${LIMA_CIDATA_MNT}/etc_environment" >>/etc/environment
  # /etc/environment was updated, so we need to kill it to make sure it will
  # restart with the updated environment before "linger" is being enabled.
  
-+opening_sessions() {
++user_sessions() {
 +	sessions=$(loginctl list-sessions --no-legend --no-pager) || return 1
-+	for session in $(printf '%s\n' "${sessions}" | awk -v user="${LIMA_CIDATA_USER}" '$3 == user {print $1}'); do
-+		state=$(loginctl show-session "${session}" --property=State --value) || return 1
++	printf '%s\n' "${sessions}" | awk -v user="${LIMA_CIDATA_USER}" '$3 == user {print $1}'
++}
++
++opening_sessions() {
++	sessions=$(user_sessions) || return 1
++	for session in ${sessions}; do
++		if ! state=$(loginctl show-session "${session}" --property=State --value); then
++			current=$(user_sessions) || return 1
++			if printf '%s\n' "${current}" | grep -Fx -- "${session}" >/dev/null; then
++				echo "Cannot inspect existing SSH session ${session}" >&2
++				return 1
++			fi
++			echo "SSH session ${session} ended during environment inspection" >&2
++			continue
++		fi
 +		if [ "${state}" = opening ]; then
 +			echo "${session}"
 +		fi
@@ -47,10 +62,10 @@ index 86bee85..b3ba606 100644
  
 diff --git a/pkg/cidata/porto_environment_test.go b/pkg/cidata/porto_environment_test.go
 new file mode 100644
-index 0000000..da9ea3c
+index 0000000..ac1c525
 --- /dev/null
 +++ b/pkg/cidata/porto_environment_test.go
-@@ -0,0 +1,125 @@
+@@ -0,0 +1,141 @@
 +// SPDX-FileCopyrightText: Copyright The Lima Authors
 +// SPDX-License-Identifier: Apache-2.0
 +
@@ -74,6 +89,8 @@ index 0000000..da9ea3c
 +		openSleeps  int
 +		unchanged   bool
 +		unavailable bool
++		vanished    bool
++		stateError  bool
 +		wantSleeps  int
 +		wantFailure bool
 +	}{
@@ -82,6 +99,8 @@ index 0000000..da9ea3c
 +		{name: "opening beyond bound", openSleeps: 31, wantSleeps: 30, wantFailure: true},
 +		{name: "unchanged environment", openSleeps: 31, unchanged: true},
 +		{name: "inspection unavailable", unavailable: true, wantFailure: true},
++		{name: "session ended during inspection", vanished: true},
++		{name: "existing session inspection failed", stateError: true, wantFailure: true},
 +	} {
 +		t.Run(test.name, func(t *testing.T) {
 +			root := t.TempDir()
@@ -108,9 +127,12 @@ index 0000000..da9ea3c
 +case "$1" in
 +  list-sessions)
 +    if [ "$UNAVAILABLE" = 1 ]; then echo 'Synthetic logind query failure' >&2; exit 92; fi
-+    printf '%s\n' 'synthetic-session 123 synthetic - - active' 'unrelated-session 456 untouched - - active' ;;
++    if [ ! -e "$VANISHED" ]; then printf '%s\n' 'synthetic-session 123 synthetic - - active'; fi
++    printf '%s\n' 'unrelated-session 456 untouched - - active' ;;
 +  show-session)
 +    [ "$2" = synthetic-session ] || { echo 'Inspected an unrelated user session' >&2; exit 93; }
++    if [ "$VANISH" = 1 ]; then : > "$VANISHED"; echo 'Synthetic session ended' >&2; exit 94; fi
++    if [ "$STATE_ERROR" = 1 ]; then echo 'Synthetic state query failure' >&2; exit 95; fi
 +    if [ "$(cat "$COUNTER")" -lt "$OPEN_SLEEPS" ]; then echo opening; else echo active; fi ;;
 +  terminate-user)
 +    if [ "$(cat "$COUNTER")" -lt "$OPEN_SLEEPS" ]; then
@@ -142,6 +164,13 @@ index 0000000..da9ea3c
 +			if test.unavailable {
 +				unavailable = "1"
 +			}
++			vanish, stateError := "0", "0"
++			if test.vanished {
++				vanish = "1"
++			}
++			if test.stateError {
++				stateError = "1"
++			}
 +			command.Env = append(os.Environ(),
 +				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
 +				"LIMA_CIDATA_USER=synthetic", "LIMA_CIDATA_IID=synthetic-boot",
@@ -149,6 +178,8 @@ index 0000000..da9ea3c
 +				"COUNTER="+filepath.ToSlash(filepath.Join(root, "counter")),
 +				"TERMINATED="+filepath.ToSlash(filepath.Join(root, "terminated")),
 +				"UNAVAILABLE="+unavailable,
++				"VANISH="+vanish, "STATE_ERROR="+stateError,
++				"VANISHED="+filepath.ToSlash(filepath.Join(root, "vanished")),
 +				"OPEN_SLEEPS="+strconv.Itoa(test.openSleeps))
 +			output, runErr := command.CombinedOutput()
 +			if ctx.Err() != nil {

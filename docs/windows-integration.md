@@ -41,6 +41,10 @@ for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
 the existing boot budget before refreshing the guest environment. Unavailable
 session inspection or sessions still opening after 30 seconds fail explicitly,
 without an unsafe reset or an SSH-ready success marker.
+Sessions that finish between enumeration and inspection are accepted only after
+a fresh list confirms removal. Unknown state for a still-listed session remains
+an error. Source-patch regression tests run on the build host, including when
+cross-packaging a Windows target.
 
 This upstream mitigation is not atomic: a new login after the last snapshot
 can still race. The definitive fixes are in newer guest systemd versions
