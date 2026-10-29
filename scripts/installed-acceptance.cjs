@@ -535,6 +535,13 @@ async function startDesktop(fixture, installed, env) {
   }
 }
 
+async function composeRunningContainer(compose) {
+  const id = await waitFor(() => compose('ps', '--status', 'running', '--quiet'),
+    'real Compose task in the running-only event inventory')
+  assert.match(id, /^[a-f0-9]{12,64}$/, 'Compose must start exactly one real synthetic container')
+  return id
+}
+
 async function toolSnapshot(installed) {
   const result = {}
   for (const file of [installed.porto, installed.desktop, installed.tools.launcher,
@@ -693,9 +700,10 @@ async function acceptance(fixture, reopen = false) {
     }))
     console.log('Installed acceptance: starting and inspecting the real Compose project')
     await compose('up', '--detach', '--no-build')
-    const id = await compose('ps', '--status', 'running', '--quiet')
-    assert.match(id, /^[a-f0-9]{12,64}$/, 'Compose must start exactly one real synthetic container')
+    console.log('Installed acceptance: confirming the running-only Compose inventory')
+    const id = await composeRunningContainer(compose)
     const inspect = async () => JSON.parse(await cli('container', 'inspect', id))[0]
+    console.log('Installed acceptance: verifying the real Compose project labels')
     assert.equal((await inspect()).Config.Labels['com.docker.compose.project'], project)
     console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
@@ -816,5 +824,5 @@ if (require.main === module) {
 
 module.exports = {
   acceptance, cdp, configureLima, existingDesktops, hostProcesses, identity, main, preflight,
-  removed, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot, guestStartupDiagnostics,
+  removed, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot, guestStartupDiagnostics, composeRunningContainer,
 }

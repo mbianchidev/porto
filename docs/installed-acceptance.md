@@ -55,6 +55,10 @@ The fixture:
    requires the event-backed inventory to contain no remaining synthetic
    containers; a successful remove is not confused with an asynchronously
    published, older inventory snapshot.
+   The same bounded convergence wait is used after Compose up before requiring
+   its running-only list to contain exactly one real container ID. Faster lifecycle
+   metadata acknowledgment may precede that event snapshot; a nonempty malformed
+   or multi-container response still fails immediately.
 7. Reapplies the same already-built package, checks that owned executables were
    replaced with the shipped bytes, and reopens the installed desktop. The
    existing image, engine ownership and real volume token must survive. No

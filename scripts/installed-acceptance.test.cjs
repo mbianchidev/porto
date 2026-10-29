@@ -13,7 +13,7 @@ const {
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
-const { cdp, existingDesktops, guestStartupDiagnostics, hostProcesses, identity, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
+const { cdp, composeRunningContainer, existingDesktops, guestStartupDiagnostics, hostProcesses, identity, rendererRequest, restored, reportRuntimeDiagnostics, retainRuntimeDiagnostics, stopProcess, reportCommandFailure, snapshot } = require('./installed-acceptance.cjs')
 const { releaseServer, uninstall } = require('./installed-package.cjs')
 
 function directory(t) {
@@ -559,6 +559,17 @@ test('startup diagnostic failure is explicit without replacing the original acce
   })
   assert.ok(logs.some((message) => message.includes('diagnostics unavailable')))
   assert.ok(!logs.some((message) => message.includes('synthetic private arguments')))
+})
+
+test('Compose running-only inventory converges after fast lifecycle metadata without relaxing the single-ID gate', async () => {
+  let calls = 0
+  const id = 'a'.repeat(64)
+  assert.equal(await composeRunningContainer(async (...args) => {
+    assert.deepEqual(args, ['ps', '--status', 'running', '--quiet'])
+    return ++calls === 1 ? '' : id
+  }), id)
+  assert.equal(calls, 2)
+  await assert.rejects(composeRunningContainer(async () => `${id}\n${'b'.repeat(64)}`), /exactly one/)
 })
 
 test('only renderer POST start uses the existing one-minute lifecycle allowance', async (t) => {
