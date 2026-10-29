@@ -134,9 +134,13 @@ an opaque ID. Network lists expose the same full identities, not display-shorten
 IDs. Recorded native mount annotations retain named-volume identity in Docker
 summaries while preserving the actual OCI source and read-only flags; ordinary
 bind mounts are not guessed to be volumes. Runtime helper teardown stops its
-owned process group, including
-SSH descendants, so repeated health checks and lifecycle operations release
-their transport sessions.
+owned process group, including SSH descendants, so repeated health checks and
+lifecycle operations release their transport sessions.
+Container creation, removal and rename are acknowledged only after the healthy
+inventory exposes the committed change. Compose can replace a service and
+immediately list its final identity without seeing the removed container or a
+temporary replacement name. If confirmation fails after the runtime mutation,
+the request reports that committed change and the confirmation error explicitly.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
 unused application stdin cannot terminate output, while completion or failed
 setup releases guest reader jobs and their FIFO directory instead of consuming

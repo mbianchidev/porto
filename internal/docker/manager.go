@@ -1442,6 +1442,30 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
+	switch action {
+	case "remove", "remove-force", "remove-volumes", "remove-force-volumes":
+		if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+			target := strings.TrimPrefix(id, "/")
+			if container, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+				target = container.ID
+			}
+			defer func() {
+				if err != nil {
+					return
+				}
+				if confirmationErr := m.confirmContainerInventory(ctx, func(containers []Container) bool {
+					for _, container := range containers {
+						if strings.HasPrefix(container.ID, target) || strings.TrimPrefix(container.Name, "/") == target {
+							return false
+						}
+					}
+					return true
+				}); confirmationErr != nil {
+					err = fmt.Errorf("container %q was removed, but inventory confirmation failed: %w", id, confirmationErr)
+				}
+			}()
+		}
+	}
 	if action == "start" || action == "restart" || action == "unpause" {
 		var selection acceleration.Selection
 		selection, err = m.validateExistingArchitecture(ctx, id)
@@ -1752,12 +1776,34 @@ func containerRemovalPending(err error) bool {
 		strings.Contains(message, "task is running")
 }
 
-func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
+func (m *Manager) RenameContainer(ctx context.Context, id, name string) (err error) {
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
 	if err := validateObjectID(name); err != nil {
 		return err
+	}
+	if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+		var target string
+		if container, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+			target = container.ID
+		}
+		defer func() {
+			if err != nil {
+				return
+			}
+			if confirmationErr := m.confirmContainerInventory(ctx, func(containers []Container) bool {
+				for _, container := range containers {
+					if (target == "" || container.ID == target) &&
+						strings.TrimPrefix(container.Name, "/") == strings.TrimPrefix(name, "/") {
+						return true
+					}
+				}
+				return false
+			}); confirmationErr != nil {
+				err = fmt.Errorf("container %q was renamed to %q, but inventory confirmation failed: %w", id, name, confirmationErr)
+			}
+		}()
 	}
 	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
 		return operations.Rename(ctx, id, name)
@@ -1767,7 +1813,7 @@ func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
 		}
 		return directErr
 	}
-	_, err := m.run(ctx, "rename Porto container", "rename", id, name)
+	_, err = m.run(ctx, "rename Porto container", "rename", id, name)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
