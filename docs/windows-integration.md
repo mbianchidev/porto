@@ -57,7 +57,11 @@ The existing Windows Ubuntu 24.04 image selection and existing guest disks are
 unchanged; no systemd binary, kernel, PAM policy or host configuration is patched.
 
 The standalone Windows updater uses native process executable/creation metadata,
-not the CIM provider. Installed executable names only select candidates; the
+not the CIM provider. It explicitly loads its required system modules from the
+running interpreter's `$PSHOME` with command autoload disabled, avoiding unbounded
+cold command discovery or inherited third-party module resolution. A failed
+module import reports an error without signaling readiness or asking Porto to
+exit. Installed executable names only select candidates; the
 complete installation path establishes ownership, and PID creation time and path
 are rechecked before stopping a process. A running owned QEMU executable still
 refuses the update before readiness. Unknown inspection fails explicitly, and

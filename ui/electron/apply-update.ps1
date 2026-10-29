@@ -12,6 +12,7 @@ param(
 $ErrorActionPreference = "Stop"
 $LogFile = "$PackagePath.install.log"
 $Utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+$NativeModulesReady = $false
 
 function Write-UpdateLog([string]$Message) {
     [System.IO.File]::AppendAllText(
@@ -117,6 +118,12 @@ function Format-PortoProcesses([object[]]$Processes) {
 }
 
 try {
+    Write-UpdateLog "Loading PowerShell system modules from the running interpreter."
+    $PSModuleAutoLoadingPreference = "None"
+    foreach ($Module in @("Microsoft.PowerShell.Management", "Microsoft.PowerShell.Utility")) {
+        Import-Module -Name ([System.IO.Path]::Combine($PSHOME, "Modules", $Module, "$Module.psd1"))
+    }
+    $NativeModulesReady = $true
     Write-UpdateLog "Validating downloaded installer and installation paths."
     if (-not [System.IO.Path]::IsPathRooted($InstallDirectory)) {
         throw "Refusing to replace a relative Porto installation path."
@@ -208,11 +215,13 @@ try {
     Write-UpdateLog "Porto update installed successfully."
 }
 catch {
-    Remove-Item -LiteralPath $ReadyFile -Force -ErrorAction SilentlyContinue
-    Remove-Item -LiteralPath $ProceedFile -Force -ErrorAction SilentlyContinue
+    [System.IO.File]::Delete($ReadyFile)
+    [System.IO.File]::Delete($ProceedFile)
     $Message = "Porto could not install the downloaded update. $($_.Exception.Message) See $LogFile for details."
     Write-UpdateLog $Message
     [System.IO.File]::WriteAllText($ErrorFile, "$Message`r`n", $Utf8NoBom)
-    Restart-ExistingPorto
+    if ($NativeModulesReady) {
+        Restart-ExistingPorto
+    }
     exit 1
 }
