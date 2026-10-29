@@ -539,7 +539,7 @@ test('slow native Windows startup diagnoses SSH and guest sessions without chang
       assert.doesNotMatch(args[7], /systemctl|reboot|shutdown|kill/)
       assert.equal(options.env.SSH, '"C:/Synthetic OS/System32/OpenSSH/ssh.exe" -vvv')
       assert.equal(options.env.LIMA_HOME, env.LIMA_HOME)
-      assert.equal(options.timeout, 90000)
+      assert.equal(options.timeout, 180000)
       assert.equal(options.allowFailure, true)
       return { status: 0, stdout: 'synthetic session timing', stderr: `https://user:${secret}@synthetic.invalid/` }
     },

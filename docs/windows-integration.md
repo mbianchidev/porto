@@ -34,6 +34,21 @@ zero and never applies its existing CPU-aware cipher preferences. The patch
 retains the upstream OpenSSH 8.1 minimum for cipher reordering and the actual
 Windows processor feature check; it does not force AES on unsupported CPUs.
 
+The bundle also backports
+[Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)
+for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
+[lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570). It waits within
+the existing boot budget before refreshing the guest environment. Unavailable
+session inspection or sessions still opening after 30 seconds fail explicitly,
+without an unsafe reset or an SSH-ready success marker.
+
+This upstream mitigation is not atomic: a new login after the last snapshot
+can still race. The definitive fixes are in newer guest systemd versions
+([0ae9073f](https://github.com/systemd/systemd/commit/0ae9073f15209b6e0acfbd23ec146c4a29b7abbe),
+[b2a41090](https://github.com/systemd/systemd/commit/b2a4109031c1bd79c498f8642df150deeebe1708)).
+The existing Windows Ubuntu 24.04 image selection and existing guest disks are
+unchanged; no systemd binary, kernel, PAM policy or host configuration is patched.
+
 ## Native Windows setup
 
 In **Settings > Native Windows containers**, inspect host capabilities and

@@ -285,7 +285,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.3"
+    lima_windows_version="v2.2.1+porto.4"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -306,6 +306,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
   lima_ssh_version_patch="$script_directory/patches/lima-2.2.1-windows-ssh-version.patch"
+  lima_logind_patch="$script_directory/patches/lima-2.2.1-logind-opening.patch"
   (
     cd "$temporary/$lima_source_directory"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
@@ -314,8 +315,9 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     if [ "$lima_version" = v2.2.1 ]; then
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"
-      GOWORK=off go test -mod=readonly ./pkg/sshutil \
-        -run '^TestParseNativeWindowsOpenSSHVersion$' -count=1
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
+      GOWORK=off go test -mod=readonly ./pkg/sshutil ./pkg/cidata \
+        -run '^(TestParseNativeWindowsOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions)$' -count=1
       if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
         CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
           -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
@@ -338,6 +340,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   if [ "$lima_version" = v2.2.1 ]; then
     cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
     cp "$lima_ssh_version_patch" "$destination/licenses/lima-windows-ssh-version.patch"
+    cp "$lima_logind_patch" "$destination/licenses/lima-logind-opening.patch"
   fi
 fi
 

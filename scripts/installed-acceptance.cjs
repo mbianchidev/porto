@@ -414,14 +414,14 @@ report() {
   "$@" || { printf 'Diagnostic failed: %s\\n' "$*" >&2; status=1; }
 }
 report uname -a
+report sudo -n journalctl -b --no-pager -o short-monotonic -n 100 -u ssh.service -u systemd-logind.service -u systemd-user-sessions.service -u "user@$(id -u).service" -u cloud-final.service
 report cat /proc/cpuinfo /proc/meminfo /proc/pressure/cpu /proc/pressure/io /proc/pressure/memory
 report ps -eo pid,stat,comm,wchan:32
-report sudo -n journalctl -b --no-pager -o short-monotonic -n 120 -u ssh.service -u systemd-logind.service -u systemd-user-sessions.service -u "user@$(id -u).service" -u cloud-final.service
 exit "$status"
 `
     const result = await runImpl(installed.limactl, [
       '--debug', 'shell', '--workdir=/', 'porto-engine', '--', 'sh', '-c', script,
-    ], { env: diagnosticEnv, allowFailure: true, timeout: 90000 })
+    ], { env: diagnosticEnv, allowFailure: true, timeout: 180000 })
     logImpl(`Installed read-only guest diagnostic status: ${result.signal || result.status}`)
     for (const [label, output] of [['SSH startup', result.stderr], ['guest startup', result.stdout]]) {
       if (output) logImpl(`Installed ${label} diagnostics:\n${runtimeFailureDiagnostic(new Error(output))}`)
@@ -468,7 +468,7 @@ async function startDesktop(fixture, installed, env) {
   retain()
   const diagnosticsTimer = setInterval(retain, 250)
   let guestDiagnostics
-  const guestDiagnosticsTimer = fixture.target === 'windows/arm64'
+  const guestDiagnosticsTimer = fixture.target.startsWith('windows/')
     ? setTimeout(() => { guestDiagnostics = guestStartupDiagnostics(installed, env) }, 5 * 60 * 1000)
     : undefined
   try {

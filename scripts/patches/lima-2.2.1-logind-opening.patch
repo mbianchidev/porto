@@ -1,0 +1,178 @@
+Porto first-boot session draining for Lima v2.2.1 (Apache-2.0).
+
+Based on upstream 396604e38baf2645a4fa23b4bb4f012ef41ddb85:
+https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85
+
+Ubuntu 24.04's systemd v255 can deadlock when terminate-user races an opening
+SSH session. Preserve the existing environment refresh and wait for currently
+opening sessions before resetting them. Unlike the upstream mitigation, fail
+explicitly when inspection fails or sessions remain opening after 30 seconds.
+No boot budget is extended. A new login after the final snapshot can still race;
+this is not a replacement for the definitive systemd fixes.
+
+diff --git a/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh b/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
+index 86bee85..b3ba606 100644
+--- a/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
++++ b/pkg/cidata/cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh
+@@ -18,7 +18,30 @@ cat "${LIMA_CIDATA_MNT}/etc_environment" >>/etc/environment
+ # /etc/environment was updated, so we need to kill it to make sure it will
+ # restart with the updated environment before "linger" is being enabled.
+ 
++opening_sessions() {
++	sessions=$(loginctl list-sessions --no-legend --no-pager) || return 1
++	for session in $(printf '%s\n' "${sessions}" | awk -v user="${LIMA_CIDATA_USER}" '$3 == user {print $1}'); do
++		state=$(loginctl show-session "${session}" --property=State --value) || return 1
++		if [ "${state}" = opening ]; then
++			echo "${session}"
++		fi
++	done
++}
++
+ if command -v loginctl >/dev/null 2>&1 && [ "${orig}" != "$(cat /etc/environment)" ]; then
++	# systemd v255's logind can spin forever when an opening session is stopped.
++	# https://github.com/lima-vm/lima/issues/5570
++	retry=0
++	pending=$(opening_sessions) || { echo "Cannot inspect SSH sessions before environment reset" >&2; exit 1; }
++	while [ -n "${pending}" ] && [ "${retry}" -lt 30 ]; do
++		retry=$((retry + 1))
++		sleep 1
++		pending=$(opening_sessions) || { echo "Cannot inspect SSH sessions before environment reset" >&2; exit 1; }
++	done
++	if [ -n "${pending}" ]; then
++		echo "SSH sessions are still opening after 30 seconds; refusing unsafe environment reset" >&2
++		exit 1
++	fi
+ 	loginctl terminate-user "${LIMA_CIDATA_USER}" || true
+ fi
+ 
+diff --git a/pkg/cidata/porto_environment_test.go b/pkg/cidata/porto_environment_test.go
+new file mode 100644
+index 0000000..da9ea3c
+--- /dev/null
++++ b/pkg/cidata/porto_environment_test.go
+@@ -0,0 +1,125 @@
++// SPDX-FileCopyrightText: Copyright The Lima Authors
++// SPDX-License-Identifier: Apache-2.0
++
++package cidata
++
++import (
++	"context"
++	"os"
++	"os/exec"
++	"path/filepath"
++	"runtime"
++	"strconv"
++	"strings"
++	"testing"
++	"time"
++)
++
++func TestEnvironmentWaitsForOpeningSessions(t *testing.T) {
++	for _, test := range []struct {
++		name        string
++		openSleeps  int
++		unchanged   bool
++		unavailable bool
++		wantSleeps  int
++		wantFailure bool
++	}{
++		{name: "opening then active", openSleeps: 2, wantSleeps: 2},
++		{name: "already active"},
++		{name: "opening beyond bound", openSleeps: 31, wantSleeps: 30, wantFailure: true},
++		{name: "unchanged environment", openSleeps: 31, unchanged: true},
++		{name: "inspection unavailable", unavailable: true, wantFailure: true},
++	} {
++		t.Run(test.name, func(t *testing.T) {
++			root := t.TempDir()
++			bin := filepath.Join(root, "bin")
++			if err := os.Mkdir(bin, 0o700); err != nil {
++				t.Fatal(err)
++			}
++			write := func(name, contents string) {
++				t.Helper()
++				if err := os.WriteFile(filepath.Join(root, name), []byte(contents), 0o700); err != nil {
++					t.Fatal(err)
++				}
++			}
++			const environment = "#LIMA-START\nSYNTHETIC_VALUE=current\n#LIMA-END\n"
++			before := "BASE=retained\n#LIMA-START\nSYNTHETIC_VALUE=previous\n#LIMA-END\n"
++			if test.unchanged {
++				before = "BASE=retained\n" + environment
++			}
++			write("environment", before)
++			write("etc_environment", environment)
++			write("counter", "0\n")
++			write("bin/loginctl", `#!/bin/sh
++set -eu
++case "$1" in
++  list-sessions)
++    if [ "$UNAVAILABLE" = 1 ]; then echo 'Synthetic logind query failure' >&2; exit 92; fi
++    printf '%s\n' 'synthetic-session 123 synthetic - - active' 'unrelated-session 456 untouched - - active' ;;
++  show-session)
++    [ "$2" = synthetic-session ] || { echo 'Inspected an unrelated user session' >&2; exit 93; }
++    if [ "$(cat "$COUNTER")" -lt "$OPEN_SLEEPS" ]; then echo opening; else echo active; fi ;;
++  terminate-user)
++    if [ "$(cat "$COUNTER")" -lt "$OPEN_SLEEPS" ]; then
++      echo 'Refusing to terminate a synthetic opening session' >&2
++      exit 90
++    fi
++    printf '%s\n' terminated > "$TERMINATED" ;;
++  *) echo 'Unexpected loginctl operation' >&2; exit 91 ;;
++esac
++`)
++			write("bin/sleep", "#!/bin/sh\nset -eu\nprintf '%s\\n' \"$(($(cat \"$COUNTER\") + 1))\" > \"$COUNTER\"\n")
++			script, err := os.ReadFile("cidata.TEMPLATE.d/boot.Linux/07-etc-environment.sh")
++			if err != nil {
++				t.Fatal(err)
++			}
++			quote := func(name string) string {
++				return "'" + strings.ReplaceAll(filepath.ToSlash(filepath.Join(root, name)), "'", "'\"'\"'") + "'"
++			}
++			contents := strings.ReplaceAll(string(script), "/etc/environment", quote("environment"))
++			contents = strings.ReplaceAll(contents, "/run/lima-ssh-ready", quote("ready"))
++			if runtime.GOOS == "darwin" {
++				contents = strings.ReplaceAll(contents, "sed -i ", "sed -i '' ")
++			}
++			write("boot.sh", contents)
++			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
++			defer cancel()
++			command := exec.CommandContext(ctx, "sh", filepath.Join(root, "boot.sh"))
++			unavailable := "0"
++			if test.unavailable {
++				unavailable = "1"
++			}
++			command.Env = append(os.Environ(),
++				"PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"),
++				"LIMA_CIDATA_USER=synthetic", "LIMA_CIDATA_IID=synthetic-boot",
++				"LIMA_CIDATA_MNT="+filepath.ToSlash(root),
++				"COUNTER="+filepath.ToSlash(filepath.Join(root, "counter")),
++				"TERMINATED="+filepath.ToSlash(filepath.Join(root, "terminated")),
++				"UNAVAILABLE="+unavailable,
++				"OPEN_SLEEPS="+strconv.Itoa(test.openSleeps))
++			output, runErr := command.CombinedOutput()
++			if ctx.Err() != nil {
++				t.Fatalf("unbounded environment setup: %v: %s", ctx.Err(), output)
++			}
++			if (runErr != nil) != test.wantFailure {
++				t.Fatalf("setup error = %v, want failure %t: %s", runErr, test.wantFailure, output)
++			}
++			counter, err := os.ReadFile(filepath.Join(root, "counter"))
++			if err != nil || strings.TrimSpace(string(counter)) != strconv.Itoa(test.wantSleeps) {
++				t.Fatalf("wait count = %q, error %v, want %d: %s", counter, err, test.wantSleeps, output)
++			}
++			_, terminatedErr := os.Stat(filepath.Join(root, "terminated"))
++			if (terminatedErr == nil) != (!test.wantFailure && !test.unchanged) {
++				t.Fatalf("unsafe or missing session termination: %v: %s", terminatedErr, output)
++			}
++			_, readyErr := os.Stat(filepath.Join(root, "ready"))
++			if (readyErr == nil) == test.wantFailure {
++				t.Fatalf("incorrect SSH-ready signal: %v: %s", readyErr, output)
++			}
++			after, err := os.ReadFile(filepath.Join(root, "environment"))
++			if err != nil || string(after) != "BASE=retained\n"+environment {
++				t.Fatalf("environment replacement lost data: %q, %v", after, err)
++			}
++		})
++	}
++}
