@@ -141,6 +141,8 @@ inventory exposes the committed change. Compose can replace a service and
 immediately list its final identity without seeing the removed container or a
 temporary replacement name. If confirmation fails after the runtime mutation,
 the request reports that committed change and the confirmation error explicitly.
+Once the inventory worker has stopped, cleanup and container queries use the
+runtime directly rather than waiting on its inactive cache.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
 unused application stdin cannot terminate output, while completion or failed
 setup releases guest reader jobs and their FIFO directory instead of consuming

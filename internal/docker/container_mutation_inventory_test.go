@@ -61,6 +61,35 @@ func TestContainerReplacementFailureDoesNotWaitForInventory(t *testing.T) {
 	}
 }
 
+func TestStoppedContainerInventoryDoesNotBlockRuntimeCleanup(t *testing.T) {
+	for _, action := range []string{"remove", "rename"} {
+		t.Run(action, func(t *testing.T) {
+			manager := managerWithContainerOperations(&fakeContainerOperations{})
+			manager.inventory = newContainerInventory(nil, defaultInventoryOptions())
+			manager.inventory.snapshot.Available = true
+			manager.inventory.snapshot.Containers = []Container{{ID: "synthetic-old", Name: "synthetic-temporary"}}
+			manager.inventoryCancel = func() {}
+			manager.inventoryDone = make(chan struct{})
+			close(manager.inventoryDone)
+			ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+			defer cancel()
+			var err error
+			if action == "rename" {
+				err = manager.RenameContainer(ctx, "synthetic-old", "synthetic-app")
+			} else {
+				err = manager.ContainerAction(ctx, "synthetic-old", action)
+			}
+			if err != nil {
+				t.Fatalf("owned runtime cleanup depended on the stopped inventory worker: %v", err)
+			}
+			containers, err := manager.DockerContainers(ctx, true)
+			if err != nil || len(containers) != 0 {
+				t.Fatalf("stopped inventory replaced an authoritative runtime query: %+v, %v", containers, err)
+			}
+		})
+	}
+}
+
 func testContainerMutationInventory(t *testing.T, action string, direct, byName, cancelMutation bool) {
 	t.Helper()
 	old := Container{ID: "synthetic-old", Name: "synthetic-app", State: "exited"}

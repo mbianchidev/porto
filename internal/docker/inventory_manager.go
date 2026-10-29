@@ -124,7 +124,12 @@ func (m *Manager) activeContainerInventory() *containerInventory {
 	if m.inventoryCancel == nil {
 		return nil
 	}
-	return m.inventory
+	select {
+	case <-m.inventoryDone:
+		return nil
+	default:
+		return m.inventory
+	}
 }
 
 func (m *Manager) invalidateContainerInventory() {
