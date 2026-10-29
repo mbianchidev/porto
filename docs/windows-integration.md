@@ -45,6 +45,9 @@ Sessions that finish between enumeration and inspection are accepted only after
 a fresh list confirms removal. Unknown state for a still-listed session remains
 an error. Source-patch regression tests run on the build host, including when
 cross-packaging a Windows target.
+Runtime patch application forces LF locally to that Git invocation, independent
+of a Windows host's `core.autocrlf` setting. Embedded Linux script bytes are
+checked before building; CRLF shebangs must never reach the guest.
 
 This upstream mitigation is not atomic: a new login after the last snapshot
 can still race. The definitive fixes are in newer guest systemd versions

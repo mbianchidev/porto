@@ -3,7 +3,7 @@ const net = require('node:net')
 const path = require('node:path')
 const { stripVTControlCharacters } = require('node:util')
 
-const diagnosticPattern = /\b(vda\d*|virtio|scsi|partition|udev(?:d|adm)?|hwdb|sysusers|tmpfiles|fsck|clocksource|tsc|io-apic|pit|watchdog|lockup|panic|rcu|oom)\b|modules-load|by-label|boot(?:-efi)?\.mount|local-fs|emergency|timed out|failed|stall|out of memory|killed process|allocation failure|cannot inspect|unsafe environment reset|session .* ended during/i
+const diagnosticPattern = /\b(vda\d*|virtio|scsi|partition|udev(?:d|adm)?|hwdb|sysusers|tmpfiles|fsck|clocksource|tsc|io-apic|pit|watchdog|lockup|panic|rcu|oom)\b|modules-load|by-label|boot(?:-efi)?\.mount|local-fs|emergency|timed out|failed|stall|out of memory|killed process|allocation failure|cannot inspect|unsafe environment reset|session .* ended during|bad interpreter|cannot execute|boot.*not found/i
 
 function bootRecords(contents, limit = 65536) {
   const selected = stripVTControlCharacters(contents).replaceAll('\r', '\n')

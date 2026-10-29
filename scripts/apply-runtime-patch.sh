@@ -23,10 +23,10 @@ if git rev-parse --show-toplevel >/dev/null 2>&1; then
   exit 1
 fi
 
-git apply --check "${patches[@]}"
-git apply "${patches[@]}"
+git -c core.autocrlf=false -c core.eol=lf apply --check "${patches[@]}"
+git -c core.autocrlf=false -c core.eol=lf apply "${patches[@]}"
 reverse=()
 for ((index=${#patches[@]}-1; index>=0; index--)); do
   reverse+=("${patches[index]}")
 done
-git apply --reverse --check "${reverse[@]}"
+git -c core.autocrlf=false -c core.eol=lf apply --reverse --check "${reverse[@]}"

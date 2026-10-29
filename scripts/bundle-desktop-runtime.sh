@@ -285,7 +285,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.5"
+    lima_windows_version="v2.2.1+porto.6"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then

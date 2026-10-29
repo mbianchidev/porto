@@ -55,3 +55,30 @@ test('a missing or already-applied patch fails instead of producing an unpatched
   assert.notEqual(repeated.status, 0)
   assert.equal(fs.readFileSync(path.join(source, 'value.txt'), 'utf8'), 'after\n')
 })
+
+test('host autocrlf cannot rewrite patched Linux guest scripts to CRLF', (t) => {
+  const { source, patch } = fixture(t)
+  const scriptPatch = path.join(path.dirname(patch), 'guest.diff')
+  fs.writeFileSync(scriptPatch, [
+    'diff --git a/guest.sh b/guest.sh',
+    'new file mode 100755',
+    '--- /dev/null',
+    '+++ b/guest.sh',
+    '@@ -0,0 +1,2 @@',
+    '+#!/bin/sh',
+    '+printf "synthetic guest ready\\n"',
+    '',
+  ].join('\n'))
+  const result = command('bash', [script, source, scriptPatch], {
+    env: { ...process.env, GIT_CONFIG_COUNT: '2',
+      GIT_CONFIG_KEY_0: 'core.autocrlf', GIT_CONFIG_VALUE_0: 'true',
+      GIT_CONFIG_KEY_1: 'core.eol', GIT_CONFIG_VALUE_1: 'crlf' },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  const contents = fs.readFileSync(path.join(source, 'guest.sh'), 'utf8')
+  assert.equal(contents, '#!/bin/sh\nprintf "synthetic guest ready\\n"\n')
+  assert.ok(!contents.includes('\r'))
+  const executed = command(path.join(source, 'guest.sh'), [])
+  assert.equal(executed.status, 0, executed.stderr)
+  assert.equal(executed.stdout, 'synthetic guest ready\n')
+})
