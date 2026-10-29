@@ -164,7 +164,18 @@ func (m *Manager) Workload(ctx context.Context, request WorkloadRequest) (operat
 			if err != nil {
 				return operations.Failure(publicError(err))
 			}
-			patch["spec"] = map[string]any{"template": template}
+			data, err := json.Marshal([]map[string]any{
+				{"op": "test", "path": "/metadata/uid", "value": request.UID},
+				{"op": "test", "path": "/metadata/resourceVersion", "value": request.ResourceVersion},
+				{"op": "replace", "path": "/spec/template", "value": template},
+			})
+			if err != nil {
+				return operations.Failure("The retained pod template could not be encoded.")
+			}
+			if _, err := client.objects(request.Target).Patch(ctx, request.Name, types.JSONPatchType, data, metav1.PatchOptions{FieldManager: fieldManager, FieldValidation: metav1.FieldValidationStrict}); err != nil {
+				return mutationError(err, 0)
+			}
+			return client.waitRollout(ctx, request.Target, progress)
 		}
 		data, err := json.Marshal(patch)
 		if err != nil {
@@ -173,7 +184,7 @@ func (m *Manager) Workload(ctx context.Context, request WorkloadRequest) (operat
 		if _, err := client.objects(request.Target).Patch(ctx, request.Name, types.MergePatchType, data, metav1.PatchOptions{FieldManager: fieldManager, FieldValidation: metav1.FieldValidationStrict}); err != nil {
 			return mutationError(err, 0)
 		}
-		if request.Action == "restart" || request.Action == "rollback" {
+		if request.Action == "restart" {
 			return client.waitRollout(ctx, request.Target, progress)
 		}
 		return progress("resource action accepted; inspect current conditions and scheduling state")
@@ -220,7 +231,12 @@ func (s *session) waitRollout(parent context.Context, target Target, progress fu
 			updated, _, _ = unstructured.NestedInt64(object.Object, "status", "updatedNumberScheduled")
 		}
 		observed, _, _ := unstructured.NestedInt64(object.Object, "status", "observedGeneration")
-		if observed >= object.GetGeneration() && ready == desired && updated == desired {
+		complete := observed >= object.GetGeneration() && ready == desired && updated == desired
+		if target.Resource == "deployments" {
+			total, _, _ := unstructured.NestedInt64(object.Object, "status", "replicas")
+			complete = complete && total == desired
+		}
+		if complete {
 			return progress("controller rollout is ready; this does not prove application-level health")
 		}
 		if err := progress(fmt.Sprintf("observing rollout: %d/%d ready, %d/%d updated", ready, desired, updated, desired)); err != nil {

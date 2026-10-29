@@ -16,6 +16,10 @@ import (
 )
 
 func archiveManifest(archive *os.File, image Image) (string, []string, error) {
+	selectedPlatform, err := NormalizePlatform(image.Platform)
+	if err != nil {
+		return "", nil, err
+	}
 	current := image.Digest
 	for depth := 0; depth < 8; depth++ {
 		data, err := archiveBlob(archive, current)
@@ -43,7 +47,8 @@ func archiveManifest(archive *os.File, image Image) (string, []string, error) {
 			if platform.Variant != "" {
 				actual += "/" + platform.Variant
 			}
-			if actual != image.Platform {
+			normalized, err := NormalizePlatform(actual)
+			if err != nil || normalized != selectedPlatform {
 				return "", nil, fmt.Errorf("archive platform %s does not match selected platform %s", actual, image.Platform)
 			}
 			layers := make([]string, 0, len(node.Layers))
@@ -64,7 +69,8 @@ func archiveManifest(archive *os.File, image Image) (string, []string, error) {
 			if manifest.Platform.Variant != "" {
 				platform += "/" + manifest.Platform.Variant
 			}
-			if platform == image.Platform {
+			normalized, err := NormalizePlatform(platform)
+			if err == nil && normalized == selectedPlatform {
 				if selected != "" {
 					return "", nil, errors.New("image index contains ambiguous platform manifests")
 				}

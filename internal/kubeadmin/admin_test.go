@@ -67,16 +67,17 @@ type apiRequest struct {
 	Body         []byte
 }
 type fakeAPI struct {
-	mu              sync.Mutex
-	objects         map[string]*unstructured.Unstructured
-	requests        []apiRequest
-	denied          map[string]bool
-	failSecondApply bool
-	applyCount      int
-	served          bool
-	schemaHash      string
-	holdRollout     bool
-	mutated         chan struct{}
+	mu               sync.Mutex
+	objects          map[string]*unstructured.Unstructured
+	requests         []apiRequest
+	denied           map[string]bool
+	failSecondApply  bool
+	applyCount       int
+	served           bool
+	schemaHash       string
+	holdRollout      bool
+	mutated          chan struct{}
+	concurrentCreate bool
 }
 
 func object(t *testing.T, document string) *unstructured.Unstructured {
@@ -228,6 +229,32 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		respond(current.Object)
 		return
 	}
+	jsonPatch := r.Method == "PATCH" && strings.Contains(r.Header.Get("Content-Type"), "application/json-patch+json")
+	if jsonPatch && current != nil {
+		var changes []struct {
+			Op, Path string
+			Value    json.RawMessage
+		}
+		if json.Unmarshal(body, &changes) != nil {
+			status(w, 400, "BadRequest")
+			return
+		}
+		var template map[string]any
+		for _, change := range changes {
+			if change.Op == "test" {
+				var value string
+				_ = json.Unmarshal(change.Value, &value)
+				if change.Path == "/metadata/uid" && value != string(current.GetUID()) || change.Path == "/metadata/resourceVersion" && value != current.GetResourceVersion() {
+					status(w, 409, "Conflict")
+					return
+				}
+			}
+			if change.Op == "replace" && change.Path == "/spec/template" {
+				_ = json.Unmarshal(change.Value, &template)
+			}
+		}
+		body, _ = json.Marshal(map[string]any{"apiVersion": current.GetAPIVersion(), "kind": current.GetKind(), "metadata": current.Object["metadata"], "spec": map[string]any{"template": template}})
+	}
 	if r.Method == "PATCH" && current != nil {
 		var fields map[string]json.RawMessage
 		if json.Unmarshal(body, &fields) == nil {
@@ -260,6 +287,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		respond(map[string]any{"apiVersion": "v1", "kind": "Status", "status": "Success"})
 		return
 	}
+	if f.concurrentCreate && r.URL.Query().Get("dryRun") != "All" && current == nil && resource == "configmaps" {
+		current = &unstructured.Unstructured{Object: map[string]any{"apiVersion": "v1", "kind": "ConfigMap", "metadata": map[string]any{"name": name, "namespace": namespace, "uid": "concurrent-uid", "resourceVersion": "30"}, "data": map[string]any{"value": "concurrent-owner"}}}
+		f.objects[key] = current
+		f.concurrentCreate = false
+	}
 	if r.Method == "POST" && current != nil {
 		status(w, 409, "AlreadyExists")
 		return
@@ -280,6 +312,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		next = current.DeepCopy()
 		mergeObject(next.Object, desired.Object)
+		if jsonPatch {
+			template, _, _ := unstructured.NestedMap(desired.Object, "spec", "template")
+			_ = unstructured.SetNestedMap(next.Object, template, "spec", "template")
+		}
 	}
 	next.SetName(name)
 	next.SetNamespace(namespace)
@@ -292,7 +328,7 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		if !found {
 			replicas = 1
 		}
-		next.Object["status"] = map[string]any{"observedGeneration": int64(1), "readyReplicas": replicas, "updatedReplicas": replicas}
+		next.Object["status"] = map[string]any{"observedGeneration": int64(1), "readyReplicas": replicas, "updatedReplicas": replicas, "replicas": replicas}
 		next.SetGeneration(1)
 		if f.holdRollout {
 			next.Object["status"] = map[string]any{"observedGeneration": int64(0), "readyReplicas": int64(0), "updatedReplicas": int64(0)}

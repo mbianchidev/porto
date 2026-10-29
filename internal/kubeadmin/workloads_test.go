@@ -2,6 +2,7 @@ package kubeadmin
 
 import (
 	"context"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"strings"
 	"testing"
 	"time"
@@ -48,6 +49,7 @@ func TestControllerRollbackNeverUsesAnotherWorkloadUID(t *testing.T) {
 	api.objects["apps/replicasets/default/owned"] = object(t, `{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"owned","namespace":"default","uid":"owned-rs","resourceVersion":"1","annotations":{"deployment.kubernetes.io/revision":"1"},"ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"synthetic","uid":"deployment-uid","controller":true}]},"spec":{"template":{"metadata":{"labels":{"app":"synthetic","pod-template-hash":"old-hash"}},"spec":{"containers":[{"name":"app","image":"registry.invalid/synthetic:old"}]}}}}`)
 	api.objects["apps/replicasets/default/foreign"] = object(t, `{"apiVersion":"apps/v1","kind":"ReplicaSet","metadata":{"name":"foreign","namespace":"default","uid":"foreign-rs","resourceVersion":"1","annotations":{"deployment.kubernetes.io/revision":"2"},"ownerReferences":[{"apiVersion":"apps/v1","kind":"Deployment","name":"synthetic","uid":"another-deployment","controller":true}]},"spec":{"template":{"spec":{"containers":[{"name":"app","image":"registry.invalid/foreign:wrong"}]}}}}`)
 	target := Target{Context: "porto-synthetic", Namespace: "default", Group: "apps", Version: "v1", Resource: "deployments", Name: "synthetic", UID: "deployment-uid", ResourceVersion: "1"}
+	_ = unstructured.SetNestedMap(api.objects["apps/deployments/default/synthetic"].Object, map[string]any{"new": "only"}, "spec", "template", "spec", "nodeSelector")
 	history, err := manager.RolloutHistory(context.Background(), target)
 	if err != nil || len(history) != 1 || history[0].Revision != 1 {
 		t.Fatalf("foreign controller history was mixed: %+v %v", history, err)
@@ -59,4 +61,15 @@ func TestControllerRollbackNeverUsesAnotherWorkloadUID(t *testing.T) {
 	if result := waitAdmin(t, ops, op.ID); result.Status != "succeeded" {
 		t.Fatal(result)
 	}
+	api.mu.Lock()
+	template, _, _ := unstructured.NestedMap(api.objects["apps/deployments/default/synthetic"].Object, "spec", "template")
+	if _, found, _ := unstructured.NestedMap(template, "spec", "nodeSelector"); found {
+		t.Fatal("rollback merged current-only pod fields instead of restoring the exact retained template")
+	}
+	if labels, found, _ := unstructured.NestedMap(template, "metadata", "labels"); found {
+		if _, present := labels["pod-template-hash"]; present {
+			t.Fatal("controller-generated hash label was restored")
+		}
+	}
+	api.mu.Unlock()
 }

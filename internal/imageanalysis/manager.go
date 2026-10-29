@@ -60,6 +60,10 @@ func (m *Manager) Start(ctx context.Context, reference, platform string, options
 	if err != nil {
 		return Report{}, err
 	}
+	image.Platform, err = NormalizePlatform(image.Platform)
+	if err != nil {
+		return Report{}, err
+	}
 	key := hash(struct {
 		Image       Image
 		AllowStale  bool

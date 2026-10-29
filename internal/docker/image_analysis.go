@@ -20,6 +20,13 @@ func (m *Manager) ResolveAnalysisImage(ctx context.Context, reference, platform 
 	if err := validateObjectID(reference); err != nil {
 		return imageanalysis.Image{}, err
 	}
+	if platform != "" {
+		var err error
+		platform, err = imageanalysis.NormalizePlatform(platform)
+		if err != nil {
+			return imageanalysis.Image{}, err
+		}
+	}
 	images, err := m.Images(ctx)
 	if err != nil {
 		return imageanalysis.Image{}, err
@@ -46,6 +53,10 @@ func (m *Manager) ResolveAnalysisImage(ctx context.Context, reference, platform 
 		}
 		if metadata.OS != "linux" || metadata.Architecture == "" {
 			return imageanalysis.Image{}, fmt.Errorf("%w: image analysis requires an identifiable Linux platform", ErrUnsupported)
+		}
+		actual, err = imageanalysis.NormalizePlatform(actual)
+		if err != nil {
+			return imageanalysis.Image{}, err
 		}
 		if platform != "" && platform != actual {
 			return imageanalysis.Image{}, errors.New("selected image platform is unavailable locally")

@@ -292,6 +292,11 @@ func (m *Manager) ApplyManifest(ctx context.Context, contextName, namespace, tok
 			if err := client.require(ctx, object.Target, verb, ""); err != nil {
 				return operations.Failure(publicError(err))
 			}
+			if !object.Exists {
+				if err := client.require(ctx, object.Target, "create", ""); err != nil {
+					return operations.Failure(publicError(err))
+				}
+			}
 			if prepared.Mode == "apply" {
 				current, err := client.objects(object.Target).Get(ctx, object.Target.Name, metav1.GetOptions{})
 				if object.Exists {
@@ -315,7 +320,7 @@ func (m *Manager) ApplyManifest(ctx context.Context, contextName, namespace, tok
 			if err := json.Unmarshal(object.Data, &desired); err != nil {
 				return operations.Failure("Encrypted manifest data could not be decoded.")
 			}
-			if prepared.Mode == "create" {
+			if prepared.Mode == "create" || !object.Exists {
 				_, err = client.objects(object.Target).Create(ctx, &desired, metav1.CreateOptions{FieldManager: fieldManager, FieldValidation: metav1.FieldValidationStrict})
 			} else {
 				force := false

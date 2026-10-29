@@ -374,6 +374,11 @@ function inspectPackage(root, expectedTarget) {
     assert.equal(toolchain.versions.get(name)?.split(/[ (]/)[0].replace(/^v/, ''), version,
       `Installed ${name} metadata must match the pinned toolchain`)
   }
+  if (expectedTarget === 'windows/arm64') {
+    assert.match(toolchain.versions.get('grype') || '', /^not available/, 'Windows ARM64 must not substitute an x64 Grype')
+  } else {
+    assert.equal(toolchain.versions.get('grype')?.split(/[ (]/)[0].replace(/^v/, ''), '0.121.0', 'Installed Grype metadata must match its pinned scanner')
+  }
   const nativeFile = (file, expected) => {
     assert.ok(within(fs.realpathSync(root), fs.realpathSync(file)), `Executable escaped its installed package: ${file}`)
     nativeHeader(file, expected)

@@ -56,12 +56,16 @@ function packageFixture(fixture) {
   }
   write(path.join(result.runtime, 'bin', 'porto-runtime-helper'), header('linux', fixture.target.split('/')[1]), 0o700)
   write(path.join(result.runtime, 'bin', `dive${suffix}`), 'synthetic layout only', 0o700)
+  const analysisTools = ['syft', 'helm', ...(fixture.target === 'windows/arm64' ? [] : ['grype'])]
+  for (const name of analysisTools) write(path.join(result.runtime, 'bin', `${name}${suffix}`), header(...fixture.target.split('/')), 0o700)
   write(path.join(result.runtime, 'VERSIONS'), Object.entries(EXPECTED).map(([name, version]) => `${name} v${version}`)
+    .concat(fixture.target === 'windows/arm64' ? 'grype not available for windows/arm64' : 'grype v0.121.0')
     .concat(`wsl linux/${fixture.target.split('/')[1]}`).join('\n'))
   for (const name of ['docker-cli.txt', 'docker-cli-NOTICE.txt', 'docker-cli-bundled-plugins.patch',
     'docker-compose.txt', 'docker-compose-NOTICE.txt', 'docker-buildx.txt', 'docker-buildx-AUTHORS.txt', 'dive.txt']) {
     write(path.join(result.runtime, 'licenses', name), 'Synthetic layout fixture, never executed\n')
   }
+  for (const name of analysisTools) write(path.join(result.runtime, 'licenses', `${name}.txt`), 'Synthetic layout fixture, never executed\n')
   if (process.platform === 'win32') {
     for (const name of ['qemu-img.exe', fixture.target.endsWith('/arm64') ? 'qemu-system-aarch64.exe' : 'qemu-system-x86_64.exe']) {
       write(path.join(result.runtime, 'qemu', name), header(...fixture.target.split('/')), 0o700)

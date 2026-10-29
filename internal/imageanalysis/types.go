@@ -3,9 +3,12 @@ package imageanalysis
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"time"
+
+	"github.com/containerd/platforms"
 )
 
 const (
@@ -96,6 +99,14 @@ type Report struct {
 	Warnings     []string  `json:"warnings,omitempty"`
 	Error        string    `json:"error,omitempty"`
 	Cached       bool      `json:"cached"`
+}
+
+func NormalizePlatform(value string) (string, error) {
+	platform, err := platforms.Parse(value)
+	if err != nil || platform.OS != "linux" || platform.Architecture == "" {
+		return "", fmt.Errorf("%w: an identifiable Linux image platform is required", ErrInvalid)
+	}
+	return platforms.Format(platforms.Normalize(platform)), nil
 }
 
 func SeverityRank(value string) int {

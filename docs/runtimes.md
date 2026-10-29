@@ -362,6 +362,10 @@ ownership. Changed/recreated objects, identity changes, served-version changes,
 admission failures and field-manager conflicts require a fresh preview.
 Helm/controller-owned objects carry ownership guidance; update the declared
 owner instead of fighting reconciliation.
+If an object was absent at preview, activation uses an atomic native create
+instead of retargeting a concurrent creator through an upsert. Controller
+rollback replaces the complete retained pod template, rather than merging
+current-only fields into the older revision.
 
 Apply is not a transaction: if a later resource fails, earlier accepted resources
 are reported as partial and remain available for inspection. Network loss or

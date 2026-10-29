@@ -56,6 +56,20 @@ func TestCacheIdentitySeparatesVariantsToolsDatabaseAndOptions(t *testing.T) {
 	}
 }
 
+func TestPlatformNormalizationPreservesArchitectureAndRealVariantBoundaries(t *testing.T) {
+	arm64, err := NormalizePlatform("linux/arm64/v8")
+	if err != nil || arm64 != "linux/arm64" {
+		t.Fatalf("equivalent ARM64 platform was not normalized: %s %v", arm64, err)
+	}
+	amd64, err := NormalizePlatform("linux/amd64/v2")
+	if err != nil || amd64 == "linux/amd64" || amd64 == arm64 {
+		t.Fatal("architecture or real CPU variant boundaries were lost")
+	}
+	if _, err := NormalizePlatform("windows/amd64"); err == nil {
+		t.Fatal("unsupported OS was accepted")
+	}
+}
+
 func TestInvalidScannerDocumentsAreNotCleanReports(t *testing.T) {
 	for _, document := range []string{`{}`, `null`, `{"artifacts":null}`, `{"matches":null}`} {
 		if decodeSBOM([]byte(document), &Report{}) == nil || decodeFindings([]byte(document), &Report{}) == nil {
