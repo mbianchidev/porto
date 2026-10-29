@@ -124,7 +124,7 @@ func Fetch(ctx context.Context, root string, source Git, token string, runner lo
 		authorization := base64.StdEncoding.EncodeToString([]byte("x-access-token:" + token))
 		environment = append(environment, "GIT_CONFIG_COUNT=1", "GIT_CONFIG_KEY_0=http."+source.Repository+".extraheader", "GIT_CONFIG_VALUE_0=Authorization: Basic "+authorization)
 	}
-	prefix := []string{"-c", "credential.helper=", "-c", "core.hooksPath=" + filepath.Join(home, "hooks"), "-c", "protocol.ext.allow=never", "-c", "http.followRedirects=false"}
+	prefix := []string{"-c", "credential.helper=", "-c", "core.longpaths=true", "-c", "core.hooksPath=" + filepath.Join(home, "hooks"), "-c", "protocol.ext.allow=never", "-c", "http.followRedirects=false"}
 	if filepath.IsAbs(source.Repository) {
 		prefix = append(prefix, "-c", "protocol.file.allow=always")
 	} else {
