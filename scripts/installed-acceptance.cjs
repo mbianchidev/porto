@@ -721,11 +721,14 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(worker.Config.Labels['com.docker.compose.project'], project)
     assert.equal(worker.Config.Labels['com.docker.compose.service'], 'worker')
     const network = `${project}-stack`
+    const networkID = JSON.parse(await cli('network', 'inspect', network))[0].Id
+    assert.ok(networkID, 'The stack network must expose its actual canonical runtime identity')
     await waitFor(async () => {
-      const appAddress = (await inspect()).NetworkSettings.Networks[network]?.IPAddress
-      const workerAddress = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]?.IPAddress
-      return appAddress && workerAddress && workerAddress !== appAddress
-    }, 'distinct live endpoints on the selected named stack network')
+      const appEndpoint = (await inspect()).NetworkSettings.Networks[network]
+      const workerEndpoint = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]
+      return appEndpoint?.IPAddress && workerEndpoint?.IPAddress && workerEndpoint.IPAddress !== appEndpoint.IPAddress &&
+        appEndpoint.NetworkID === networkID && workerEndpoint.NetworkID === networkID
+    }, 'distinct live endpoints with canonical IDs on the selected named stack network')
     console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
     assert.equal(await cli('exec', workerID, 'cat', '/data/token'), fixture.id,

@@ -83,6 +83,21 @@ type directProcessIO struct {
 	finishInput  func() error
 }
 
+func (p directProcessIO) cleanupFailedStart() error {
+	var cleanupErr error
+	if p.cleanup != nil {
+		cleanupErr = p.cleanup()
+	}
+	if p.bridge == nil {
+		return cleanupErr
+	}
+	killErr := p.bridge.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) || errors.Is(killErr, syscall.ESRCH) {
+		killErr = nil
+	}
+	return errors.Join(cleanupErr, killErr, p.bridge.Wait())
+}
+
 type processInputCloser struct {
 	io.WriteCloser
 	finish func() error
@@ -254,7 +269,7 @@ func newDirectContainerProcess(
 func (r *grpcContainerRuntime) StartExec(
 	ctx context.Context,
 	request ExecRequest,
-) (runtimes.Process, error) {
+) (result runtimes.Process, resultErr error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
@@ -284,20 +299,22 @@ func (r *grpcContainerRuntime) StartExec(
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, processIO.cleanupFailedStart())
+		}
+	}()
 	process, err := task.Exec(namespacedContext, execID, processSpec, processIO.creator)
 	if err != nil {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("create exec in", request.ContainerID, err)
 	}
 	wait, err := process.Wait(withContainerdNamespace(context.Background(), r.namespace))
 	if err != nil {
 		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("wait for exec in", request.ContainerID, err)
 	}
 	if err := process.Start(namespacedContext); err != nil {
 		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("start exec in", request.ContainerID, err)
 	}
 	return newDirectContainerProcess(process, wait, processIO, true, r.namespace), nil
@@ -307,7 +324,7 @@ func (r *grpcContainerRuntime) StartAttached(
 	ctx context.Context,
 	id string,
 	attachStdin bool,
-) (runtimes.Process, error) {
+) (result runtimes.Process, resultErr error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
@@ -346,41 +363,39 @@ func (r *grpcContainerRuntime) StartAttached(
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, processIO.cleanupFailedStart())
+		}
+	}()
 	taskFound := false
 	if existing, taskErr := container.Task(namespacedContext, nil); taskErr == nil {
 		status, statusErr := existing.Status(namespacedContext)
 		if statusErr != nil {
-			_ = processIO.cleanup()
 			return nil, containerdOperationError("inspect task for attached start of", id, statusErr)
 		}
 		if status.Status == containerd.Running ||
 			status.Status == containerd.Paused ||
 			status.Status == containerd.Pausing {
-			_ = processIO.cleanup()
 			return nil, fmt.Errorf("%w: container %q is already running", ErrConflict, id)
 		}
 		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
-			_ = processIO.cleanup()
 			return nil, err
 		}
 		taskFound = true
 		if _, deleteErr := existing.Delete(namespacedContext); deleteErr != nil {
-			_ = processIO.cleanup()
 			return nil, containerdOperationError("delete stopped task for attached start of", id, deleteErr)
 		}
 	} else if !errdefs.IsNotFound(taskErr) {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("inspect task for attached start of", id, taskErr)
 	}
 	if !taskFound {
 		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
-			_ = processIO.cleanup()
 			return nil, err
 		}
 	}
 	task, err := container.NewTask(namespacedContext, processIO.creator)
 	if err != nil {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("create attached task for", id, err)
 	}
 	netns := ""
@@ -390,13 +405,11 @@ func (r *grpcContainerRuntime) StartAttached(
 	if err := r.reconcileNetworkRecord(ctx, networkResponse.GetContainer(), netns, true); err != nil {
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(err, networkCleanupErr)
 	}
 	if err := r.setRestartDesired(ctx, id, true); err != nil {
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, deleteErr := task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(err, networkCleanupErr, deleteErr)
 	}
 	wait, err := task.Wait(withContainerdNamespace(context.Background(), r.namespace))
@@ -404,7 +417,6 @@ func (r *grpcContainerRuntime) StartAttached(
 		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(
 			containerdOperationError("wait for attached task", id, err),
 			restartRollbackErr,
@@ -415,7 +427,6 @@ func (r *grpcContainerRuntime) StartAttached(
 		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(
 			containerdOperationError("start attached task", id, err),
 			restartRollbackErr,

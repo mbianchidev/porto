@@ -39,6 +39,68 @@ func TestContainerInspectionAndIdentityRequestUncontaminatedStdout(t *testing.T)
 	}
 }
 
+func TestDockerContainerSummaryReportsCanonicalNetworkIdentityForCompose(t *testing.T) {
+	networkID := strings.Repeat("a", 64)
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		arguments := strings.Join(command.Args, " ")
+		switch {
+		case strings.HasPrefix(arguments, "ps "):
+			return []byte("{\"ID\":\"synthetic-container\",\"Names\":\"synthetic-app\",\"State\":\"running\",\"Networks\":\"synthetic-stack\"}\n"), nil
+		case arguments == "network inspect synthetic-stack":
+			return []byte(`[{"Name":"synthetic-stack","Id":"` + networkID + `"}]`), nil
+		default:
+			return nil, fmt.Errorf("unexpected synthetic network read: %s", strings.Join(command.Args, " "))
+		}
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/json?all=true", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("container summary failed: %d: %s", response.Code, response.Body.String())
+	}
+	var summaries []struct {
+		NetworkSettings struct {
+			Networks map[string]struct{ NetworkID string }
+		}
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &summaries); err != nil {
+		t.Fatal(err)
+	}
+	if len(summaries) != 1 || summaries[0].NetworkSettings.Networks["synthetic-stack"].NetworkID != networkID {
+		t.Fatalf("Compose would recreate an unchanged service because its actual network ID is missing or abbreviated: %s", response.Body.String())
+	}
+}
+
+func TestDockerContainerInspectPreservesStateAndCompletesActualNetworkIdentity(t *testing.T) {
+	networkID := strings.Repeat("b", 64)
+	runner := &fakeRunner{outputs: map[string][]byte{
+		"nerdctl container inspect synthetic-container": []byte(`[{"Id":"synthetic-container","Config":{"Labels":{}},"State":{"Status":"running","Running":true,"Pid":42},"NetworkSettings":{"Networks":{"synthetic-stack":{"IPAddress":"10.88.0.2","Aliases":["app"]}}}}]`),
+		"nerdctl network inspect synthetic-stack":       []byte(`[{"Name":"synthetic-stack","Id":"` + networkID + `"}]`),
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic-container/json", nil))
+	var inspected struct {
+		State struct {
+			Running bool
+			Pid     int
+		}
+		NetworkSettings struct {
+			Networks map[string]struct {
+				NetworkID, IPAddress string
+				Aliases              []string
+			}
+		}
+	}
+	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &inspected) != nil {
+		t.Fatalf("network-aware inspection failed: %d: %s", response.Code, response.Body.String())
+	}
+	endpoint := inspected.NetworkSettings.Networks["synthetic-stack"]
+	if endpoint.NetworkID != networkID || endpoint.IPAddress != "10.88.0.2" || len(endpoint.Aliases) != 1 || endpoint.Aliases[0] != "app" || !inspected.State.Running || inspected.State.Pid != 42 {
+		t.Fatalf("actual network completion changed unrelated container state: %s", response.Body.String())
+	}
+}
+
 func TestManagedContainerInspectRetainsHealthcheckForComposeReadiness(t *testing.T) {
 	document, err := json.Marshal([]any{map[string]any{
 		"Id": "synthetic-container",

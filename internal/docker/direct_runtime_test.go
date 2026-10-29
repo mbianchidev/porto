@@ -452,6 +452,26 @@ func TestHealthTimeoutKillsExecBeforeReturning(t *testing.T) {
 	}
 }
 
+func TestFailedProcessStartReleasesItsIOBridgeEvenWhenLocalCleanupFails(t *testing.T) {
+	bridge := newDetachableProcess()
+	t.Cleanup(func() { _ = bridge.Kill() })
+	failure := errors.New("synthetic local I/O cleanup failure")
+	processIO := directProcessIO{
+		bridge: bridge,
+		cleanup: func() error {
+			return failure
+		},
+	}
+	if err := processIO.cleanupFailedStart(); !errors.Is(err, failure) || !bridge.killed {
+		t.Fatalf("failed start left its owned transport alive or hid cleanup failure: killed=%t, err=%v", bridge.killed, err)
+	}
+	select {
+	case <-bridge.done:
+	default:
+		t.Fatal("failed start did not collect its owned transport")
+	}
+}
+
 func TestFirstHealthCheckWaitsForConfiguredInterval(t *testing.T) {
 	inventory := newContainerInventory(nil, defaultInventoryOptions())
 	inventory.snapshot.Containers = []Container{{

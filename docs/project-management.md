@@ -125,6 +125,12 @@ Runtime inspection keeps JSON stdout separate from shell/tool diagnostics so
 advisory stderr does not break health-gated dependencies or container identity
 checks. Failed commands remain failures with bounded diagnostics; partial JSON
 is never accepted as a successful inspection.
+Docker-compatible summaries and inspection resolve full network IDs from actual
+backend network metadata. This lets Compose retain an unchanged service during
+stack reconciliation rather than recreating it because CNI inspection omitted
+an opaque ID. Runtime helper teardown stops its owned process group, including
+SSH descendants, so repeated health checks and lifecycle operations release
+their transport sessions.
 
 Choose **Compose editor**, upload a YAML/JSON file (at most 1 MiB), select an
 immutable template version, or provide an explicit Git repository/ref/file.

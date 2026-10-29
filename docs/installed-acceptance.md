@@ -49,8 +49,11 @@ The fixture:
    or named-pipe/socket support fail.
    Network inspection must report distinct live endpoint addresses under the
    selected named network; the pinned CNI-based nerdctl inspection does not
-   expose Docker's opaque `NetworkID`. Actual service DNS/HTTP communication,
-   not an invented network ID, is the connectivity gate.
+   itself expose Docker's `NetworkID`. Porto resolves canonical IDs from the
+   selected backend's network inspection for Docker container summaries and
+   inspection, so Compose can recognize an unchanged network without recreating
+   its services. The gate requires those exact IDs and actual service DNS/HTTP
+   communication, not invented identities or metadata alone.
 5. Connects to that installed dashboard's loopback DevTools endpoint and uses
    its ordinary renderer-origin container APIs to observe, stop and start the
    same Compose container. With the workload running, ordinary desktop update

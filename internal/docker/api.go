@@ -352,7 +352,8 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	response := make([]map[string]any, 0, len(containers))
+	matching := make([]Container, 0, len(containers))
+	names := []string{}
 	for _, container := range containers {
 		if !filters.matchesID(container.ID) ||
 			!filters.matchesName(container.Name) ||
@@ -360,9 +361,19 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			!filters.matchesLabels(container.Labels) {
 			continue
 		}
-		if limit > 0 && len(response) >= limit {
+		if limit > 0 && len(matching) >= limit {
 			break
 		}
+		matching = append(matching, container)
+		names = append(names, containerNetworkNames(container)...)
+	}
+	networkIDs, err := a.manager.containerNetworkIdentities(r.Context(), names)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	response := make([]map[string]any, 0, len(matching))
+	for _, container := range matching {
 		name := container.Name
 		if name != "" && !strings.HasPrefix(name, "/") {
 			name = "/" + name
@@ -381,7 +392,7 @@ func (a *API) containers(w http.ResponseWriter, r *http.Request) {
 			"HostConfig": map[string]any{
 				"NetworkMode": strings.Split(firstNonEmpty(container.Networks, "default"), ",")[0],
 			},
-			"NetworkSettings": map[string]any{"Networks": dockerContainerNetworkSettings(container)},
+			"NetworkSettings": map[string]any{"Networks": dockerContainerNetworkSettings(container, networkIDs)},
 			"Mounts":          dockerContainerMounts(container),
 		}
 		if dockerBool(r, "size") {
@@ -780,6 +791,9 @@ func composeContainerName(labels map[string]string, networks []ContainerNetwork)
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
 	value, err := a.manager.InspectContainer(r.Context(), r.PathValue("id"))
+	if err == nil && !a.manager.IsNativeWindows() {
+		value, err = a.manager.completeInspectNetworkIdentities(r.Context(), value)
+	}
 	if err == nil {
 		value, err = dockerInspectForVersion(value, dockerRequestVersion(r), false)
 	}
@@ -1232,7 +1246,7 @@ func parseDockerTimestamp(value string) time.Time {
 	return time.Time{}
 }
 
-func dockerContainerNetworkSettings(container Container) map[string]any {
+func dockerContainerNetworkSettings(container Container, identities map[string]string) map[string]any {
 	networks := make(map[string]any)
 	for _, endpoint := range container.NetworkDetails {
 		if endpoint.Name == "" {
@@ -1252,6 +1266,18 @@ func dockerContainerNetworkSettings(container Container) map[string]any {
 			fields["Aliases"] = append([]string(nil), endpoint.Aliases...)
 		}
 		networks[endpoint.Name] = fields
+	}
+	for _, name := range containerNetworkNames(container) {
+		id := identities[name]
+		if id == "" {
+			continue
+		}
+		fields, ok := networks[name].(map[string]any)
+		if !ok {
+			fields = map[string]any{}
+		}
+		fields["NetworkID"] = id
+		networks[name] = fields
 	}
 	return networks
 }
