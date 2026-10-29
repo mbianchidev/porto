@@ -25,8 +25,7 @@ tar -xzf "$temporary/source.tar.gz" -C "$temporary"
 source="$temporary/mutagen-0.18.1"
 (
   cd "$source"
-  git apply --check "$scripts/patches/mutagen-0.18.1-version.patch"
-  git apply "$scripts/patches/mutagen-0.18.1-version.patch"
+  bash "$scripts/apply-runtime-patch.sh" "$PWD" "$scripts/patches/mutagen-0.18.1-version.patch"
   GOWORK=off go get \
     github.com/klauspost/compress@v1.20.1 \
     golang.org/x/net@v0.60.0 \

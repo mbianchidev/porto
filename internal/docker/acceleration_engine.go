@@ -122,7 +122,11 @@ func (m *Manager) ApplyAcceleration(ctx context.Context, restartConfirmed bool) 
 		if err := m.configureAMD64Handler(ctx); err != nil {
 			return err
 		}
-		return m.refreshLimaBuildKitPlatforms(ctx)
+		state, err := m.readEngineState()
+		if err != nil {
+			return err
+		}
+		return m.refreshLimaBuildKitPlatforms(ctx, state.OwnerID)
 	})
 }
 

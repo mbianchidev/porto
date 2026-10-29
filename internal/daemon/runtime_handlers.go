@@ -179,7 +179,19 @@ func (s *Server) dockerStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) installDockerEngine(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRuntimeOperation() {
+		http.Error(w, "Porto is shutting down; runtime installation was not started", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endRuntimeOperation()
+	if requestsEngineInstallProgress(r) {
+		s.streamEngineInstallProgress(w, r, engineInstallHeartbeatInterval)
+		return
+	}
 	status, err := s.docker.InstallEngine(r.Context())
+	if err != nil {
+		logEngineInstallFailure(err)
+	}
 	writeRuntimeResult(w, status, err)
 }
 

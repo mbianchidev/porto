@@ -6,9 +6,13 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strings"
 	"sync"
+	"time"
 
 	controlapi "github.com/moby/buildkit/api/services/control"
+	"github.com/moby/buildkit/client/buildid"
+	"github.com/moby/buildkit/util/registrar"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -24,9 +28,96 @@ type buildKitControlProxy struct {
 	solveGate            func(context.Context) (context.Context, func(), error)
 	validateArchitecture func(context.Context, *controlapi.SolveRequest) error
 	filterArchitecture   func(context.Context, *controlapi.ListWorkersResponse) error
+	admissions           *buildKitSolveAdmissions
 
 	workerMu         sync.Mutex
 	workerCompatible bool
+}
+
+type buildKitSolveAdmission struct {
+	ready chan struct{}
+	once  sync.Once
+	err   error
+}
+
+func (a *buildKitSolveAdmission) resolve(err error) {
+	a.once.Do(func() {
+		a.err = err
+		close(a.ready)
+	})
+}
+
+type buildKitSolveAdmissions struct {
+	mu      sync.Mutex
+	active  map[string]*buildKitSolveAdmission
+	retired map[string]*buildKitSolveAdmission
+	pending *registrar.Registrar[string, *buildKitSolveAdmission]
+}
+
+func newBuildKitSolveAdmissions() *buildKitSolveAdmissions {
+	return &buildKitSolveAdmissions{
+		active:  make(map[string]*buildKitSolveAdmission),
+		retired: make(map[string]*buildKitSolveAdmission),
+		pending: registrar.New[string, *buildKitSolveAdmission](),
+	}
+}
+
+func (a *buildKitSolveAdmissions) begin(ref string) (*buildKitSolveAdmission, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active[ref] != nil {
+		return nil, status.Error(codes.AlreadyExists, "BuildKit Solve reference is already active")
+	}
+	if a.retired[ref] != nil {
+		delete(a.retired, ref)
+		a.pending.Discard(ref)
+	}
+	admission := &buildKitSolveAdmission{ready: make(chan struct{})}
+	a.active[ref] = admission
+	a.pending.Register(ref, admission)
+	return admission, nil
+}
+
+func (a *buildKitSolveAdmissions) finish(ref string, admission *buildKitSolveAdmission) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.active[ref] == admission {
+		delete(a.active, ref)
+		if admission.err == nil {
+			a.pending.Discard(ref)
+			return
+		}
+		a.retired[ref] = admission
+		// Match BuildKit's registration window so a concurrent Ping sees the actual refusal.
+		time.AfterFunc(3*time.Second, func() {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			if a.retired[ref] == admission {
+				delete(a.retired, ref)
+				a.pending.Discard(ref)
+			}
+		})
+	}
+}
+
+func (a *buildKitSolveAdmissions) wait(ctx context.Context, ref string) error {
+	admission, err := a.pending.Get(ctx, ref)
+	if err != nil {
+		if ctx.Err() != nil {
+			return status.FromContextError(context.Cause(ctx)).Err()
+		}
+		if errors.Is(err, context.Canceled) {
+			// A build created outside this Docker endpoint remains authoritative upstream.
+			return nil
+		}
+		return err
+	}
+	select {
+	case <-ctx.Done():
+		return status.FromContextError(context.Cause(ctx)).Err()
+	case <-admission.ready:
+		return admission.err
+	}
 }
 
 func (p *buildKitControlProxy) DiskUsage(ctx context.Context, request *controlapi.DiskUsageRequest) (*controlapi.DiskUsageResponse, error) {
@@ -49,7 +140,17 @@ func (p *buildKitControlProxy) Prune(request *controlapi.PruneRequest, stream gr
 	return forwardBuildKitServerStream(upstream, stream)
 }
 
-func (p *buildKitControlProxy) Solve(ctx context.Context, request *controlapi.SolveRequest) (*controlapi.SolveResponse, error) {
+func (p *buildKitControlProxy) Solve(ctx context.Context, request *controlapi.SolveRequest) (_ *controlapi.SolveResponse, resultErr error) {
+	var admission *buildKitSolveAdmission
+	if p.admissions != nil && request.Ref != "" {
+		var err error
+		admission, err = p.admissions.begin(request.Ref)
+		if err != nil {
+			return nil, err
+		}
+		defer p.admissions.finish(request.Ref, admission)
+		defer func() { admission.resolve(resultErr) }()
+	}
 	if p.solveGate != nil {
 		gated, release, err := p.solveGate(ctx)
 		if err != nil {
@@ -73,6 +174,9 @@ func (p *buildKitControlProxy) Solve(ctx context.Context, request *controlapi.So
 		}
 	}
 	var header, trailer metadata.MD
+	if admission != nil {
+		admission.resolve(nil)
+	}
 	response, err := p.client.Solve(
 		outgoingBuildKitContext(ctx),
 		rewritten,
@@ -98,6 +202,17 @@ func (p *buildKitControlProxy) ensureMobyWorker(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("inspect BuildKit workers for moby export: %w", err)
 	}
+	if p.rememberMobyWorker(response) {
+		return nil
+	}
+	return fmt.Errorf(
+		"%w: BuildKit moby exporter requires a containerd worker in Porto namespace %q",
+		ErrUnsupported,
+		p.containerdNamespace,
+	)
+}
+
+func (p *buildKitControlProxy) rememberMobyWorker(response *controlapi.ListWorkersResponse) bool {
 	for _, worker := range response.GetRecord() {
 		if worker.GetLabels()[buildKitWorkerExecutorLabel] != buildKitWorkerContainerdExecutor {
 			continue
@@ -108,16 +223,17 @@ func (p *buildKitControlProxy) ensureMobyWorker(ctx context.Context) error {
 		p.workerMu.Lock()
 		p.workerCompatible = true
 		p.workerMu.Unlock()
-		return nil
+		return true
 	}
-	return fmt.Errorf(
-		"%w: BuildKit moby exporter requires a containerd worker in Porto namespace %q",
-		ErrUnsupported,
-		p.containerdNamespace,
-	)
+	return false
 }
 
 func (p *buildKitControlProxy) Status(request *controlapi.StatusRequest, stream grpc.ServerStreamingServer[controlapi.StatusResponse]) error {
+	if p.admissions != nil && request.Ref != "" {
+		if err := p.admissions.wait(stream.Context(), request.Ref); err != nil {
+			return err
+		}
+	}
 	upstream, err := p.client.Status(outgoingBuildKitContext(stream.Context()), request)
 	if err != nil {
 		return err
@@ -200,6 +316,9 @@ func (p *buildKitControlProxy) ListWorkers(ctx context.Context, request *control
 		if err := p.filterArchitecture(ctx, response); err != nil {
 			return nil, status.Error(codes.FailedPrecondition, err.Error())
 		}
+	}
+	if err == nil {
+		p.rememberMobyWorker(response)
 	}
 	return response, err
 }
@@ -286,11 +405,18 @@ var buildKitProxyStream = &grpc.StreamDesc{
 	ClientStreams: true,
 }
 
-func transparentBuildKitHandler(connection *grpc.ClientConn) grpc.StreamHandler {
+func transparentBuildKitHandler(connection *grpc.ClientConn, admissions *buildKitSolveAdmissions) grpc.StreamHandler {
 	return func(_ any, serverStream grpc.ServerStream) error {
 		method, ok := grpc.MethodFromServerStream(serverStream)
 		if !ok {
 			return status.Error(codes.Internal, "BuildKit proxy cannot determine the gRPC method")
+		}
+		if admissions != nil && strings.HasPrefix(method, "/moby.buildkit.v1.frontend.LLBBridge/") {
+			if ref := buildid.FromIncomingContext(serverStream.Context()); ref != "" {
+				if err := admissions.wait(serverStream.Context(), ref); err != nil {
+					return err
+				}
+			}
 		}
 		upstreamContext, cancel := context.WithCancel(outgoingBuildKitContext(serverStream.Context()))
 		defer cancel()

@@ -9,6 +9,72 @@ Docker context or the dashboard's **Container backend view**.
 These are separate endpoints and stores, not an image conversion or a switch to
 Lima's WSL driver. Both API endpoints report their actual backend OS.
 
+## Bundled QEMU and Unicode paths
+
+The Windows bundle adds a per-process UTF-8 manifest to `qemu-img.exe` and its
+architecture-matched `qemu-system-*.exe` before packaging or signing. This lets
+their narrow Windows file APIs open firmware and disks in paths containing
+non-ASCII characters on Windows 10 version 1903 or later, without changing the
+host's locale/code-page settings or substituting an ASCII installation path.
+See Microsoft's [UTF-8 process code-page documentation](https://learn.microsoft.com/en-us/windows/apps/design/globalizing/use-utf8-code-page).
+
+The downloaded vendor archive is checksum-verified and left unchanged; only
+isolated build copies are edited. Native code, image addressing, version/icon
+resources and unrelated data are verified unchanged. Editing removes the
+vendor Authenticode signature, which would otherwise be invalid; any signing
+of these modified copies must happen after bundling. `runtime/VERSIONS` records
+the change, and its manifest/build helper are retained under `runtime/licenses`.
+A matching native Windows build also creates a Unicode-path image and opens
+Unicode-path firmware in a paused, network-free QEMU process, then requires a
+clean QMP exit. This quick probe does not replace full installed-runtime CI.
+
+The bundled Lima also recognizes the native OS client's
+`OpenSSH_for_Windows_` version banner. Otherwise it treats that client as version
+zero and never applies its existing CPU-aware cipher preferences. The patch
+retains the upstream OpenSSH 8.1 minimum for cipher reordering and the actual
+Windows processor feature check; it does not force AES on unsupported CPUs.
+
+The bundle also backports
+[Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)
+for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
+[lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570). It waits within
+the existing boot budget before refreshing the guest environment. Unavailable
+session inspection or sessions still opening after 30 seconds fail explicitly,
+without an unsafe reset or an SSH-ready success marker.
+Sessions that finish between enumeration and inspection are accepted only after
+a fresh list confirms removal. Unknown state for a still-listed session remains
+an error. Source-patch regression tests run on the build host, including when
+cross-packaging a Windows target.
+Runtime patch application forces LF locally to that Git invocation, independent
+of a Windows host's `core.autocrlf` setting. Embedded Linux script bytes are
+checked before building; CRLF shebangs must never reach the guest.
+
+This upstream mitigation is not atomic: a new login after the last snapshot
+can still race. The definitive fixes are in newer guest systemd versions
+([0ae9073f](https://github.com/systemd/systemd/commit/0ae9073f15209b6e0acfbd23ec146c4a29b7abbe),
+[b2a41090](https://github.com/systemd/systemd/commit/b2a4109031c1bd79c498f8642df150deeebe1708)).
+The existing Windows Ubuntu 24.04 image selection and existing guest disks are
+unchanged; no systemd binary, kernel, PAM policy or host configuration is patched.
+
+The standalone Windows updater uses native process executable/creation metadata,
+not the CIM provider. It explicitly loads its required system modules from the
+running interpreter's `$PSHOME` with command autoload disabled, avoiding unbounded
+cold command discovery or inherited third-party module resolution. A failed
+module import reports an error without signaling readiness or asking Porto to
+exit. Installed executable names only select candidates; the
+complete installation path establishes ownership, and PID creation time and path
+are rechecked before stopping a process. A running owned QEMU executable still
+refuses the update before readiness. Unknown inspection fails explicitly, and
+the existing 15-second helper-readiness limit is unchanged.
+Both native Windows CI rows exercise cold `-File` launches and the actual helper
+with CIM unavailable, an owned QEMU-shaped synthetic process, and an unrelated
+same-name executable. The fixture checks the real readiness handshake and
+preserves the unrelated process before the separate full NSIS update/uninstall
+acceptance runs. The helper's adjacent installer log timestamps path validation,
+executable cataloging, native process inspection and readiness. A failed installed
+readiness gate retains its bounded log and error message without dumping settings
+or credentials.
+
 ## Native Windows setup
 
 In **Settings > Native Windows containers**, inspect host capabilities and

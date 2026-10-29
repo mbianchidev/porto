@@ -1291,8 +1291,16 @@ func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
 		},
 	}
 	manager := NewWithStateDir(runner, t.TempDir())
+	manager.lookPath = func(name string) (string, error) { return name, nil }
+	manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
+		return updateSafetyRuntime(t, &updateTasks{}), nil
+	}
+	manager.dialBuildKit = workingBuildKitDialer(t)
+	detached := false
+	manager.nativeGuard = func(string, string) error { return ErrConflict }
+	manager.nativeClose = func(context.Context) error { detached = true; return nil }
 	if err := manager.writeEngineState(engineState{
-		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner",
+		Mode: "lima", Instance: engineInstanceName, OwnerID: "test-owner", ResourceSaverToken: "synthetic-sleep-owner",
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -1302,6 +1310,13 @@ func TestPrepareEngineUpdateStopsOwnedRuntime(t *testing.T) {
 	}
 	if !stopped {
 		t.Fatal("running Porto engine was not stopped for the update")
+	}
+	if !detached {
+		t.Fatal("idle engine update did not detach owned native files")
+	}
+	state, err := manager.readEngineState()
+	if err != nil || state.ResourceSaverToken != "" {
+		t.Fatalf("idle engine update did not release engine sleep ownership: %+v, %v", state, err)
 	}
 	for _, command := range runner.commands {
 		if command.Name == "limactl" && strings.Join(command.Args, " ") == "stop porto-engine" {
@@ -1436,6 +1451,71 @@ func TestResolveRuntimeHelperPathPrefersPackagedHelper(t *testing.T) {
 	}
 }
 
+func TestInstallLimaRuntimeHelperUsesProvisioningBudgetAndCallerCancellation(t *testing.T) {
+	helper := filepath.Join(t.TempDir(), "synthetic-runtime-helper")
+	payload := []byte("synthetic runtime helper payload")
+	if err := os.WriteFile(helper, payload, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, scenario := range []struct {
+		name   string
+		caller time.Duration
+		cancel bool
+	}{
+		{name: "provisioning budget"},
+		{name: "longer caller remains bounded", caller: 30 * time.Minute},
+		{name: "shorter caller takes precedence", caller: 5 * time.Second},
+		{name: "cancellation during transfer", cancel: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			want := engineStartTimeout
+			if scenario.caller > 0 {
+				var deadlineCancel context.CancelFunc
+				ctx, deadlineCancel = context.WithTimeout(ctx, scenario.caller)
+				defer deadlineCancel()
+				want = min(want, scenario.caller)
+			}
+			var remaining time.Duration
+			runner := lifecycleDeadlineRunner(func(commandContext context.Context, command runtimes.Command) ([]byte, error) {
+				if command.Name != "limactl" || len(command.Args) == 0 || !bytes.Equal(command.Stdin, payload) ||
+					command.Args[len(command.Args)-1] != limaRuntimeHelperInstallCommand {
+					return nil, errors.New("helper transfer changed its payload or atomic validation command")
+				}
+				deadline, ok := commandContext.Deadline()
+				if !ok {
+					return nil, errors.New("runtime helper transfer has no provisioning deadline")
+				}
+				remaining = time.Until(deadline)
+				if scenario.cancel {
+					cancel()
+					return nil, context.Cause(commandContext)
+				}
+				return nil, nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			manager.lookPath = func(name string) (string, error) {
+				if name != "porto-runtime-helper" {
+					return "", fmt.Errorf("unexpected executable lookup: %s", name)
+				}
+				return helper, nil
+			}
+			err := manager.installLimaRuntimeHelper(ctx, "synthetic-engine")
+			if scenario.cancel {
+				if !errors.Is(err, context.Canceled) {
+					t.Fatalf("helper transfer cancellation = %v", err)
+				}
+			} else if err != nil {
+				t.Fatal(err)
+			}
+			if remaining <= want-time.Second || remaining > want {
+				t.Fatalf("helper transfer budget = %s, want %s without extending the caller deadline", remaining, want)
+			}
+		})
+	}
+}
+
 func TestInstallLimaRuntimeHelperPreservesPreviousBinaryOnFailure(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("runtime helper installation runs in the Linux guest")
@@ -1504,7 +1584,7 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 		{name: "changed owner", owner: "new-synthetic-owner", instance: engineInstanceName, available: true},
 		{name: "changed instance", owner: "synthetic-owner", instance: "another-synthetic-engine", available: true},
 	} {
-		for _, operation := range []string{"nerdctl", "files"} {
+		for _, operation := range []string{"nerdctl", "files", "buildkit"} {
 			t.Run(scenario.name+"/"+operation, func(t *testing.T) {
 				runner := &fakeRunner{}
 				manager := NewWithStateDir(runner, t.TempDir())
@@ -1520,8 +1600,14 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 					}},
 				}
 				var err error
+				buildKitDial := errors.New("synthetic BuildKit tunnel dial reached")
+				manager.dialBuildKit = func(context.Context) (net.Conn, error) {
+					return nil, buildKitDial
+				}
 				want := []string{"shell", engineInstanceName, "--", "sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner", "nerdctl", "volume", "ls"}
-				if operation == "files" {
+				if operation == "buildkit" {
+					_, err = manager.DialBuildKit(context.Background())
+				} else if operation == "files" {
 					descriptor := runtimefiles.Descriptor{Resource: datafiles.Resource{Kind: "volume", Name: "synthetic-volume", ID: "synthetic-identity"}}
 					err = manager.RunFileRequest(context.Background(), descriptor, datafiles.Request{
 						Action: "volume-identity", Identity: descriptor.Resource.Fingerprint(),
@@ -1540,6 +1626,12 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 					}
 					return
 				}
+				if operation == "buildkit" {
+					if !errors.Is(err, buildKitDial) || len(runner.commands) != 0 {
+						t.Fatalf("the healthy BuildKit origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
+					}
+					return
+				}
 				if err != nil || len(runner.commands) != 1 {
 					t.Fatalf("the healthy origin required extra discovery/ownership processes: err=%v commands=%+v", err, runner.commands)
 				}
@@ -1548,6 +1640,25 @@ func TestRuntimeCommandsBorrowOnlyTheMatchingHealthyEngineOrigin(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestBuildKitTunnelChecksGuestOwnershipBeforeProtocolTraffic(t *testing.T) {
+	backend := commandBackend{name: "limactl", limaInstance: "synthetic-engine", ownerID: "synthetic-owner"}
+	command := limaBuildKitStdioCommand(context.Background(), backend)
+	want := []string{
+		"limactl", "shell", "--workdir=/", backend.limaInstance, "--", "sh", "-c",
+		limaOwnedRuntimeCommand, "porto-runtime-command", backend.ownerID, "sh", "-lc",
+		limaBuildKitCommand,
+	}
+	if !reflect.DeepEqual(command.Args, want) {
+		t.Fatalf("BuildKit tunnel omitted its in-channel ownership check: %q", command.Args)
+	}
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	backend.ownerID = ""
+	connection, err := manager.dialBuildKitBackend(context.Background(), backend)
+	if connection != nil || !errors.Is(err, ErrUnavailable) || !strings.Contains(err.Error(), "ownership") {
+		t.Fatalf("BuildKit accepted an unowned tunnel: connection=%v err=%v", connection, err)
 	}
 }
 

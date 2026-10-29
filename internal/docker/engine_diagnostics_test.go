@@ -80,3 +80,45 @@ func TestOwnershipFailureReportsGuestPanic(t *testing.T) {
 		})
 	}
 }
+
+func TestGuestPanicRetainsFaultContextBeforeRestart(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("LIMA_HOME", home)
+	logPath := filepath.Join(home, engineInstanceName, "serial.log")
+	if err := os.MkdirAll(filepath.Dir(logPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	contents := strings.Join([]string{
+		"[0.0] Linux version synthetic",
+		"unrelated guest output",
+		"[42.0] traps: synthetic-init[1] general protection fault ip:1234",
+		"[42.1] Kernel panic - not syncing: synthetic init failure",
+		"[42.2] Call Trace:",
+		"[42.3]  synthetic_fault+0x1/0x2",
+	}, "\n")
+	if err := os.WriteFile(logPath, []byte(contents), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cause := errors.New("synthetic start failed")
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "limactl" || command.Args[0] != "start" {
+			t.Fatalf("unexpected startup command: %+v", command)
+		}
+		return nil, cause
+	}}
+	_, diagnostic := New(runner).startLimaRuntime(context.Background(), "start synthetic guest", engineInstanceName)
+	if err := os.WriteFile(logPath, []byte("[0.0] Linux version synthetic recovery\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !errors.Is(diagnostic, cause) {
+		t.Fatalf("lost original startup failure: %v", diagnostic)
+	}
+	for _, expected := range []string{"general protection fault ip:1234", "Call Trace:", "synthetic_fault+0x1/0x2"} {
+		if !strings.Contains(diagnostic.Error(), expected) {
+			t.Fatalf("fault context lost after restart: %v", diagnostic)
+		}
+	}
+	if strings.Contains(diagnostic.Error(), "unrelated guest output") {
+		t.Fatalf("diagnostic included unrelated guest output: %v", diagnostic)
+	}
+}

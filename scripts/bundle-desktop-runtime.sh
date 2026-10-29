@@ -78,8 +78,7 @@ docker_source_directory="$temporary/cli-${docker_version}"
 docker_plugin_patch="$script_directory/patches/docker-cli-29.7.2-bundled-plugins.patch"
 (
   cd "$docker_source_directory"
-  git apply --check "$docker_plugin_patch"
-  git apply "$docker_plugin_patch"
+  bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$docker_plugin_patch"
   cp vendor.mod go.mod
   cp vendor.sum go.sum
 )
@@ -286,7 +285,7 @@ case "$lima_version" in
     ;;
   v2.2.1)
     lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.2"
+    lima_windows_version="v2.2.1+porto.6"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -306,17 +305,20 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
+  lima_ssh_version_patch="$script_directory/patches/lima-2.2.1-windows-ssh-version.patch"
+  lima_logind_patch="$script_directory/patches/lima-2.2.1-logind-opening.patch"
   (
     cd "$temporary/$lima_source_directory"
-    git apply --check "$lima_pid_patch" "$lima_stop_patch"
-    git apply "$lima_pid_patch" "$lima_stop_patch"
-    git apply --check "$lima_graceful_stop_patch"
-    git apply "$lima_graceful_stop_patch"
-    git apply --check "$lima_arm64_cpu_patch"
-    git apply "$lima_arm64_cpu_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_graceful_stop_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_arm64_cpu_patch"
     if [ "$lima_version" = v2.2.1 ]; then
-      git apply --check "$lima_wsl_mount_patch"
-      git apply "$lima_wsl_mount_patch"
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"
+      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
+      GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOWORK=off \
+        go test -mod=readonly ./pkg/sshutil ./pkg/cidata \
+        -run '^(TestParseNativeWindowsOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions)$' -count=1
       if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
         CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
           -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
@@ -338,6 +340,8 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   cp "$lima_arm64_cpu_patch" "$destination/licenses/lima-windows-arm64-cpu.patch"
   if [ "$lima_version" = v2.2.1 ]; then
     cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
+    cp "$lima_ssh_version_patch" "$destination/licenses/lima-windows-ssh-version.patch"
+    cp "$lima_logind_patch" "$destination/licenses/lima-logind-opening.patch"
   fi
 fi
 
@@ -398,6 +402,9 @@ if [ "$goos" = "windows" ]; then
   find "$destination/qemu" -maxdepth 1 -type f -iname 'qemu-system-*.exe' ! -iname "$qemu_system" -delete
   test -f "$destination/qemu/qemu-img.exe"
   test -f "$destination/qemu/$qemu_system"
+  node "$script_directory/windows-qemu-manifest.cjs" "$destination/qemu" "$goarch"
+  cp "$script_directory/patches/qemu-windows-utf8.manifest" "$destination/licenses/qemu-windows-utf8.manifest"
+  cp "$script_directory/windows-qemu-manifest.cjs" "$destination/licenses/qemu-windows-utf8.cjs"
   qemu_bundled=true
 fi
 
@@ -455,7 +462,7 @@ dive ${dive_version} (${dive_asset}, sha256:${dive_checksum})
 kind $([ "$kind_bundled" = "true" ] && printf '%s' "$kind_version" || printf 'not available for %s/%s' "$goos" "$goarch")
 k9s ${k9s_version}
 lima ${lima_runtime_version}
-qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
+qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s; Porto UTF-8 manifest)' "$qemu_version" "$qemu_build" || printf 'not bundled for %s/%s' "$goos" "$goarch")
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF

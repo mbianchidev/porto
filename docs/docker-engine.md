@@ -67,6 +67,18 @@ never changes the disk or image of an existing instance.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
 
+BuildKit tunnels reuse an available inventory's engine origin only when its
+instance and owner still match the saved state. The same tunnel checks the
+guest ownership marker before `buildctl` can consume protocol input. This
+avoids redundant cold SSH discovery/ownership processes for concurrent Buildx
+connections without removing the ownership check or extending client deadlines.
+
+Container lifecycle execution labels use the same direct metadata operations
+and healthy inventory connection as the lifecycle action. Successful start or
+resume no longer opens another cold Lima/containerd connection just to record
+its selected architecture. Architecture validation, namespace/label ownership,
+caller cancellation and operation deadlines remain unchanged.
+
 ## Live container inventory
 
 The daemon maintains one authoritative, revisioned container snapshot for both
@@ -92,6 +104,19 @@ without a task reports `Created`, not `Restarting`, even if a stale desired-stat
 label says `running`. Observing the inventory never changes its restart policy.
 Both created and exited containers can be started or removed without a
 running task; Stop and Restart remain disabled until the container is active.
+
+Docker inspect also projects an explicitly empty compatibility-runtime status
+from its existing lifecycle flags and timestamps. A never-started container
+therefore reports `created` to Compose instead of an empty state that can
+prevent startup convergence. Explicit nonempty states, process identity,
+exit history, health and other inspection fields are retained.
+
+When the Docker endpoint uses the event-backed inventory, successful creation
+waits until that healthy inventory contains the new container ID. Compose can
+therefore list and start every member immediately after creation instead of
+losing a newly created service to a delayed snapshot. Cancellation or failed
+inventory confirmation reports the already-created ID for recovery, rather
+than claiming the whole operation completed or deleting the container.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a helper channel open for the gRPC connection. All host
@@ -491,6 +516,14 @@ Porto endpoint automatically.
 
 BuildKit clients connect through Docker-compatible h2c upgrades. Multi-platform
 builds work with Buildx and Compose Bake:
+
+The proxy coordinates gateway and status calls with the matching Solve's storage,
+architecture and exporter preflight. A cold guest must not receive gateway
+`Ping` before that build can be registered upstream. Admission is keyed by the
+original build ID across upgraded connections; other builds stay independent,
+caller cancellation remains bounded, and actual preflight refusals are not
+replaced with an opaque missing-job error. Verified worker discovery can supply
+the existing namespace/exporter compatibility proof without a duplicate probe.
 
 SDK uploads to the ordinary Docker `/build` endpoint are unpacked into a
 confined temporary context before invoking nerdctl, which does not accept a

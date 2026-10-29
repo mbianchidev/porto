@@ -164,7 +164,7 @@ func (a *API) hijackBuildKitControl(
 	server := grpc.NewServer(
 		grpc.MaxRecvMsgSize(defaults.DefaultMaxRecvMsgSize),
 		grpc.MaxSendMsgSize(defaults.DefaultMaxSendMsgSize),
-		grpc.UnknownServiceHandler(transparentBuildKitHandler(connection)),
+		grpc.UnknownServiceHandler(transparentBuildKitHandler(connection, a.buildKitAdmissions)),
 	)
 	controlapi.RegisterControlServer(server, &buildKitControlProxy{
 		client:               controlapi.NewControlClient(connection),
@@ -173,6 +173,7 @@ func (a *API) hijackBuildKitControl(
 		solveGate:            a.manager.dataReadGate,
 		validateArchitecture: a.manager.validateBuildKitArchitecture,
 		filterArchitecture:   a.manager.filterBuildKitArchitecture,
+		admissions:           a.buildKitAdmissions,
 	})
 	stopped := make(chan struct{})
 	go func() {

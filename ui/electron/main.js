@@ -26,6 +26,8 @@ const {
   inspectBundledDockerToolchain,
   inspectDaemon,
   inspectDockerStatus,
+  inspectWindowsDaemonProcesses,
+  inspectWindowsProcessIdentity,
   installDockerContext,
   installDockerEngine,
   mergeExecutablePaths,
@@ -33,7 +35,7 @@ const {
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
-  windowsDaemonProcesses,
+  runtimeFailureDiagnostic,
   waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
 const {
@@ -576,14 +578,7 @@ async function startDaemon() {
 async function runningDaemonProcesses() {
   let processes
   if (process.platform === 'win32') {
-    const script = 'Get-CimInstance Win32_Process | Select-Object ProcessId,CommandLine | ConvertTo-Json -Compress'
-    const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-      timeout: 10000,
-      maxBuffer: 4 * 1024 * 1024,
-      windowsHide: true,
-    })
-    if (stdout.trim() === '') return []
-    processes = windowsDaemonProcesses(JSON.parse(stdout))
+    return inspectWindowsDaemonProcesses()
   } else {
     const { stdout } = await execFileAsync('ps', ['-ax', '-o', 'pid=,command='], {
       timeout: 5000,
@@ -599,25 +594,16 @@ async function runningDaemonProcesses() {
 }
 
 async function processIdentity(pid) {
+  if (process.platform === 'win32') return inspectWindowsProcessIdentity(pid)
   try {
-    if (process.platform === 'win32') {
-      const script = `Get-CimInstance Win32_Process -Filter "ProcessId = ${pid}" | Select-Object CreationDate,CommandLine | ConvertTo-Json -Compress`
-      const { stdout } = await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        timeout: 5000,
-        maxBuffer: 1024 * 1024,
-        windowsHide: true,
-      })
-      if (stdout.trim() === '') return null
-      const processInfo = JSON.parse(stdout)
-      return `${processInfo.CreationDate || ''}|${processInfo.CommandLine || ''}`
-    }
     const { stdout } = await execFileAsync('ps', ['-p', String(pid), '-o', 'lstart=,command='], {
       timeout: 5000,
       maxBuffer: 1024 * 1024,
     })
     return stdout.trim() || null
-  } catch {
-    return null
+  } catch (error) {
+    if (error.code === 1 && !error.signal && !error.stdout?.trim() && !error.stderr?.trim()) return null
+    throw new Error('Native daemon process inspection is unavailable; unverified processes will not be stopped.')
   }
 }
 
@@ -628,7 +614,11 @@ async function stopDaemonProcesses(daemons) {
       if (await processIdentity(pid) !== identity) runningProcesses.delete(pid)
     }
   }
-  const signal = (pid, name) => {
+  const signal = async (pid, name) => {
+    if (await processIdentity(pid) !== runningProcesses.get(pid)) {
+      runningProcesses.delete(pid)
+      return true
+    }
     try {
       process.kill(pid, name)
       return true
@@ -637,7 +627,7 @@ async function stopDaemonProcesses(daemons) {
         runningProcesses.delete(pid)
         return true
       }
-      console.error(`Unable to send ${name} to incompatible Porto daemon ${pid}`, error)
+      console.error('Unable to stop a verified incompatible Porto daemon. Check process permissions before retrying.')
       return false
     }
   }
@@ -653,12 +643,12 @@ async function stopDaemonProcesses(daemons) {
   }
   await refresh()
   for (const pid of runningProcesses.keys()) {
-    if (!signal(pid, 'SIGTERM')) return false
+    if (!(await signal(pid, 'SIGTERM'))) return false
   }
   if (await waitForExit(40)) return true
   await refresh()
   for (const pid of runningProcesses.keys()) {
-    if (!signal(pid, 'SIGKILL')) return false
+    if (!(await signal(pid, 'SIGKILL'))) return false
   }
   return waitForExit(20)
 }
@@ -684,8 +674,8 @@ async function ensureDaemonRunning() {
   let processes
   try {
     processes = await runningDaemonProcesses()
-  } catch (error) {
-    console.error('Unable to inspect existing Porto daemons', error)
+  } catch {
+    console.error('Unable to inspect existing Porto daemons. Check native process-query access; unverified processes will not be stopped.')
     return false
   }
   if (existing.ready) {
@@ -709,7 +699,12 @@ async function ensureDaemonRunning() {
         if (existing.reachable) break
       }
     }
-    if (!(await stopDaemonProcesses(processes))) return false
+    try {
+      if (!(await stopDaemonProcesses(processes))) return false
+    } catch {
+      console.error('Unable to recheck existing Porto daemon ownership. Unverified processes will not be stopped.')
+      return false
+    }
   } else if (existing.reachable) {
     return false
   }
@@ -728,13 +723,21 @@ async function ensureDaemonRunning() {
   return false
 }
 
-async function ensureDockerEngine() {
+async function ensureDockerEngine({ onProgress = () => {}, signal } = {}) {
   console.debug('Checking container runtime readiness')
+  signal?.throwIfAborted()
+  await onProgress({ message: 'Checking the bundled local runtime executables.' })
   if (app.isPackaged) {
-    const toolchain = await inspectBundledDockerToolchain({
-      resourcesPath: process.resourcesPath,
-      environment: await portoEnvironment(),
-    })
+    let toolchain
+    try {
+      toolchain = await inspectBundledDockerToolchain({
+        resourcesPath: process.resourcesPath,
+        environment: await portoEnvironment(),
+      })
+    } catch (error) {
+      console.error('Bundled Docker toolchain validation failed: %s', runtimeFailureDiagnostic(error))
+      throw new Error("A bundled local runtime executable is missing or cannot run. Repair or reinstall Porto's bundled tools, then retry.")
+    }
     if (!toolchain.supported) {
       console.warn('Bundled Docker toolchain is unavailable on this platform: %s', toolchain.message)
     } else {
@@ -752,13 +755,17 @@ async function ensureDockerEngine() {
   const command = dockerBootstrapCommand(status, {
     isPackaged: app.isPackaged,
   })
+  signal?.throwIfAborted()
   if (command !== null) {
     console.debug('Reconciling the bundled container runtime')
-    await installDockerEngine({ daemonURL: DAEMON_URL })
+    await installDockerEngine({ daemonURL: DAEMON_URL, onProgress, signal })
+    await onProgress({ message: 'Waiting for the verified container backend and inventory to become available.' })
     status = await waitForDockerEngine({ daemonURL: DAEMON_URL })
     console.debug('Container runtime readiness: available=%s enabled=%s', status.available, status.enabled)
   }
+  signal?.throwIfAborted()
   if (app.isPackaged && process.platform !== 'win32' && status.available) {
+    await onProgress({ message: 'Checking the Porto Docker context.' })
     await installDockerContext({ daemonURL: DAEMON_URL })
   }
 }
@@ -766,7 +773,7 @@ async function ensureDockerEngine() {
 function createBootstrapWindow(show = true) {
   const window = new BrowserWindow({
     width: 460,
-    height: 210,
+    height: 250,
     resizable: false,
     show,
     backgroundColor: '#141516',
@@ -790,10 +797,29 @@ function createBootstrapWindow(show = true) {
       p { margin: 0; color: #a6a9ae; line-height: 1.5; }
     </style>
   </head>
-  <body><main><h1>Preparing Porto</h1><p>Starting the daemon and bundled container runtime. First launch can take a few minutes.</p></main></body>
+  <body><main><h1>Preparing Porto</h1><p id="provisioning-progress" role="status" aria-atomic="true">Starting the daemon and bundled container runtime. First launch can take a few minutes.</p></main></body>
 </html>`
-  window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
-  return window
+  const loaded = window.loadURL(`data:text/html;charset=utf-8,${encodeURIComponent(html)}`)
+  const controller = new AbortController()
+  const abort = () => controller.abort()
+  app.once('before-quit', abort)
+  window.once('closed', () => {
+    abort()
+    app.removeListener('before-quit', abort)
+  })
+  return {
+    window,
+    signal: controller.signal,
+    async onProgress({ message }) {
+      await loaded
+      controller.signal.throwIfAborted()
+      if (!window.isDestroyed()) {
+        await window.webContents.executeJavaScript(
+          `document.getElementById('provisioning-progress').textContent = ${JSON.stringify(message)}`,
+        )
+      }
+    },
+  }
 }
 
 function createWindow() {
@@ -961,7 +987,8 @@ app.whenReady().then(async () => {
     app.quit()
     return
   }
-  const bootstrapWindow = createBootstrapWindow(!startHidden)
+  const bootstrap = createBootstrapWindow(!startHidden)
+  const bootstrapWindow = bootstrap.window
   const healthy = await ensureDaemonRunning()
   if (!healthy) {
     console.error('Porto daemon did not reach compatible readiness')
@@ -975,8 +1002,12 @@ app.whenReady().then(async () => {
   }
   let dockerError = null
   try {
-    await ensureDockerEngine()
+    await ensureDockerEngine(bootstrap)
   } catch (error) {
+    if (bootstrap.signal.aborted) {
+      app.quit()
+      return
+    }
     dockerError = error
     console.error('Unable to prepare the bundled Porto container runtime', error)
   }

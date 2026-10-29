@@ -134,6 +134,155 @@ run_as_root() {
   fi
 }
 
+verify_linux_qemu() {
+  for qemu_executable in "$qemu_command" qemu-img; do
+    if ! command -v "$qemu_executable" >/dev/null 2>&1 || ! "$qemu_executable" --version >/dev/null; then
+      echo "Porto setup incomplete: $qemu_executable is missing or cannot execute. QEMU is required for the managed container engine and virtual machines. Repair it and retry; existing Porto files have not been replaced." >&2
+      exit 1
+    fi
+  done
+}
+
+install_linux_prerequisites() {
+  if [ "${PORTO_SKIP_PREREQS:-0}" = "1" ]; then
+    echo "Linux runtime and desktop sandbox prerequisite checks explicitly skipped with PORTO_SKIP_PREREQS=1. Readiness has not been verified." >&2
+    return
+  fi
+
+  case "$goarch" in
+    amd64) qemu_command="qemu-system-x86_64" ;;
+    arm64) qemu_command="qemu-system-aarch64" ;;
+  esac
+  if command -v "$qemu_command" >/dev/null 2>&1; then
+    verify_linux_qemu
+    return
+  fi
+
+  echo "Installing QEMU for Porto's managed container engine and virtual machines."
+  if command -v apt-get >/dev/null 2>&1; then
+    if run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils ipxe-qemu; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v dnf >/dev/null 2>&1; then
+    if run_as_root dnf install -y qemu-kvm qemu-img; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v pacman >/dev/null 2>&1; then
+    if run_as_root pacman -S --needed qemu-desktop; then
+      verify_linux_qemu
+      return
+    fi
+  elif command -v zypper >/dev/null 2>&1; then
+    if run_as_root zypper --non-interactive install qemu; then
+      verify_linux_qemu
+      return
+    fi
+  fi
+  echo "Porto setup incomplete: QEMU is required for the managed container engine and virtual machines. Install $qemu_command and qemu-img, then retry. Existing Porto files have not been replaced." >&2
+  exit 1
+}
+
+configure_linux_sandbox() {
+  [ "${PORTO_SKIP_PREREQS:-0}" != "1" ] || return 0
+  sandbox_key="kernel.apparmor_restrict_unprivileged_userns"
+  if ! command -v sysctl >/dev/null 2>&1; then
+    if [ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then return 0; fi
+    echo "Porto setup incomplete: install sysctl to inspect the Linux desktop sandbox policy. Existing Porto files have not been replaced." >&2
+    exit 1
+  fi
+  if ! sandbox_restriction="$(sysctl -n "$sandbox_key" 2>"$temporary/sandbox-probe.log")"; then
+    if [ ! -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then return 0; fi
+    cat "$temporary/sandbox-probe.log" >&2
+    echo "Porto setup incomplete: unable to inspect the Linux desktop sandbox policy. Existing Porto files have not been replaced." >&2
+    exit 1
+  fi
+  case "$sandbox_restriction" in
+    0) return 0 ;;
+    1) ;;
+    *)
+      echo "Porto setup incomplete: unrecognized Linux desktop sandbox policy. Existing Porto files have not been replaced." >&2
+      exit 1
+      ;;
+  esac
+  mkdir -p "$(dirname "$install_root")"
+  sandbox_parent="$(cd -P "$(dirname "$install_root")" && pwd -P)"
+  sandbox_executable="$sandbox_parent/$(basename "$install_root")/Porto"
+  echo "Configuring Porto's Chromium user-namespace sandbox; administrator approval may be required."
+  if ! run_as_root /bin/sh -s -- "$sandbox_executable" "$(id -u)" <<'PORTO_APPARMOR_SETUP'
+set -eu
+PATH=/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+if ! command -v apparmor_parser >/dev/null 2>&1; then
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get update && apt-get install -y apparmor
+  else
+    echo "Install the distribution's apparmor_parser utility, then retry Porto setup." >&2
+    exit 1
+  fi
+fi
+
+install_linux_sandbox_profile() {
+  profile_directory="$1"
+  profile_executable="$2"
+  profile_uid="$3"
+  case "$profile_executable" in
+    /*) ;;
+    *) echo "The Porto sandbox needs an absolute executable path." >&2; return 1 ;;
+  esac
+  if [ "$(printf '%s' "$profile_executable" | LC_ALL=C tr -d '\000-\037\177')" != "$profile_executable" ]; then
+    echo "The Porto installation path contains unsupported AppArmor control characters." >&2
+    return 1
+  fi
+  case "$profile_executable" in
+    *'"'*|*'\'*|*'*'*|*'?'*|*'['*|*']'*|*'{'*|*'}'*)
+      echo "The Porto installation path contains unsupported AppArmor policy characters; choose a literal path without control characters or pattern syntax." >&2
+      return 1
+      ;;
+  esac
+  case "$profile_uid" in
+    ''|*[!0-9]*) echo "The Porto sandbox requires a numeric account ID." >&2; return 1 ;;
+  esac
+  profile_hash="$(printf '%s' "$profile_executable" | sha256sum | awk '{print $1}')"
+  profile_name="porto-sandbox-$profile_uid-$profile_hash"
+  profile_path="$profile_directory/$profile_name"
+  profile_temporary="$(mktemp "$profile_directory/.porto-sandbox.XXXXXX")"
+  trap 'rm -f -- "$profile_temporary"' EXIT HUP INT TERM
+  printf '%s\n' '# Managed by the Porto installer; grants only Chromium user namespaces.' \
+    'abi <abi/4.0>,' 'include <tunables/global>' \
+    "profile $profile_name \"$profile_executable\" flags=(unconfined) {" \
+    '  userns,' '}' > "$profile_temporary"
+  chmod 644 "$profile_temporary"
+  apparmor_parser -Q "$profile_temporary"
+  profile_operation="-a"
+  if [ -e "$profile_path" ] || [ -L "$profile_path" ]; then
+    if [ -L "$profile_path" ] || [ ! -f "$profile_path" ] ||
+      [ "$(stat -c '%u:%a' -- "$profile_path")" != "0:644" ] ||
+      ! cmp -s "$profile_temporary" "$profile_path"; then
+      echo "Refusing to overwrite an existing administrator AppArmor policy: $profile_path" >&2
+      return 1
+    fi
+    profile_operation="-r"
+  else
+    ln "$profile_temporary" "$profile_path"
+  fi
+  if ! apparmor_parser "$profile_operation" "$profile_path"; then
+    if [ "$profile_operation" = "-a" ]; then rm -f -- "$profile_path"; fi
+    echo "Unable to load Porto's AppArmor sandbox permission." >&2
+    return 1
+  fi
+  echo "Porto sandbox permission loaded: $profile_path"
+}
+
+install_linux_sandbox_profile /etc/apparmor.d "$1" "$2"
+PORTO_APPARMOR_SETUP
+  then
+    echo "Porto setup incomplete: the desktop sandbox permission could not be configured. Existing Porto files have not been replaced; resolve the administrator or AppArmor error and retry." >&2
+    exit 1
+  fi
+}
+
 daemon_pids() {
   if [ "$goos" = "darwin" ]; then
     processes="$(ps -ax -o pid=,command=)" || return 1
@@ -204,6 +353,8 @@ if [ "$goos" = "darwin" ]; then
   fi
 else
   install_root="${PORTO_INSTALL_DIR:-$HOME/.local/opt/porto}"
+  install_linux_prerequisites
+  configure_linux_sandbox
   stop_daemons
   if [ -d "$install_root" ]; then
     stop_linux_app "$install_root/Porto"
@@ -222,27 +373,17 @@ else
 Type=Application
 Name=Porto
 Comment=Local apps, containers, Kubernetes, and virtual machines
-Exec=$install_root/Porto
+Exec="$install_root/Porto"
 Icon=$install_root/resources/porto.png
 Terminal=false
 Categories=Development;
 EOF
 
-  if [ "${PORTO_SKIP_PREREQS:-0}" != "1" ] && ! command -v qemu-system-x86_64 >/dev/null 2>&1 && ! command -v qemu-system-aarch64 >/dev/null 2>&1; then
-    if command -v apt-get >/dev/null 2>&1; then
-      run_as_root apt-get update && run_as_root apt-get install -y qemu-system qemu-utils || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v dnf >/dev/null 2>&1; then
-      run_as_root dnf install -y qemu-kvm qemu-img || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v pacman >/dev/null 2>&1; then
-      run_as_root pacman -S --needed qemu-desktop || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    elif command -v zypper >/dev/null 2>&1; then
-      run_as_root zypper --non-interactive install qemu || echo "Install QEMU/KVM to use Porto virtual machines." >&2
-    else
-      echo "Install QEMU/KVM to use Porto virtual machines on Linux." >&2
-    fi
+  if [ "${PORTO_SKIP_PREREQS:-0}" = "1" ]; then
+    echo "Installed Porto files at $install_root; Linux runtime prerequisite verification was explicitly skipped."
+  else
+    echo "Installed Porto at $install_root"
   fi
-
-  echo "Installed Porto at $install_root"
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
     nohup "$install_root/Porto" >/dev/null 2>&1 &
   fi

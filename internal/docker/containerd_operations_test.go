@@ -19,6 +19,7 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
 	containerd "github.com/containerd/containerd/v2/client"
+	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"google.golang.org/grpc"
@@ -34,6 +35,42 @@ type fakeContainerOperations struct {
 	calls    []string
 	waitCode int
 	errs     map[string]error
+}
+
+func TestRecordContainerExecutionReusesContainerOperations(t *testing.T) {
+	selection := acceleration.Selection{Execution: "native", Platform: "linux/arm64"}
+	updates := map[string]string{
+		acceleration.ExecutionLabel: selection.Execution,
+		acceleration.PlatformLabel:  selection.Platform,
+	}
+	updateCall := fmt.Sprintf("update-labels synthetic-container %v", updates)
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{name: "recorded"},
+		{name: "caller cancellation", err: context.Canceled},
+		{name: "metadata failure", err: errors.New("synthetic metadata failure")},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &fakeContainerOperations{errs: map[string]error{updateCall: test.err}}
+			manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return operations, nil
+			}
+			manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
+				t.Fatal("execution metadata reopened cold backend discovery after the lifecycle operation")
+				return nil, ErrUnavailable
+			}
+			err := manager.recordContainerExecution(context.Background(), "synthetic-container", selection)
+			if !errors.Is(err, test.err) {
+				t.Fatalf("record execution = %v, want %v", err, test.err)
+			}
+			if want := []string{updateCall, "close"}; !reflect.DeepEqual(operations.calls, want) {
+				t.Fatalf("metadata operations = %v, want %v", operations.calls, want)
+			}
+		})
+	}
 }
 
 type fakeNetworkOperations struct {

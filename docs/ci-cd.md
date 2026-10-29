@@ -209,7 +209,10 @@ boundaries are in [Windows development integration](windows-integration.md).
 The `cross-build` matrix compiles `./cmd/porto` with `CGO_ENABLED=0` in six
 independent jobs, one for each release target (`linux`, `darwin`, and `windows`
 on `amd64` and `arm64`). All targets remain mandatory; a broken platform build
-fails the pull request instead of the release.
+fails the pull request instead of the release. Each job resolves its locked Go
+modules before the crypto import-graph check, so a cold cache's network downloads
+do not consume that check's unchanged two-minute metadata budget. The import
+policy and overall cross-build job limit remain unchanged.
 
 Generic Linux x64 jobs use `ubuntu-latest`, including native containerd and
 KVM-backed Lima acceptance. ARM macOS jobs use `macos-latest`, including the
@@ -520,6 +523,10 @@ Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
 diagnostics, and disk/configuration preservation without booting a VM.
+Upstream Docker, Lima and synchronization source patches use an isolated Git
+discovery boundary and reverse-application check. This prevents `git apply`
+from silently skipping archive-relative changes when a build's `TMPDIR` is
+inside the Porto checkout; the enclosing repository and index are not used.
 Windows CI repeats these checks against the installed package in a path with
 spaces, rather than only checking that its binaries exist. It also starts
 synthetic consoleless processes and verifies that a forced stop terminates the
@@ -530,12 +537,22 @@ covering silent in-place replacement and NSIS installation paths containing
 spaces without launching the updated desktop.
 These checks do not boot a guest or prove guest-kernel compatibility.
 
-Native installers build in four independent OS/architecture jobs rather than
-two sequential architecture loops. Each job verifies exactly one installer;
-each macOS job also verifies its matching desktop archive and DMG checksum.
-The Windows AMD64 job retains the complete installed-package, WinFsp,
-logging, blocked-update, in-place-update, and uninstall smoke checks; ARM64
-remains a cross-built package, not a claimed native execution test.
+Native installers build in four independent, architecture-matched host jobs.
+Each job verifies exactly one installer; each macOS job also verifies its
+matching desktop archive and DMG checksum. Both Windows architectures run the
+installed-package, WinFsp, logging, blocked-update, in-place-update and
+uninstall checks. The two Linux toolchain jobs also build and install their
+native desktop archive rather than treating an ARM64 cross-build as execution.
+
+The [installed-package gate](installed-acceptance.md) runs the shipped desktop,
+daemon, Docker, Compose and Buildx from real paths containing spaces and
+non-ASCII characters. It requires real Compose/Buildx workflows, safe refusal
+to update a running workload, and byte-checked preservation through replacement
+and removal. Hosted fixtures explicitly select QEMU TCG; their evidence does
+not qualify default hardware-accelerated drivers. Test definitions, package
+builds, native host execution and actual successful runtime results remain
+distinct evidence.
+
 CI and CodeQL matrices use fail-fast: a failed member cancels queued and
 running siblings instead of spending more time on an already-failed matrix.
 Successful runs still execute every platform, architecture, and validation
@@ -607,6 +624,8 @@ measurement. Periodic sampling reads fixed process fields, not every process's
 argument memory, so diagnostics do not add that expensive host-wide scan.
 Unavailable diagnostics are reported without replacing the original failure;
 diagnostics never repair mounts, change guest state or create engine ownership.
+Failed Lima starts also retain bounded kernel fault/stack context before a
+configuration rollback can restart the guest and replace its serial log.
 Fresh Lima fixtures fail immediately if that helper is unavailable.
 Linux runners without `/dev/kvm` use the same host-side archive preparation.
 Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
@@ -750,6 +769,9 @@ available. Command Line Tools alone cannot compile the modern icon. Install full
 Xcode and complete its first-launch setup before running the macOS desktop tests
 or preparing a release. Source development still uses the `.icns` icon and
 prepares its cached bundle without compiling a native entry point.
+That isolated development copy is ad-hoc signed with its nested helpers,
+including unsigned helpers in upstream Intel archives. The npm-installed
+Electron runtime and its native entry point are never modified.
 
 Packaging honors an explicit `DEVELOPER_DIR`, otherwise checks the active Xcode
 and then `/Applications/Xcode.app/Contents/Developer`. It selects tools only for

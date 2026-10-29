@@ -907,14 +907,15 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		return err
 	}
 	if err := r.Kill(ctx, id, stopSignal); err != nil {
-		return err
+		return r.reconcileStoppedTask(ctx, id, err)
 	}
-	waitContext, cancel := context.WithTimeout(ctx, stopTimeout)
+	graceDeadline := time.Now().Add(stopTimeout)
+	waitContext, cancel := context.WithDeadline(ctx, graceDeadline)
 	_, waitErr := r.tasks.Wait(
 		withContainerdNamespace(waitContext, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
-	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded)
+	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded) || !time.Now().Before(graceDeadline)
 	cancel()
 	if waitErr == nil {
 		return r.cleanupNetworksResolved(ctx, id)
@@ -922,18 +923,40 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
 	}
+	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
+		return context.DeadlineExceeded
+	}
 	if status.Code(waitErr) != codes.DeadlineExceeded && !graceExpired {
-		return containerdOperationError("wait for stopped", id, waitErr)
+		return r.reconcileStoppedTask(ctx, id, containerdOperationError("wait for stopped", id, waitErr))
 	}
 	if err := r.Kill(ctx, id, 9); err != nil {
-		return fmt.Errorf("force stop container %q: %w", id, err)
+		return r.reconcileStoppedTask(ctx, id, fmt.Errorf("force stop container %q: %w", id, err))
 	}
 	_, err = r.tasks.Wait(
 		withContainerdNamespace(ctx, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
 	if err := containerdOperationError("wait for force-stopped", id, err); err != nil {
+		return r.reconcileStoppedTask(ctx, id, err)
+	}
+	return r.cleanupNetworksResolved(ctx, id)
+}
+
+func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id string, stopErr error) error {
+	if err := context.Cause(ctx); err != nil {
 		return err
+	}
+	if !errors.Is(stopErr, ErrNotFound) && !errors.Is(stopErr, context.Canceled) {
+		return stopErr
+	}
+	// Exit can race a signal or wait. Verify the task is no longer runnable
+	// before releasing its networks; never hide a missing live task target.
+	process, err := r.getTask(ctx, id)
+	if err != nil && status.Code(err) != codes.NotFound {
+		return fmt.Errorf("verify stopped state after %v: %w", stopErr, containerdOperationError("verify stopped task for", id, err))
+	}
+	if err == nil && process.GetStatus() != tasktypes.Status_STOPPED {
+		return stopErr
 	}
 	return r.cleanupNetworksResolved(ctx, id)
 }

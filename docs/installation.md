@@ -49,6 +49,11 @@ the daemon bundled in the installed app. It gracefully replaces a different
 daemon before opening the dashboard, even when the executable path, product
 version, and API compatibility version are unchanged. This prevents a newly
 installed Porto app from continuing to use code left running by an older build.
+On Windows, discovery reads native executable/creation metadata and actual
+daemon command lines without PowerShell CIM/formatting-module autoload.
+Only exact Porto daemon commands are eligible for replacement, with fresh
+ownership checks before each signal. Unavailable inspection fails explicitly;
+it never means no daemon exists or permits stopping an unrelated desktop/CLI.
 
 Desktop startup failures include the path to the persistent diagnostic log:
 `logs/porto.log` inside the platform's Porto data directory, or under
@@ -65,9 +70,22 @@ contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
 system installation. Windows ARM64 excludes KinD because upstream does not
 publish a native binary; Porto builds its Docker CLI from Docker's pinned
 official source and bundles upstream Windows ARM64 Compose and Buildx plugins.
-Linux installation installs QEMU
-through `apt`, `dnf`, `pacman`, or `zypper` when it is missing. Set
-`PORTO_SKIP_PREREQS=1` to skip that Linux prerequisite step.
+Linux installation installs missing QEMU through `apt`, `dnf`, `pacman`, or
+`zypper`, then executes the host-architecture system emulator and `qemu-img` to
+verify both prerequisites. A failed package installation, missing executable or
+broken executable stops setup before stopping daemons or replacing an existing
+Porto installation. QEMU is required for the managed Linux container engine,
+not only standalone VMs.
+Minimal Debian/Ubuntu QEMU setups also need the `ipxe-qemu` option-ROM files,
+including `efi-virtio.rom`; an executable that prints its version is not a
+replacement for those firmware resources. The installer's APT setup includes
+that package explicitly.
+
+Set `PORTO_SKIP_PREREQS=1` only when intentionally managing the runtime and
+desktop sandbox prerequisites yourself, for example when using an existing
+local containerd backend. This explicitly skips verification and automatic
+sandbox setup; the installer reports that distinction rather than claiming
+the app or managed container engine is ready.
 
 On macOS, Linux, and Windows, the packaged app automatically provisions and starts its
 containerd and BuildKit backend on first launch when Docker support is enabled.
@@ -76,6 +94,28 @@ login-shell `PATH`, so project commands can find package managers and language
 toolchains installed outside the system paths available to graphical applications.
 Installing and opening the desktop package requires no follow-up runtime setup
 command.
+
+The first-launch window reports the active tool checks, guest startup,
+downloads, runtime-helper setup and containerd/BuildKit verification. Guest
+images and missing guest tools still require network access; bundled host
+clients do not make a clean first launch offline. A verified existing engine
+does not download or recreate its guest just because Porto reopens. Download,
+DNS/proxy/trust failures, missing or broken local executables, ownership
+conflicts and unavailable backends have distinct retry guidance. Closing the
+preparation window cancels provisioning; existing engines and data are retained,
+and only a newly created failed guest is eligible for cleanup.
+While a boot or setup command is quiet, the progress stream repeats its last
+actual stage to keep idle transports alive. This does not invent a new stage,
+mark setup complete, or extend the existing installation deadline.
+Uploading and validating the bundled runtime-helper binary uses the existing
+20-minute provisioning command budget rather than a 30-second metadata-probe
+limit. Any shorter remaining caller deadline or cancellation still wins.
+Installation validates a temporary helper before atomic replacement, preserving
+the previous binary if transfer or validation fails.
+
+See [installed-package acceptance](installed-acceptance.md) for the real
+clean-install, upgrade and removal gates, including the distinction between
+native host binaries and software-emulated guest qualification.
 
 The install scripts add a `docker` command beside `porto` only when that name is
 unused or already points to Porto. Existing user-managed commands are preserved.
@@ -106,7 +146,7 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.1+porto.2`: the stable 2.2.1 source with
+Windows packages bundle Lima `v2.2.1+porto.6`: the stable 2.2.1 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
 backported and consoleless shutdown fixes. Graceful QEMU stops request ACPI
 powerdown through that instance's existing QMP socket and retain Lima's
@@ -137,6 +177,37 @@ Porto validates saved archive structure before returning success. If an older
 engine reports an incomplete export, update nerdctl inside that owned guest to
 2.4.0 or newer using its upstream checksum-verified release, then retry the
 export. Do not delete the original image after a failed save.
+
+### Linux desktop sandbox
+
+Ubuntu and other AppArmor-enabled hosts can restrict unprivileged user
+namespaces. A portable Electron app then cannot start with its ordinary
+Chromium sandbox. Porto's installer detects this policy and requests
+administrator approval to load a permission for the resolved installed
+`Porto` executable, before stopping or replacing an existing app. It installs
+the distribution's AppArmor parser if needed on an APT-based host.
+
+The root-owned policy lives at the path printed during setup:
+`/etc/apparmor.d/porto-sandbox-<uid>-<executable-path-sha256>`. It grants `userns`
+to that literal executable attachment, leaving the app otherwise unconfined
+as before. It does not globally disable AppArmor or its namespace restriction,
+disable Chromium sandboxing, or make Electron's helper SUID root. Existing
+administrator policies and symlinks are never overwritten. Permission,
+validation or policy-loading failures stop setup with the existing
+installation intact.
+
+Spaces and non-ASCII installation paths work. Paths containing control
+characters or AppArmor pattern/quoting syntax are refused rather than
+interpreted as a broader permission. Choose a literal path when prompted.
+Direct archive extraction on a restricted host still requires an
+administrator-provided sandbox permission; use the installer for automatic
+setup.
+
+The permission is a host prerequisite and survives manual app removal, like
+other administrator-installed prerequisites. If it is no longer needed, an
+administrator can unload the **exact printed policy** with `sudo apparmor_parser -R`
+followed by that path, then remove that same file. Do not remove unrelated
+profiles or disable the global AppArmor restriction.
 
 ### Windows guest recovery
 
@@ -190,10 +261,15 @@ on **Settings** to skip the download prompt. Porto never restarts itself: after
 verification it waits for **Restart and update**. That restart replaces the
 desktop package and reconnects the bundled daemon without deleting or
 recreating existing VMs, Kubernetes clusters, containers, images, or volumes.
-On Windows, Porto first stops its owned container engine cleanly and starts it
-again after the updated desktop launches. If another Porto VM or Kubernetes
-cluster still has the bundled QEMU runtime open, the update aborts instead of
-force-killing that workload; stop it and retry the update.
+On Windows, Porto stops its owned container engine only after a fresh
+all-namespace task inventory and active-build check prove it idle, then starts
+it again after the updated desktop launches. Running or manually paused
+containers, Kubernetes nodes, active builds, storage operations and unavailable
+inventory prevent update preparation. Stop the workloads explicitly and retry;
+refusal does not detach native files or change Resource Saver ownership.
+Owned native attachments are closed only after the idle checks succeed.
+If another Porto VM or Kubernetes cluster still has the bundled QEMU runtime
+open, the update aborts instead of force-killing that workload.
 
 In-app installation requires the current application directory to be writable
 by the user. The one-line installers use writable per-user locations by default.
@@ -406,9 +482,11 @@ Source builds use standard host tools:
 Release desktop apps bundle Docker, Compose, Buildx, Dive, kubectl, k9s, and Lima.
 Kind is bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
 not because upstream does not publish relocatable binaries and package-manager
-builds have large architecture-specific dynamic library closures. On macOS, run
-`brew install qemu` and restart Porto. Source builds can install the other
-providers with `porto runtime install lima|kind|k9s|k0s`.
+builds have large architecture-specific dynamic library closures. Default macOS
+VZ-backed container engines do not require QEMU. Install it with
+`brew install qemu` and restart Porto when selecting QEMU-backed VMs,
+snapshot-capable VMs or foreign-architecture guest kernels. Source builds can
+install the other providers with `porto runtime install lima|kind|k9s|k0s`.
 
 Porto keeps native project orchestration and Docker API health checks available when optional execution backends are missing.
 

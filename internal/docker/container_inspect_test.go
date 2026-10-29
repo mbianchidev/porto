@@ -99,3 +99,51 @@ func TestConfiguredCompatibilityHealthIsStartingBeforeItsFirstProbe(t *testing.T
 		t.Fatalf("Compose saw no healthcheck during the first-probe race: %s", output)
 	}
 }
+
+func TestDockerInspectNormalizesExplicitEmptyCompatibilityState(t *testing.T) {
+	for _, test := range []struct {
+		name  string
+		state string
+		want  string
+	}{
+		{"metadata-only", `{"Status":"","Running":false,"Pid":0,"StartedAt":"","FinishedAt":""}`, "created"},
+		{"running", `{"Status":"","Running":true,"Pid":123}`, "running"},
+		{"paused", `{"Status":"","Running":true,"Paused":true,"Pid":123}`, "paused"},
+		{"restarting", `{"Status":"","Restarting":true}`, "restarting"},
+		{"dead", `{"Status":"","Dead":true}`, "dead"},
+		{"previously-started", `{"Status":"","StartedAt":"2026-01-01T00:00:00Z","ExitCode":7}`, "exited"},
+		{"finished", `{"Status":"","FinishedAt":"2026-01-01T00:00:01Z"}`, "exited"},
+		{"explicit-state", `{"Status":"removing","Running":false}`, "removing"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			document := []byte(`[{"Id":"synthetic-container","Config":{"Labels":{"nerdctl/name":"synthetic-container"}},"State":` + test.state + `}]`)
+			runner := &fakeRunner{outputs: map[string][]byte{"nerdctl container inspect synthetic-container": document}}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+				httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic-container/json", nil))
+			if response.Code != http.StatusOK {
+				t.Fatalf("inspect failed: %d: %s", response.Code, response.Body.String())
+			}
+			var inspected struct {
+				State map[string]json.RawMessage
+			}
+			if err := json.Unmarshal(response.Body.Bytes(), &inspected); err != nil {
+				t.Fatal(err)
+			}
+			if string(inspected.State["Status"]) != `"`+test.want+`"` {
+				t.Fatalf("Compose received an unusable compatibility state: %s", response.Body.String())
+			}
+			delete(inspected.State, "Status")
+			var original map[string]json.RawMessage
+			if err := json.Unmarshal([]byte(test.state), &original); err != nil {
+				t.Fatal(err)
+			}
+			delete(original, "Status")
+			for key, value := range original {
+				if !bytes.Equal(value, inspected.State[key]) {
+					t.Fatalf("state normalization changed %s: %s", key, response.Body.String())
+				}
+			}
+		})
+	}
+}

@@ -112,7 +112,7 @@ function createStalePlugin(file, platform) {
   fs.writeFileSync(file, '#!/bin/sh\necho STALE-PLUGIN-MUST-NOT-RUN >&2\nexit 42\n', { mode: 0o700 })
 }
 
-function execute(file, args, options) {
+function execute(file, args, options, plugin) {
   const result = spawnSync(file, args, {
     ...options,
     encoding: 'utf8',
@@ -121,7 +121,16 @@ function execute(file, args, options) {
   })
   if (result.error) throw result.error
   if (result.status !== 0) {
-    throw new Error(`${file} ${args.join(' ')} exited with ${result.status}: ${(result.stderr || result.stdout).trim()}`)
+    let diagnostics = ''
+    if (plugin) {
+      for (const [command, arguments_] of [[plugin, ['docker-cli-plugin-metadata']], [file, ['--help']]]) {
+        const probe = spawnSync(command, arguments_, {
+          ...options, encoding: 'utf8', timeout: 30000, windowsHide: true, shell: false,
+        })
+        diagnostics += `\n${command} ${arguments_.join(' ')}: ${probe.error?.message || `exit ${probe.status}`}\n${probe.stdout || ''}${probe.stderr || ''}`
+      }
+    }
+    throw new Error(`${file} ${args.join(' ')} exited with ${result.status}: ${(result.stderr || result.stdout).trim()}${diagnostics}`)
   }
   const output = `${result.stdout || ''}\n${result.stderr || ''}`.trim()
   if (output.includes('STALE-PLUGIN-MUST-NOT-RUN')) {
@@ -163,8 +172,8 @@ function smoke(runtimeRoot, options = {}) {
     }
     if (process.env.SystemRoot) environment.SystemRoot = process.env.SystemRoot
     const dockerOutput = execute(inspection.layout.launcher, ['--version'], { env: environment })
-    const composeOutput = execute(inspection.layout.launcher, ['compose', 'version', '--short'], { env: environment })
-    const buildxOutput = execute(inspection.layout.launcher, ['buildx', 'version'], { env: environment })
+    const composeOutput = execute(inspection.layout.launcher, ['compose', 'version', '--short'], { env: environment }, inspection.layout.compose)
+    const buildxOutput = execute(inspection.layout.launcher, ['buildx', 'version'], { env: environment }, inspection.layout.buildx)
     const diveOutput = execute(inspection.layout.dive, ['--version'], { env: environment })
     for (const [name, output, expected] of [
       ['docker', dockerOutput, versionToken(inspection.versions.get('docker'))],

@@ -10,6 +10,9 @@ test('retains early disk enumeration and later mount failures without terminal e
     'systemd-udevd.service: starting',
     'Finished systemd-hwdb-update.service',
     'Out of memory: Killed process 42 (synthetic worker)',
+    'Cannot inspect SSH sessions before environment reset',
+    'SSH sessions are still opening after 30 seconds; refusing unsafe environment reset',
+    '/mnt/lima-cidata/boot.Linux/07-etc-environment.sh: not found',
     'Unrelated package progress',
     '\u001b[31mTimed out waiting for /dev/disk/by-label/BOOT\u001b[0m\r',
     'Reached target emergency.target',
@@ -18,6 +21,9 @@ test('retains early disk enumeration and later mount failures without terminal e
   assert.match(output, /systemd-udevd\.service/)
   assert.match(output, /systemd-hwdb-update\.service/)
   assert.match(output, /Out of memory/)
+  assert.match(output, /Cannot inspect SSH sessions/)
+  assert.match(output, /refusing unsafe environment reset/)
+  assert.match(output, /07-etc-environment\.sh: not found/)
   assert.match(output, /Timed out.*BOOT/)
   assert.match(output, /emergency.target/)
   assert.doesNotMatch(output, /\u001b|Unrelated package/)

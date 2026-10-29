@@ -38,11 +38,11 @@ Additional runtime features require:
 | Capability | Requirement |
 | --- | --- |
 | Docker client compatibility | Desktop packages bundle Docker CLI, Compose, Buildx, and Dive; source builds may use another Docker Engine API client |
-| Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or `limactl` plus QEMU for Porto-managed containerd and BuildKit; Windows desktop releases bundle both |
+| Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or Lima for Porto-managed containerd and BuildKit. Default macOS VZ needs no QEMU; Linux needs its architecture-matched QEMU and `qemu-img`; Windows packages bundle them. |
 | Compose project orchestration | Bundled Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
-| Standalone virtual machines | `limactl`, QEMU, and host virtualization support; Windows desktop releases bundle Lima and QEMU |
+| Standalone virtual machines | Lima and a supported VZ or QEMU driver. QEMU is required for snapshots and foreign-architecture kernels; Windows desktop releases bundle it. |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
 

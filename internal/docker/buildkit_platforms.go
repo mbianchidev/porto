@@ -15,10 +15,10 @@ import (
 	"google.golang.org/grpc"
 )
 
-func (m *Manager) refreshLimaBuildKitPlatforms(ctx context.Context) error {
+func (m *Manager) refreshLimaBuildKitPlatforms(ctx context.Context, ownerID string) error {
 	ctx, cancel := context.WithTimeout(ctx, time.Minute)
 	defer cancel()
-	missing, err := m.limaBuildKitMissingPlatforms(ctx, true)
+	missing, err := m.limaBuildKitMissingPlatforms(ctx, ownerID, true)
 	if err != nil || len(missing) == 0 {
 		return err
 	}
@@ -32,7 +32,7 @@ func (m *Manager) refreshLimaBuildKitPlatforms(ctx context.Context) error {
 	); err != nil {
 		return err
 	}
-	missing, err = m.limaBuildKitMissingPlatforms(ctx, false)
+	missing, err = m.limaBuildKitMissingPlatforms(ctx, ownerID, false)
 	if err != nil {
 		return err
 	}
@@ -42,9 +42,14 @@ func (m *Manager) refreshLimaBuildKitPlatforms(ctx context.Context) error {
 	return nil
 }
 
-func (m *Manager) limaBuildKitMissingPlatforms(ctx context.Context, requireIdle bool) ([]string, error) {
+func (m *Manager) limaBuildKitMissingPlatforms(ctx context.Context, ownerID string, requireIdle bool) ([]string, error) {
+	if ownerID == "" {
+		return nil, fmt.Errorf("%w: Porto Lima BuildKit ownership identity is missing", ErrUnavailable)
+	}
 	connection, err := newBuildKitControlConnection(func(dialContext context.Context) (net.Conn, error) {
-		return m.dialBuildKitBackend(dialContext, commandBackend{name: "limactl", limaInstance: engineInstanceName})
+		return m.dialBuildKitBackend(dialContext, commandBackend{
+			name: "limactl", limaInstance: engineInstanceName, ownerID: ownerID,
+		})
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create BuildKit platform client: %w", err)
