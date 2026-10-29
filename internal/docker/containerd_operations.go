@@ -789,7 +789,7 @@ func (r *grpcContainerRuntime) directNetworkState(
 }
 
 func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...string) ([]byte, error) {
-	command := runtimes.Command{}
+	command := runtimes.Command{StdoutOnly: true}
 	if r.lima != "" {
 		command.Name = "limactl"
 		command.Args = []string{

@@ -29,10 +29,32 @@ base="${XDG_RUNTIME_DIR:-/tmp}/porto-container-fifos"
 umask 077
 mkdir -p "$base"
 dir="$(mktemp -d "$base/porto-io.XXXXXX")"
+bridge_pid=$$
+children=""
 cleanup() {
+  trap - EXIT
+  trap '' HUP INT TERM USR1
+  for child in $children; do
+    if kill -0 "$child" 2>/dev/null; then
+      if parent="$(ps -o ppid= -p "$child" 2>/dev/null)"; then
+        set -- $parent
+        if [ "${1:-}" = "$bridge_pid" ]; then
+          if ! kill -TERM "$child" 2>/dev/null && kill -0 "$child" 2>/dev/null; then
+            echo "Unable to stop an owned I/O bridge child" >&2
+          fi
+        fi
+      elif kill -0 "$child" 2>/dev/null; then
+        echo "Unable to verify an I/O bridge child's ownership; no signal was sent" >&2
+      fi
+    fi
+  done
+  for child in $children; do wait "$child" 2>/dev/null || true; done
   rm -rf "$dir"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 143' HUP TERM
+trap 'exit 130' INT
+trap 'exit 0' USR1
 stdin_path=""
 stderr_path=""
 log_path="$3"
@@ -50,11 +72,11 @@ if [ "$1" != "1" ]; then
   stderr_path="$dir/stderr"
   mkfifo "$stderr_path"
 fi
-printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 if [ -n "$stdin_path" ]; then
   # Background jobs otherwise inherit /dev/null instead of the SSH input.
   exec 3<&0
   (result=0; cat <&3 > "$stdin_path" || result=$?; touch "$stdin_path.done"; exit "$result") &
+  children="$children $!"
   exec 3<&-
 fi
 if [ -n "$log_path" ]; then
@@ -62,13 +84,24 @@ if [ -n "$log_path" ]; then
 else
   cat "$stdout_path" &
 fi
+children="$children $!"
 if [ -n "$stderr_path" ]; then
   if [ -n "$log_path" ]; then
     "$HOME/.local/bin/porto-runtime-helper" log-stdio --path "$log_path" --stream stderr < "$stderr_path" >&2 &
   else
     cat "$stderr_path" >&2 &
   fi
+  children="$children $!"
 fi
+if [ -z "$stdin_path" ]; then
+  # Unattached stdin is a private lifetime channel, not container input.
+  exec 3<&0
+  (while IFS= read -r ignored <&3; do :; done; kill -USR1 "$bridge_pid" 2>/dev/null || true) &
+  children="$children $!"
+  exec 3<&-
+fi
+# Register every child before readiness so early EOF cannot orphan a FIFO reader.
+printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 wait
 `
 
@@ -104,6 +137,11 @@ type processInputCloser struct {
 	once   sync.Once
 	err    error
 }
+
+type unattachedProcessInput struct{}
+
+func (unattachedProcessInput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (unattachedProcessInput) Close() error              { return nil }
 
 func (p *processInputCloser) Close() error {
 	p.once.Do(func() { p.err = p.finish() })
@@ -636,6 +674,10 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 	}
 	var finishOnce sync.Once
 	var finishInput func() error
+	stdin := bridge.Stdin()
+	if !attachStdin {
+		stdin = unattachedProcessInput{}
+	}
 	if attachStdin {
 		finishInput = func() error {
 			closeErr := bridge.Stdin().Close()
@@ -662,7 +704,7 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 		creator: func(string) (cio.IO, error) {
 			return &staticContainerIO{config: config}, nil
 		},
-		stdin:       bridge.Stdin(),
+		stdin:       stdin,
 		stdout:      &bufferedReadCloser{Reader: reader, closer: stdout},
 		stderr:      bridge.Stderr(),
 		bridge:      bridge,

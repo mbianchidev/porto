@@ -30,9 +30,9 @@ func (m *Manager) AccelerationCapabilities(ctx context.Context) (acceleration.Ca
 	if err != nil {
 		return host, err
 	}
-	command := runtimes.Command{Name: "sh", Args: []string{"-c", acceleration.GuestProbeScript}}
+	command := runtimes.Command{Name: "sh", Args: []string{"-c", acceleration.GuestProbeScript}, StdoutOnly: true}
 	if backend.limaInstance != "" {
-		output, err := m.runCommand(ctx, 20*time.Second, "inspect engine architecture", nil,
+		output, err := m.runStdoutCommand(ctx, 20*time.Second, "inspect engine architecture",
 			"limactl", "list", backend.limaInstance, "--json")
 		if err != nil {
 			return host, err

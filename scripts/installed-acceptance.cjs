@@ -738,12 +738,14 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(await cli('exec', id, 'cat', '/porto-installed.txt'), `Synthetic installed image ${fixture.id}`)
     console.log('Installed acceptance: exercising renderer-origin container stop and start')
     const listing = await rendererRequest(session.renderer, '/api/docker/containers')
+    if (listing.status !== 200) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: listing.body })
     assert.equal(listing.status, 200, listing.body)
     assert.ok(JSON.parse(listing.body).some((item) => item.id === id || id.startsWith(item.id)),
       'The real installed renderer must observe the Compose container')
     for (const [action, running] of [['stop', false], ['start', true]]) {
       console.log(`Installed lifecycle: requesting renderer ${action}`)
       const response = await rendererRequest(session.renderer, `/api/docker/containers/${id}/${action}`, 'POST')
+      if (response.status !== 200) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: response.body })
       assert.equal(response.status, 200, response.body)
       console.log(`Installed lifecycle: confirming real task state after ${action}`)
       await waitFor(async () => (await inspect()).State.Running === running, `real desktop ${action}`)
@@ -752,6 +754,7 @@ async function acceptance(fixture, reopen = false) {
     const before = await inspect()
     assert.ok(before.State.Pid > 0, 'The running synthetic workload must have a real guest PID')
     const refusal = await rendererRequest(session.renderer, '/api/docker/engine/prepare-update', 'POST')
+    if (refusal.status !== 409) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: refusal.body })
     assert.equal(refusal.status, 409, 'Desktop update preparation must refuse a real running workload')
     assert.match(refusal.body, /running|active|stop/i, 'Unsafe update refusal must be actionable')
     const after = await inspect()

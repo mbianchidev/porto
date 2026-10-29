@@ -109,7 +109,7 @@ func (m *Manager) checkEngineWorkloadsIdle(ctx context.Context) (err error) {
 }
 
 func (m *Manager) engineConfiguration(ctx context.Context, instance string) (EngineConfiguration, error) {
-	output, err := m.runCommand(ctx, 20*time.Second, "inspect owned engine configuration", nil,
+	output, err := m.runStdoutCommand(ctx, 20*time.Second, "inspect owned engine configuration",
 		"limactl", "list", instance, "--json")
 	if err != nil {
 		return EngineConfiguration{}, err

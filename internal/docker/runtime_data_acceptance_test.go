@@ -113,6 +113,15 @@ exit "$result"`
 	})
 	diagnostics := strings.ReplaceAll(strings.ReplaceAll(stderr.String(), startMarker, ""), endMarker, "")
 	output := append(stdout.Bytes(), diagnostics...)
+	if command.StdoutOnly {
+		if err == nil {
+			if strings.TrimSpace(diagnostics) != "" {
+				fmt.Fprintf(os.Stderr, "CI runtime metadata read captured %d diagnostic bytes without mixing them into its protocol.\n", len(diagnostics))
+			}
+			return stdout.Bytes(), nil
+		}
+		output = []byte(diagnostics)
+	}
 	if err != nil {
 		output = append(output, []byte(fmt.Sprintf(
 			"\nOriginal read timing: host elapsed=%s, guest start observed=%t at %s, guest finish observed=%t at %s\n",

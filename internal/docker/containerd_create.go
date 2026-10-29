@@ -138,8 +138,7 @@ func (r *grpcContainerRuntime) directRuntimeConfiguration(ctx context.Context, i
 		return BackendInfo{}, nil, nil, fmt.Errorf("%w: backend runtime configuration reader is unavailable", ErrUnsupported)
 	}
 	output, err := r.runner.Run(ctx, runtimes.Command{
-		Name: "limactl",
-		Args: []string{"shell", "--workdir=/", r.lima, "--", "nerdctl", "info", "--format", "{{json .}}"},
+		Name: "limactl", Args: []string{"shell", "--workdir=/", r.lima, "--", "nerdctl", "info", "--format", "{{json .}}"}, StdoutOnly: true,
 	})
 	if err != nil {
 		return BackendInfo{}, nil, nil, fmt.Errorf("read direct backend runtime configuration: %w", err)

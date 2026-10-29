@@ -39,6 +39,61 @@ func TestContainerInspectionAndIdentityRequestUncontaminatedStdout(t *testing.T)
 	}
 }
 
+func TestMachineReadableRuntimeQueriesKeepDiagnosticsSeparate(t *testing.T) {
+	ctx := context.Background()
+	for _, test := range []struct {
+		name   string
+		output string
+		read   func(*Manager) error
+	}{
+		{"runtime information", `{"OSType":"linux","NCPU":2}`, func(m *Manager) error { _, err := m.BackendInfo(ctx); return err }},
+		{"containers", "{\"ID\":\"synthetic\",\"Names\":\"synthetic\",\"State\":\"running\"}\n", func(m *Manager) error { _, err := m.Containers(ctx); return err }},
+		{"images", "{\"ID\":\"sha256:synthetic\",\"Repository\":\"synthetic\",\"Tag\":\"one\"}\n", func(m *Manager) error { _, err := m.Images(ctx); return err }},
+		{"networks", "{\"ID\":\"synthetic\",\"Name\":\"synthetic\"}\n", func(m *Manager) error { _, err := m.Networks(ctx); return err }},
+		{"volumes", "{\"Name\":\"synthetic\"}\n", func(m *Manager) error { _, err := m.Volumes(ctx); return err }},
+		{"statistics", "{\"ID\":\"synthetic\",\"CPUPerc\":\"1.0%\",\"MemUsage\":\"1MiB / 2MiB\",\"PIDs\":\"1\"}\n", func(m *Manager) error { _, err := m.ContainerStats(ctx); return err }},
+		{"paused state", `[{"State":{"Status":"paused","Paused":true}}]`, func(m *Manager) error {
+			paused, err := m.containerPaused(ctx, "synthetic")
+			if err == nil && !paused {
+				return fmt.Errorf("actual paused state was lost")
+			}
+			return err
+		}},
+		{"compatibility enrichment", "{\"ID\":\"synthetic\",\"Names\":\"synthetic\",\"State\":\"running\"}\n", func(m *Manager) error {
+			_, err := m.containerInventoryEnricher(commandBackend{name: "nerdctl"})(ctx)
+			return err
+		}},
+		{"runtime helper", `{"cni":true}`, func(m *Manager) error {
+			runtime := &grpcContainerRuntime{runner: m.runner, helperPath: "/synthetic/helper", namespace: "default"}
+			output, err := runtime.runRuntimeHelper(ctx, "probe")
+			if err == nil && !json.Valid(output) {
+				return fmt.Errorf("runtime helper output was contaminated")
+			}
+			return err
+		}},
+		{"guest ownership", "synthetic-owner\n", func(m *Manager) error { return m.verifyLimaOwnershipUnlocked(ctx, "synthetic-owner") }},
+		{"containerd discovery", "/run/synthetic.sock\ndefault\n", func(m *Manager) error {
+			socket, namespace, err := m.discoverLimaContainerd(ctx, "synthetic")
+			if err == nil && (socket != "/run/synthetic.sock" || namespace != "default") {
+				return fmt.Errorf("actual socket or namespace was lost")
+			}
+			return err
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				if !command.StdoutOnly {
+					return []byte("mux_client_request_session: synthetic diagnostic\n" + test.output), nil
+				}
+				return []byte(test.output), nil
+			}}
+			if err := test.read(New(runner)); err != nil {
+				t.Fatalf("structured query consumed diagnostic stderr: %v", err)
+			}
+		})
+	}
+}
+
 func TestDockerContainerSummaryReportsCanonicalNetworkIdentityForCompose(t *testing.T) {
 	networkID := strings.Repeat("a", 64)
 	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
