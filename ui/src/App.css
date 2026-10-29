@@ -1944,6 +1944,13 @@ button:disabled {
   font: 12px/1.3 var(--mono);
 }
 
+.administrationControlBar .namespaceField,
+.administrationControlBar .namespaceField input,
+.administrationControlBar .namespaceField select {
+  min-width: 0;
+  max-width: 100%;
+}
+
 .portForwardPanel {
   margin-bottom: 12px;
 }

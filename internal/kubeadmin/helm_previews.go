@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -24,20 +25,33 @@ func (m *Manager) chartPath(id string) (string, error) {
 	if !chartIdentity(id) {
 		return "", invalid("A SHA-256-pinned chart archive is required.")
 	}
-	path := filepath.Join(m.root, "charts", id+".tgz")
-	info, err := os.Stat(path)
+	directory := filepath.Join(m.root, "charts")
+	root, err := os.OpenRoot(directory)
+	if err != nil {
+		return "", invalid("The selected chart cache is unavailable. Upload or pull the chart again.")
+	}
+	defer root.Close()
+	file, err := root.Open(id + ".tgz")
+	if err != nil {
+		return "", invalid("The selected chart archive is unavailable. Upload or pull it again.")
+	}
+	defer file.Close()
+	info, err := file.Stat()
 	if err != nil || !info.Mode().IsRegular() || info.Size() > 16*1024*1024 {
 		return "", invalid("The selected chart archive is unavailable or exceeds 16 MiB. Upload or pull it again.")
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(file, 16*1024*1024+1))
 	if err != nil {
 		return "", err
+	}
+	if len(data) > 16*1024*1024 {
+		return "", invalid("The selected chart archive exceeds 16 MiB.")
 	}
 	sum := sha256.Sum256(data)
 	if hex.EncodeToString(sum[:]) != id {
 		return "", conflict("Chart content changed after it was pinned. No mutable replacement was accepted.")
 	}
-	return path, nil
+	return filepath.Join(directory, id+".tgz"), nil
 }
 
 func (m *Manager) pullChart(ctx context.Context, request HelmRequest) (string, error) {

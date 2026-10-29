@@ -72,5 +72,3 @@ export function resourceActions(resource: AdminResource | undefined): string[] {
   }
   return ['delete']
 }
-
-export const ADMIN_TARGET_KEY = 'porto:administration-target'

@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useKubernetesStatus } from '../kubernetes'
@@ -9,28 +9,17 @@ import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { LocalOperations } from '../components/LocalOperations'
 import { RuntimeGate } from '../components/SectionChrome'
 import { StatusLamp } from '../components/StatusLamp'
-import { ADMIN_TARGET_KEY, adminQuery, resourceActions, resourceKey } from '../kubeAdminTypes'
+import { adminQuery, resourceActions, resourceKey } from '../kubeAdminTypes'
+import { useKubernetesAdminTarget } from '../kubeAdminTarget'
 import type { AdminAccess, AdminDiscovery, AdminObject, AdminObjectList, AdminPreview, AdminSchema, AdminTarget, RolloutRevision } from '../kubeAdminTypes'
 import type { KubernetesContext } from '../types'
 
-function transferredTarget(): { target: AdminTarget | null; error: string } {
-  try {
-    const stored = window.sessionStorage.getItem(ADMIN_TARGET_KEY)
-    if (!stored) return { target: null, error: '' }
-    window.sessionStorage.removeItem(ADMIN_TARGET_KEY)
-    const value: unknown = JSON.parse(stored)
-    if (!value || typeof value !== 'object') throw new Error('Invalid resource selection.')
-    for (const key of ['context', 'namespace', 'group', 'version', 'resource', 'name']) {
-      if (!(key in value) || typeof value[key as keyof typeof value] !== 'string') throw new Error('Invalid explicit resource selection.')
-    }
-    return { target: value as AdminTarget, error: '' }
-  } catch { return { target: null, error: 'The transferred resource selection could not be read. Select its context, namespace and served API explicitly.' } }
-}
-
 export function KubernetesAdmin({ context, contexts, onContextChange }: { context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void }) {
   const { notifyError, notifyNotice } = useMessages()
-  const [incoming] = useState(transferredTarget)
-  const initial = incoming.target?.context === context ? incoming.target : null
+  const selection = useKubernetesAdminTarget()
+  const [incoming] = useState(selection.target)
+  useEffect(() => selection.setTarget(null), [selection.setTarget])
+  const initial = incoming?.context === context ? incoming : null
   const [namespace, setNamespace] = useState(initial?.namespace ?? 'default')
   const [chosenResource, setChosenResource] = useState(initial ? `${initial.group}/${initial.version}/${initial.resource}` : 'apps/v1/deployments')
   const [selectedName, setSelectedName] = useState(initial?.name ?? '')
@@ -131,7 +120,7 @@ export function KubernetesAdmin({ context, contexts, onContextChange }: { contex
       <span className="fleetDatum">{context || 'Select context'} / {scope || 'cluster scope'}</span>
       <span className="fleetMessage">{access.error ? 'Authorization unavailable' : readOnly ? 'Read-only or not authorized to mutate' : 'Native permissions available'}</span>
     </section>
-    <div className="controlBar kubernetesResourceControlBar">
+    <div className="controlBar kubernetesResourceControlBar administrationControlBar">
       <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} disabled={busy} />
       <label className="namespaceField">Namespace<input type="text" value={resource?.namespaced ? namespace : ''} disabled={!resource?.namespaced || busy} placeholder={resource?.namespaced ? 'Explicit namespace required' : 'Cluster scope'} onChange={(event) => { setNamespace(event.target.value); reset() }} /></label>
       <label className="namespaceField">Served API resource<select value={resource ? resourceKey(resource) : ''} disabled={busy || !kinds.length} onChange={(event) => { setChosenResource(event.target.value); reset() }}>
@@ -141,7 +130,6 @@ export function KubernetesAdmin({ context, contexts, onContextChange }: { contex
       <button type="button" onClick={() => { status.reload(); discovery.reload(); listing.reload(); access.reload(); schema.reload() }}>Refresh discovery</button>
     </div>
     <div className="workArea">
-      {incoming.error && <p role="alert">{incoming.error}</p>}
       {discovery.error && <p role="alert">{discovery.error}</p>}
       {discovery.data?.partial && <p role="alert">{discovery.data.message}</p>}
       {!available && <RuntimeGate label="Kubernetes administration" enabled={status.data?.enabled ?? false} message={status.error || status.data?.message} />}

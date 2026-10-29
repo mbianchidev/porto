@@ -6,6 +6,7 @@ import { MessagesProvider } from './messages'
 import { useMessages } from './useMessages'
 import { PreferencesProvider } from './preferences'
 import { RuntimeActivity } from './runtimeActivity'
+import { KubernetesAdminTargetProvider } from './kubeAdminTarget'
 import { ActionButton } from './components/ActionButton'
 import { ContainerModeSelector } from './components/WindowsContainersSettings'
 import { useDockerMode } from './dockerMode'
@@ -227,7 +228,7 @@ function AppShell() {
 function App() {
   return (
     <MessagesProvider>
-      <AppShell />
+      <KubernetesAdminTargetProvider><AppShell /></KubernetesAdminTargetProvider>
     </MessagesProvider>
   )
 }

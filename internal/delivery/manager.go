@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -317,14 +318,26 @@ func (m *Manager) prepare(ctx context.Context, project app.Project, current Appl
 		if err != nil {
 			return result, err
 		}
-		path := filepath.Join(checkout.Directory, filepath.FromSlash(request.Source.Git.Path))
-		info, err := os.Stat(path)
+		root, err := os.OpenRoot(checkout.Directory)
+		if err != nil {
+			return result, err
+		}
+		defer root.Close()
+		file, err := root.Open(filepath.FromSlash(request.Source.Git.Path))
+		if err != nil {
+			return result, fmt.Errorf("%w: selected Git Compose file is unavailable", ErrInvalid)
+		}
+		defer file.Close()
+		info, err := file.Stat()
 		if err != nil || !info.Mode().IsRegular() || info.Size() > 1024*1024 {
 			return result, fmt.Errorf("%w: selected Git Compose file is unavailable or exceeds 1 MiB", ErrInvalid)
 		}
-		data, err := os.ReadFile(path)
+		data, err := io.ReadAll(io.LimitReader(file, 1024*1024+1))
 		if err != nil {
 			return result, err
+		}
+		if len(data) > 1024*1024 {
+			return result, fmt.Errorf("%w: selected Git Compose file exceeds 1 MiB", ErrInvalid)
 		}
 		result.Request.Compose, result.Directory, result.Commit = string(data), checkout.Directory, checkout.Commit
 	default:
