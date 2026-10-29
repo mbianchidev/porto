@@ -584,7 +584,19 @@ unavailable; matching the host architecture keeps its guest agent/runtime helper
 aligned without cross-architecture x86 emulation. Windows ARM64 hosted runners
 also use TCG through Lima's QEMU command override because nested WHPX cannot
 provide the required physical address width. This affects only disposable CI
-guests, not packaged runtime defaults or native WinFsp mounting. Windows also
+guests, not packaged runtime defaults or native WinFsp mounting. Windows x64
+retains WHPX, but its disposable Ubuntu guest boots with the documented
+[`nousershstk` kernel parameter](https://docs.kernel.org/arch/x86/shstk.html).
+Some hosted Hyper-V CPUs advertise user shadow stacks without the CET XSAVE
+state needed to context-switch them, causing return-instruction shadow-stack
+page faults in systemd and leaving later container or SSH operations stalled.
+This matches the [WHPX guest fault documented in ericcurtin/agenticlinux#15](https://github.com/ericcurtin/agenticlinux/pull/15).
+The fixture updates only its fresh guest's GRUB configuration, restarts it with
+the unchanged 20-minute boot budget, and requires both the effective boot
+argument and the absence of `user_shstk` before recording ownership or running
+the full client suite. It neither switches to software emulation nor changes
+installed guest defaults, rootless provisioning, or any acceptance assertion.
+Windows also
 avoids unused SSHFS home-folder mounts and their startup probes. Short temporary
 directory names keep both guest SSH socket paths within macOS's Unix-socket
 length limit. The test harness records
