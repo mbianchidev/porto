@@ -157,6 +157,11 @@ temporary replacement name. If confirmation fails after the runtime mutation,
 the request reports that committed change and the confirmation error explicitly.
 Once the inventory worker has stopped, cleanup and container queries use the
 runtime directly rather than waiting on its inactive cache.
+Compatibility-path container removal uses a bounded lifecycle allowance of at
+least one minute, not the shorter metadata-probe deadline. Force removal and
+stopped-container cleanup share that allowance instead of restarting it or
+imposing a separate ten-second cutoff. Shorter caller deadlines and cancellation
+still take precedence, and larger configured operation budgets are preserved.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
 unused application stdin cannot terminate output, while completion or failed
 setup releases guest reader jobs and their FIFO directory instead of consuming

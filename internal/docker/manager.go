@@ -1535,7 +1535,7 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	commandTimeout := m.timeout
-	if action == "start" || action == "restart" {
+	if action == "start" || action == "restart" || strings.HasPrefix(action, "remove") {
 		commandTimeout = max(commandTimeout, time.Minute)
 	}
 	_, err = m.runWithTimeout(ctx, commandTimeout, action+" Porto container", nil, args...)
@@ -1685,17 +1685,18 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 	if err != nil {
 		return err
 	}
+	timeout := max(m.timeout, time.Minute)
+	cleanupContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	args := []string{"rm", "--force"}
 	if volumes {
 		args = append(args, "--volumes")
 	}
 	args = append(args, containerID)
-	if _, err := m.run(ctx, "force-remove Porto container", args...); err != nil {
+	if _, err := m.runWithTimeout(cleanupContext, timeout, "force-remove Porto container", nil, args...); err != nil {
 		return err
 	}
 
-	cleanupContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -1704,7 +1705,7 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 			args = append(args, "--volumes")
 		}
 		args = append(args, containerID)
-		_, err := m.run(cleanupContext, "remove stopped Porto container", args...)
+		_, err := m.runWithTimeout(cleanupContext, timeout, "remove stopped Porto container", nil, args...)
 		if err == nil || containerRemovalComplete(err) {
 			return nil
 		}
