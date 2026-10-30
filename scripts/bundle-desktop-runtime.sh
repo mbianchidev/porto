@@ -205,6 +205,8 @@ else
 fi
 mv "$temporary/dive/dive${binary_suffix}" "$destination/bin/dive${binary_suffix}"
 cp "$temporary/dive/LICENSE" "$destination/licenses/dive.txt"
+bash "$script_directory/bundle-image-analysis.sh" "$goos" "$goarch" "$destination"
+bash "$script_directory/bundle-helm.sh" "$goos" "$goarch" "$destination"
 
 kind_bundled=false
 if [ "$goos/$goarch" != "windows/arm64" ]; then
@@ -466,6 +468,9 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s; Porto UTF-8
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
+
+cat "$destination/licenses/image-analysis-VERSIONS.txt" >> "$destination/VERSIONS"
+cat "$destination/licenses/helm-VERSIONS.txt" >> "$destination/VERSIONS"
 
 if [ "$goos" != "windows" ]; then
   cat "$destination/licenses/mutagen-build.txt" >> "$destination/VERSIONS"

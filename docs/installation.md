@@ -474,12 +474,13 @@ Source builds use standard host tools:
 - Docker CLI with Compose for the named Porto context and Compose project orchestration
 - `nerdctl` with containerd and BuildKit, or `limactl` for Porto's managed containerd and BuildKit backend
 - `kubectl` for Kubernetes inspection
+- Helm 4.3.1 for native release lifecycle, and Syft/Grype for [local image analysis](image-inspection.md)
 - `k9s` for interactive cluster terminals
 - `limactl` for k3s/k0s clusters and standalone Linux VMs
 - `qemu-system-*` for snapshot-capable Lima VMs
 - `kind` for Kubernetes-in-Porto clusters
 
-Release desktop apps bundle Docker, Compose, Buildx, Dive, kubectl, k9s, and Lima.
+Release desktop apps bundle Docker, Compose, Buildx, Dive, Syft, Grype where supported, Helm, kubectl, k9s, and Lima.
 Kind is bundled except on Windows ARM64. Windows packages bundle QEMU; macOS packages do
 not because upstream does not publish relocatable binaries and package-manager
 builds have large architecture-specific dynamic library closures. Default macOS

@@ -338,7 +338,10 @@ func TestDockerContainerListMetadataUsesInventoryPortsAndMounts(t *testing.T) {
 	if len(ports) != 1 || ports[0]["PrivatePort"] != int32(8080) || ports[0]["PublicPort"] != int32(18080) {
 		t.Fatalf("unexpected ports: %+v", ports)
 	}
-	mounts := dockerContainerMounts(container)
+	mounts, err := dockerContainerMounts(container)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if len(mounts) != 1 || mounts[0]["Name"] != "data" || mounts[0]["RW"] != false {
 		t.Fatalf("unexpected mounts: %+v", mounts)
 	}
@@ -1927,14 +1930,22 @@ func TestDockerComposeUpUsesPortoNativeSocket(t *testing.T) {
 			}
 			return []byte(output.String()), nil
 		case strings.HasPrefix(args, "network inspect "):
-			target := strings.TrimPrefix(args, "network inspect ")
-			for name, id := range networks {
-				if target == name || target == id {
-					networkName := strings.TrimPrefix(name, "compose-test_")
-					return []byte(fmt.Sprintf(`[{"Name":%q,"Id":%q,"Driver":"bridge","Scope":"local","Labels":{"com.docker.compose.project":"compose-test","com.docker.compose.network":%q}}]`, name, id, networkName)), nil
+			var inspected []map[string]any
+			for _, target := range strings.Fields(strings.TrimPrefix(args, "network inspect ")) {
+				found := false
+				for name, id := range networks {
+					if target == name || target == id {
+						networkName := strings.TrimPrefix(name, "compose-test_")
+						inspected = append(inspected, map[string]any{"Name": name, "Id": id, "Driver": "bridge", "Scope": "local", "Labels": map[string]string{"com.docker.compose.project": "compose-test", "com.docker.compose.network": networkName}})
+						found = true
+						break
+					}
+				}
+				if !found {
+					return nil, fmt.Errorf("no network found matching: %s\nunable to find any network matching the provided request", target)
 				}
 			}
-			return nil, fmt.Errorf("no network found matching: %s\nunable to find any network matching the provided request", target)
+			return json.Marshal(inspected)
 		case strings.HasPrefix(args, "volume ls "):
 			if volumeExists {
 				return []byte(`{"Name":"compose-test_data","Driver":"local","Scope":"local","Labels":"com.docker.compose.project=compose-test,com.docker.compose.volume=data"}` + "\n"), nil

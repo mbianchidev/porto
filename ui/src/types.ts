@@ -330,6 +330,7 @@ export type DockerImage = {
   repository: string
   tag: string
   digest: string
+  platform?: string
   size: string
   createdAt: string
 }
@@ -827,6 +828,7 @@ export type VMCreateRequest = {
 
 export type RouteID =
   | 'localhost-ing'
+  | 'applications'
   | 'containers'
   | 'images'
   | 'builds'
@@ -835,6 +837,8 @@ export type RouteID =
   | 'docker-storage'
   | 'migration'
   | 'kubernetes'
+  | 'kubernetes-admin'
+  | 'helm'
   | 'deployments'
   | 'pods'
   | 'services'

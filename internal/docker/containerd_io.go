@@ -29,10 +29,32 @@ base="${XDG_RUNTIME_DIR:-/tmp}/porto-container-fifos"
 umask 077
 mkdir -p "$base"
 dir="$(mktemp -d "$base/porto-io.XXXXXX")"
+bridge_pid=$$
+children=""
 cleanup() {
+  trap - EXIT
+  trap '' HUP INT TERM USR1
+  for child in $children; do
+    if kill -0 "$child" 2>/dev/null; then
+      if parent="$(ps -o ppid= -p "$child" 2>/dev/null)"; then
+        set -- $parent
+        if [ "${1:-}" = "$bridge_pid" ]; then
+          if ! kill -TERM "$child" 2>/dev/null && kill -0 "$child" 2>/dev/null; then
+            echo "Unable to stop an owned I/O bridge child" >&2
+          fi
+        fi
+      elif kill -0 "$child" 2>/dev/null; then
+        echo "Unable to verify an I/O bridge child's ownership; no signal was sent" >&2
+      fi
+    fi
+  done
+  for child in $children; do wait "$child" 2>/dev/null || true; done
   rm -rf "$dir"
 }
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 143' HUP TERM
+trap 'exit 130' INT
+trap 'exit 0' USR1
 stdin_path=""
 stderr_path=""
 log_path="$3"
@@ -50,11 +72,11 @@ if [ "$1" != "1" ]; then
   stderr_path="$dir/stderr"
   mkfifo "$stderr_path"
 fi
-printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 if [ -n "$stdin_path" ]; then
   # Background jobs otherwise inherit /dev/null instead of the SSH input.
   exec 3<&0
   (result=0; cat <&3 > "$stdin_path" || result=$?; touch "$stdin_path.done"; exit "$result") &
+  children="$children $!"
   exec 3<&-
 fi
 if [ -n "$log_path" ]; then
@@ -62,13 +84,24 @@ if [ -n "$log_path" ]; then
 else
   cat "$stdout_path" &
 fi
+children="$children $!"
 if [ -n "$stderr_path" ]; then
   if [ -n "$log_path" ]; then
     "$HOME/.local/bin/porto-runtime-helper" log-stdio --path "$log_path" --stream stderr < "$stderr_path" >&2 &
   else
     cat "$stderr_path" >&2 &
   fi
+  children="$children $!"
 fi
+if [ -z "$stdin_path" ]; then
+  # Unattached stdin is a private lifetime channel, not container input.
+  exec 3<&0
+  (while IFS= read -r ignored <&3; do :; done; kill -USR1 "$bridge_pid" 2>/dev/null || true) &
+  children="$children $!"
+  exec 3<&-
+fi
+# Register every child before readiness so early EOF cannot orphan a FIFO reader.
+printf 'PORTO_IO\t%s\t%s\t%s\n' "$stdin_path" "$stdout_path" "$stderr_path"
 wait
 `
 
@@ -83,12 +116,32 @@ type directProcessIO struct {
 	finishInput  func() error
 }
 
+func (p directProcessIO) cleanupFailedStart() error {
+	var cleanupErr error
+	if p.cleanup != nil {
+		cleanupErr = p.cleanup()
+	}
+	if p.bridge == nil {
+		return cleanupErr
+	}
+	killErr := p.bridge.Kill()
+	if errors.Is(killErr, os.ErrProcessDone) || errors.Is(killErr, syscall.ESRCH) {
+		killErr = nil
+	}
+	return errors.Join(cleanupErr, killErr, p.bridge.Wait())
+}
+
 type processInputCloser struct {
 	io.WriteCloser
 	finish func() error
 	once   sync.Once
 	err    error
 }
+
+type unattachedProcessInput struct{}
+
+func (unattachedProcessInput) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
+func (unattachedProcessInput) Close() error              { return nil }
 
 func (p *processInputCloser) Close() error {
 	p.once.Do(func() { p.err = p.finish() })
@@ -254,7 +307,7 @@ func newDirectContainerProcess(
 func (r *grpcContainerRuntime) StartExec(
 	ctx context.Context,
 	request ExecRequest,
-) (runtimes.Process, error) {
+) (result runtimes.Process, resultErr error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
@@ -284,20 +337,22 @@ func (r *grpcContainerRuntime) StartExec(
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, processIO.cleanupFailedStart())
+		}
+	}()
 	process, err := task.Exec(namespacedContext, execID, processSpec, processIO.creator)
 	if err != nil {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("create exec in", request.ContainerID, err)
 	}
 	wait, err := process.Wait(withContainerdNamespace(context.Background(), r.namespace))
 	if err != nil {
 		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("wait for exec in", request.ContainerID, err)
 	}
 	if err := process.Start(namespacedContext); err != nil {
 		_, _ = process.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("start exec in", request.ContainerID, err)
 	}
 	return newDirectContainerProcess(process, wait, processIO, true, r.namespace), nil
@@ -307,7 +362,7 @@ func (r *grpcContainerRuntime) StartAttached(
 	ctx context.Context,
 	id string,
 	attachStdin bool,
-) (runtimes.Process, error) {
+) (result runtimes.Process, resultErr error) {
 	if r.client == nil {
 		return nil, fmt.Errorf("%w: high-level containerd client is unavailable", ErrUnavailable)
 	}
@@ -346,41 +401,39 @@ func (r *grpcContainerRuntime) StartAttached(
 	if err != nil {
 		return nil, err
 	}
+	defer func() {
+		if resultErr != nil {
+			resultErr = errors.Join(resultErr, processIO.cleanupFailedStart())
+		}
+	}()
 	taskFound := false
 	if existing, taskErr := container.Task(namespacedContext, nil); taskErr == nil {
 		status, statusErr := existing.Status(namespacedContext)
 		if statusErr != nil {
-			_ = processIO.cleanup()
 			return nil, containerdOperationError("inspect task for attached start of", id, statusErr)
 		}
 		if status.Status == containerd.Running ||
 			status.Status == containerd.Paused ||
 			status.Status == containerd.Pausing {
-			_ = processIO.cleanup()
 			return nil, fmt.Errorf("%w: container %q is already running", ErrConflict, id)
 		}
 		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
-			_ = processIO.cleanup()
 			return nil, err
 		}
 		taskFound = true
 		if _, deleteErr := existing.Delete(namespacedContext); deleteErr != nil {
-			_ = processIO.cleanup()
 			return nil, containerdOperationError("delete stopped task for attached start of", id, deleteErr)
 		}
 	} else if !errdefs.IsNotFound(taskErr) {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("inspect task for attached start of", id, taskErr)
 	}
 	if !taskFound {
 		if err := r.cleanupNetworkRecord(ctx, networkResponse.GetContainer(), ""); err != nil {
-			_ = processIO.cleanup()
 			return nil, err
 		}
 	}
 	task, err := container.NewTask(namespacedContext, processIO.creator)
 	if err != nil {
-		_ = processIO.cleanup()
 		return nil, containerdOperationError("create attached task for", id, err)
 	}
 	netns := ""
@@ -390,13 +443,11 @@ func (r *grpcContainerRuntime) StartAttached(
 	if err := r.reconcileNetworkRecord(ctx, networkResponse.GetContainer(), netns, true); err != nil {
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(err, networkCleanupErr)
 	}
 	if err := r.setRestartDesired(ctx, id, true); err != nil {
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, deleteErr := task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(err, networkCleanupErr, deleteErr)
 	}
 	wait, err := task.Wait(withContainerdNamespace(context.Background(), r.namespace))
@@ -404,7 +455,6 @@ func (r *grpcContainerRuntime) StartAttached(
 		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(
 			containerdOperationError("wait for attached task", id, err),
 			restartRollbackErr,
@@ -415,7 +465,6 @@ func (r *grpcContainerRuntime) StartAttached(
 		restartRollbackErr := r.setRestartDesired(context.Background(), id, false)
 		networkCleanupErr := r.cleanupNetworkRecord(context.Background(), networkResponse.GetContainer(), netns)
 		_, _ = task.Delete(withContainerdNamespace(context.Background(), r.namespace))
-		_ = processIO.cleanup()
 		return nil, errors.Join(
 			containerdOperationError("start attached task", id, err),
 			restartRollbackErr,
@@ -625,6 +674,10 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 	}
 	var finishOnce sync.Once
 	var finishInput func() error
+	stdin := bridge.Stdin()
+	if !attachStdin {
+		stdin = unattachedProcessInput{}
+	}
 	if attachStdin {
 		finishInput = func() error {
 			closeErr := bridge.Stdin().Close()
@@ -651,7 +704,7 @@ func (r *grpcContainerRuntime) newLimaProcessIO(
 		creator: func(string) (cio.IO, error) {
 			return &staticContainerIO{config: config}, nil
 		},
-		stdin:       bridge.Stdin(),
+		stdin:       stdin,
 		stdout:      &bufferedReadCloser{Reader: reader, closer: stdout},
 		stderr:      bridge.Stderr(),
 		bridge:      bridge,

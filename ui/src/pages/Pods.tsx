@@ -2,6 +2,8 @@ import { lazy, Suspense, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { writeClipboard } from '../clipboard'
 import { usePolledResource } from '../hooks'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
@@ -578,7 +580,7 @@ export function Pods({
   )
   const items = (pods.data ?? []).filter((pod) => matchesNamespace(pod.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((pod) => normalizedQuery === '' || [pod.name, pod.namespace, pod.node]
+  const filtered = items.filter((pod) => normalizedQuery === '' || [pod.name, pod.namespace, `${pod.namespace}/${pod.name}`, pod.node]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const key = (pod: KubernetesPod) => `${pod.namespace}/${pod.name}`
   const selected = items.find((pod) => key(pod) === selectedKey) ?? null
@@ -595,13 +597,14 @@ export function Pods({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter pods</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter pods by name or node" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((pod) => `${pod.namespace}/${pod.name}`)} type="search" value={query} placeholder="Filter pods by name or node" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="namespaceField">
           <span>Namespace</span>
-          <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+          <ResourceInput options={(pods.data ?? []).map((pod) => pod.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} disabled={debugBusy} />
+        <KubernetesResourceLookup target={{ context, namespace, group: '', version: 'v1', resource: 'pods', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} pods</span>
         <button className="refreshControl" type="button" onClick={() => {
           setInspectorGeneration((generation) => generation + 1)

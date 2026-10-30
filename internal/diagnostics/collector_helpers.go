@@ -105,6 +105,12 @@ func dockerToolchainChecks(statuses []dockercli.Status) []Check {
 			name = "Docker CLI"
 		} else if name == "dive" {
 			name = "Dive image layers"
+		} else if name == "syft" {
+			name = "Syft local SBOM"
+		} else if name == "grype" {
+			name = "Grype local vulnerabilities"
+		} else if name == "helm" {
+			name = "Helm Kubernetes releases"
 		} else {
 			name = "Docker " + strings.ToUpper(name[:1]) + name[1:]
 		}

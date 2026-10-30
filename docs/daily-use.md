@@ -70,6 +70,28 @@ These preferences are stored in the desktop app's user-data directory. The web
 dashboard shows the controls as unavailable because a browser cannot manage
 login items or a system tray.
 
+## Find and target resources
+
+Resource filters offer a searchable dropdown of currently discovered names,
+including projects, Docker containers/images/networks/volumes and Kubernetes
+resources. Namespace filters also suggest discovered namespaces. Suggestions
+refresh with their inventory; typing arbitrary text still performs the existing
+substring search rather than requiring a listed value.
+
+Kubernetes suggestions use `namespace/name` where needed. Choose a suggestion,
+or type a resource name with an explicit namespace (or `namespace/name`) and
+choose **Inspect typed resource** to open native administration even if that
+resource is missing from the inventory. This escape hatch is useful when a
+list/filter is incomplete; the actual API response and selected identity's
+permissions remain authoritative.
+
+**Resources and RBAC** and **Port forwarding** populate their named-target
+dropdowns from all metadata-only API pages in the selected context, namespace
+and resource type. A failed or forbidden list shows a suggestion error but does
+not disable manually named inspection or forwarding. Kubernetes still checks
+the requested get, mutation or port-forward permission. Helm release names
+likewise accept either a listed release or a manually entered name.
+
 ## Clean up unused runtime data
 
 Use the runtime cleanup controls in **Settings** to opt in to weekly cleanup,

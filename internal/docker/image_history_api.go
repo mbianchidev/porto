@@ -18,7 +18,7 @@ func (a *API) imageHistory(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	output, err := a.manager.run(r.Context(), "read image history",
+	output, err := a.manager.runStdout(r.Context(), "read image history",
 		"history", "--no-trunc", "--human=false", "--format", "{{json .}}", normalizeNerdctlReference(id))
 	if err != nil {
 		writeDockerError(w, err)

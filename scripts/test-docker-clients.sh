@@ -288,6 +288,25 @@ else
   fi
   created_lima=true
   limactl "${lima_options[@]}" template:ubuntu-26.04
+  if [ "$goos/$goarch" = windows/amd64 ]; then
+    echo "::notice::Disabling unsupported WHPX user shadow stacks only in the disposable x64 guest; native acceleration and acceptance checks remain enabled."
+    MSYS2_ARG_CONV_EXCL='*' limactl shell --workdir=/ porto-engine -- sudo -n sh -eu <<'GUEST'
+printf '%s\n' 'GRUB_CMDLINE_LINUX="${GRUB_CMDLINE_LINUX} nousershstk"' \
+  > /etc/default/grub.d/99-porto-ci-whpx.cfg
+update-grub
+GUEST
+    limactl stop --tty=false porto-engine
+    limactl start --tty=false --timeout=20m porto-engine
+    MSYS2_ARG_CONV_EXCL='*' limactl shell --workdir=/ porto-engine -- sh -eu -c '
+      grep -qw nousershstk /proc/cmdline
+      if grep -qw user_shstk /proc/cpuinfo; then
+        echo "The disposable WHPX guest still exposes unsafe user shadow stacks" >&2
+        exit 1
+      fi
+      printf "CI WHPX guest kernel arguments: "
+      cat /proc/cmdline
+    '
+  fi
   export PORTO_DOCKER_CLIENT_OWN_FRESH_LIMA=1
 fi
 

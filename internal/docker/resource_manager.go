@@ -61,7 +61,7 @@ func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkReques
 		args = append(args, "--label", "io.porto.windows.owner="+m.windows.installation.OwnerSID)
 	}
 	args = append(args, request.Name)
-	output, err := m.run(ctx, "create Porto network", args...)
+	output, err := m.runStdout(ctx, "create Porto network", args...)
 	if err != nil {
 		return "", err
 	}
@@ -196,7 +196,7 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 		args = append(args, "--label", key+"="+value)
 	}
 	args = append(args, name)
-	output, err := m.run(ctx, "create Porto volume", args...)
+	output, err := m.runStdout(ctx, "create Porto volume", args...)
 	if err != nil {
 		return Volume{}, err
 	}

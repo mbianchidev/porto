@@ -5,8 +5,11 @@ import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
+import { KubernetesAdminLink } from '../components/KubernetesAdminLink'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import type { KubernetesContext, KubernetesSecret } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(150px,1fr) minmax(80px,0.4fr) minmax(90px,0.5fr) minmax(70px,0.4fr)'
@@ -39,6 +42,7 @@ export function Secrets({
   const filtered = items.filter((secret) => normalizedQuery === '' || [
     secret.name,
     secret.namespace,
+    `${secret.namespace}/${secret.name}`,
     secret.type,
     ...secret.keys,
   ].some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
@@ -58,13 +62,14 @@ export function Secrets({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter secrets</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter secrets by name, type, or key" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((secret) => `${secret.namespace}/${secret.name}`)} type="search" value={query} placeholder="Filter secrets by name, type, or key" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="namespaceField">
           <span>Namespace</span>
-          <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+          <ResourceInput options={(secrets.data ?? []).map((secret) => secret.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup target={{ context, namespace, group: '', version: 'v1', resource: 'secrets', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} secrets</span>
         <button className="refreshControl" type="button" onClick={() => { status.reload(); secrets.reload() }}>Refresh</button>
       </div>
@@ -107,7 +112,8 @@ export function Secrets({
               </dl>
               <h3>Data keys</h3>
               <p className="hintLine">{selected.keys.join(', ') || 'No data keys are defined.'}</p>
-              <p className="hintLine">Secret values are never returned by Porto.</p>
+              <p className="hintLine">This inventory remains metadata-only. Explicit authorized reveal/edit is available through native resource administration; values are never included in cached previews or Activity.</p>
+              <KubernetesAdminLink target={{ context, namespace: selected.namespace, group: '', version: 'v1', resource: 'secrets', name: selected.name }} />
             </section>
           </Inspector>
         )}

@@ -14,6 +14,7 @@ import type { StorageResource } from '../dataTypes'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type { DockerStatus, DockerVolume } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(180px,1.3fr) minmax(100px,0.6fr) minmax(220px,1.4fr) minmax(90px,0.5fr)'
@@ -79,7 +80,7 @@ export function Volumes() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter volumes</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter volumes by name" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((volume) => volume.name)} type="search" value={query} placeholder="Filter volumes by name" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} volumes</span>
         <button className="refreshControl" type="button" onClick={volumes.reload}>Refresh</button>

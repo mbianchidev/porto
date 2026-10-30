@@ -5,11 +5,13 @@ import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { DiveTerminal } from '../components/DiveTerminal'
+import { ImageAnalysis } from '../components/ImageAnalysis'
 import { RuntimeFiles } from '../components/RuntimeFiles'
 import { Inspector, InspectorTabs } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
+import { ResourceInput } from '../components/ResourceInput'
 import type { DockerImage, DockerStatus, RegistryProfile } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(200px,1.4fr) minmax(90px,0.5fr) minmax(200px,1.3fr) minmax(90px,0.5fr)'
@@ -36,7 +38,7 @@ export function Images() {
   const items = images.data ?? []
   const verifiedRegistries = (registries.data ?? []).filter((registry) => registry.enabled && registry.verified)
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest]
+  const filtered = items.filter((image) => normalizedQuery === '' || [image.repository, image.tag, image.digest, imageReference(image)]
     .some((value) => value.toLocaleLowerCase().includes(normalizedQuery)))
   const imageKey = (image: DockerImage) => `${image.repository}:${image.tag}:${image.digest || image.id}`
   const selected = items.find((image) => imageKey(image) === selectedID) ?? null
@@ -97,7 +99,7 @@ export function Images() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter images</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter images by repository or tag" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map(imageReference)} type="search" value={query} placeholder="Filter images by repository or tag" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <form className="pullForm" onSubmit={pullImage}>
           <input
@@ -145,6 +147,7 @@ export function Images() {
               tabs={[
                 { id: 'overview', label: 'Overview' },
                 { id: 'layers', label: 'Layers' },
+                { id: 'analysis', label: 'SBOM and vulnerabilities' },
                 { id: 'files', label: 'Files (read-only)' },
               ]}
               activeID={imageTab}
@@ -171,6 +174,9 @@ export function Images() {
               </>
             )}
             {imageTab === 'layers' && <DiveTerminal image={imageReference(selected)} />}
+            {imageTab === 'analysis' && (mode === 'linux'
+              ? <ImageAnalysis key={selected.digest} image={selected} reference={imageReference(selected)} />
+              : <p role="status">Local Syft/Grype analysis currently supports Linux OCI images. Native Windows image coverage is unavailable, not clean.</p>)}
             {imageTab === 'files' && (mode === 'linux'
               ? <RuntimeFiles key={selected.id} kind="image" name={imageReference(selected)} />
               : <p role="status">Linux snapshot/file helpers are not used for native Windows images. Inspect the image metadata or use a supported Windows bind mount.</p>)}

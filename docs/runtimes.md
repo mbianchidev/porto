@@ -23,7 +23,7 @@ Porto separates the control plane from runtime providers:
 - Native projects continue to run directly on the host.
 - Docker clients connect to Porto through the named `porto` context.
 - Porto translates supported Docker API operations to nerdctl and a Porto-owned containerd backend, either local or in a persistent Lima VM.
-- Kubernetes inspection uses the selected `kubectl` context.
+- Kubernetes inspection uses the selected managed kubeconfig; native administration uses Kubernetes clients and scoped Helm tooling without changing a global context.
 - Porto-created Kubernetes clusters use Lima VMs running k3s.
 - Standalone Linux VMs use Lima and remain separate from Kubernetes node groups.
 
@@ -37,10 +37,12 @@ Additional runtime features require:
 
 | Capability | Requirement |
 | --- | --- |
-| Docker client compatibility | Desktop packages bundle Docker CLI, Compose, Buildx, and Dive; source builds may use another Docker Engine API client |
+| Docker client compatibility | Desktop packages bundle Docker CLI, Compose, Buildx, Dive, Syft and Grype where supported; source builds may use another Docker Engine API client |
 | Containers, images, networks, volumes | `nerdctl` with containerd and BuildKit, or Lima for Porto-managed containerd and BuildKit. Default macOS VZ needs no QEMU; Linux needs its architecture-matched QEMU and `qemu-img`; Windows packages bundle them. |
 | Compose project orchestration | Bundled Docker CLI with Compose, using Porto's native Docker endpoint |
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
+| Kubernetes manifest/RBAC administration | An explicitly selected managed kubeconfig and its native Kubernetes permissions |
+| Helm lifecycle | Checksum-pinned Helm 4.3.1 (bundled on all six desktop targets), selected namespace and native release/resource permissions |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
 | Standalone virtual machines | Lima and a supported VZ or QEMU driver. QEMU is required for snapshots and foreign-architecture kernels; Windows desktop releases bundle it. |
 
@@ -326,6 +328,165 @@ cluster or Porto daemon exits, and are not restored after a daemon restart.
 Porto allows up to 30 seconds for startup and checks the loopback listener
 without competing for its port. Failed starts are stopped and reaped before
 returning an error; daemon shutdown also cancels pending startup checks.
+
+### Manifest, workload and permission administration
+
+Open **Kubernetes > Resources and RBAC** for native administration. Existing
+Deployment, Job, CronJob, ConfigMap and Secret inspectors link to the same
+resource using only explicit context/namespace/name metadata. There is no second
+cluster/context store or administrator fallback: an unavailable managed
+kubeconfig, missing selected context or changed identity stops the operation.
+External-cluster onboarding remains a separate environment concern.
+
+Named-target inputs offer searchable current-resource suggestions while still
+accepting a manually typed name. Metadata-only name discovery follows every
+200-object API page without exposing Secret values. List permissions and
+failures affect suggestions only; native authorized get/actions can still
+target an unlisted name. Inventory filters also offer **Inspect typed resource**
+for an explicit namespace/name, without requiring the row to be visible.
+See [resource targeting](daily-use.md#find-and-target-resources).
+
+Discovery inventories actual served group/version/resource/kind combinations,
+including CRDs/custom resources, ServiceAccounts, Roles, ClusterRoles and their
+bindings. A failed API group produces a visible partial inventory rather than
+an empty success. Choose namespace or explicit cluster scope; cross-namespace
+manifest names are rejected rather than retargeted. Resource lists are paged at
+200 objects. **Show served schema** reads that API version's OpenAPI v3 kind
+schema and exposes its version/hash; unavailable or referenced-only schemas are
+identified honestly. Server-side validation remains authoritative.
+
+Effective capabilities come from native `SelfSubjectAccessReview` requests for
+the selected identity/resource, including the scale subresource where relevant.
+Read-only users see disabled mutation controls. Viewing or listing an object
+never grants permission to mutate it; Kubernetes enforces RBAC, bind/escalate
+restrictions, admission and immutable fields again at execution.
+
+Create a named resource or edit/upload YAML/JSON, then choose **Server dry run
+and diff**. Manifest input is bounded to 2 MiB and 50 named resources. Native
+server-side dry run with strict field validation produces the before/after
+preview. Apply uses field manager `porto-admin`, preserves server-owned
+status/metadata, binds existing UID/resourceVersion, and never uses force
+ownership. Changed/recreated objects, identity changes, served-version changes,
+admission failures and field-manager conflicts require a fresh preview.
+Helm/controller-owned objects carry ownership guidance; update the declared
+owner instead of fighting reconciliation.
+If an object was absent at preview, activation uses an atomic native create
+instead of retargeting a concurrent creator through an upsert. Controller
+rollback replaces the complete retained pod template, rather than merging
+current-only fields into the older revision.
+
+Apply is not a transaction: if a later resource fails, earlier accepted resources
+are reported as partial and remain available for inspection. Network loss or
+cancellation after a write cannot prove that the API rejected it; such outcomes
+are explicitly uncertain/partial, never a clean success or automatic rollback.
+An accepted manifest does not prove application readiness.
+
+Workload controls support:
+
+- Deployment/StatefulSet replica scale and Job parallelism.
+- Deployment/StatefulSet/DaemonSet restart and retained-controller rollback.
+- Deployment rollout pause/resume and Job/CronJob suspend/resume.
+- Explicit UID/resourceVersion-bound deletion for served resources, with
+  additional storage/namespace/CRD consequence acknowledgement where applicable.
+
+Rollout observation uses actual ready, updated and available replicas, observed
+generation and failure conditions, with a three-minute bound. Deployment,
+StatefulSet and DaemonSet availability must reach the desired count; readiness
+alone does not complete a rollout while the controller is still enforcing
+`minReadySeconds`. Paused/OnDelete policies,
+ProgressDeadlineExceeded, cancellation, API outages and incomplete rollout stay
+visible instead of claiming full completion. Controller history is filtered by
+the actual owning UID, never just a reused name. Rollback restores a retained pod
+template, not persistent data or database schema. Foreground deletion preserves
+finalizers and reports pending dependents; there is no force-finalizer removal.
+CRD deletion can remove all its custom resources, so inspect ownership, consumers,
+conversion/storage versions and backups first.
+
+Administration, Helm and existing cluster lifecycle operations share exclusion
+gates. A local stop/upgrade/rename cannot race an admitted administration action;
+other identities' external Kubernetes clients can still change resources, which
+native conflict checks and release revisions detect. Progress, cancellation,
+failed/partial states and daemon interruptions appear in shared **Activity >
+Operation history**, with no manifest or credential payload in its records.
+
+#### ConfigMaps and Secrets
+
+ConfigMaps remain ordinary readable Kubernetes configuration. Secret inventory
+and generic inspection use metadata-only responses by default. **Reveal Secret
+values** is an explicit action checked against the selected identity's native
+get permission; **Edit revealed Secret** is separate from reveal. Secret create/
+edit also requires consent before server dry run.
+
+Secret `data`, `stringData` and sensitive annotations are stripped from public
+diffs and cached operation previews. Full pending definitions are AES-GCM
+encrypted under a key in the system credential store; unavailable keys fail
+closed rather than producing plaintext cache files. Revealed values live only
+in the active editor state, are cleared after preview/hide/context changes, and
+are not added to Activity or diagnostic exports. Raw API/tool errors and warning
+values are withheld when they could include sensitive input. Do not put secret
+literals in ConfigMaps, labels, pod arguments or other ordinary readable fields:
+Kubernetes does not treat them as protected Secret data.
+
+### Helm repositories and releases
+
+Open **Kubernetes > Helm releases**. Desktop packages include Apache-2.0
+Helm **4.3.1**, with architecture-native macOS/Linux/Windows AMD64/ARM64 archives,
+reviewed SHA-256 pins, startup version/license checks and diagnostic tool status.
+Source installations need that exact reviewed version on `PATH`. Other tool
+versions fail explicitly; no unreviewed download or x64 substitution is used.
+
+Add a named HTTPS repository and optional scoped credentials, then explicitly
+update indexes. Repository passwords are encrypted at rest and placed only in a
+private temporary Helm repository configuration, never URL/command arguments or
+global user Helm state. Cross-source credentials are not silently reused.
+Removing a local source does not uninstall releases.
+
+For install/upgrade, choose an exact chart version or upload a local `.tgz`
+(at most 16 MiB). The selected archive is SHA-256-pinned, rechecked before apply,
+and kept separate from release inventory. Values are JSON objects bounded to
+1 MiB, encrypted with the preview, and passed through a private temporary values
+file. **Reveal current Helm values** is explicit and requires native release-store
+read permissions; values are not exposed by status/history by default.
+Upgrades use replacement overrides (`--reset-values`), so explicitly load the
+old overrides when retaining them.
+
+**Render, dry run and preview Helm** selects the exact context/namespace, renders
+with native Helm, and performs strict API-server dry runs for served chart
+resources. Public before/after output hides Kubernetes Secret values and shows
+cluster-scoped/storage/CRD consequences. CRD-dependent APIs that do not yet exist
+cannot be fully admission-validated and carry an explicit warning; native Helm
+can still fail partially while establishing them. Charts, hooks and lookup/
+template code are trusted workload configuration, not an untrusted-code sandbox.
+Random templates, admission defaults and hooks can differ from a preview.
+
+Applying rechecks chart bytes, selected identity and current release revision.
+Install/upgrade/rollback wait for native resources and hook Jobs within bounded
+timeouts. Failed hooks, API errors, uncertain completion or non-completed release
+status are reported as partial, with native history and sanitized hook phases
+available. Porto does not force ownership, automatically clean up partial
+resources, or silently rollback failure.
+
+Rollback previews a specific retained Helm revision. Uninstall previews rendered
+resources, keeps native release history, and uses foreground deletion while
+respecting finalizers. Both require explicit confirmation; rendered storage,
+namespace and CRD consequences require additional acknowledgement. Helm/chart
+policies can delete PVCs or dependent resources. Neither chart rollback nor
+uninstall is a persistent-data/database rollback, and retained release history
+does not recreate deleted data.
+Rollback warnings include resources in both the current release and the retained
+target revision. A PVC present only in the current release still requires storage
+acknowledgement before rollback, even when the target manifest contains no PVC.
+
+Kubernetes-native GitOps application delivery with Flux and Argo CD is tracked
+separately in [#174](https://github.com/mbianchidev/porto/issues/174). The current
+direct administration/Helm workflow and local Compose Git polling are not a
+Flux or Argo CD reconciliation controller.
+
+Synthetic API fixtures exercise served schemas/version changes, context/
+namespace isolation, native RBAC denial, Secret redaction/reveal, concurrent
+edits, partial application, controller UID history, finalizers, cancellation and
+failed Helm hooks. Native pinned Helm rendering/flag acceptance can be run with
+`PORTO_TEST_HELM_BIN=/path/to/verified/bin go test ./internal/kubeadmin`.
 
 ### Create a local cluster
 
@@ -660,7 +821,7 @@ porto kubernetes files default api-7d9f --container api --path /app
 porto kubernetes files default api-7d9f --container api --path /app/config.json --read
 ```
 
-The dashboard adds pod overview, streaming logs, an expandable xterm terminal backed by a real PTY, bounded text-file editing, resource statistics, events, readable and copyable effective manifest views, ConfigMap inspection, and Secret inventory. ConfigMap text values are visible to authorized users. Secret values are never returned by Porto; only names, types, and data keys are exposed. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
+The dashboard adds pod overview, streaming logs, an expandable xterm terminal backed by a real PTY, bounded text-file editing, resource statistics, events, readable and copyable effective manifest views, ConfigMap inspection, and metadata-only Secret inventory. ConfigMap text values are visible to authorized users. Secret values require explicit authorized reveal/edit in **Resources and RBAC** and never appear in cached previews or Activity. All operations use the selected kubeconfig identity and never bypass Kubernetes RBAC or container filesystem permissions.
 ConfigMap inspectors provide copy actions for every text or base64-encoded binary value and for the complete Kubernetes resource as formatted JSON.
 
 The Kubernetes **Storage** section inventories cluster-scoped PersistentVolumes
@@ -772,6 +933,7 @@ GET    /api/kubernetes/persistent-volume-claims
 GET    /api/kubernetes/gateway-classes
 GET    /api/kubernetes/gateways
 GET    /api/kubernetes/http-routes
+GET    /api/kubernetes/admin/resource-names
 
 GET    /api/vms/status
 GET    /api/vms/images

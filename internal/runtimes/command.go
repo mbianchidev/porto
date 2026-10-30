@@ -25,6 +25,8 @@ type Command struct {
 	Env         []string
 	Stdin       []byte
 	StdinReader io.Reader
+	// Structured reads must not mix successful stdout with runtime diagnostics.
+	StdoutOnly bool
 	// Local ownership and cleanup must not depend on proxy-vault availability.
 	Network       bool
 	NetworkPolicy *networking.Manager
@@ -54,7 +56,19 @@ func (ExecRunner) Run(ctx context.Context, command Command) (output []byte, err 
 		return nil, err
 	}
 	defer closeInput()
-	return cmd.CombinedOutput()
+	if !command.StdoutOnly {
+		return cmd.CombinedOutput()
+	}
+	diagnostics := &streamOutput{emit: func(OutputChunk) error { return nil }}
+	cmd.Stderr = chunkWriter{stream: "stderr", output: diagnostics}
+	stdout, err := cmd.Output()
+	if err != nil {
+		return diagnostics.diagnostic, err
+	}
+	if len(diagnostics.diagnostic) > 0 {
+		slog.Warn("Runtime command emitted stderr diagnostics", "binary", filepath.Base(command.Name), "capturedBytes", len(diagnostics.diagnostic))
+	}
+	return stdout, nil
 }
 
 func (ExecRunner) RunStreaming(

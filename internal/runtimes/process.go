@@ -3,8 +3,12 @@ package runtimes
 import (
 	"context"
 	"io"
+	"os"
 	"os/exec"
 	"sync"
+	"sync/atomic"
+
+	"github.com/mbianchidev/porto/internal/process"
 )
 
 type Process interface {
@@ -62,6 +66,7 @@ type execProcess struct {
 	stderr  io.ReadCloser
 	wait    sync.Once
 	waitErr error
+	exited  atomic.Bool
 }
 
 func (p *execProcess) Stdin() io.WriteCloser {
@@ -79,6 +84,7 @@ func (p *execProcess) Stderr() io.ReadCloser {
 func (p *execProcess) Wait() error {
 	p.wait.Do(func() {
 		p.waitErr = p.command.Wait()
+		p.exited.Store(true)
 	})
 	return p.waitErr
 }
@@ -87,7 +93,10 @@ func (p *execProcess) Kill() error {
 	if p.command.Process == nil {
 		return nil
 	}
-	return p.command.Process.Kill()
+	if p.exited.Load() {
+		return os.ErrProcessDone
+	}
+	return process.Kill(p.command)
 }
 
 func (p *execProcess) PID() int {

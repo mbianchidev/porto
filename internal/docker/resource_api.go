@@ -1,6 +1,9 @@
 package docker
 
-import "net/http"
+import (
+	"net/http"
+	"strings"
+)
 
 func (a *API) networks(w http.ResponseWriter, r *http.Request) {
 	filters, err := parseDockerFilters(r.URL.Query().Get("filters"))
@@ -8,22 +11,46 @@ func (a *API) networks(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
-	networks, err := a.manager.Networks(r.Context())
-	if err != nil {
-		writeDockerError(w, err)
+	for attempt := 0; ; attempt++ {
+		networks, err := a.manager.Networks(r.Context())
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
+		selected := make([]Network, 0, len(networks))
+		names := []string{}
+		for _, network := range networks {
+			if !filters.matchesName(network.Name) ||
+				!filters.matchesValue("driver", network.Driver) ||
+				!filters.matchesLabels(network.Labels) {
+				continue
+			}
+			selected = append(selected, network)
+			if network.ID != "" {
+				names = append(names, network.Name)
+			}
+		}
+		identities, err := a.manager.containerNetworkIdentities(r.Context(), names)
+		if err != nil {
+			message := strings.ToLower(err.Error())
+			if attempt == 0 && (strings.Contains(message, "no network found matching:") || strings.Contains(message, "no such network:")) {
+				continue
+			}
+			writeDockerError(w, err)
+			return
+		}
+		response := make([]map[string]any, 0, len(selected))
+		for _, network := range selected {
+			if id := identities[network.Name]; id != "" {
+				network.ID = id
+			}
+			if filters.matchesID(network.ID) {
+				response = append(response, dockerNetwork(network))
+			}
+		}
+		writeDockerJSON(w, http.StatusOK, response)
 		return
 	}
-	response := make([]map[string]any, 0, len(networks))
-	for _, network := range networks {
-		if !filters.matchesID(network.ID) ||
-			!filters.matchesName(network.Name) ||
-			!filters.matchesValue("driver", network.Driver) ||
-			!filters.matchesLabels(network.Labels) {
-			continue
-		}
-		response = append(response, dockerNetwork(network))
-	}
-	writeDockerJSON(w, http.StatusOK, response)
 }
 
 func (a *API) createNetwork(w http.ResponseWriter, r *http.Request) {

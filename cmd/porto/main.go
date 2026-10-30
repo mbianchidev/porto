@@ -116,6 +116,9 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	if args[0] == "docker" {
 		return dockerCmd(args[1:])
 	}
+	if args[0] == "image-analysis" {
+		return imageAnalysisCmd(args[1:])
+	}
 	if dockerShortcut(args[0]) {
 		return runDockerCLI(args)
 	}
@@ -747,6 +750,9 @@ Commands:
   porto docker cli <args...>
   porto docker run [options] <image> [command...]
   porto docker dive [--container name] <image> [dive args...]
+  porto image-analysis scan [--platform linux/arm64] [--fail-on high] [--force] <image>
+  porto image-analysis report|export|cancel <report-id>
+  porto image-analysis database status|update --confirm-network|import <archive>
   porto docker status|engine-install|engine-start|engine-stop|engine-remove
   porto docker engine-resources status|configure|apply [--restart-engine]
   porto docker windows status|install|start|stop|remove|context [--confirm]

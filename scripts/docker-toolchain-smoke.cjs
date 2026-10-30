@@ -2,6 +2,7 @@ const { spawnSync } = require('node:child_process')
 const fs = require('node:fs')
 const os = require('node:os')
 const path = require('node:path')
+const { localToolchain } = require('../ui/electron/local-toolchain.cjs')
 
 function parseVersions(contents) {
   const versions = new Map()
@@ -56,6 +57,7 @@ function validateToolchainLayout(runtimeRoot, {
   const dockerVersion = versions.get('docker') || ''
   const supported = !dockerVersion.startsWith('not available')
   const layout = toolchainLayout(runtimeRoot, platform)
+  const localTools = localToolchain(runtimeRoot, versions, { platform, existsImpl })
   const mode = platform === 'win32' ? fs.constants.F_OK : fs.constants.F_OK | fs.constants.X_OK
   try {
     accessImpl(layout.dive, mode)
@@ -96,7 +98,7 @@ function validateToolchainLayout(runtimeRoot, {
     const architecture = wsl.startsWith('linux/') ? wsl.slice('linux/'.length) : ''
     validateWSLToolchain(runtimeRoot, architecture)
   }
-  return { supported: true, versions, layout }
+  return { supported: true, versions, layout, localTools }
 }
 
 function versionToken(value) {
@@ -175,6 +177,10 @@ function smoke(runtimeRoot, options = {}) {
     const composeOutput = execute(inspection.layout.launcher, ['compose', 'version', '--short'], { env: environment }, inspection.layout.compose)
     const buildxOutput = execute(inspection.layout.launcher, ['buildx', 'version'], { env: environment }, inspection.layout.buildx)
     const diveOutput = execute(inspection.layout.dive, ['--version'], { env: environment })
+    for (const [name, executable, args, expected] of inspection.localTools) {
+      const output = execute(executable, args, { env: environment })
+      if (!output.includes(versionToken(expected))) throw new Error(`${name} reported an unexpected version`)
+    }
     for (const [name, output, expected] of [
       ['docker', dockerOutput, versionToken(inspection.versions.get('docker'))],
       ['compose', composeOutput, versionToken(inspection.versions.get('docker-compose'))],

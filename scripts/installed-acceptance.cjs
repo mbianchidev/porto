@@ -202,7 +202,7 @@ async function json(url) {
 
 async function rendererRequest(renderer, endpoint, method = 'GET') {
   assert.ok(endpoint.startsWith('/api/docker/'), 'Only synthetic Docker operations belong in installed acceptance')
-  const timeout = method === 'POST' && /^\/api\/docker\/containers\/[^/]+\/start$/.test(endpoint) ? 60000 : 30000
+  const timeout = method === 'POST' && /^\/api\/docker\/containers\/[^/]+\/start$/.test(endpoint) ? 180000 : 30000
   return await renderer.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(endpoint)}, { method: ${JSON.stringify(method)} })
     return { status: response.status, body: await response.text() }
@@ -276,13 +276,18 @@ try {
 }
 
 async function stopProcess(processRecord, env, tree = false, {
-  identityImpl = identity, signalImpl = (pid, signal) => process.kill(pid, signal),
+  platform = process.platform, identityImpl = identity, runImpl = run,
+  signalImpl = (pid, signal) => process.kill(pid, signal),
 } = {}) {
   if (!processRecord || !processRecord.identity) return
   if (await identityImpl(processRecord.pid, env) !== processRecord.identity) return
-  if (process.platform === 'win32' && tree) {
-    await run('taskkill.exe',
-      ['/PID', String(processRecord.pid), '/T', '/F'], { env })
+  if (platform === 'win32' && tree) {
+    try {
+      await runImpl('taskkill.exe',
+        ['/PID', String(processRecord.pid), '/T', '/F'], { env })
+    } catch (error) {
+      if (await identityImpl(processRecord.pid, env) === processRecord.identity) throw error
+    }
   } else {
     try { signalImpl(processRecord.pid, 'SIGTERM') } catch (error) {
       if (error.code !== 'ESRCH') throw error
@@ -687,35 +692,66 @@ async function acceptance(fixture, reopen = false) {
     const built = JSON.parse(await cli('image', 'inspect', image))
     assert.match(built[0].Id, /^sha256:[a-f0-9]{64}$/)
     assert.equal(built[0].Config.Labels['porto.test.suite'], project)
-    write(path.join(workspace, 'compose.json'), JSON.stringify({
+    const stack = {
       services: {
         app: {
-          image, pull_policy: 'never', network_mode: 'none',
+          image, pull_policy: 'never', networks: ['stack'],
           labels: { 'porto.test.suite': project },
+          environment: { PORTO_SYNTHETIC_REVISION: 'one' },
           volumes: ['retained:/data'],
-          command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec sleep 3600`],
+          command: ['sh', '-c', `test -f /data/token || printf '%s' '${fixture.id}' > /data/token; exec httpd -f -p 8080 -h /data`],
+          healthcheck: { test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token'], interval: '30s', timeout: '30s', retries: 20 },
+        },
+        worker: {
+          image, pull_policy: 'never', networks: ['stack'],
+          labels: { 'porto.test.suite': project },
+          depends_on: { app: { condition: 'service_healthy' } },
+          volumes: ['retained:/data:ro'],
+          command: ['sh', '-c', `test "$(cat /data/token)" = '${fixture.id}' && test "$(wget -q -O - http://app:8080/token)" = '${fixture.id}' && exec sleep 3600`],
         },
       },
       volumes: { retained: { name: `${project}-retained`, labels: { 'porto.test.suite': project } } },
-    }))
-    console.log('Installed acceptance: starting and inspecting the real Compose project')
+      networks: { stack: { name: `${project}-stack`, labels: { 'porto.test.suite': project } } },
+    }
+    write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+    console.log('Installed acceptance: starting the real multi-service Compose stack with a healthy dependency')
     await compose('up', '--detach', '--no-build')
     console.log('Installed acceptance: confirming the running-only Compose inventory')
-    const id = await composeRunningContainer(compose)
+    const id = await composeRunningContainer((...args) => compose(...args, 'app'))
+    const workerID = await composeRunningContainer((...args) => compose(...args, 'worker'))
+    assert.notEqual(workerID, id, 'The Compose stack must contain two independently running services')
     const inspect = async () => JSON.parse(await cli('container', 'inspect', id))[0]
     console.log('Installed acceptance: verifying the real Compose project labels')
     assert.equal((await inspect()).Config.Labels['com.docker.compose.project'], project)
+    const worker = JSON.parse(await cli('container', 'inspect', workerID))[0]
+    assert.equal(worker.Config.Labels['com.docker.compose.project'], project)
+    assert.equal(worker.Config.Labels['com.docker.compose.service'], 'worker')
+    const network = `${project}-stack`
+    const networkID = JSON.parse(await cli('network', 'inspect', network))[0].Id
+    assert.ok(networkID, 'The stack network must expose its actual canonical runtime identity')
+    await waitFor(async () => {
+      const appEndpoint = (await inspect()).NetworkSettings.Networks[network]
+      const workerEndpoint = JSON.parse(await cli('container', 'inspect', workerID))[0].NetworkSettings.Networks[network]
+      return appEndpoint?.IPAddress && workerEndpoint?.IPAddress && workerEndpoint.IPAddress !== appEndpoint.IPAddress &&
+        appEndpoint.NetworkID === networkID && workerEndpoint.NetworkID === networkID
+    }, 'distinct live endpoints with canonical IDs on the selected named stack network')
     console.log('Installed acceptance: checking retained volume and built image contents')
     await waitFor(async () => await cli('exec', id, 'cat', '/data/token') === fixture.id, 'real retained volume token')
+    assert.equal(await cli('exec', workerID, 'cat', '/data/token'), fixture.id,
+      'The dependent service must observe the retained shared-volume contents')
+    assert.equal(await cli('exec', workerID, 'wget', '-q', '-O', '-', 'http://app:8080/token'), fixture.id,
+      'Compose service DNS and HTTP must work across the actual stack network')
     assert.equal(await cli('exec', id, 'cat', '/porto-installed.txt'), `Synthetic installed image ${fixture.id}`)
     console.log('Installed acceptance: exercising renderer-origin container stop and start')
     const listing = await rendererRequest(session.renderer, '/api/docker/containers')
+    if (listing.status !== 200) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: listing.body })
     assert.equal(listing.status, 200, listing.body)
     assert.ok(JSON.parse(listing.body).some((item) => item.id === id || id.startsWith(item.id)),
       'The real installed renderer must observe the Compose container')
     for (const [action, running] of [['stop', false], ['start', true]]) {
       console.log(`Installed lifecycle: requesting renderer ${action}`)
       const response = await rendererRequest(session.renderer, `/api/docker/containers/${id}/${action}`, 'POST')
+      if (response.status !== 200) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: response.body })
       assert.equal(response.status, 200, response.body)
       console.log(`Installed lifecycle: confirming real task state after ${action}`)
       await waitFor(async () => (await inspect()).State.Running === running, `real desktop ${action}`)
@@ -724,6 +760,7 @@ async function acceptance(fixture, reopen = false) {
     const before = await inspect()
     assert.ok(before.State.Pid > 0, 'The running synthetic workload must have a real guest PID')
     const refusal = await rendererRequest(session.renderer, '/api/docker/engine/prepare-update', 'POST')
+    if (refusal.status !== 409) reportCommandFailure({ code: 'PORTO_COMMAND_FAILED', stderr: refusal.body })
     assert.equal(refusal.status, 409, 'Desktop update preparation must refuse a real running workload')
     assert.match(refusal.body, /running|active|stop/i, 'Unsafe update refusal must be actionable')
     const after = await inspect()
@@ -731,6 +768,36 @@ async function acceptance(fixture, reopen = false) {
     assert.equal(after.State.Pid, before.State.Pid, 'Update preparation replaced the workload task')
     assert.equal(after.State.StartedAt, before.State.StartedAt, 'Update preparation restarted the workload')
     assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
+    console.log('Installed acceptance: reconciling a removed stack service without deleting shared data')
+    delete stack.services.worker
+    write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+    await compose('up', '--detach', '--no-build', '--remove-orphans')
+    await waitFor(async () =>
+      await cli('ps', '--all', '--quiet', '--filter', `label=porto.test.suite=${project}`,
+        '--filter', 'label=com.docker.compose.service=worker') === '',
+    'Updating the Compose stack must remove its obsolete service')
+    const reconciledID = await composeRunningContainer(compose)
+    if (reconciledID !== id) console.error('Installed stack reconciliation replaced an unchanged app container.')
+    assert.equal(reconciledID, id,
+      'Removing another service must not replace the unchanged app')
+    assert.equal(await cli('exec', id, 'cat', '/data/token'), fixture.id)
+    let previousID = id
+    for (const revision of ['two', 'one']) {
+      console.log(`Installed acceptance: applying recorded synthetic configuration revision ${revision}`)
+      stack.services.app.environment.PORTO_SYNTHETIC_REVISION = revision
+      write(path.join(workspace, 'compose.json'), JSON.stringify(stack))
+      await compose('up', '--detach', '--no-build', '--remove-orphans')
+      const currentID = await composeRunningContainer(compose)
+      assert.notEqual(currentID, previousID, 'A real configuration update must replace the selected service')
+      const current = JSON.parse(await cli('container', 'inspect', currentID))[0]
+      assert.ok(current.Config.Env.includes(`PORTO_SYNTHETIC_REVISION=${revision}`),
+        'The actual container must run the selected configuration revision')
+      assert.equal(await cli('exec', currentID, 'cat', '/data/token'), fixture.id,
+        'Update and configuration rollback must retain the original named-volume data')
+      await waitFor(async () => await cli('exec', currentID, 'wget', '-q', '-O', '-', 'http://127.0.0.1:8080/token') === fixture.id,
+        'updated application HTTP readiness and retained data')
+      previousID = currentID
+    }
     console.log('Installed acceptance: stopping Compose and preserving its volume')
     await compose('down', '--remove-orphans')
     console.log('Installed acceptance: verifying Compose removal in the event-backed inventory')
@@ -747,6 +814,8 @@ async function acceptance(fixture, reopen = false) {
       compose: installed.tools.compose, buildx: installed.tools.buildx,
       versions: EXPECTED, image: built[0].Id, ownedEngine: engine.ownerId,
       realComposeUpDown: true, realBuildxLoadInspect: !reopen || fixture.evidence.cleanInstall?.realBuildxLoadInspect === true,
+      realComposeStackDependencies: true, realComposeStackNetworking: true, realComposeStackServiceRemoval: true,
+      realComposeStackConfigurationUpdateRollback: true,
       renderedDesktopControl: true, runningWorkloadUpdateRefused: true, retainedVolume: true,
       preservedRegisteredProject: projectPath, runningWorkloadPID: before.State.Pid,
     }

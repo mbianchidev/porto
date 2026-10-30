@@ -8,10 +8,13 @@ import { Inspector } from './Inspector'
 import { InventoryList } from './InventoryList'
 import type { InventoryColumn } from './InventoryList'
 import { KubernetesContextSelect } from './KubernetesContextSelect'
+import { KubernetesAdminLink } from './KubernetesAdminLink'
 import { StatusLamp } from './StatusLamp'
 import { RuntimeGate } from './SectionChrome'
+import { ResourceInput } from './ResourceInput'
+import { KubernetesResourceLookup } from './KubernetesResourceLookup'
 
-type KubernetesWorkloadDashboardProps<T extends { namespace: string }> = {
+type KubernetesWorkloadDashboardProps<T extends { namespace: string; name: string }> = {
   context: string
   contexts: KubernetesContext[]
   onContextChange: (context: string) => void
@@ -34,7 +37,7 @@ type KubernetesWorkloadDashboardProps<T extends { namespace: string }> = {
   renderInspector: (item: T) => ReactNode
 }
 
-export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
+export function KubernetesWorkloadDashboard<T extends { namespace: string; name: string }>({
   context,
   contexts,
   onContextChange,
@@ -72,7 +75,7 @@ export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
   )
   const items = (resources.data ?? []).filter((item) => matchesNamespace(item.namespace, namespace))
   const normalizedQuery = query.trim().toLocaleLowerCase()
-  const filtered = items.filter((item) => normalizedQuery === '' || matchesQuery(item, normalizedQuery))
+  const filtered = items.filter((item) => normalizedQuery === '' || matchesQuery(item, normalizedQuery) || `${item.namespace}/${item.name}`.toLocaleLowerCase().includes(normalizedQuery))
   const selected = items.find((item) => getKey(item) === selectedKey) ?? null
   const loading = status.loading || (available && resources.loading)
   const ready = available && !resources.loading && !resources.error
@@ -103,13 +106,14 @@ export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter {pluralLabel}</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder={filterPlaceholder} onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((item) => `${item.namespace}/${item.name}`)} type="search" value={query} placeholder={filterPlaceholder} onChange={(event) => setQuery(event.target.value)} />
         </label>
         <label className="namespaceField">
           <span>Namespace</span>
-          <input type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
+          <ResourceInput options={(resources.data ?? []).map((item) => item.namespace)} type="text" value={namespace} placeholder="all namespaces" onChange={(event) => setNamespace(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup target={{ context, namespace, group: endpoint === 'deployments' ? 'apps' : 'batch', version: 'v1', resource: endpoint, name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} {pluralLabel}</span>
         <button className="refreshControl" type="button" onClick={() => { status.reload(); resources.reload() }}>Refresh</button>
       </div>
@@ -144,6 +148,7 @@ export function KubernetesWorkloadDashboard<T extends { namespace: string }>({
             onClose={closeInspector}
           >
             {renderInspector(selected)}
+            <section className="drawerPanel"><KubernetesAdminLink target={{ context, namespace: selected.namespace, group: endpoint === 'deployments' ? 'apps' : 'batch', version: 'v1', resource: endpoint, name: selected.name }} /></section>
           </Inspector>
         )}
       </div>

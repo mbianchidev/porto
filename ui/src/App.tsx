@@ -6,6 +6,7 @@ import { MessagesProvider } from './messages'
 import { useMessages } from './useMessages'
 import { PreferencesProvider } from './preferences'
 import { RuntimeActivity } from './runtimeActivity'
+import { KubernetesAdminTargetProvider } from './kubeAdminTarget'
 import { ActionButton } from './components/ActionButton'
 import { ContainerModeSelector } from './components/WindowsContainersSettings'
 import { useDockerMode } from './dockerMode'
@@ -43,15 +44,18 @@ import type {
 } from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
-  'localhost-ing', 'containers', 'images', 'builds', 'volumes', 'networks',
+  'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
-  'kubernetes', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
+  'kubernetes', 'kubernetes-admin', 'helm', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
 
 const DockerStorage = lazy(async () => ({ default: (await import('./pages/DockerStorage')).DockerStorage }))
 const Migration = lazy(async () => ({ default: (await import('./pages/Migration')).Migration }))
+const Applications = lazy(async () => ({ default: (await import('./pages/Applications')).Applications }))
+const KubernetesAdmin = lazy(async () => ({ default: (await import('./pages/KubernetesAdmin')).KubernetesAdmin }))
+const Helm = lazy(async () => ({ default: (await import('./pages/Helm')).Helm }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 
 function routeFromHash(): RouteID {
@@ -155,6 +159,7 @@ function AppShell() {
           {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
         {route === 'localhost-ing' && <LocalhostIng settings={settings} sendboxStatus={sendbox.data} kubeContext={activeKubeContext} />}
+        {route === 'applications' && <Suspense fallback={<p role="status">Loading application delivery...</p>}><Applications /></Suspense>}
         {route === 'containers' && <Containers key={`containers:${dockerMode}`} />}
         {route === 'images' && <Images key={`images:${dockerMode}`} />}
         {route === 'builds' && (dockerMode === 'linux' ? <Builds /> : <NativeWindowsBoundary title="Windows image builds" />)}
@@ -171,6 +176,8 @@ function AppShell() {
           />
         )}
         {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
+        {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
+        {route === 'helm' && <Suspense fallback={<p role="status">Loading Helm administration...</p>}><Helm key={`helm:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
         {route === 'pods' && (
           <Pods
             key={`pods:${activeKubeContext}`}
@@ -221,7 +228,7 @@ function AppShell() {
 function App() {
   return (
     <MessagesProvider>
-      <AppShell />
+      <KubernetesAdminTargetProvider><AppShell /></KubernetesAdminTargetProvider>
     </MessagesProvider>
   )
 }

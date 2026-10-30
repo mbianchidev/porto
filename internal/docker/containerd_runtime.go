@@ -364,20 +364,10 @@ func uniqueStrings(values []string) []string {
 }
 
 func (m *Manager) discoverLimaContainerd(ctx context.Context, instance string) (string, string, error) {
-	output, err := m.runCommand(
-		ctx,
-		20*time.Second,
-		"discover Lima containerd socket",
-		nil,
-		"limactl",
-		"shell",
-		"--workdir=/",
-		instance,
-		"--",
-		"sh",
-		"-lc",
-		limaContainerdDiscoveryCommand,
-	)
+	output, err := m.runBufferedCommand(ctx, 20*time.Second, "discover Lima containerd socket", runtimes.Command{
+		Name: "limactl", Args: []string{"shell", "--workdir=/", instance, "--", "sh", "-lc", limaContainerdDiscoveryCommand},
+		StdoutOnly: true,
+	})
 	if err != nil {
 		return "", "", err
 	}
@@ -416,12 +406,11 @@ func limaContainerdStdioCommand(ctx context.Context, instance, socket string) *e
 
 func (m *Manager) containerInventoryEnricher(backend commandBackend) func(context.Context) ([]Container, error) {
 	return func(ctx context.Context) ([]Container, error) {
-		output, err := m.runBackend(
+		output, err := m.runBackendStdout(
 			ctx,
 			backend,
 			defaultInventoryOperationTimeout,
 			"read Porto container compatibility metadata",
-			nil,
 			"ps",
 			"-a",
 			"--no-trunc",

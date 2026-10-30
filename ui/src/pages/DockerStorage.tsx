@@ -6,6 +6,7 @@ import { useMessages } from '../useMessages'
 import { DataOperations } from '../components/DataOperations'
 import { Inspector } from '../components/Inspector'
 import { VolumeTools } from '../components/VolumeTools'
+import { ResourceInput } from '../components/ResourceInput'
 
 const resourceKinds = ['image', 'container', 'volume', 'network', 'cache']
 const kindLabels: Record<string, string> = { image: 'Images', container: 'Writable containers', volume: 'Volumes', network: 'Networks', cache: 'Build cache' }
@@ -78,7 +79,7 @@ export function DockerStorage() {
       <span className="fleetDatum">Volumes {bytesLabel(usage.data?.volumeBytes)}</span>
     </section>
     <div className="controlBar storageControls">
-      <label className="projectSearch"><span className="visuallyHidden">Search storage resources and owners</span><input type="search" placeholder="Resource or Compose application" value={query} onChange={(event) => changeFilter(() => setQuery(event.target.value))} /></label>
+      <label className="projectSearch"><span className="visuallyHidden">Search storage resources and owners</span><ResourceInput options={resources.filter((item) => kind === 'all' || item.resource.kind === kind).map((item) => item.resource.name)} type="search" placeholder="Resource or Compose application" value={query} onChange={(event) => changeFilter(() => setQuery(event.target.value))} /></label>
       <label>Resource type <select value={kind} onChange={(event) => changeFilter(() => setKind(event.target.value))}><option value="all">All resources</option>{resourceKinds.map((value) => <option key={value} value={value}>{kindLabels[value]}</option>)}</select></label>
       <label>Reference filter <select value={filter} onChange={(event) => changeFilter(() => setFilter(event.target.value))}><option value="all">All references</option><option value="in-use">In use</option><option value="unused">Unused</option><option value="dangling">Dangling</option></select></label>
       <button type="button" onClick={() => { setPreview(null); usage.reload() }}>Refresh storage</button>

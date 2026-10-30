@@ -1,6 +1,8 @@
 import { useState } from 'react'
 import { apiGet } from '../api'
 import { usePolledResource } from '../hooks'
+import { ResourceInput } from '../components/ResourceInput'
+import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
 import { useKubernetesStatus } from '../kubernetes'
 import { Inspector } from '../components/Inspector'
 import { InventoryList } from '../components/InventoryList'
@@ -50,9 +52,10 @@ export function Nodes({
         <label className="projectSearch">
           <span className="visuallyHidden">Filter nodes</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <input type="search" value={query} placeholder="Filter nodes by name" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.map((node) => node.name)} type="search" value={query} placeholder="Filter nodes by name" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <KubernetesContextSelect contexts={contexts} value={context} onChange={onContextChange} />
+        <KubernetesResourceLookup namespaced={false} target={{ context, namespace: '', group: '', version: 'v1', resource: 'nodes', name: query }} />
         <span className="filterResultCount" aria-live="polite">{filtered.length} / {items.length} nodes</span>
         <button className="refreshControl" type="button" onClick={() => { status.reload(); nodes.reload() }}>Refresh</button>
       </div>

@@ -41,24 +41,48 @@ The fixture:
    real Porto-owned Lima engine, and render its packaged dashboard.
 4. Uses **`porto docker cli buildx build --builder default --load`** to build a
    synthetic BusyBox-based image, then inspects its loaded ID and label.
-   The installed Compose plugin starts a synthetic project with a named volume.
-   Real container exec reads both the built image fixture and retained volume
-   token. Missing downloads, tools, backend or named-pipe/socket support fail.
+   The installed Compose plugin starts two services on the same named network.
+   The worker depends on the app's native HTTP health check, reaches its
+   `app` service DNS name over HTTP, and reads its shared named-volume token
+   through a read-only mount. Real container exec reads both
+   the built image fixture and retained token. Missing downloads, tools, backend
+   or named-pipe/socket support fail.
+   The synthetic HTTP check uses the normal 30-second interval and probe timeout,
+   including exec/SSH setup on software-emulated hosted guests. A one-second
+   interval would continuously restart remote probes on those guests and compete
+   with the dependent service's start. The check must still fetch the actual
+   token successfully; stack command deadlines and production operation timeouts
+   are unchanged.
+   Network inspection must report distinct live endpoint addresses under the
+   selected named network; the pinned CNI-based nerdctl inspection does not
+   itself expose Docker's `NetworkID`. Porto resolves canonical IDs from the
+   selected backend's network inspection for Docker container summaries and
+   inspection, so Compose can recognize an unchanged network without recreating
+   its services. The gate requires those exact IDs and actual service DNS/HTTP
+   communication, not invented identities or metadata alone.
 5. Connects to that installed dashboard's loopback DevTools endpoint and uses
    its ordinary renderer-origin container APIs to observe, stop and start the
    same Compose container. With the workload running, ordinary desktop update
    preparation must refuse with HTTP 409, leaving its PID, start time and
    volume token unchanged. No real user project or workload participates.
-6. Runs real Compose down, retaining the synthetic volume. It stops only the
+6. Updates the stack to remove its worker with `up --remove-orphans`, requiring
+   the obsolete service to disappear while the app container and shared data
+   remain unchanged. It then changes a synthetic environment revision and
+   restores the previous revision: both operations must replace the selected
+   service, expose the actual selected environment, remain HTTP-ready, and
+   retain the same named-volume data. It runs real Compose down, retaining the synthetic
+   volume. It stops only the
    owned fixture engine and recorded desktop/daemon processes, checking process
    identity again before signaling. The normal bounded state-convergence wait
    requires the event-backed inventory to contain no remaining synthetic
    containers; a successful remove is not confused with an asynchronously
    published, older inventory snapshot.
    The same bounded convergence wait is used after Compose up before requiring
-   its running-only list to contain exactly one real container ID. Faster lifecycle
-   metadata acknowledgment may precede that event snapshot; a nonempty malformed
-   or multi-container response still fails immediately.
+   each selected service's running-only list to contain exactly one real
+   container ID. After worker removal, the whole project's running-only list
+   must contain exactly the unchanged app ID. Faster lifecycle metadata
+   acknowledgment may precede that event snapshot; a nonempty malformed or
+   multi-container response to a single-service query still fails immediately.
 7. Reapplies the same already-built package, checks that owned executables were
    replaced with the shipped bytes, and reopens the installed desktop. The
    existing image, engine ownership and real volume token must survive. No
@@ -155,9 +179,15 @@ separately from guest pressure. No provisioning or acceptance deadline changes.
 Fixed stage labels identify the failing operation, and each original failure
 category is reported before cleanup errors are combined. Raw exception
 messages, arguments and environment values are not printed.
-Renderer-origin container start requests use the existing one-minute
-start-command allowance rather than the debugger's shorter 30-second default.
-Other debugger requests and all production operation deadlines are unchanged.
+Renderer-origin container start requests have a bounded three-minute debugger
+envelope for metadata/architecture preflight, the existing one-minute start
+command, and execution bookkeeping. This does not extend the start command's
+deadline. Other debugger requests retain their 30-second limit, and provisioning
+and production operation deadlines are unchanged by this fixture setting.
+Windows desktop teardown rechecks the exact native process generation if
+`taskkill` loses a race with process exit. A verified exited/replaced generation
+needs no further signal; a still-owned process or unavailable inspection remains
+an explicit cleanup failure.
 Backend availability alone does not complete startup: the actual packaged
 dashboard target must appear within the same existing 25-minute provisioning
 wait. The fixture does not start a premature one-minute page timer while

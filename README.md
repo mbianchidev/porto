@@ -17,11 +17,13 @@ Porto runs its own containerd backends rather than proxying another Docker engin
 ## What you can do
 
 - **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
-- **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect image layers with Dive, browse runtime files and stats, create local volume backups, and preview protected cleanup.
-- **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA on all three distributions. See [autoscaling](docs/kubernetes-autoscaling.md).
+- **Deliver local applications.** Create or edit multi-service Compose stacks with dependencies, shared storage/networks and replica-aware readiness. Upload definitions, use versioned templates or explicit Git refs, preview changes, and record controlled updates/rollback. Polling and signed webhooks are opt-in. See [application delivery](docs/project-management.md#application-delivery).
+- **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect layers with Dive and generate local Syft SBOMs with Grype vulnerability matching, browse runtime files and stats, create local volume backups, and preview protected cleanup.
+- **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Preview/apply manifests, operate workloads, manage native Helm releases and generic/RBAC resources with the selected identity. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA. See [administration](docs/runtimes.md#manifest-workload-and-permission-administration) and [autoscaling](docs/kubernetes-autoscaling.md).
 - **Create Linux VMs.** Use Lima-backed Ubuntu, CentOS Stream, openSUSE, NixOS, Arch, or Alpine machines, with snapshots where the provider supports them. Kali images are available only for compatible architectures. See [local runtimes](docs/runtimes.md).
 - **Control laptop runtime resources.** Set owned-engine budgets and opt eligible HTTP applications into Resource Saver. Choose native, Rosetta-preferred or QEMU-compatible architecture policies. See [resource management](docs/resource-management.md) for safety boundaries and platform requirements.
 - **Keep branches and local URLs organized.** Switch branches with automatic restarts or run concurrent branches in managed worktrees. Open projects, opted-in containers and managed Kubernetes Services through local HTTP hostnames, with trusted portless HTTPS on macOS, Windows and supported systemd Linux hosts.
+- **Find resources without memorizing names.** Search current-resource dropdowns or enter an explicit unlisted Kubernetes target for native inspection and actions. See [resource targeting](docs/daily-use.md#find-and-target-resources).
 - **Use selected WSL distributions.** Native Linux Docker, Compose and Buildx use Porto's private Windows pipe, selected shared roots, polling watches and native-vault credentials. Windows-hosted Linux terminals use ConPTY. The existing Lima/QEMU Linux engine remains in place; see [Windows integration](docs/windows-integration.md).
 - **Select native Windows containers explicitly.** On a supported Windows host, install the separately owned containerd/runhcs runtime and use its own context, store, Windows shells and capability checks without replacing Linux/WSL workloads. See [native Windows setup](docs/windows-integration.md#native-windows-setup).
 - **Source-preserving migration and native files.** Dry-run selected local Docker runtime transfers and open capability-supported read-only or explicitly writable native filesystem bridges.
@@ -42,7 +44,7 @@ Releases target **macOS, Linux, and Windows** on **x86-64 (`amd64`) and ARM64 (`
 | Linux | Portable archive | The installer verifies QEMU and prepares a [scoped desktop sandbox permission](docs/installation.md#linux-desktop-sandbox) where AppArmor requires it, with administrator approval. Failed prerequisites stop setup before replacing Porto. KVM access enables hardware acceleration. |
 | Windows | EXE installer | Lima and QEMU are bundled. Native Windows-container tooling is separately selected on supported AMD64 hosts. Native WCOW and kind are not substituted with x64 binaries on ARM64; see the [matrix](docs/windows-integration.md#embedded-terminals-and-supported-boundaries). |
 
-Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.
+Desktop packages include the daemon, dashboard, Docker CLI, Compose, Buildx, Dive, Syft, Grype, Helm, `kubectl`, `k9s`, Lima, and kind where supported. They do **not** require Go, Node.js, or a separate Docker Desktop installation.
 
 They also include Porto's Linux runtime helper for direct container I/O, Windows
 containerd connections, CNI, and checkpoint capability discovery. New Windows-hosted
@@ -187,7 +189,7 @@ Use **Settings** for runtime and desktop preferences, log retention, and optiona
 - **Docker compatibility is bounded.** Porto supports Docker API versions **1.41 through 1.47**, not every Docker Engine feature. Swarm and generic engine plugins are unsupported; native Windows mode has a separate host/image/isolation matrix and does not advertise Linux-only helpers or builds. Mounts, checkpoints, SDKs, Dev Containers, and Testcontainers have documented capability limits. Check the [compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix) before relying on a workflow.
 - **Discovery and readiness are opinionated.** Detection follows file and entry-point conventions, and readiness expects HTTP 200 on the selected port. See [project management](docs/project-management.md) before using non-HTTP services or unusual monorepo layouts.
 - **Backups are not database-aware.** Local volume copies are crash-consistent, not application-consistent database backups. Native filesystem access and migration support depend on the host/backend. See [data-management safety boundaries](docs/data-management.md).
-- **Layer inspection is not vulnerability scanning.** Dive works today; local SBOM and Grype-based CVE analysis remain a [separate roadmap](docs/image-inspection.md).
+- **Analysis coverage is explicit.** Dive is not a vulnerability scanner. Local Syft/Grype analysis requires an identifiable Linux OCI platform and a valid local advisory database; partial, stale and failed analysis never means zero vulnerabilities. See [image analysis](docs/image-inspection.md).
 
 ## Build from source
 
@@ -224,7 +226,7 @@ Start with the [documentation index](docs/README.md), or go directly to a guide:
 | [Project management](docs/project-management.md) and [branches](docs/branch-management.md) | Discovery, setup, CLI commands, ports, readiness, logs, and worktrees |
 | [Local runtimes](docs/runtimes.md) and [Docker Engine](docs/docker-engine.md) | Containers, Compose, Kubernetes, VMs, and Docker API compatibility |
 | [Kubernetes upgrades](docs/kubernetes-upgrades.md) and [autoscaling](docs/kubernetes-autoscaling.md) | Upgrade/recovery boundaries, Karpenter workers, and KEDA |
-| [Runtime data management](docs/data-management.md) and [image inspection](docs/image-inspection.md) | Files, storage, backups, migration, native mounts, and Dive |
+| [Runtime data management](docs/data-management.md) and [image analysis](docs/image-inspection.md) | Files, storage, backups, migration, native mounts, Dive, SBOMs and Grype |
 | [Networking](docs/networking.md) and [integrations](docs/integrations.md) | Local HTTP/HTTPS, DNS, sql-not-so-lite, KillSwitch, and Sendbox |
 | [Diagnostics](docs/diagnostics.md) | Health checks, redacted bundles, and confirmed repairs |
 | [Product overview](docs/product.md) and [design system](docs/design.md) | Intended users, product principles, and interface conventions |

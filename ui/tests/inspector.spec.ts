@@ -199,6 +199,15 @@ test('Compose status and running counts follow live task snapshots', async ({ pa
   const group = page.locator('.containerComposeGroup')
   const summary = group.locator('summary')
   await expect(summary).toContainText('3 service(s) · 4 container(s) · 0 running')
+  const filter = page.getByLabel('Filter containers', { exact: true })
+  const suggestions = () => filter.evaluate((element) => {
+    if (!(element instanceof HTMLInputElement)) throw new Error('Expected a container resource filter')
+    return Array.from(element.list?.options ?? [], (option) => option.value)
+  })
+  await expect.poll(suggestions).toEqual(['fixture-api', 'fixture-api-old', 'fixture-database', 'fixture-stack', 'fixture-web'])
+  await filter.fill('fixture-stack')
+  await expect(group.getByRole('option')).toHaveCount(4)
+  await filter.clear()
 
   async function publishSnapshot(nextSnapshot: typeof snapshot) {
     await page.evaluate((nextSnapshot) => {
@@ -235,6 +244,8 @@ test('Compose status and running counts follow live task snapshots', async ({ pa
   await expect(summary).toContainText('3 service(s) · 4 container(s) · 2 running')
   await expect(group.getByRole('option', { name: /Status: Up(?:\s|$)/ })).toHaveCount(2)
   await expect(group.getByRole('option', { name: /Status: Exited \(1\)/ })).toBeVisible()
+  await publishSnapshot({ ...runningSnapshot, revision: 4, containers: runningSnapshot.containers.filter((container) => container.id !== oldContainer.id) })
+  await expect.poll(suggestions).toEqual(['fixture-api', 'fixture-database', 'fixture-stack', 'fixture-web'])
 })
 
 for (const grouped of [true, false]) {

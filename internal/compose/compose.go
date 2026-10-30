@@ -60,6 +60,44 @@ type PortPlan struct {
 	Ports        []PlannedPort
 }
 
+type serviceConfiguration struct {
+	Profiles  []string `json:"profiles"`
+	Scale     *int     `json:"scale"`
+	DependsOn map[string]struct {
+		Condition string `json:"condition"`
+	} `json:"depends_on"`
+	Healthcheck *struct {
+		Disable bool     `json:"disable"`
+		Test    []string `json:"test"`
+	} `json:"healthcheck"`
+	Deploy struct {
+		Replicas *int `json:"replicas"`
+	} `json:"deploy"`
+	Ports []struct {
+		Target    int    `json:"target"`
+		Published string `json:"published"`
+		Protocol  string `json:"protocol"`
+	} `json:"ports"`
+}
+
+func (s serviceConfiguration) requiresHealth() bool {
+	return s.Healthcheck != nil && !s.Healthcheck.Disable &&
+		(len(s.Healthcheck.Test) == 0 || s.Healthcheck.Test[0] != "NONE")
+}
+
+func (s serviceConfiguration) desiredReplicas() int {
+	if len(s.Profiles) > 0 {
+		return 0
+	}
+	if s.Scale != nil {
+		return *s.Scale
+	}
+	if s.Deploy.Replicas != nil {
+		return *s.Deploy.Replicas
+	}
+	return 1
+}
+
 type Runner interface {
 	Run(ctx context.Context, command Command) ([]byte, error)
 }
@@ -73,10 +111,11 @@ func (ExecRunner) Run(ctx context.Context, command Command) ([]byte, error) {
 }
 
 type Integration struct {
-	runner       Runner
-	checkTimeout time.Duration
-	downTimeout  time.Duration
-	dockerHost   string
+	runner            Runner
+	checkTimeout      time.Duration
+	downTimeout       time.Duration
+	dockerHost        string
+	resolveDefinition func(app.Project) (string, error)
 }
 
 func New(runner Runner) *Integration {
@@ -142,13 +181,13 @@ func (i *Integration) Check(ctx context.Context) error {
 }
 
 func (i *Integration) PublishedPorts(ctx context.Context, project app.Project) ([]PublishedPort, error) {
-	file, err := configFile(project)
+	file, err := i.configFile(project)
 	if err != nil {
 		return nil, err
 	}
 	commandContext, cancel := context.WithTimeout(ctx, i.checkTimeout)
 	defer cancel()
-	args := []string{"compose", "-f", file}
+	args := composeArguments(project, file)
 	if override, overrideErr := OverridePath(project); overrideErr == nil {
 		if info, statErr := os.Stat(override); statErr == nil && !info.IsDir() {
 			args = append(args, "-f", override)
@@ -175,13 +214,13 @@ func (i *Integration) PublishedPorts(ctx context.Context, project app.Project) (
 }
 
 func (i *Integration) Down(ctx context.Context, project app.Project) error {
-	file, err := configFile(project)
+	file, err := i.configFile(project)
 	if err != nil {
 		return err
 	}
 	commandContext, cancel := context.WithTimeout(ctx, i.downTimeout)
 	defer cancel()
-	args := []string{"compose", "-f", file}
+	args := composeArguments(project, file)
 	override, overrideErr := OverridePath(project)
 	if overrideErr == nil {
 		if info, statErr := os.Stat(override); statErr == nil && !info.IsDir() {
@@ -214,7 +253,7 @@ func (i *Integration) Down(ctx context.Context, project app.Project) error {
 }
 
 func (i *Integration) PreparePorts(ctx context.Context, project app.Project, used map[int]bool) (PortPlan, error) {
-	file, err := configFile(project)
+	file, err := i.configFile(project)
 	if err != nil {
 		return PortPlan{}, err
 	}
@@ -223,8 +262,8 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 	output, err := i.runner.Run(commandContext, Command{
 		Dir:  project.Path,
 		Name: "docker",
-		Args: []string{"compose", "-f", file, "config", "--format", "json"},
-		Env:  i.dockerEnvironment("COMPOSE_PROJECT_NAME=" + ProjectName(project)),
+		Args: append(composeArguments(project, file), "config", "--format", "json"),
+		Env:  i.dockerEnvironment("COMPOSE_PROJECT_NAME="+ProjectName(project), "COMPOSE_PROFILES="),
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return PortPlan{}, fmt.Errorf("Docker Compose port planning for %s timed out", project.Name)
@@ -233,13 +272,7 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		return PortPlan{}, commandError("inspect Docker Compose ports for "+project.Name, output, err)
 	}
 	var composeConfig struct {
-		Services map[string]struct {
-			Ports []struct {
-				Target    int    `json:"target"`
-				Published string `json:"published"`
-				Protocol  string `json:"protocol"`
-			} `json:"ports"`
-		} `json:"services"`
+		Services map[string]serviceConfiguration `json:"services"`
 	}
 	if err := json.Unmarshal(output, &composeConfig); err != nil {
 		return PortPlan{}, fmt.Errorf("decode Docker Compose configuration for %s: %w", project.Name, err)
@@ -257,7 +290,18 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 		return serviceNames[left] < serviceNames[right]
 	})
 	plan := PortPlan{ConfigFile: file}
+	previous, err := priorPorts(project)
+	if err != nil {
+		return PortPlan{}, err
+	}
 	for _, service := range serviceNames {
+		replicas := composeConfig.Services[service].desiredReplicas()
+		if replicas < 0 {
+			return PortPlan{}, fmt.Errorf("invalid Docker Compose replica count for %s/%s", project.Name, service)
+		}
+		if replicas == 0 {
+			continue
+		}
 		for _, configured := range composeConfig.Services[service].Ports {
 			protocol := strings.ToLower(configured.Protocol)
 			if protocol == "" {
@@ -270,6 +314,9 @@ func (i *Integration) PreparePorts(ctx context.Context, project app.Project, use
 				return PortPlan{}, fmt.Errorf("unsupported published protocol %q for %s/%s", protocol, project.Name, service)
 			}
 			preferred, _ := strconv.Atoi(configured.Published)
+			if saved := previous[fmt.Sprintf("%s:%d/%s", service, configured.Target, protocol)]; saved > 0 {
+				preferred = saved
+			}
 			published, err := ports.PickProtocol(preferred, config.BasePort, used, protocol)
 			if err != nil {
 				return PortPlan{}, fmt.Errorf("allocate Docker Compose port for %s/%s: %w", project.Name, service, err)

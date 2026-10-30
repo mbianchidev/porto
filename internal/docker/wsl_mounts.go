@@ -88,7 +88,7 @@ func (m *Manager) ApplyWSLMounts(ctx context.Context, restartConfirmed bool) (er
 	if state.Mode != "lima" || state.Instance != engineInstanceName || state.OwnerID == "" {
 		return fmt.Errorf("%w: only Porto's existing owned Lima/QEMU engine can receive WSL shares", ErrUnsupported)
 	}
-	output, err := m.runCommand(ctx, 20*time.Second, "inspect owned engine mount configuration", nil, "limactl", "list", state.Instance, "--json")
+	output, err := m.runStdoutCommand(ctx, 20*time.Second, "inspect owned engine mount configuration", "limactl", "list", state.Instance, "--json")
 	if err != nil {
 		return err
 	}

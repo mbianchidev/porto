@@ -124,7 +124,12 @@ func (m *Manager) activeContainerInventory() *containerInventory {
 	if m.inventoryCancel == nil {
 		return nil
 	}
-	return m.inventory
+	select {
+	case <-m.inventoryDone:
+		return nil
+	default:
+		return m.inventory
+	}
 }
 
 func (m *Manager) invalidateContainerInventory() {
@@ -140,10 +145,25 @@ func (m *Manager) completeContainerCreation(ctx context.Context, id string, crea
 	if id == "" {
 		return "", errors.New("container runtime returned no created container identity")
 	}
+	err := m.confirmContainerInventory(ctx, func(containers []Container) bool {
+		for _, container := range containers {
+			if container.ID == id {
+				return true
+			}
+		}
+		return false
+	})
+	if err != nil {
+		return id, fmt.Errorf("container %q was created, but inventory confirmation failed: %w", id, err)
+	}
+	return id, nil
+}
+
+func (m *Manager) confirmContainerInventory(ctx context.Context, matches func([]Container) bool) error {
 	inventory := m.activeContainerInventory()
 	if inventory == nil || m.IsNativeWindows() {
 		m.invalidateContainerInventory()
-		return id, nil
+		return nil
 	}
 	updates, unsubscribe := inventory.subscribe()
 	defer unsubscribe()
@@ -156,7 +176,7 @@ func (m *Manager) completeContainerCreation(ctx context.Context, id string, crea
 		case <-ctx.Done():
 			err = context.Cause(ctx)
 		case <-timer.C:
-			err = errors.New("timed out waiting for the created container in inventory")
+			err = errors.New("timed out waiting for the committed container change in inventory")
 		case snapshot, ok := <-updates:
 			if !ok {
 				err = errors.New("container inventory subscription closed")
@@ -166,16 +186,12 @@ func (m *Manager) completeContainerCreation(ctx context.Context, id string, crea
 				err = context.Cause(ctx)
 				break
 			}
-			if snapshot.Available && !snapshot.Stale {
-				for _, container := range snapshot.Containers {
-					if container.ID == id {
-						return id, nil
-					}
-				}
+			if snapshot.Available && !snapshot.Stale && matches(snapshot.Containers) {
+				return nil
 			}
 		}
 		if err != nil {
-			return id, fmt.Errorf("container %q was created, but inventory confirmation failed: %w", id, err)
+			return err
 		}
 	}
 }

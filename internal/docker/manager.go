@@ -237,7 +237,7 @@ func (m *Manager) Status(ctx context.Context, socketPath string) Status {
 }
 
 func (m *Manager) BackendInfo(ctx context.Context) (BackendInfo, error) {
-	output, err := m.run(ctx, "inspect Porto container runtime information", "info", "--format", "{{json .}}")
+	output, err := m.runStdout(ctx, "inspect Porto container runtime information", "info", "--format", "{{json .}}")
 	if err != nil {
 		return BackendInfo{}, err
 	}
@@ -823,7 +823,7 @@ func (m *Manager) DockerContainers(ctx context.Context, all bool) ([]Container, 
 		args = append(args, "-a")
 	}
 	args = append(args, "--no-trunc", "--format", "{{json .}}")
-	output, err := m.run(ctx, "list Porto containers", args...)
+	output, err := m.runStdout(ctx, "list Porto containers", args...)
 	if err != nil {
 		return nil, err
 	}
@@ -1324,7 +1324,7 @@ func validateContainerDevice(device ContainerDevice) error {
 }
 
 func (m *Manager) Images(ctx context.Context) ([]Image, error) {
-	output, err := m.run(ctx, "list Porto images", "images", "--digests", "--no-trunc", "--format", "{{json .}}")
+	output, err := m.runStdout(ctx, "list Porto images", "images", "--digests", "--no-trunc", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -1353,7 +1353,7 @@ func (m *Manager) Images(ctx context.Context) ([]Image, error) {
 }
 
 func (m *Manager) Networks(ctx context.Context) ([]Network, error) {
-	output, err := m.run(ctx, "list Porto networks", "network", "ls", "--format", "{{json .}}")
+	output, err := m.runStdout(ctx, "list Porto networks", "network", "ls", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -1382,7 +1382,7 @@ func (m *Manager) Networks(ctx context.Context) ([]Network, error) {
 }
 
 func (m *Manager) Volumes(ctx context.Context) ([]Volume, error) {
-	output, err := m.run(ctx, "list Porto volumes", "volume", "ls", "--format", "{{json .}}")
+	output, err := m.runStdout(ctx, "list Porto volumes", "volume", "ls", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -1441,6 +1441,30 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 	}
 	if err := validateObjectID(id); err != nil {
 		return err
+	}
+	switch action {
+	case "remove", "remove-force", "remove-volumes", "remove-force-volumes":
+		if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+			target := strings.TrimPrefix(id, "/")
+			if container, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+				target = container.ID
+			}
+			defer func() {
+				if err != nil {
+					return
+				}
+				if confirmationErr := m.confirmContainerInventory(ctx, func(containers []Container) bool {
+					for _, container := range containers {
+						if strings.HasPrefix(container.ID, target) || strings.TrimPrefix(container.Name, "/") == target {
+							return false
+						}
+					}
+					return true
+				}); confirmationErr != nil {
+					err = fmt.Errorf("container %q was removed, but inventory confirmation failed: %w", id, confirmationErr)
+				}
+			}()
+		}
 	}
 	if action == "start" || action == "restart" || action == "unpause" {
 		var selection acceleration.Selection
@@ -1511,7 +1535,7 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 		return fmt.Errorf("unsupported container action %q", action)
 	}
 	commandTimeout := m.timeout
-	if action == "start" || action == "restart" {
+	if action == "start" || action == "restart" || strings.HasPrefix(action, "remove") {
 		commandTimeout = max(commandTimeout, time.Minute)
 	}
 	_, err = m.runWithTimeout(ctx, commandTimeout, action+" Porto container", nil, args...)
@@ -1634,7 +1658,7 @@ func (m *Manager) KillContainer(ctx context.Context, id, signal string) error {
 }
 
 func (m *Manager) containerPaused(ctx context.Context, id string) (bool, error) {
-	output, err := m.run(ctx, "inspect Porto container state", "container", "inspect", id)
+	output, err := m.runStdout(ctx, "inspect Porto container state", "container", "inspect", id)
 	if err != nil {
 		return false, err
 	}
@@ -1661,17 +1685,18 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 	if err != nil {
 		return err
 	}
+	timeout := max(m.timeout, time.Minute)
+	cleanupContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	args := []string{"rm", "--force"}
 	if volumes {
 		args = append(args, "--volumes")
 	}
 	args = append(args, containerID)
-	if _, err := m.run(ctx, "force-remove Porto container", args...); err != nil {
+	if _, err := m.runWithTimeout(cleanupContext, timeout, "force-remove Porto container", nil, args...); err != nil {
 		return err
 	}
 
-	cleanupContext, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 	for {
@@ -1680,7 +1705,7 @@ func (m *Manager) forceRemoveContainer(ctx context.Context, id string, volumes b
 			args = append(args, "--volumes")
 		}
 		args = append(args, containerID)
-		_, err := m.run(cleanupContext, "remove stopped Porto container", args...)
+		_, err := m.runWithTimeout(cleanupContext, timeout, "remove stopped Porto container", nil, args...)
 		if err == nil || containerRemovalComplete(err) {
 			return nil
 		}
@@ -1720,7 +1745,7 @@ func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (stri
 		}
 		return value.ID, strings.TrimPrefix(value.Name, "/"), nil
 	}
-	output, err := m.run(ctx, "inspect Porto container identity", "container", "inspect", id)
+	output, err := m.runStdout(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
 		return "", "", err
 	}
@@ -1752,12 +1777,34 @@ func containerRemovalPending(err error) bool {
 		strings.Contains(message, "task is running")
 }
 
-func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
+func (m *Manager) RenameContainer(ctx context.Context, id, name string) (err error) {
 	if err := validateObjectID(id); err != nil {
 		return err
 	}
 	if err := validateObjectID(name); err != nil {
 		return err
+	}
+	if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+		var target string
+		if container, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+			target = container.ID
+		}
+		defer func() {
+			if err != nil {
+				return
+			}
+			if confirmationErr := m.confirmContainerInventory(ctx, func(containers []Container) bool {
+				for _, container := range containers {
+					if (target == "" || container.ID == target) &&
+						strings.TrimPrefix(container.Name, "/") == strings.TrimPrefix(name, "/") {
+						return true
+					}
+				}
+				return false
+			}); confirmationErr != nil {
+				err = fmt.Errorf("container %q was renamed to %q, but inventory confirmation failed: %w", id, name, confirmationErr)
+			}
+		}()
 	}
 	if handled, directErr := m.withContainerOperations(ctx, func(operations containerOperations) error {
 		return operations.Rename(ctx, id, name)
@@ -1767,7 +1814,7 @@ func (m *Manager) RenameContainer(ctx context.Context, id, name string) error {
 		}
 		return directErr
 	}
-	_, err := m.run(ctx, "rename Porto container", "rename", id, name)
+	_, err = m.run(ctx, "rename Porto container", "rename", id, name)
 	if err == nil {
 		m.invalidateContainerInventory()
 	}
@@ -2095,7 +2142,7 @@ func allowedContainerShell(shell string) bool {
 }
 
 func (m *Manager) ContainerStats(ctx context.Context) ([]ContainerStats, error) {
-	output, err := m.run(ctx, "read Porto container stats", "stats", "--no-stream", "--format", "{{json .}}")
+	output, err := m.runStdout(ctx, "read Porto container stats", "stats", "--no-stream", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -2406,7 +2453,7 @@ func (m *Manager) inspect(ctx context.Context, kind, id string, options ...strin
 	args := []string{kind, "inspect"}
 	args = append(args, options...)
 	args = append(args, id)
-	output, err := m.run(ctx, "inspect Porto "+kind, args...)
+	output, err := m.runStdout(ctx, "inspect Porto "+kind, args...)
 	if err != nil {
 		if missingDockerObject(err, kind) {
 			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
@@ -2494,6 +2541,28 @@ func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 
 func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byte, error) {
 	return m.runWithTimeout(ctx, m.timeout, action, nil, args...)
+}
+
+func (m *Manager) runStdout(ctx context.Context, action string, args ...string) ([]byte, error) {
+	backend, err := m.backendForCommand(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return m.runBackendStdout(ctx, backend, m.timeout, action, args...)
+}
+
+func (m *Manager) runBackendStdout(ctx context.Context, backend commandBackend, timeout time.Duration, action string, args ...string) ([]byte, error) {
+	commandArgs, err := m.networkCommandArgs(backend, append(append([]string(nil), backend.prefix...), args...))
+	if err != nil {
+		return nil, err
+	}
+	return m.runStdoutCommand(ctx, timeout, action, backend.name, commandArgs...)
+}
+
+func (m *Manager) runStdoutCommand(ctx context.Context, timeout time.Duration, action, name string, args ...string) ([]byte, error) {
+	return m.runBufferedCommand(ctx, timeout, action, runtimes.Command{
+		Name: name, Args: args, StdoutOnly: true,
+	})
 }
 
 func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error) {
@@ -2601,7 +2670,7 @@ DOCKER_CONFIG="$config_dir" "$@"
 }
 
 func (m *Manager) runDockerCLI(ctx context.Context, action string, args ...string) ([]byte, error) {
-	return m.runCommand(ctx, m.timeout, action, nil, "docker", args...)
+	return m.runStdoutCommand(ctx, m.timeout, action, "docker", args...)
 }
 
 type streamingRunner interface {
@@ -2727,15 +2796,16 @@ func (m *Manager) runCommandWithEnv(
 	name string,
 	args ...string,
 ) ([]byte, error) {
+	return m.runBufferedCommand(ctx, timeout, action, runtimes.Command{
+		Name: name, Args: args, Env: environment, Stdin: stdin,
+	})
+}
+
+func (m *Manager) runBufferedCommand(ctx context.Context, timeout time.Duration, action string, command runtimes.Command) ([]byte, error) {
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{
-		Name:          name,
-		Args:          args,
-		Env:           environment,
-		Stdin:         stdin,
-		NetworkPolicy: m.NetworkPolicy(),
-	})
+	command.NetworkPolicy = m.NetworkPolicy()
+	output, err := m.runner.Run(commandContext, command)
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, runtimes.CommandError(
 			fmt.Sprintf("%s timed out after %s", action, timeout),
@@ -2753,8 +2823,7 @@ func (m *Manager) limaInstanceStatus(ctx context.Context) (exists bool, running 
 	commandContext, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	output, runErr := m.runner.Run(commandContext, runtimes.Command{
-		Name: "limactl",
-		Args: []string{"list", engineInstanceName, "--json"},
+		Name: "limactl", Args: []string{"list", engineInstanceName, "--json"}, StdoutOnly: true,
 	})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return false, false, runtimes.CommandError(
@@ -2887,20 +2956,10 @@ func (m *Manager) verifyLimaOwnershipUnlocked(ctx context.Context, ownerID strin
 	if strings.TrimSpace(ownerID) == "" {
 		return errors.New("Porto engine ownership metadata is incomplete")
 	}
-	output, err := m.runCommand(
-		ctx,
-		30*time.Second,
-		"verify Porto engine ownership",
-		nil,
-		"limactl",
-		"shell",
-		"--workdir=/",
-		engineInstanceName,
-		"--",
-		"sh",
-		"-c",
-		`cat "$HOME/.porto-engine-owner"`,
-	)
+	output, err := m.runBufferedCommand(ctx, 30*time.Second, "verify Porto engine ownership", runtimes.Command{
+		Name: "limactl", Args: []string{"shell", "--workdir=/", engineInstanceName, "--", "sh", "-c", `cat "$HOME/.porto-engine-owner"`},
+		StdoutOnly: true,
+	})
 	if err != nil {
 		return withLimaGuestDiagnostics(err)
 	}

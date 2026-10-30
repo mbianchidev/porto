@@ -98,3 +98,208 @@ Dashboard project rows also show each project's process ID, readiness status, as
 For Git branch workflows, see [branch management](branch-management.md). For project URLs and TLS, see [local networking](networking.md).
 
 For containers, the Docker-compatible endpoint, local Kubernetes clusters, pod inspection, and Linux virtual machines, see [local runtimes](runtimes.md).
+
+## Application delivery
+
+Open **Local development > Applications** to create a Compose application or
+adopt an existing Compose project. This is delivery metadata for Porto's
+existing project, not another application runtime: project IDs, Compose project
+labels (`porto-ID`), process logs, stable loopback port overrides, start/stop
+controls, branch/worktree isolation and registry handling are shared.
+Native-process projects and managed Kubernetes containers cannot be adopted.
+Only the local Linux/WSL Compose target is supported; other targets are rejected
+until Porto's environment abstraction provides them.
+
+Applications are whole Compose stacks, not single-container shortcuts. Multiple
+services, dependency health/completion conditions, shared networks, named
+volumes, builds and published ports remain in the effective definition.
+Readiness checks every enabled service and every configured replica. Long-running
+services must stay running and satisfy declared or observed health checks; an
+exit code of zero is not a substitute for health. A service is treated as a
+completion job only when an enabled, nonzero-scaled consumer declares
+`depends_on: {job: {condition: service_completed_successfully}}`. Every job replica
+must actually exit with an observed zero exit code, not merely start running.
+Intentionally zero-scaled services do not block deployment.
+
+Use **Compose profiles (comma-separated)** to select named profiles. Blank selects
+default services only; `*` selects every declared profile. Unknown profile names
+fail validation instead of silently falling back to defaults. Services behind
+inactive profiles are not started or assigned ports. Native Compose resolves the
+selected service set, which Porto freezes into the effective runtime definition;
+later starts, builds, readiness checks and rollbacks do not depend on inherited
+host `COMPOSE_PROFILES`. The selected profiles appear in previews and recorded
+revisions. Editing an application restores its selection, and rollback restores
+the retained revision's selection.
+
+Updates remove obsolete containers only inside that project's Compose ownership;
+they never delete retained volumes. Git-based relative build, bind-mount and
+configuration paths resolve from the selected Compose file's directory, including
+files in repository subdirectories.
+Machine-readable runtime reads keep stdout separate from shell/tool diagnostics,
+including container state, inventory enrichment, network/image/volume lists,
+metrics, helper probes and owned-engine discovery. Advisory stderr does not
+break health-gated dependencies, lifecycle decisions or identity checks.
+Failed commands remain failures with bounded diagnostics; partial JSON is never
+accepted as successful inspection.
+Docker-compatible summaries and inspection resolve full network IDs from actual
+backend network metadata. This lets Compose retain an unchanged service during
+stack reconciliation rather than recreating it because CNI inspection omitted
+an opaque ID. Network lists expose the same full identities, not display-shortened
+IDs. Recorded native mount annotations retain named-volume identity in Docker
+summaries while preserving the actual OCI source and read-only flags; ordinary
+bind mounts are not guessed to be volumes. Network lists filter name, driver and
+labels before canonical-ID inspection and refresh once if a selected network
+disappears concurrently. Persistent missing identities, invalid JSON, permission
+errors and other backend failures remain explicit; a removed unrelated network
+cannot break another stack's filtered inventory.
+Runtime helper teardown stops its
+owned process group, including SSH descendants, so repeated health checks and
+lifecycle operations release their transport sessions.
+Container creation, removal and rename are acknowledged only after the healthy
+inventory exposes the committed change. Compose can replace a service and
+immediately list its final identity without seeing the removed container or a
+temporary replacement name. If confirmation fails after the runtime mutation,
+the request reports that committed change and the confirmation error explicitly.
+Once the inventory worker has stopped, cleanup and container queries use the
+runtime directly rather than waiting on its inactive cache.
+Compatibility-path container removal uses a bounded lifecycle allowance of at
+least one minute, not the shorter metadata-probe deadline. Force removal and
+stopped-container cleanup share that allowance instead of restarting it or
+imposing a separate ten-second cutoff. Shorter caller deadlines and cancellation
+still take precedence, and larger configured operation budgets are preserved.
+Native task stop also distinguishes a remote grace-wait cancellation from
+cancellation by the caller. A verified stopped task can complete normally;
+a still-running task retains its remaining local grace before forced stop.
+Transport clock/scheduling differences do not become a false successful stop
+or an early forced kill, and caller cancellation still wins.
+Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
+unused application stdin cannot terminate output, while completion or failed
+setup releases guest reader jobs and their FIFO directory instead of consuming
+SSH multiplexing slots.
+
+Choose **Compose editor**, upload a YAML/JSON file (at most 1 MiB), select an
+immutable template version, or provide an explicit Git repository/ref/file.
+Built-in HTTP and worker templates declare required image/port/secret variables
+and resource limits. Editable copies remain standard Compose; custom templates
+use a new name/version rather than replacing an existing version. Keep secret
+literals out of reusable templates and supply them through secret variables.
+
+Supply non-secret variables as a JSON object and sensitive variables through
+the password-protected secret JSON input. Omitted secret keys retain their
+stored values. Reopening any recorded application, including Git sources, loads
+saved non-secret variables and profiles without revealing its Compose source or
+secret values. If those settings cannot be loaded, preview is blocked until an
+explicit retry succeeds; unavailable configuration never becomes empty defaults.
+The read-only `GET /api/delivery/{id}/configuration` endpoint exposes only these
+editable non-secret settings. For JSON preview requests, omitted `variables` or
+`profiles` retain their saved values; an explicit empty object or array clears
+that selection.
+Host-control environment variables such as `PATH`, `DOCKER_*`,
+`COMPOSE_*`, `GIT_*` and loader settings are not application variables.
+**Validate and preview** runs maintained Compose configuration validation without
+starting services. The preview shows image/resource/port/storage changes and an
+effective-definition hash, never environment values. Porto preserves an
+existing service/target/protocol's loopback port assignment where available;
+new or occupied ports are allocated during activation. The project's runtime
+port and recorded effective configuration show the actual result.
+
+**Apply preview** requires explicit confirmation, rejects expired/reused or
+concurrently changed previews, and queues one project-owned operation. Direct
+project lifecycle actions and delivery actions share the same exclusion gate;
+other projects remain independent. Progress, cancellation, health failures,
+partial deployment and interrupted-daemon states appear in the application and
+**Activity > Operation history**. Failed health checks are not successful
+deployments. Failure does not delete the previous successful revision or any
+persistent volume.
+
+Recorded definitions also drive the existing project **Start**, **Stop** and
+**Setup dependencies** actions. Startup does not implicitly pull a recorded
+application's Git source. Delivery builds selected Compose build services with
+`--no-cache` before starting them; build errors are visible in redacted project
+logs. Canceling an in-progress activation stops its owned launcher and selected
+services within a bounded cleanup budget without deleting volumes.
+
+Definitions and rollback snapshots are AES-256-GCM encrypted with an
+installation-specific key in the native system credential store. This avoids
+native credential-store blob-size limits while retaining credential-store-backed
+Git tokens, webhook keys and secret variables. Unlock the system credential
+store before editing/deploying; an unavailable or missing key never falls back
+to plaintext. Compose's active effective definition must exist as a private
+`0600` runtime file. Raw definitions require an explicit reveal action and may
+contain user-written inline values; stored secret-variable values are never
+returned by that action. Previews, operation history and diagnostic exports
+exclude the encrypted payload and runtime definition, and project log capture
+redacts known stored secret values. Applications can still emit transformed or
+unrecognized sensitive data; treat workload output accordingly.
+
+### Git ownership and automatic updates
+
+Git sources support credential-free HTTPS URLs and explicitly selected local
+repositories, an exact branch/tag/commit ref, and a confined relative Compose
+path. Private HTTPS access uses a token scoped to that project and exact
+repository, stored behind the system credential store. Tokens are passed only
+to Git's scoped HTTPS header configuration, never URL/command arguments or
+repository files. Cross-host redirects, external Git transports, inherited
+credential helpers and checkout hooks are disabled. Immutable commit checkouts
+are separate from the user's repository/worktree. Submodule/LFS initialization
+and SSH credential onboarding are not provided by this workflow.
+
+Repositories and Compose definitions are executable workload configuration, not
+an untrusted-code sandbox. Review trusted source, bind mounts, capabilities,
+build contexts and image references before opting into updates.
+
+Polling is **off by default**. An opted-in interval is 60-86400 seconds; failed
+attempts record actionable history and exponential backoff up to one hour.
+Manual update checks and authenticated webhook notifications fetch only the
+approved ref. An already-deployed commit does not redeploy again. Concurrent
+actions are rejected, and daemon restarts never turn interrupted work into
+success.
+
+Direct edits to a Git-owned definition require **Detach Git ownership**, which
+turns polling/webhooks off. Out-of-band changes to the active definition block
+reconciliation instead of being overwritten. Review a new preview with explicit
+drift-replacement consent or choose a recorded rollback.
+
+Webhooks use a **separate loopback-only, webhook-only listener** whose current
+URL is shown on the application. It has no project/control API routes. The
+port can change after restarting Porto. Never expose Porto's unauthenticated
+local control API; an optional trusted HTTPS relay must forward only the
+authenticated webhook listener.
+
+The JSON body contains the exact approved `repository` and `ref`. Send:
+
+```text
+X-Porto-Timestamp: Unix timestamp in seconds
+X-Porto-Delivery: unique 8-128 character delivery ID
+X-Porto-Signature: sha256=<hex HMAC-SHA256>
+```
+
+Sign the exact UTF-8 bytes `timestamp + "\n" + deliveryID + "\n" + body` using the
+configured 32-256 byte secret. Timestamps outside five minutes, invalid HMACs,
+unapproved sources, repeated delivery IDs and concurrent admissions are rejected.
+Accepted replay identities are persisted across restarts. Native provider
+webhook formats need a trusted relay that verifies the provider request and
+creates this local signed envelope.
+
+### Recorded rollback and recovery
+
+Each successful deployment records its exact Git commit, base/effective
+configuration hashes and available immutable service image references.
+**Preview rollback** compares a selected revision with the current definition;
+applying it creates another revision and pauses automatic updates. Recorded
+image digests use local-only pull policy; unavailable original images fail
+visibly rather than silently pulling a mutable replacement tag. Definitions
+without complete image attribution carry an explicit rollback warning.
+
+Rollback is **not database/schema or persistent-data rollback**. It never uses
+`down --volumes`, deletes volumes, or promises reversal of application migrations,
+external side effects or storage changes. A failed rollback remains partial
+with the previous successful revision available for investigation. Keep the
+credential-store key and Porto state together when backing up deployment
+history; losing the key makes encrypted historical definitions unavailable.
+
+Synthetic delivery tests cover editor/upload/template/Git sources, immutable
+commits, ownership, drift, cancellation, failed health/rollback, webhook
+authentication/replay and secret redaction. Native Compose validation can be
+exercised without an engine or network with
+`PORTO_TEST_COMPOSE=1 go test ./internal/compose`.
