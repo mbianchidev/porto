@@ -202,7 +202,7 @@ async function json(url) {
 
 async function rendererRequest(renderer, endpoint, method = 'GET') {
   assert.ok(endpoint.startsWith('/api/docker/'), 'Only synthetic Docker operations belong in installed acceptance')
-  const timeout = method === 'POST' && /^\/api\/docker\/containers\/[^/]+\/start$/.test(endpoint) ? 60000 : 30000
+  const timeout = method === 'POST' && /^\/api\/docker\/containers\/[^/]+\/start$/.test(endpoint) ? 180000 : 30000
   return await renderer.evaluate(`(async () => {
     const response = await fetch(${JSON.stringify(endpoint)}, { method: ${JSON.stringify(method)} })
     return { status: response.status, body: await response.text() }
@@ -276,13 +276,18 @@ try {
 }
 
 async function stopProcess(processRecord, env, tree = false, {
-  identityImpl = identity, signalImpl = (pid, signal) => process.kill(pid, signal),
+  platform = process.platform, identityImpl = identity, runImpl = run,
+  signalImpl = (pid, signal) => process.kill(pid, signal),
 } = {}) {
   if (!processRecord || !processRecord.identity) return
   if (await identityImpl(processRecord.pid, env) !== processRecord.identity) return
-  if (process.platform === 'win32' && tree) {
-    await run('taskkill.exe',
-      ['/PID', String(processRecord.pid), '/T', '/F'], { env })
+  if (platform === 'win32' && tree) {
+    try {
+      await runImpl('taskkill.exe',
+        ['/PID', String(processRecord.pid), '/T', '/F'], { env })
+    } catch (error) {
+      if (await identityImpl(processRecord.pid, env) === processRecord.identity) throw error
+    }
   } else {
     try { signalImpl(processRecord.pid, 'SIGTERM') } catch (error) {
       if (error.code !== 'ESRCH') throw error

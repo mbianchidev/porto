@@ -179,9 +179,15 @@ separately from guest pressure. No provisioning or acceptance deadline changes.
 Fixed stage labels identify the failing operation, and each original failure
 category is reported before cleanup errors are combined. Raw exception
 messages, arguments and environment values are not printed.
-Renderer-origin container start requests use the existing one-minute
-start-command allowance rather than the debugger's shorter 30-second default.
-Other debugger requests and all production operation deadlines are unchanged.
+Renderer-origin container start requests have a bounded three-minute debugger
+envelope for metadata/architecture preflight, the existing one-minute start
+command, and execution bookkeeping. This does not extend the start command's
+deadline. Other debugger requests retain their 30-second limit, and provisioning
+and production operation deadlines are unchanged by this fixture setting.
+Windows desktop teardown rechecks the exact native process generation if
+`taskkill` loses a race with process exit. A verified exited/replaced generation
+needs no further signal; a still-owned process or unavailable inspection remains
+an explicit cleanup failure.
 Backend availability alone does not complete startup: the actual packaged
 dashboard target must appear within the same existing 25-minute provisioning
 wait. The fixture does not start a premature one-minute page timer while

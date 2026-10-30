@@ -576,7 +576,7 @@ test('Compose running-only inventory converges after fast lifecycle metadata wit
   await assert.rejects(composeRunningContainer(async () => `${id}\n${'b'.repeat(64)}`), /exactly one/)
 })
 
-test('only renderer POST start uses the existing one-minute lifecycle allowance', async (t) => {
+test('only renderer POST start includes lifecycle preflight and bookkeeping in its bounded RPC allowance', async (t) => {
   const timers = new Set()
   let socket
   t.mock.method(globalThis, 'setTimeout', (callback, delay) => {
@@ -599,7 +599,7 @@ test('only renderer POST start uses the existing one-minute lifecycle allowance'
   const renderer = await cdp('ws://synthetic.invalid')
   t.after(() => renderer.close())
   for (const [endpoint, method, expected] of [
-    ['/api/docker/containers/synthetic/start', 'POST', 60000],
+    ['/api/docker/containers/synthetic/start', 'POST', 180000],
     ['/api/docker/containers/synthetic/start', 'GET', 30000],
     ['/api/docker/containers/synthetic/stop', 'POST', 30000],
     ['/api/docker/containers/synthetic/restart', 'POST', 30000],
@@ -960,6 +960,36 @@ test('unknown ownership inspection refuses teardown rather than signaling a PID'
     signalImpl: (pid, signal) => signals.push([pid, signal]),
   }), /inspection unavailable/)
   assert.deepEqual(signals, [])
+})
+
+test('Windows tree teardown rechecks its owned generation after taskkill races process exit', async () => {
+  for (const following of ['', 'reused-generation', 'owned-generation', 'unavailable']) {
+    let inspections = 0
+    let terminations = 0
+    const killFailure = Object.assign(new Error('Synthetic taskkill raced process exit'), { code: 'PORTO_COMMAND_FAILED', exitCode: 128 })
+    const inspectionFailure = new Error('Synthetic native identity inspection unavailable')
+    const stopped = stopProcess({ pid: 123, identity: 'owned-generation' }, {}, true, {
+      platform: 'win32',
+      identityImpl: async (pid) => {
+        assert.equal(pid, 123)
+        if (++inspections === 1) return 'owned-generation'
+        if (following === 'unavailable') throw inspectionFailure
+        return following
+      },
+      runImpl: async (file, args) => {
+        assert.equal(file, 'taskkill.exe')
+        assert.deepEqual(args, ['/PID', '123', '/T', '/F'])
+        terminations++
+        throw killFailure
+      },
+      signalImpl: () => { throw new Error('Never signal another process as a fallback') },
+    })
+    if (following === 'owned-generation') await assert.rejects(stopped, (error) => error === killFailure)
+    else if (following === 'unavailable') await assert.rejects(stopped, (error) => error === inspectionFailure)
+    else await stopped
+    assert.equal(terminations, 1)
+    assert.ok(inspections >= 2, 'A failed taskkill must not be accepted without native ownership reinspection')
+  }
 })
 
 test('bounded sanitized Lima/QEMU and guest serial diagnostics survive instance deletion', (t) => {
