@@ -79,6 +79,11 @@ report udevadm info --query=property --name=/dev/vda13
 report udevadm info --query=property --name=/dev/vda15
 report systemctl show boot.mount boot-efi.mount local-fs.target systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service systemd-sysusers.service systemd-modules-load.service systemd-tmpfiles-setup-dev-early.service cloud-init-local.service cloud-init-network.service cloud-config.service cloud-final.service ssh.service systemd-networkd-wait-online.service -p Id -p ActiveState -p Result -p ActiveEnterTimestampMonotonic -p InactiveExitTimestampMonotonic -p ExecMainStartTimestampMonotonic -p ExecMainExitTimestampMonotonic -p CPUUsageNSec
 report sudo -n journalctl -b -u systemd-udevd.service -u systemd-udev-trigger.service -u systemd-hwdb-update.service -u systemd-sysusers.service -u systemd-modules-load.service -u boot.mount -u boot-efi.mount --no-pager -n 160
+report systemctl show lima-guestagent.service -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts
+report sudo -n journalctl -b -u lima-guestagent.service --no-pager -n 100
+if [ -d /dev/virtio-ports ]; then
+  report ls -l /dev/virtio-ports
+fi
 report sudo -n tail -n 200 /var/log/cloud-init-output.log
 exit "$status"
 `

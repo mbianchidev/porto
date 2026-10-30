@@ -110,6 +110,15 @@ The Resource Saver fixture keeps its inventory context alive until registered
 container, sharing and inventory cleanups finish. Returning from the test body
 must not close its RPC connection while synthetic-container cleanup still needs it.
 
+Windows QEMU still uses Lima's
+[known unreliable serial guest-agent channel](https://github.com/lima-vm/lima/issues/2158).
+Its `Info` health probe is bounded at ten seconds, allowing the existing reconnect
+loop to replace a stalled channel rather than hold its client lock until shutdown.
+Virtual-clock coverage verifies expiration, a shorter three-second caller deadline
+and a healthy replacement connection. The one-minute guest-agent startup check
+and all real forwarding assertions remain required. Failed boot diagnostics include
+the guest-agent service state, journal and available virtio ports.
+
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an
 empty or truncated archive. The preceding passing run used the same version.

@@ -146,7 +146,7 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.1+porto.6`: the stable 2.2.1 source with
+Windows packages bundle Lima `v2.2.1+porto.7`: the stable 2.2.1 source with
 [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
 backported and consoleless shutdown fixes. Graceful QEMU stops request ACPI
 powerdown through that instance's existing QMP socket and retain Lima's
@@ -162,6 +162,10 @@ including Windows' "no running instance of the task" exit status.
 Live process IDs are not treated as stale;
 configuration errors and VM disks are preserved. macOS and Linux retain the
 unmodified upstream Lima binaries.
+Windows guest-agent health probes have a ten-second per-RPC deadline so Lima's
+existing reconnect loop can replace a stalled QEMU serial channel. Shorter caller
+deadlines and the one-minute guest-agent startup requirement remain unchanged;
+a running VM without working guest-agent forwarding still fails readiness.
 ARM64 packages also use the actual Windows CPU feature bits when selecting SSH
 ciphers, instead of emitting a spurious initialization warning into every
 runtime response.
