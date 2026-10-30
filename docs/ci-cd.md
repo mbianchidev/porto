@@ -106,6 +106,9 @@ live containerd metadata over its established connection instead of forking
 `nerdctl inspect` for each guard. They do not trust cached snapshot names and do
 not reuse a connection after engine ownership changes. The metadata timeout and
 shorter caller deadlines remain unchanged; metadata failures stay explicit.
+The Resource Saver fixture keeps its inventory context alive until registered
+container, sharing and inventory cleanups finish. Returning from the test body
+must not close its RPC connection while synthetic-container cleanup still needs it.
 
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an

@@ -209,7 +209,7 @@ func TestResourceSaverOwnedRuntimeAcceptance(t *testing.T) {
 		t.Skip("real acceptance runs only in the existing isolated development-client CI fixture")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 18*time.Minute)
-	defer cancel()
+	t.Cleanup(cancel)
 	manager := portodocker.New(nil)
 	if os.Getenv("PORTO_DOCKER_CLIENT_BACKEND") == "lima" {
 		if err := manager.StartEngine(ctx); err != nil {
