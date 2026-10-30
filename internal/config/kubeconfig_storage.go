@@ -69,6 +69,51 @@ func activeKubeconfigDirectory() (string, error) {
 	return directory, nil
 }
 
+func validateKubeconfigDestination(destination string) (err error) {
+	if filepath.Dir(destination) == destination {
+		return errors.New("choose a dedicated kubeconfig folder, not a filesystem root")
+	}
+	parent, err := os.OpenRoot(filepath.Dir(destination))
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, parent.Close()) }()
+	name := filepath.Base(destination)
+	info, err := parent.Lstat(name)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("kubeconfig destination must be an empty real directory")
+	}
+	directory, err := parent.Open(name)
+	if err != nil {
+		return err
+	}
+	defer func() { err = errors.Join(err, directory.Close()) }()
+	opened, err := directory.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(info, opened) || !opened.IsDir() {
+		return errors.New("kubeconfig destination changed during validation")
+	}
+	entries, err := directory.ReadDir(1)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return err
+	}
+	if len(entries) != 0 {
+		return errors.New("kubeconfig destination must be empty; existing files will not be overwritten")
+	}
+	return nil
+}
+
 func ValidateKubeconfigDirectoryChange(value string) error {
 	current, err := activeKubeconfigDirectory()
 	if err != nil {
@@ -121,18 +166,7 @@ func ValidateKubeconfigDirectoryChange(value string) error {
 			return errors.New("kubeconfig folders must not overlap, including through symbolic links")
 		}
 	}
-	if info, err := os.Lstat(destination); err == nil {
-		if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-			return errors.New("kubeconfig destination must be an empty real directory")
-		}
-		entries, err := os.ReadDir(destination)
-		if err != nil {
-			return err
-		}
-		if len(entries) != 0 {
-			return errors.New("kubeconfig destination must be empty; existing files will not be overwritten")
-		}
-	} else if !errors.Is(err, os.ErrNotExist) {
+	if err := validateKubeconfigDestination(destination); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(current)

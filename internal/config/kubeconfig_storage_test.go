@@ -130,3 +130,33 @@ func TestKubeconfigStorageCancellationAndInvalidConfigurationStayVisible(t *test
 		t.Fatal("invalid active storage silently fell back to the default")
 	}
 }
+
+func TestKubeconfigDestinationValidationUsesOnlyTheSelectedDirectory(t *testing.T) {
+	empty := t.TempDir()
+	if err := validateKubeconfigDestination(empty); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "not-created", "kubeconfigs")
+	if err := validateKubeconfigDestination(missing); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "synthetic-file")
+	if err := os.WriteFile(file, []byte("synthetic private data"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateKubeconfigDestination(file); err == nil {
+		t.Fatal("a regular file was accepted as storage")
+	}
+	if runtime.GOOS != "windows" {
+		link := filepath.Join(t.TempDir(), "outside-link")
+		if err := os.Symlink(empty, link); err != nil {
+			t.Fatal(err)
+		}
+		if err := validateKubeconfigDestination(link); err == nil {
+			t.Fatal("destination validation followed a directory symlink")
+		}
+		if err := validateKubeconfigDestination(string(filepath.Separator)); err == nil {
+			t.Fatal("a filesystem root was accepted as dedicated storage")
+		}
+	}
+}
