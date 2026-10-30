@@ -20,6 +20,8 @@ async function mockResources(page: Page) {
     cleanupLocalMerged: false, cleanupRemoteMerged: false, pruneRemoteTracking: false, protectedBranches: ['main'],
     sqlNotSoLiteEnabled: false, killSwitchEnabled: false, sendboxEnabled: false, dockerEnabled: true,
     dockerAutoPruneEnabled: false, kubernetesEnabled: false, vmsEnabled: true, theme: 'dark', interfaceDensity: 'compact',
+    kubeconfigDirectory: '', kubeconfigActiveDirectory: '/synthetic/porto/kubernetes',
+    kubeconfigRestartRequired: false, kubeconfigStorageError: '',
     reduceMotion: true, terminalFontSize: 13, terminalLineHeight: 1.2, terminalCursorBlink: false, terminalScrollback: 1000, logRetentionDays: 7,
   }
   await page.route('**/api/**', async (route) => {
@@ -30,6 +32,11 @@ async function mockResources(page: Page) {
     if (method !== 'GET') {
       const body: unknown = route.request().postData() ? route.request().postDataJSON() : null
       mutations.push({ path: url.pathname + url.search, method, body })
+      if (path === '/api/settings') {
+        Object.assign(settings, route.request().postDataJSON())
+        settings.kubeconfigRestartRequired = (settings.kubeconfigDirectory || '/synthetic/porto/kubernetes') !== settings.kubeconfigActiveDirectory
+        return json(settings)
+      }
       if (path === '/api/runtime/resource-saver') {
         saver.state.config = route.request().postDataJSON()
         return json(saver)
@@ -74,8 +81,58 @@ async function mockResources(page: Page) {
     return json(values[path] ?? [])
   })
   await page.goto('/#/settings')
-  return { mutations, saver, acceleration, engine, shares }
+  return { mutations, saver, acceleration, engine, shares, settings }
 }
+
+test('kubeconfig storage saves a custom folder and keeps the active folder until restart', async ({ page }) => {
+  const fixture = await mockResources(page)
+  const region = page.getByRole('region', { name: 'Choose where kubeconfigs live.' })
+  await region.getByLabel('Kubeconfig storage folder').fill('/synthetic/custom kubeconfigs')
+  await region.getByRole('button', { name: 'Save kubeconfig storage' }).click()
+  await expect.poll(() => fixture.mutations.filter((request) => request.path === '/api/settings').length).toBe(1)
+  expect(fixture.mutations.find((request) => request.path === '/api/settings')).toMatchObject({
+    method: 'PUT', body: { kubeconfigDirectory: '/synthetic/custom kubeconfigs' },
+  })
+  await expect(region.getByRole('status')).toHaveText('Restart required to apply the saved folder.')
+  await expect(region.getByText('Active folder: /synthetic/porto/kubernetes')).toBeVisible()
+  await page.reload()
+  await expect(region.getByLabel('Kubeconfig storage folder')).toHaveValue('/synthetic/custom kubeconfigs')
+  await expect(region.getByText('Active folder: /synthetic/porto/kubernetes')).toBeVisible()
+})
+
+test('kubeconfig storage can reset to default and exposes migration failures without changing active storage', async ({ page }) => {
+  const fixture = await mockResources(page)
+  fixture.settings.kubeconfigDirectory = '/synthetic/custom kubeconfigs'
+  fixture.settings.kubeconfigStorageError = 'Synthetic destination is no longer writable'
+  fixture.settings.kubeconfigRestartRequired = true
+  await page.reload()
+  const region = page.getByRole('region', { name: 'Choose where kubeconfigs live.' })
+  await expect(region.getByRole('alert')).toContainText('Synthetic destination is no longer writable')
+  await region.getByRole('button', { name: 'Use default folder' }).click()
+  await expect(region.getByLabel('Kubeconfig storage folder')).toHaveValue('')
+  await region.getByRole('button', { name: 'Save kubeconfig storage' }).click()
+  await expect.poll(() => fixture.mutations.filter((request) => request.path === '/api/settings').length).toBe(1)
+  expect(fixture.mutations.find((request) => request.path === '/api/settings')).toMatchObject({
+    method: 'PUT', body: { kubeconfigDirectory: '' },
+  })
+  expect(fixture.settings.kubeconfigActiveDirectory).toBe('/synthetic/porto/kubernetes')
+})
+
+test('kubeconfig storage reports rejected destinations and retains unsaved edits', async ({ page }) => {
+  const fixture = await mockResources(page)
+  await page.route('**/api/settings', async (route) => {
+    if (route.request().method() === 'PUT') {
+      return route.fulfill({ status: 400, contentType: 'text/plain', body: 'Kubeconfig destination must be empty' })
+    }
+    return route.fallback()
+  })
+  const region = page.getByRole('region', { name: 'Choose where kubeconfigs live.' })
+  await region.getByLabel('Kubeconfig storage folder').fill('/synthetic/occupied')
+  await region.getByRole('button', { name: 'Save kubeconfig storage' }).click()
+  await expect(page.getByText('Kubeconfig destination must be empty', { exact: true })).toBeVisible()
+  await expect(region.getByLabel('Kubeconfig storage folder')).toHaveValue('/synthetic/occupied')
+  expect(fixture.settings.kubeconfigDirectory).toBe('')
+})
 
 test('Resource Saver starts disabled and saves explicit bounded policies without applying unrelated changes', async ({ page }) => {
   const fixture = await mockResources(page)

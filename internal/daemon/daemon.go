@@ -128,6 +128,8 @@ type Server struct {
 	clusters           *kubernetes.ClusterProvisioner
 	autoscaling        kubernetesAutoscalingService
 	kubeconfigErr      error
+	kubeconfigDir      string
+	kubeStorageErr     error
 	vms                *vm.Manager
 	providers          *providers.Manager
 	dockerSocket       string
@@ -236,6 +238,7 @@ func New(st *store.Store, ui fs.FS) *Server {
 		kubernetes:     kubernetes.NewWithKubeconfigRoot(runner, kubeconfigDir),
 		clusters:       clusterProvisioner,
 		kubeconfigErr:  kubeconfigErr,
+		kubeconfigDir:  kubeconfigDir,
 		vms:            vmManager,
 		providers:      providers.New(runner),
 		dockerSocket:   dockerSocket,
@@ -301,6 +304,14 @@ func (s *Server) Run(ctx context.Context) error {
 	settings, err := s.store.Settings(ctx)
 	if err != nil {
 		return fmt.Errorf("read runtime settings: %w", err)
+	}
+	releaseKubeconfigStorage, err := s.lockKubeconfigStorage(ctx)
+	if err != nil {
+		return err
+	}
+	defer releaseKubeconfigStorage()
+	if err := s.applyKubeconfigStorage(ctx, settings); err != nil {
+		return err
 	}
 	home, err := s.userHomeDir()
 	if err != nil {
@@ -846,7 +857,7 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	writeJSON(w, settings)
+	writeJSON(w, s.kubeconfigSettings(settings))
 }
 
 func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
@@ -872,6 +883,12 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	if settings.KubeconfigDirectory != current.KubeconfigDirectory {
+		if err := config.ValidateKubeconfigDirectoryChange(settings.KubeconfigDirectory); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
 	if err := s.store.SetSettings(r.Context(), settings); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -887,10 +904,18 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 	if settings.KillSwitchEnabled != current.KillSwitchEnabled {
 		s.syncKillSwitch(r.Context())
 	}
-	writeJSON(w, settings)
+	writeJSON(w, s.kubeconfigSettings(settings))
 }
 
 func normalizeSettings(settings app.Settings) (app.Settings, error) {
+	var err error
+	settings.KubeconfigDirectory, err = config.NormalizeKubeconfigDirectory(settings.KubeconfigDirectory)
+	if err != nil {
+		return settings, err
+	}
+	settings.KubeconfigActiveDirectory = ""
+	settings.KubeconfigStorageError = ""
+	settings.KubeconfigRestartRequired = false
 	if settings.InterfaceDensity == "" {
 		settings.InterfaceDensity = app.DefaultInterfaceDensity
 	}

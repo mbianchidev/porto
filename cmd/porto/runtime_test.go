@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -270,7 +271,6 @@ func TestDefaultKubeconfigPathAlwaysUsesStandardLocation(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-
 	path, err := defaultKubeconfigPath()
 	if err != nil {
 		t.Fatal(err)
@@ -278,6 +278,38 @@ func TestDefaultKubeconfigPathAlwaysUsesStandardLocation(t *testing.T) {
 	want := filepath.Join(home, ".kube", "config")
 	if path != want {
 		t.Fatalf("default kubeconfig path = %q, want %q", path, want)
+	}
+}
+
+func TestClusterKubeconfigPathsFollowRelocatedStorage(t *testing.T) {
+	t.Setenv("PORTO_HOME", t.TempDir())
+	original, err := config.KubernetesConfigDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cluster := "synthetic-relocated"
+	token := config.KubernetesClusterFileToken(cluster)
+	request := kubernetes.ClusterRequest{Name: cluster, Provider: "k0s"}
+	metadata, err := json.Marshal(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, contents := range map[string][]byte{token + ".yaml": []byte("synthetic kubeconfig"), token + ".json": metadata} {
+		if err := os.WriteFile(filepath.Join(original, name), contents, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	destination := filepath.Join(t.TempDir(), "synthetic moved configurations")
+	if _, err := config.ApplyKubeconfigDirectory(context.Background(), destination); err != nil {
+		t.Fatal(err)
+	}
+	path, err := clusterKubeconfigPath(cluster)
+	if err != nil || path != filepath.Join(destination, token+".yaml") {
+		t.Fatalf("CLI kubeconfig = %q, %v", path, err)
+	}
+	owner, err := clusterKubeconfigOwner(cluster)
+	if err != nil || owner.Cluster != cluster || owner.Provider != "k0s" {
+		t.Fatalf("CLI ownership after relocation = %+v, %v", owner, err)
 	}
 }
 

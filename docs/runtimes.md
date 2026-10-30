@@ -705,9 +705,26 @@ porto runtime install k9s
 ```
 
 Porto stores each generated kubeconfig under an opaque, fixed-length filename
-inside `<PORTO_HOME>/kubernetes`. Use `porto kubernetes kubeconfig <cluster>`
+inside `<PORTO_HOME>/kubernetes` by default. Use `porto kubernetes kubeconfig <cluster>`
 to resolve its path. kind and k0s context, cluster, and user entries use
 `porto-<cluster>`; k3s uses `porto-k3s-<cluster>`.
+
+In **Settings > Kubeconfig storage folder**, choose an empty, dedicated folder
+using an absolute path or `~/`. Saving persists the choice; restart Porto to move
+existing kubeconfigs, cluster metadata and autoscaling state together before
+runtime workers start. The CLI and daemon then use the same active location.
+**Use default folder** schedules the same safe move back to Porto's data folder.
+Existing clusters keep running, and the standard `~/.kube/config` registration
+location is unchanged.
+
+The move supports different filesystems, preserves file contents, and creates
+private directories/files (`0700`/`0600` on Unix). Nonempty destinations,
+overlapping paths, symlinks/special files and pending upgrade-recovery folders
+are rejected rather than overwritten or followed. A failed copy retains the
+originals and rolls back only files created by the move. Settings shows the
+active folder, pending restart and any migration/cleanup error; it never
+silently claims the requested location was applied. Finish or recover a pending
+upgrade before relocating its state.
 
 Porto lifecycle-manages a flattened copy in `~/.kube/config`: creation and
 startup add or refresh the context, rename replaces it, deletion removes it,

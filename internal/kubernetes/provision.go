@@ -93,6 +93,11 @@ func (p *ClusterProvisioner) SetKubeconfigRegistry(registry *KubeconfigRegistry)
 	p.kubeconfigs = registry
 }
 
+// SetKubeconfigRoot is initialization-only, before any runtime workers start.
+func (p *ClusterProvisioner) SetKubeconfigRoot(directory string) {
+	p.kubeconfigRoot = directory
+}
+
 func (p *ClusterProvisioner) SetRegistryConfigProvider(provider func(context.Context) ([]byte, error)) {
 	p.registryConfig = provider
 }

@@ -233,11 +233,10 @@ func CanonicalDockerSocketPath() string {
 }
 
 func KubernetesConfigDir() (string, error) {
-	dir, err := Dir()
+	kubeconfigDir, err := activeKubeconfigDirectory()
 	if err != nil {
 		return "", err
 	}
-	kubeconfigDir := filepath.Join(dir, "kubernetes")
 	if err := os.MkdirAll(kubeconfigDir, 0o700); err != nil {
 		return "", err
 	}
