@@ -93,6 +93,14 @@ reading either a content-length or chunked binary upload. This catches a
 request-body draining race; in-memory response recorders alone cannot exercise
 that HTTP server behavior.
 
+BuildKit control and session channels share a one-minute connection-setup
+allowance for the owned SSH/stdio tunnel. gRPC's default 20-second dial attempt
+could discard a slow but valid emulated-guest connection before the caller's
+longer RPC deadline. A deterministic virtual-clock regression verifies a
+25-second tunnel connects once, while a caller's shorter ten-second deadline
+still expires on time. This does not retry builds or extend their request,
+container-start, provisioning or readiness budgets.
+
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an
 empty or truncated archive. The preceding passing run used the same version.

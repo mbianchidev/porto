@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"time"
 
 	"github.com/containerd/containerd/v2/defaults"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/backoff"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
@@ -16,6 +18,9 @@ func newBuildKitControlConnection(dial func(context.Context) (net.Conn, error)) 
 	return grpc.NewClient(
 		"passthrough:///buildkit",
 		grpc.WithTransportCredentials(insecure.NewCredentials()),
+		grpc.WithConnectParams(grpc.ConnectParams{
+			Backoff: backoff.DefaultConfig, MinConnectTimeout: time.Minute,
+		}),
 		grpc.WithDefaultCallOptions(
 			grpc.MaxCallRecvMsgSize(defaults.DefaultMaxRecvMsgSize),
 			grpc.MaxCallSendMsgSize(defaults.DefaultMaxSendMsgSize),

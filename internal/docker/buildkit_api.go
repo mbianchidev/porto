@@ -15,7 +15,6 @@ import (
 	"github.com/containerd/containerd/v2/defaults"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/metadata"
 )
 
@@ -46,13 +45,7 @@ func dialBuildKitSession(
 	dial func(context.Context) (net.Conn, error),
 	headers http.Header,
 ) (net.Conn, error) {
-	connection, err := grpc.NewClient(
-		"passthrough:///buildkit",
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithContextDialer(func(context.Context, string) (net.Conn, error) {
-			return dial(ctx)
-		}),
-	)
+	connection, err := newBuildKitControlConnection(dial)
 	if err != nil {
 		return nil, fmt.Errorf("connect to BuildKit session service: %w", err)
 	}
