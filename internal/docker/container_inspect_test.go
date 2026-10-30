@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -137,6 +138,90 @@ func TestDockerNetworkListUsesTheSameCanonicalIDAsNetworkInspection(t *testing.T
 	var networks []struct{ ID, Name string }
 	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &networks) != nil || len(networks) != 1 || networks[0].ID != id {
 		t.Fatalf("Compose would compare a display-shortened network ID with a canonical container endpoint ID: %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func TestDockerNetworkListFiltersBeforeInspectingCanonicalIdentities(t *testing.T) {
+	id := strings.Repeat("d", 64)
+	for _, filter := range []string{
+		`{"label":{"com.docker.compose.network=backend":true}}`,
+		`{"name":{"synthetic-backend":true}}`,
+		`{"driver":{"bridge":true}}`,
+	} {
+		t.Run(filter, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				switch strings.Join(command.Args, " ") {
+				case "network ls --format {{json .}}":
+					return []byte(`{"Name":"synthetic-removed","ID":"old","Driver":"macvlan","Labels":"com.docker.compose.network=default"}` + "\n" +
+						`{"Name":"synthetic-backend","ID":"` + id[:12] + `","Driver":"bridge","Labels":"com.docker.compose.network=backend"}` + "\n"), nil
+				case "network inspect synthetic-backend":
+					return []byte(`[{"Name":"synthetic-backend","Id":"` + id + `"}]`), nil
+				default:
+					return nil, fmt.Errorf("no network found matching: synthetic-removed")
+				}
+			}}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+				httptest.NewRequest(http.MethodGet, "/v1.47/networks?filters="+url.QueryEscape(filter), nil))
+			var networks []struct{ ID, Name string }
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &networks) != nil ||
+				len(networks) != 1 || networks[0].ID != id || networks[0].Name != "synthetic-backend" {
+				t.Fatalf("an unrelated concurrently removed network broke the filtered list: %d: %s", response.Code, response.Body.String())
+			}
+		})
+	}
+}
+
+func TestDockerNetworkListRefreshesAnObservedDeletionWithoutHidingOtherFailures(t *testing.T) {
+	id := strings.Repeat("e", 64)
+	for _, scenario := range []string{"deleted during inspection", "still missing", "permission denied", "malformed JSON"} {
+		t.Run(scenario, func(t *testing.T) {
+			lists, inspections := 0, 0
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				switch {
+				case strings.Join(command.Args, " ") == "network ls --format {{json .}}":
+					lists++
+					output := `{"Name":"synthetic-backend","ID":"` + id[:12] + `","Driver":"bridge"}` + "\n"
+					if lists == 1 || scenario == "still missing" {
+						output += `{"Name":"synthetic-removed","ID":"old","Driver":"bridge"}` + "\n"
+					}
+					return []byte(output), nil
+				case len(command.Args) >= 3 && command.Args[0] == "network" && command.Args[1] == "inspect":
+					inspections++
+					if scenario == "permission denied" {
+						return nil, fmt.Errorf("synthetic backend permission denied")
+					}
+					if scenario == "malformed JSON" {
+						return []byte("invalid synthetic JSON"), nil
+					}
+					if inspections == 1 || scenario == "still missing" {
+						return nil, fmt.Errorf("no network found matching: synthetic-removed")
+					}
+					return []byte(`[{"Name":"synthetic-backend","Id":"` + id + `"}]`), nil
+				default:
+					return nil, fmt.Errorf("unexpected synthetic network read")
+				}
+			}}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+				httptest.NewRequest(http.MethodGet, "/v1.47/networks", nil))
+			if scenario == "deleted during inspection" {
+				var networks []struct{ ID, Name string }
+				if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &networks) != nil ||
+					len(networks) != 1 || networks[0].ID != id {
+					t.Fatalf("network deletion did not refresh the authoritative list: %d: %s", response.Code, response.Body.String())
+				}
+			} else if response.Code == http.StatusOK {
+				t.Fatalf("network inspection failure became a successful partial/empty list: %s", response.Body.String())
+			}
+			expected := 1
+			if scenario == "deleted during inspection" || scenario == "still missing" {
+				expected = 2
+			}
+			if lists != expected || inspections != expected {
+				t.Fatalf("network refresh was unbounded or hid an unrelated failure: lists=%d inspections=%d want=%d", lists, inspections, expected)
+			}
+		})
 	}
 }
 

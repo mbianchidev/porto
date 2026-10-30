@@ -147,7 +147,12 @@ stack reconciliation rather than recreating it because CNI inspection omitted
 an opaque ID. Network lists expose the same full identities, not display-shortened
 IDs. Recorded native mount annotations retain named-volume identity in Docker
 summaries while preserving the actual OCI source and read-only flags; ordinary
-bind mounts are not guessed to be volumes. Runtime helper teardown stops its
+bind mounts are not guessed to be volumes. Network lists filter name, driver and
+labels before canonical-ID inspection and refresh once if a selected network
+disappears concurrently. Persistent missing identities, invalid JSON, permission
+errors and other backend failures remain explicit; a removed unrelated network
+cannot break another stack's filtered inventory.
+Runtime helper teardown stops its
 owned process group, including SSH descendants, so repeated health checks and
 lifecycle operations release their transport sessions.
 Container creation, removal and rename are acknowledged only after the healthy
