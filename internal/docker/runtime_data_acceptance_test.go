@@ -170,6 +170,9 @@ func (runner runtimeDataVMRunner) command(command runtimes.Command) runtimes.Com
 		if dependencies := os.Getenv("PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES"); dependencies != "" {
 			command.Args = append(command.Args, "--set="+dependencies)
 		}
+		if images := os.Getenv("PORTO_DOCKER_CLIENT_LIMA_IMAGES"); images != "" {
+			command.Args = append(command.Args, "--set="+images)
+		}
 		if runtime.GOARCH == "arm64" && os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
 			command.Args = append(command.Args, `--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"`)
 		}
@@ -419,11 +422,11 @@ func TestRuntimeDataAcceptance(t *testing.T) {
 		}
 	}
 	fixture.prepareSource()
-	fixture.prepareObjects()
 	cancel()
 	acceptance, finish := context.WithTimeout(lifetime, 40*time.Minute)
 	t.Cleanup(finish)
 	fixture.ctx = acceptance
+	fixture.prepareObjects()
 	t.Run("selected migration and source preservation", fixture.migrateSelected)
 	if t.Failed() {
 		return

@@ -6,7 +6,7 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const crypto = require('node:crypto')
 
-const { selectArchive, decompressArchive, dependencyProvisionOverride, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
+const { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
 const { sha256 } = require('./verify-runtime-checksum.cjs')
 
 function fixture(t) {
@@ -47,6 +47,27 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
   assert.match(script, /Debug::Acquire::Retries "true";/)
   assert.match(script, /APT::Update::Error-Mode "any";/)
   assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
+})
+
+test('Intel TCG uses matching pinned guest, kernel and initrd with only the upstream timer-check workaround', () => {
+  const images = intelTCGImages()
+  assert.equal(images.length, 1)
+  const [image] = images
+  const disk = new URL(image.location)
+  assert.equal(disk.origin, 'https://cloud-images.ubuntu.com')
+  assert.match(disk.pathname, /\/release-\d{8}\/ubuntu-26\.04-server-cloudimg-amd64\.img$/)
+  for (const artifact of [image, image.kernel, image.initrd]) {
+    assert.equal(artifact.arch, 'x86_64')
+    assert.match(artifact.digest, /^sha256:[a-f0-9]{64}$/)
+  }
+  const base = image.location.slice(0, -4)
+  const directory = base.slice(0, base.lastIndexOf('/') + 1)
+  const name = base.slice(base.lastIndexOf('/') + 1)
+  assert.equal(image.kernel.location, `${directory}unpacked/${name}-vmlinuz-generic`)
+  assert.equal(image.initrd.location, `${directory}unpacked/${name}-initrd-generic`)
+  assert.equal(image.kernel.cmdline, 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check')
+  image.kernel.cmdline = 'synthetic mutation'
+  assert.notEqual(intelTCGImages()[0].kernel.cmdline, image.kernel.cmdline)
 })
 
 test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {

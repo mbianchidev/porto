@@ -270,6 +270,9 @@ else
     if [ "$suite/$goarch" = data/amd64 ]; then
       export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb"
       export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
+      PORTO_DOCKER_CLIENT_LIMA_IMAGES="$(node scripts/lima-containerd-archive.cjs --intel-tcg-images)"
+      export PORTO_DOCKER_CLIENT_LIMA_IMAGES
+      echo "::warning::Intel macOS TCG uses Lima's CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged."
       echo "::notice::Intel macOS data fixtures explicitly use bounded QEMU TCG; a hardware capability bit is not support for nested HVF on hosted runners."
     fi
   fi
@@ -279,6 +282,9 @@ else
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
     --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user
     "--set=$PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES")
+  if [ -n "${PORTO_DOCKER_CLIENT_LIMA_IMAGES:-}" ]; then
+    lima_options+=("--set=$PORTO_DOCKER_CLIENT_LIMA_IMAGES")
+  fi
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
     if [ "$goarch" = arm64 ]; then
       lima_options+=('--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"')

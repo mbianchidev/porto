@@ -390,6 +390,9 @@ executable. Local-containerd cells have no Lima engine to restart; selecting the
 dedicated engine phase without an independently owned CI Lima runtime is an error.
 No job waits for another phase's artifacts. The 85-minute job, 55-minute
 executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.
+The source setup budget ends when its VM, Docker daemon and transport are ready.
+Synthetic image/resource seeding uses the existing acceptance budget instead of
+the last few seconds left after a slow emulated source boot and Docker install.
 Normal development-client jobs retain their existing scope. Linux installs
 FUSE3, `qemu-utils`, and only the host-architecture QEMU package:
 `qemu-system-x86` on x64 or `qemu-system-arm` on ARM64. All source and destination
@@ -679,7 +682,17 @@ a supported emulated CPU. Forcing just the accelerator while Lima selects its
 HVF configuration bypasses these TCG defaults. Serializing both guest vCPUs and
 reducing the translation cache slows the CPU-bound device discovery and rootless
 provisioning. The guest retains its two vCPUs and normal clock handling, without
-instruction counting. Raising Lima's outer timeout does not repair an
+instruction counting. Intel macOS TCG fixtures explicitly opt into Lima's
+[upstream CI workaround](https://github.com/lima-vm/lima/pull/2541) for the
+[intermittent IO-APIC timer panic](https://github.com/lima-vm/lima/issues/84).
+They boot the same checksum-pinned Ubuntu 26.04 image selected by Lima 2.2.1,
+with its matching dated-release kernel and initrd also pinned by SHA-256, and
+append only `no_timer_check` to the guest command line. This disables the guest
+kernel's hardware-timer sanity check in those emulated fixtures, not a Porto
+assertion. Both source and destination use the same override. CI emits an
+explicit warning; packaged runtime defaults, non-Intel fixtures and native
+hardware acceptance are unchanged. Keep all three dated image/kernel/initrd pins
+aligned when updating this fixture. Raising Lima's outer timeout does not repair an
 emergency-mode boot.
 The Intel runtime-data phases verify that both destination and source retain
 the image's `LABEL=BOOT` and `LABEL=UEFI` fstab entries, resolve those labels to
