@@ -190,7 +190,7 @@ PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cj
 export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
-  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu neoverse-n1"
+  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt -accel tcg,thread=multi,tb-size=512 -cpu neoverse-n1"
   export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
   echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."
 fi

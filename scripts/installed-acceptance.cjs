@@ -121,7 +121,7 @@ async function configureLima(fixture, env) {
   }
   const quotedQemu = `'${qemu.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`
   env[arch === 'amd64' ? 'QEMU_SYSTEM_X86_64' : 'QEMU_SYSTEM_AARCH64'] = arch === 'arm64'
-    ? `${quotedQemu} -machine virt,accel=tcg -cpu neoverse-n1`
+    ? `${quotedQemu} -machine virt -accel tcg,thread=multi,tb-size=512 -cpu neoverse-n1`
     : `${quotedQemu} -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb`
   if (fixture.snapshots) return
   console.log('Installed acceptance: preparing checksum-verified guest tools')

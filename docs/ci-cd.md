@@ -108,6 +108,15 @@ requested SIGKILL escalation and confirms task exit. An earlier caller deadline
 still returns cancellation without an extra kill. This avoids an intermittent
 Testcontainers stop failure without retrying its workflow.
 
+The disposable development-client Lima fixture is initially created by
+`limactl`, not Porto's installer. Before timed Resource Saver checks, it completes
+Porto's normal engine provisioning, including static QEMU/binfmt packages and
+BuildKit platform registration. Otherwise the first shutdown/wake would try to
+download and install those missing prerequisites inside its 60-second readiness
+budget. The configured wake deadline and real request/readiness assertions are
+unchanged; later wakes still verify the installed handlers through the normal
+production path.
+
 Development-client acceptance also runs Resource Saver against the same
 disposable backends: original binary POST preservation, shared concurrent wakes,
 real WebSocket activity, manual-pause exclusion, and owned-engine shutdown and
@@ -665,6 +674,10 @@ Linux runners without `/dev/kvm` use the same host-side archive preparation.
 Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
 source VM, avoiding the EDK2 LPA2 boot hang reported in
 [tianocore/edk2#11962](https://github.com/tianocore/edk2/issues/11962).
+Explicit ARM64 TCG executable overrides also retain Lima's full multi-threaded
+TCG profile and 512 MiB translation cache instead of overriding only the machine
+accelerator. This reduces avoidable translation-cache pressure during native
+ARM64 software emulation without extending installation or readiness deadlines.
 The 20-minute guest startup budget and resource assertions remain unchanged.
 The isolated Ubuntu guests omit APT translation, AppStream and
 command-not-found indexes and the post-install `needrestart` scanner; signed
