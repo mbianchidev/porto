@@ -12,7 +12,7 @@ Porto is an open-source local development control plane for native applications,
 
 Porto runs its own containerd backends rather than proxying another Docker engine, with BuildKit for Linux workloads. Supported Linux Docker clients and Compose workflows use the `porto` context; explicitly selected native Windows containers use a separate `porto-windows` context and runhcs store.
 
-![Porto dashboard showing containers, runtime controls](https://github.com/user-attachments/assets/ed553cf3-1714-431b-83b7-f9443d8a3dab)
+<img width="1728" height="1117" alt="Porto dashboard showing local k8s cluster controls" src="https://github.com/user-attachments/assets/abf50f78-349b-4210-a63a-a4dcf4b87ac2" />
 
 ## What you can do
 
