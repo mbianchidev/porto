@@ -33,6 +33,11 @@ claim that the upstream module-only advisory has disappeared.
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
+The Unix Git-timeout fixture reexecutes its already-running test binary instead
+of cold-starting a generated shell script and a separate `sleep` process under
+the Git deadlines. Locale checks, actual lock creation, process termination and
+owned-lock cleanup remain required; production timeouts are unchanged.
+
 The native platform-networking job runs on Ubuntu, Windows x64 and Windows
 ARM64. Disposable hosts install the real loopback HTTPS integration, check
 occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted
@@ -238,6 +243,15 @@ are scoped by runner OS/architecture, resolved Go version, workload, target,
 and dependency/runtime inputs, so a host-only cache cannot displace a
 cross-build or native-packaging cache. Go still validates compiler cache
 entries against current source and flags; test executions retain `-count=1`.
+After restoring those caches, setup resolves the locked module graph before
+builds, tests and import-policy checks. Source-built Windows runtimes, Lima and
+the synchronization tools use the same dependency-acquisition helper.
+`scripts/go-dependencies.cjs` retries recognized HTTP/2, transport, rate-limit
+and server failures at most three times, with two- and four-second backoffs.
+Each failed attempt retains its diagnostics; only the successful import graph
+reaches stdout. Integrity, authentication, missing-version and unknown errors
+still fail immediately. Compilation, tests and vulnerability checks are never
+retried, and the existing job deadlines are unchanged.
 Cache paths are exported through the job environment so post-job saves can
 resolve them even when setup actions are nested inside runtime acceptance.
 The same rule keeps nested Electron/builder download caches available at cleanup.
@@ -607,7 +621,12 @@ the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
 Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
-on the date its fixture configuration was generated. The snapshot ID is logged
+on the previous completed UTC day, allowing a full day for snapshot publication
+and cache population rather than requiring the same-day endpoint. This trades
+one day of guest dependency freshness for a less time-sensitive fixture input.
+PR #173 exhausted APT's retry
+budget on same-day snapshot HTTP 503 responses, then reported missing
+`newuidmap` during rootless containerd setup. The snapshot ID is logged
 and reused for the destination, source VM, and restarts. Only the Ubuntu source
 URIs change; suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes

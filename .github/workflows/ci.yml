@@ -228,7 +228,6 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
         run: |
-          go mod download
           node scripts/check-go-crypto.cjs
           go build -o /dev/null ./cmd/porto
 

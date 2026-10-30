@@ -15,22 +15,24 @@ function fixture(t) {
   return { source: path.join(directory, 'runtime.tar.gz'), destination: path.join(directory, 'runtime.tar') }
 }
 
-test('CI dependencies use one immutable Ubuntu snapshot for the current UTC date', () => {
+test('CI dependencies use one immutable Ubuntu snapshot from the previous completed UTC day', () => {
   const date = new Date('2026-10-22T14:35:00Z')
   const override = dependencyProvisionOverride(date)
   const entries = JSON.parse(override.slice('.provision += '.length))
   assert.equal(entries.length, 1)
   assert.equal(entries[0].mode, 'dependency')
-  assert.match(entries[0].script, /URIs: https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261022T000000Z\//)
+  assert.match(entries[0].script, /URIs: https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261021T000000Z\//)
   assert.doesNotMatch(entries[0].script, /APT::Snapshot/)
   assert.match(entries[0].script, /APT::Update::Error-Mode "any";/)
-  assert.match(entries[0].script, /Ubuntu snapshot: 20261022T000000Z/)
+  assert.match(entries[0].script, /Ubuntu snapshot: 20261021T000000Z/)
   assert.equal(override, dependencyProvisionOverride(date))
 })
 
 test('CI snapshot selection uses UTC boundaries and rejects an invalid date', () => {
   const override = dependencyProvisionOverride(new Date('2026-10-22T23:30:00-07:00'))
-  assert.match(override, /20261023T000000Z/)
+  assert.match(override, /20261022T000000Z/)
+  assert.match(dependencyProvisionOverride(new Date('2026-01-01T00:00:00Z')), /20251231T000000Z/)
+  assert.match(dependencyProvisionOverride(new Date('2024-03-01T23:59:59Z')), /20240229T000000Z/)
   assert.throws(() => dependencyProvisionOverride(new Date('invalid')), RangeError)
 })
 

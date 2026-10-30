@@ -124,7 +124,8 @@ per-user `override.yaml` configuration and QEMU executable selection. The
 installed Porto binary still creates the guest and its ownership record; the
 harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
-and dependency-provision fixture. Linux/macOS install their documented QEMU
+and dependency-provision fixture, including its previous-completed-UTC-day
+Ubuntu snapshot and bounded APT retries. Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
 The host-only Windows archive download uses verified Git for Windows Bash
 without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.

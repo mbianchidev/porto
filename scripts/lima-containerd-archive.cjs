@@ -55,7 +55,8 @@ function run(command, args, capture = false, env = process.env) {
 }
 
 function dependencyProvisionOverride(date = new Date()) {
-  const snapshot = `${date.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
+  const completedDay = new Date(date.getTime() - 24 * 60 * 60 * 1000)
+  const snapshot = `${completedDay.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
   const script = [
     '#!/bin/sh',
     'set -eu',

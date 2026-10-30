@@ -29,7 +29,7 @@ runs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
       with:
         path: ${{ env.PORTO_GO_MODULE_CACHE }}
-        key: porto-go-mod-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh') }}
+        key: porto-go-mod-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('go.sum', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh', 'scripts/bundle-windows-containers.sh') }}
         restore-keys: |
           porto-go-mod-v1-${{ runner.os }}-${{ runner.arch }}-
 
@@ -40,3 +40,7 @@ runs:
         key: porto-go-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-${{ hashFiles('go.sum', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh', 'scripts/patches/*.patch') }}
         restore-keys: |
           porto-go-build-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.go-version }}-${{ inputs.cache-scope }}-
+
+    - name: Download Go dependencies before builds and tests
+      shell: bash
+      run: node scripts/go-dependencies.cjs mod download

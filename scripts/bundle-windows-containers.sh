@@ -55,7 +55,8 @@ build_source() {
       -require=golang.org/x/net@v0.60.0 -require=golang.org/x/sys@v0.49.0 \
       -require=github.com/sirupsen/logrus@v1.10.2 -require=google.golang.org/grpc@v1.83.2 \
       -dropreplace=golang.org/x/sys
-    imports="$(CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off go list -mod=mod -deps -f '{{.ImportPath}}' "$package")"
+    imports="$(CGO_ENABLED=0 GOOS=windows GOARCH=amd64 GOWORK=off \
+      node "$script_directory/go-dependencies.cjs" list -mod=mod -deps -f '{{.ImportPath}}' "$package")"
     if printf '%s\n' "$imports" | grep -E '^golang\.org/x/crypto/openpgp($|/)' >&2; then
       echo "GO-2026-5932: a native runtime source imports deprecated OpenPGP" >&2
       exit 1

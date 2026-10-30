@@ -314,6 +314,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_graceful_stop_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_arm64_cpu_patch"
+    GOWORK=off node "$script_directory/go-dependencies.cjs" mod download
     if [ "$lima_version" = v2.2.1 ]; then
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
       bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"

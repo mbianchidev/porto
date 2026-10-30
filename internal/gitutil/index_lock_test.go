@@ -3,6 +3,7 @@ package gitutil
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,26 +12,45 @@ import (
 	"time"
 )
 
+func TestMain(m *testing.M) {
+	if lockPath := os.Getenv("PORTO_TEST_INDEX_LOCK"); lockPath != "" && filepath.Base(os.Args[0]) == "git" {
+		if os.Getenv("LC_ALL") != "C" || os.Getenv("LANG") != "C" || len(os.Args) < 2 {
+			fmt.Fprintln(os.Stderr, "synthetic Git requires normalized locale and a command")
+			os.Exit(2)
+		}
+		switch os.Args[1] {
+		case "rev-parse":
+			fmt.Println(lockPath)
+			os.Exit(0)
+		case "pull":
+			if err := os.WriteFile(lockPath, nil, 0o600); err != nil {
+				fmt.Fprintln(os.Stderr, err)
+				os.Exit(2)
+			}
+			time.Sleep(time.Minute)
+			os.Exit(0)
+		default:
+			fmt.Fprintln(os.Stderr, "unexpected synthetic Git command")
+			os.Exit(2)
+		}
+	}
+	os.Exit(m.Run())
+}
+
 func TestGitTimeoutRemovesLockCreatedByPortoProcess(t *testing.T) {
 	if runtime.GOOS == "windows" {
-		t.Skip("shell-based process-group test")
+		t.Skip("Unix process-group test")
 	}
 	repository := t.TempDir()
 	lockPath := filepath.Join(repository, "index.lock")
 	binDirectory := t.TempDir()
 	gitPath := filepath.Join(binDirectory, "git")
-	script := `#!/bin/sh
-if [ "$LC_ALL" != "C" ] || [ "$LANG" != "C" ]; then
-  exit 2
-fi
-if [ "$1" = "rev-parse" ]; then
-  printf '%s\n' "$PORTO_TEST_INDEX_LOCK"
-  exit 0
-fi
-: > "$PORTO_TEST_INDEX_LOCK"
-sleep 60
-`
-	if err := os.WriteFile(gitPath, []byte(script), 0o700); err != nil {
+	executable, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Reuse the running test executable rather than cold-starting a new script under the Git deadlines.
+	if err := os.Symlink(executable, gitPath); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PORTO_TEST_INDEX_LOCK", lockPath)
