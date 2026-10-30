@@ -6,7 +6,7 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const crypto = require('node:crypto')
 
-const { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
+const { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
 const { sha256 } = require('./verify-runtime-checksum.cjs')
 
 function fixture(t) {
@@ -68,6 +68,18 @@ test('Intel TCG uses matching pinned guest, kernel and initrd with only the upst
   assert.equal(image.kernel.cmdline, 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check')
   image.kernel.cmdline = 'synthetic mutation'
   assert.notEqual(intelTCGImages()[0].kernel.cmdline, image.kernel.cmdline)
+})
+
+test('installed ARM TCG uses measured host parallelism without changing the Intel or minimum CPU allocation', () => {
+  for (const [available, expected] of [[2, 2], [3, 2], [4, 3], [8, 4], [64, 4]]) {
+    assert.equal(tcgGuestCPUs('arm64', available), expected)
+    assert.equal(tcgGuestCPUs('amd64', available), 2)
+    assert.ok(expected <= available)
+  }
+  for (const available of [0, 1, NaN, 2.5]) {
+    assert.throws(() => tcgGuestCPUs('arm64', available), /at least two available host CPUs/)
+  }
+  assert.throws(() => tcgGuestCPUs('unknown', 4), /Unsupported TCG guest architecture/)
 })
 
 test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {

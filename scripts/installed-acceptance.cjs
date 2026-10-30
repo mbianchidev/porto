@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 
@@ -8,7 +9,7 @@ const {
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
-const { dependencyProvisionOverride, intelTCGImages } = require('./lima-containerd-archive.cjs')
+const { dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs } = require('./lima-containerd-archive.cjs')
 
 function reportCommandFailure(error, logImpl = console.error) {
   if (error?.code !== 'PORTO_COMMAND_FAILED') return
@@ -142,9 +143,12 @@ async function configureLima(fixture, env) {
   if (intel) {
     console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
   }
+  const availableCPUs = os.availableParallelism()
+  const cpus = tcgGuestCPUs(arch, availableCPUs)
+  console.log(`Installed acceptance: selected ${cpus} TCG guest CPUs from ${availableCPUs} available host CPUs`)
   write(path.join(fixture.limaHome, '_config', 'override.yaml'), JSON.stringify({
     vmType: 'qemu', arch: arch === 'amd64' ? 'x86_64' : 'aarch64',
-    cpus: 2, memory: '3GiB', disk: '20GiB',
+    cpus, memory: '3GiB', disk: '20GiB',
     ssh: { loadDotSSHPubKeys: false, forwardAgent: false, forwardX11: false },
     propagateProxyEnv: false,
     containerd: { archives },

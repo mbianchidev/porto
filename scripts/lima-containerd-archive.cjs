@@ -1,5 +1,6 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const { Transform } = require('node:stream')
@@ -104,6 +105,14 @@ function intelTCGImages() {
   }]
 }
 
+function tcgGuestCPUs(arch, available = os.availableParallelism()) {
+  if (!['amd64', 'arm64'].includes(arch)) throw new Error(`Unsupported TCG guest architecture: ${arch}`)
+  if (!Number.isSafeInteger(available) || available < 2) {
+    throw new Error('Installed TCG acceptance requires at least two available host CPUs')
+  }
+  return arch === 'arm64' ? Math.min(4, Math.max(2, available - 1)) : 2
+}
+
 async function prepareContainerdArchive(goarch, directory, {
   platform = process.platform,
   runImpl = run,
@@ -151,4 +160,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, prepareContainerdArchive }
+module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs, prepareContainerdArchive }

@@ -132,6 +132,13 @@ with the same pinned guest image and matching SHA-256-pinned kernel/initrd.
 Only that emulated fixture skips the guest kernel's timer sanity check; all
 Porto rendering, ownership, lifecycle and preservation assertions remain.
 Production defaults and non-Intel fixtures are unchanged.
+Installed ARM64 TCG guests use measured host parallelism: at least two guest
+vCPUs, up to four, reserving a host CPU where capacity permits. The extra guest
+capacity is intended to reduce contention between container start and real
+dependency health probes on small hosted runners. Intel keeps two vCPUs;
+production defaults, guest memory/disk,
+the one-minute container-start budget and actual health/network assertions are
+unchanged. The chosen CPU allocation is logged.
 The host-only Windows archive download uses verified Git for Windows Bash
 without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.
 No WSL distribution is needed to prepare the installed Lima guest archive.
