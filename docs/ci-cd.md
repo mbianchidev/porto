@@ -101,6 +101,12 @@ longer RPC deadline. A deterministic virtual-clock regression verifies a
 still expires on time. This does not retry builds or extend their request,
 container-start, provisioning or readiness budgets.
 
+Container identity checks on an available, matching owned Lima inventory use
+live containerd metadata over its established connection instead of forking
+`nerdctl inspect` for each guard. They do not trust cached snapshot names and do
+not reuse a connection after engine ownership changes. The metadata timeout and
+shorter caller deadlines remain unchanged; metadata failures stay explicit.
+
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an
 empty or truncated archive. The preceding passing run used the same version.

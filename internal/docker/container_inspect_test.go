@@ -11,8 +11,57 @@ import (
 	"strings"
 	"testing"
 
+	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	"github.com/mbianchidev/porto/internal/runtimes"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
+
+func TestContainerIdentityUsesLiveMatchingInventoryMetadataWithoutCLIForks(t *testing.T) {
+	client := &fakeContainersClient{container: &containersapi.Container{
+		ID: "synthetic-container", Labels: map[string]string{nerdctlNameLabel: "current-live-name"},
+	}}
+	manager := NewWithStateDir(&fakeRunner{handler: func(runtimes.Command) ([]byte, error) {
+		t.Fatal("live identity inspection forked a CLI instead of using the owned inventory connection")
+		return nil, nil
+	}}, t.TempDir())
+	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+		t.Fatal(err)
+	}
+	runtimeClient := &grpcContainerRuntime{
+		containers: client, namespace: "default",
+		commandSource: commandBackend{name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner"},
+	}
+	manager.inventoryCancel = func() {}
+	manager.inventory = &containerInventory{
+		snapshot:      ContainerSnapshot{Available: true, Containers: []Container{{ID: "synthetic-container", Name: "stale-snapshot-name"}}},
+		runtimeClient: runtimeClient,
+	}
+	for _, identifier := range []string{"", "-all", "synthetic\ncontainer"} {
+		if _, _, err := manager.resolveContainerIdentity(context.Background(), identifier); err == nil {
+			t.Fatalf("invalid identity %q was accepted", identifier)
+		}
+	}
+	if len(client.calls) != 0 {
+		t.Fatal("invalid identity reached containerd")
+	}
+	for _, identifier := range []string{"synthetic-container", "synthetic-cont", "/current-live-name"} {
+		id, name, err := manager.resolveContainerIdentity(context.Background(), identifier)
+		if err != nil || id != "synthetic-container" || name != "current-live-name" {
+			t.Fatalf("live identity %q = %q, %q, %v", identifier, id, name, err)
+		}
+	}
+	client.getErr = status.Error(codes.PermissionDenied, "synthetic access denied")
+	if _, _, err := manager.resolveContainerIdentity(context.Background(), "synthetic-container"); err == nil {
+		t.Fatal("live metadata failure fell back to cached identity")
+	}
+	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "replaced-owner"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, matched := manager.inventoryLimaRuntime(); matched {
+		t.Fatal("identity reused a connection belonging to a replaced engine owner")
+	}
+}
 
 func TestContainerInspectionAndIdentityRequestUncontaminatedStdout(t *testing.T) {
 	document := []byte(`[{"Id":"synthetic-container","Name":"/synthetic-app","Config":{"Labels":{}},"State":{"Status":"running","Running":true,"Pid":42}}]`)
