@@ -162,6 +162,11 @@ least one minute, not the shorter metadata-probe deadline. Force removal and
 stopped-container cleanup share that allowance instead of restarting it or
 imposing a separate ten-second cutoff. Shorter caller deadlines and cancellation
 still take precedence, and larger configured operation budgets are preserved.
+Native task stop also distinguishes a remote grace-wait cancellation from
+cancellation by the caller. A verified stopped task can complete normally;
+a still-running task retains its remaining local grace before forced stop.
+Transport clock/scheduling differences do not become a false successful stop
+or an early forced kill, and caller cancellation still wins.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
 unused application stdin cannot terminate output, while completion or failed
 setup releases guest reader jobs and their FIFO directory instead of consuming

@@ -911,14 +911,24 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	}
 	graceDeadline := time.Now().Add(stopTimeout)
 	waitContext, cancel := context.WithDeadline(ctx, graceDeadline)
+	defer cancel()
 	_, waitErr := r.tasks.Wait(
 		withContainerdNamespace(waitContext, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
 	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded) || !time.Now().Before(graceDeadline)
-	cancel()
 	if waitErr == nil {
 		return r.cleanupNetworksResolved(ctx, id)
+	}
+	if status.Code(waitErr) == codes.Canceled && !graceExpired {
+		stopErr := r.reconcileStoppedTask(ctx, id, containerdOperationError("wait for stopped", id, waitErr))
+		if stopErr == nil || !errors.Is(stopErr, context.Canceled) {
+			return stopErr
+		}
+		// A remote grace cancellation can arrive before the local deadline.
+		// A still-running task keeps its remaining grace, never an early SIGKILL.
+		<-waitContext.Done()
+		graceExpired = errors.Is(waitContext.Err(), context.DeadlineExceeded)
 	}
 	if ctx.Err() != nil {
 		return context.Cause(ctx)
