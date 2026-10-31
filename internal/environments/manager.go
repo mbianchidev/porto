@@ -50,7 +50,6 @@ type Manager struct {
 	listener     *http.Server
 	listenerStop func() bool
 	closed       bool
-	local        http.Handler
 }
 
 func Open(root string, vault credentials.Store) (*Manager, error) {
@@ -156,13 +155,8 @@ func (m *Manager) Profile(id string) (Profile, error) {
 }
 
 func (m *Manager) Add(ctx context.Context, request AddRequest) (Profile, error) {
-	if strings.TrimSpace(request.Name) == "" || len(request.Name) > 100 || len(request.Labels) > 32 {
-		return Profile{}, problem(400, "profile", "A name of 1-100 characters and at most 32 labels are required.")
-	}
-	for k, v := range request.Labels {
-		if strings.TrimSpace(k) == "" || len(k) > 100 || len(v) > 200 {
-			return Profile{}, problem(400, "labels", "Labels require nonempty keys up to 100 characters and values up to 200 characters.")
-		}
+	if err := validateMetadata(request.Name, request.Labels); err != nil {
+		return Profile{}, err
 	}
 	id, err := ID()
 	if err != nil {
@@ -448,7 +442,7 @@ func (m *Manager) Rotate(ctx context.Context, id string) error {
 	value.Token = result.Token
 	m.mu.Lock()
 	current, exists := m.state.Profiles[id]
-	if !exists || current.Revoked || current.Revision != p.Revision {
+	if !exists || current.Revoked || current.Identity != p.Identity || current.Address != p.Address || current.Certificate != p.Certificate {
 		m.mu.Unlock()
 		cleanupClient, cleanupErr := secureClient(p, value)
 		if cleanupErr == nil {
@@ -541,6 +535,30 @@ func (m *Manager) Remove(id string, localOnly bool) error {
 	}
 	delete(m.state.Profiles, id)
 	return m.saveLocked()
+}
+
+func (m *Manager) Metadata(id string, request MetadataRequest) (Profile, error) {
+	if err := validateMetadata(request.Name, request.Labels); err != nil {
+		return Profile{}, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	current, exists := m.state.Profiles[id]
+	if !exists {
+		return Profile{}, problem(404, "target_not_found", "Enrolled environment not found.")
+	}
+	if current.Revision != request.Revision {
+		return Profile{}, problem(409, "target_changed", "Environment changed while editing metadata; refresh and review its identity before retrying.")
+	}
+	previous := current
+	current.Name, current.Labels = strings.TrimSpace(request.Name), cloneLabels(request.Labels)
+	current.Revision++
+	m.state.Profiles[id] = current
+	if err := m.saveLocked(); err != nil {
+		m.state.Profiles[id] = previous
+		return Profile{}, err
+	}
+	return current, nil
 }
 
 func (m *Manager) Close(ctx context.Context) error {

@@ -879,11 +879,34 @@ fix for the missing-authority server panic,
 containing the fix when updating this dependency; keep the vulnerability
 scan enabled.
 
-The module graph keeps `golang.org/x/net` at `v0.60.0` or newer for the HTTP/2
-security fixes. Standard-library fixes, including compromised intermediate
+The module graph keeps `golang.org/x/net` at `v0.62.0` or newer for the HTTP/2
+and HTML namespace/text-coalescing security fixes. Standard-library fixes, including compromised intermediate
 certificate distrust ([GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809)),
 are included in the minimum supported Go `1.27.3`; use that release or a newer
 security-patched toolchain for local builds and vulnerability scans.
+
+## Management and packaging validation
+
+The desktop lockfile also overrides build-only glob/minimatch dependencies to
+patched glob 14 and minimatch 11 releases. EJS retains its existing renderer API
+while its build-only Jake dependency uses the maintained FileList 2 chain.
+`desktop-dependency-compat.test.cjs` exercises the actual archive matcher,
+FileList and EJS contracts; do not use audit's suggested obsolete packager or
+builder downgrades. Desktop and dashboard `npm audit` should remain clean.
+
+Remote-management coverage includes synthetic distinct TLS hosts, an external
+Kubernetes API, outbound Edge reconnect/revocation, escaped-path authorization,
+redirect rejection, immutable fleet targets, terminal cleanup and native-sized
+OS credential records. Extension coverage includes real Go-built WASI reference
+execution, explicit grants, cancellation, provenance, update rollback and opaque
+UI/desktop-bridge boundaries. `go test -race ./internal/environments
+./internal/extensions ./internal/credentials` and
+`npm --prefix ui test -- phase-six.spec.ts` provide focused checks.
+
+`golang.org/x/crypto/openpgp` has an upstream unmaintained-package advisory with
+no fixed version. Porto does not import it. Keep reachable-package vulnerability
+scanning enabled and distinguish that module-level notice from an affected
+package rather than suppressing checks or removing the maintained SSH packages.
 
 ## Cutting a release
 

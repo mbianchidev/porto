@@ -8,7 +8,7 @@
 >
 > **Releases are not code-signed**, and macOS builds are not notarized. Your operating system may display security warnings or block installation or launch.
 
-Porto is an open-source local development control plane for native applications, Linux containers, capability-supported native Windows containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
+Porto is an open-source local-first development control plane for native applications, Linux containers, capability-supported native Windows containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
 
 Porto runs its own containerd backends rather than proxying another Docker engine, with BuildKit for Linux workloads. Supported Linux Docker clients and Compose workflows use the `porto` context; explicitly selected native Windows containers use a separate `porto-windows` context and runhcs store.
 
@@ -16,6 +16,8 @@ Porto runs its own containerd backends rather than proxying another Docker engin
 
 ## What you can do
 
+- **Manage authorized environments.** Enroll remote Porto hosts and outbound Edge agents, import an explicit Kubernetes identity, and operate target-scoped resources or previewed fleets. Local access still needs no account. See [remote environments](docs/remote-environments.md).
+- **Install scoped tooling.** Add verified extension packages with explicit grants, static isolated views and bounded WebAssembly actions. See [extensions and authoring](docs/extensions.md).
 - **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
 - **Deliver local applications.** Create or edit multi-service Compose stacks with dependencies, shared storage/networks and replica-aware readiness. Upload definitions, use versioned templates or explicit Git refs, preview changes, and record controlled updates/rollback. Polling and signed webhooks are opt-in. See [application delivery](docs/project-management.md#application-delivery).
 - **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect layers with Dive and generate local Syft SBOMs with Grype vulnerability matching, browse runtime files and stats, create local volume backups, and preview protected cleanup.
@@ -185,7 +187,7 @@ Use **Settings** for runtime and desktop preferences, log retention, and optiona
 
 ## Important limitations
 
-- **Local development only.** The dashboard/API bind to loopback, and Docker clients use a private Unix socket or Windows named pipe. Do not expose these control interfaces through an unauthenticated network proxy.
+- **Local-first development, not production management.** The dashboard/API stay on loopback and Docker clients use private sockets/pipes. Optional remote access uses a separate authenticated TLS agent or an explicitly imported identity. Never expose the unauthenticated control interfaces through a network proxy.
 - **Docker compatibility is bounded.** Porto supports Docker API versions **1.41 through 1.47**, not every Docker Engine feature. Swarm and generic engine plugins are unsupported; native Windows mode has a separate host/image/isolation matrix and does not advertise Linux-only helpers or builds. Mounts, checkpoints, SDKs, Dev Containers, and Testcontainers have documented capability limits. Check the [compatibility matrix](docs/docker-engine.md#docker-api-compatibility-matrix) before relying on a workflow.
 - **Discovery and readiness are opinionated.** Detection follows file and entry-point conventions, and readiness expects HTTP 200 on the selected port. See [project management](docs/project-management.md) before using non-HTTP services or unusual monorepo layouts.
 - **Backups are not database-aware.** Local volume copies are crash-consistent, not application-consistent database backups. Native filesystem access and migration support depend on the host/backend. See [data-management safety boundaries](docs/data-management.md).
@@ -228,6 +230,7 @@ Start with the [documentation index](docs/README.md), or go directly to a guide:
 | [Kubernetes upgrades](docs/kubernetes-upgrades.md) and [autoscaling](docs/kubernetes-autoscaling.md) | Upgrade/recovery boundaries, Karpenter workers, and KEDA |
 | [Runtime data management](docs/data-management.md) and [image analysis](docs/image-inspection.md) | Files, storage, backups, migration, native mounts, Dive, SBOMs and Grype |
 | [Networking](docs/networking.md) and [integrations](docs/integrations.md) | Local HTTP/HTTPS, DNS, sql-not-so-lite, KillSwitch, and Sendbox |
+| [Remote environments](docs/remote-environments.md) and [extensions](docs/extensions.md) | Enrollment, Edge fleets, trust, target-scoped operations, grants and authoring |
 | [Diagnostics](docs/diagnostics.md) | Health checks, redacted bundles, and confirmed repairs |
 | [Product overview](docs/product.md) and [design system](docs/design.md) | Intended users, product principles, and interface conventions |
 | [CI and releases](docs/ci-cd.md) | Local checks, automated tests, packaging, and release artifacts |

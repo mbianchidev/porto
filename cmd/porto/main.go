@@ -744,11 +744,11 @@ Commands:
   porto list
   porto version
   porto daemon start|status
-  porto environments list|add|request|enroll|listen|revoke|rotate|remove
+  porto environments list|add|metadata|request|enroll|listen|revoke|rotate|remove
   porto environments fleet-preview|fleet-run|fleet-list|fleet-status|fleet-cancel
   porto agent serve|connect|forget
   porto extension list|install|enable|disable|invoke|cancel|remove|pack|keygen
-  porto extension catalog|catalog-import|catalog-install|trust|revoke-publisher|secret
+  porto extension catalog|catalog-sign|catalog-import|catalog-install|trust|revoke-publisher|secret
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status

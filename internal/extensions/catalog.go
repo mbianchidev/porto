@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"encoding/base64"
 	"encoding/json"
+	"github.com/blang/semver/v4"
 	"slices"
 	"strings"
 )
@@ -81,6 +82,9 @@ func (m *Manager) AddCatalog(catalog Catalog) error {
 		if !extensionID.MatchString(entry.ID) || !digestPattern.MatchString(entry.SHA256) || entry.Publisher != catalog.PublicKey || seen[entry.ID] {
 			return failure(400, "extension_catalog_entry", "Catalog entries require unique extension IDs, pinned digests and the same trusted publisher.")
 		}
+		if _, err := semver.Parse(entry.Version); err != nil || entry.Name == "" || len(entry.Name) > 100 || len(entry.Description) > 2000 || len(entry.URL) > 4096 {
+			return failure(400, "extension_catalog_entry", "Catalog entries require a semantic version, name up to 100 bytes, description up to 2000 bytes and HTTPS URL up to 4096 bytes.")
+		}
 		if _, err := httpsURL(entry.URL); err != nil {
 			return err
 		}
@@ -116,10 +120,10 @@ func (m *Manager) Catalog() []CatalogEntry {
 	slices.SortFunc(values, func(a, b CatalogEntry) int { return strings.Compare(a.ID+a.Version, b.ID+b.Version) })
 	return values
 }
-func (m *Manager) InstallCatalog(ctx context.Context, id, sha string) (Installed, error) {
+func (m *Manager) InstallCatalog(ctx context.Context, id, sha, publisher string) (Installed, error) {
 	var selected *CatalogEntry
 	for _, entry := range m.Catalog() {
-		if entry.ID == id && entry.SHA256 == sha {
+		if entry.ID == id && entry.SHA256 == sha && entry.Publisher == publisher {
 			copy := entry
 			selected = &copy
 			break

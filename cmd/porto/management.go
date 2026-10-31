@@ -107,6 +107,15 @@ func environmentsCmd(args []string) error {
 			return err
 		}
 		return managementAPI(ctx, "POST", base+"/fleet/previews", request)
+	case "metadata":
+		if len(args) != 3 {
+			return errors.New("usage: porto environments metadata ENVIRONMENT_ID metadata.json")
+		}
+		var request environments.MetadataRequest
+		if err := extensions.ReadJSON(args[2], &request, 64<<10); err != nil {
+			return err
+		}
+		return managementAPI(ctx, "PUT", base+"/"+url.PathEscape(args[1])+"/metadata", request)
 	case "remove", "revoke", "rotate", "revoke-identity", "fleet-status", "fleet-cancel":
 		flags := flag.NewFlagSet("environments "+args[0], flag.ContinueOnError)
 		confirm := flags.Bool("confirm", false, "confirm exact target revocation or removal")
@@ -304,10 +313,16 @@ func extensionCmd(args []string) error {
 		}
 		return managementAPI(ctx, "POST", base, extensions.InstallRequest{Package: p, ExpectedSHA256: *digest, Developer: *developer})
 	case "catalog-install":
-		if len(args) != 3 {
-			return errors.New("usage: porto extension catalog-install EXTENSION_ID VERIFIED_SHA256 (explicitly downloads a trusted catalog artifact, installed disabled)")
+		flags := flag.NewFlagSet("extension catalog-install", flag.ContinueOnError)
+		publisher := flags.String("publisher", "", "explicit trusted catalog publisher key")
+		digest := flags.String("sha256", "", "verified catalog artifact digest")
+		if err := flags.Parse(args[1:]); err != nil {
+			return err
 		}
-		return managementAPI(ctx, "POST", base+"/catalog/install", map[string]string{"id": args[1], "sha256": args[2]})
+		if flags.NArg() != 1 || *publisher == "" || *digest == "" {
+			return errors.New("usage: porto extension catalog-install --publisher BASE64_KEY --sha256 HASH EXTENSION_ID")
+		}
+		return managementAPI(ctx, "POST", base+"/catalog/install", map[string]string{"id": flags.Arg(0), "sha256": *digest, "publisher": *publisher})
 	case "enable":
 		flags := flag.NewFlagSet("extension enable", flag.ContinueOnError)
 		approve := flags.Bool("approve", false, "explicitly approve this grant document")
@@ -396,6 +411,8 @@ func extensionCmd(args []string) error {
 		return managementAPI(ctx, "POST", path, body)
 	case "pack":
 		return packExtension(args[1:])
+	case "catalog-sign":
+		return signExtensionCatalog(args[1:])
 	case "keygen":
 		return extensionKeygen(args[1:])
 	default:
@@ -416,14 +433,11 @@ func packExtension(args []string) error {
 	}
 	var key []byte
 	if *keyFile != "" {
-		data, err := os.ReadFile(*keyFile)
+		signingKey, err := readExtensionSigningKey(*keyFile)
 		if err != nil {
 			return err
 		}
-		key, err = base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
-		if err != nil {
-			return errors.New("signing key must contain base64 Ed25519 private-key bytes")
-		}
+		key = signingKey
 	}
 	p, err := extensions.Pack(*directory, key)
 	if err != nil {
@@ -449,6 +463,56 @@ func writeNewPrivateFile(path string, data []byte) (err error) {
 	}
 	return file.Sync()
 }
+
+func readExtensionSigningKey(path string) (ed25519.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(string(data)))
+	if err != nil || len(key) != ed25519.PrivateKeySize || !bytes.Equal(key, ed25519.NewKeyFromSeed(key[:ed25519.SeedSize])) {
+		return nil, errors.New("signing key must be a complete, internally consistent base64 Ed25519 private key")
+	}
+	return ed25519.PrivateKey(key), nil
+}
+
+func signExtensionCatalog(args []string) error {
+	flags := flag.NewFlagSet("extension catalog-sign", flag.ContinueOnError)
+	input := flags.String("index", "", "unsigned format-1 JSON index")
+	keyFile := flags.String("signing-key", "", "explicit private signing key file")
+	output := flags.String("out", "", "new signed catalog JSON file")
+	if err := flags.Parse(args); err != nil {
+		return err
+	}
+	if flags.NArg() != 0 || *input == "" || *keyFile == "" || *output == "" {
+		return errors.New("usage: porto extension catalog-sign --index index.json --signing-key KEY.private --out signed-catalog.json")
+	}
+	var catalog extensions.Catalog
+	if err := extensions.ReadJSON(*input, &catalog, 1<<20); err != nil {
+		return err
+	}
+	if catalog.Version != 1 || len(catalog.Entries) > 128 {
+		return errors.New("catalog format 1 with at most 128 entries is required")
+	}
+	key, err := readExtensionSigningKey(*keyFile)
+	if err != nil {
+		return err
+	}
+	catalog.PublicKey = base64.StdEncoding.EncodeToString(key.Public().(ed25519.PublicKey))
+	for index := range catalog.Entries {
+		catalog.Entries[index].Publisher = catalog.PublicKey
+	}
+	catalog.Signature = base64.StdEncoding.EncodeToString(ed25519.Sign(key, extensions.CatalogPayload(catalog)))
+	data, err := json.Marshal(catalog)
+	if err != nil {
+		return err
+	}
+	if err := writeNewPrivateFile(*output, data); err != nil {
+		return err
+	}
+	return writeOutput(map[string]string{"catalog": *output, "publisher": catalog.PublicKey})
+}
+
 func extensionKeygen(args []string) error {
 	flags := flag.NewFlagSet("extension keygen", flag.ContinueOnError)
 	private := flags.String("private", "", "new owner-only private signing-key path")
@@ -467,7 +531,7 @@ func extensionKeygen(args []string) error {
 		return err
 	}
 	if err := writeNewPrivateFile(*public, []byte(base64.StdEncoding.EncodeToString(key)+"\n")); err != nil {
-		return err
+		return errors.Join(err, os.Remove(*private))
 	}
 	return writeOutput(map[string]string{"publicKey": base64.StdEncoding.EncodeToString(key), "privateKeyFile": *private})
 }

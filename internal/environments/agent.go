@@ -526,7 +526,7 @@ func (m *Manager) StartListener(ctx context.Context, options ListenerOptions, lo
 		return options, errors.Join(err, listener.Close())
 	}
 	server := &http.Server{Handler: m.AgentHandler(local), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 30 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 32 << 10, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS13, Certificates: []tls.Certificate{certificate}, NextProtos: []string{"http/1.1"}}}
-	m.listener, m.local = server, local
+	m.listener = server
 	go func() {
 		if err := server.Serve(tls.NewListener(netutil.LimitListener(listener, 64), server.TLSConfig)); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("Secure environment listener stopped", "error", err)

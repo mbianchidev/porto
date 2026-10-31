@@ -60,6 +60,18 @@ func (s *Server) environmentRoutes(mux *http.ServeMux) {
 		}
 		environments.JSON(w, 200, map[string]string{"status": "rotated"})
 	})
+	register("PUT /api/environments/{environment}/metadata", func(w http.ResponseWriter, r *http.Request) {
+		var request environments.MetadataRequest
+		if !environments.Decode(w, r, &request) {
+			return
+		}
+		value, err := s.environments.Metadata(r.PathValue("environment"), request)
+		if err != nil {
+			environments.WriteError(w, err)
+			return
+		}
+		environments.JSON(w, 200, value)
+	})
 	register("POST /api/environments/{environment}/revocation", func(w http.ResponseWriter, r *http.Request) {
 		if err := s.environments.Revoke(r.Context(), r.PathValue("environment")); err != nil {
 			environments.WriteError(w, err)

@@ -67,6 +67,24 @@ type AddRequest struct {
 	Labels            map[string]string `json:"labels"`
 }
 
+type MetadataRequest struct {
+	Name     string            `json:"name"`
+	Labels   map[string]string `json:"labels"`
+	Revision uint64            `json:"revision"`
+}
+
+func validateMetadata(name string, labels map[string]string) error {
+	if strings.TrimSpace(name) == "" || len(name) > 100 || len(labels) > 32 {
+		return problem(400, "profile", "A name of 1-100 bytes and at most 32 labels are required.")
+	}
+	for key, value := range labels {
+		if strings.TrimSpace(key) == "" || len(key) > 100 || len(value) > 200 {
+			return problem(400, "labels", "Labels require nonempty keys up to 100 bytes and values up to 200 bytes.")
+		}
+	}
+	return nil
+}
+
 type secret struct {
 	Token             string `json:"token,omitempty"`
 	ClientCertificate string `json:"clientCertificate,omitempty"`

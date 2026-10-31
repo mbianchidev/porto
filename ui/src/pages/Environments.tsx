@@ -47,6 +47,7 @@ export function Environments() {
   const [action, setAction] = useState('stop')
   const [preview, setPreview] = useState<FleetPreview | null>(null)
   const [confirmation, setConfirmation] = useState('')
+  const [metadata, setMetadata] = useState<{ id: string; name: string; labels: string; revision: number } | null>(null)
 
   async function run(work: () => Promise<void>) {
     if (busy) return
@@ -85,6 +86,7 @@ export function Environments() {
           <td><strong>{profile.revoked ? 'revoked' : profile.state}</strong><p>{profile.lastSeen ? `Last contact: ${new Date(profile.lastSeen).toLocaleString()}` : 'No successful contact recorded'}</p><p>{profile.capabilities.join(', ')}</p>{profile.lastError && <p role="alert">{profile.lastError}</p>}{profile.unsupported?.map((message) => <p key={message}>{message}</p>)}</td>
           <td><div className="actions"><button type="button" disabled={profile.revoked} onClick={() => selectTarget(profile)}>Use {profile.name}</button>
             {profile.id !== 'local' && <>
+              <button type="button" disabled={busy} onClick={() => setMetadata({ id: profile.id, name: profile.name, labels: JSON.stringify(profile.labels ?? {}, null, 2), revision: profile.revision })}>Edit labels for {profile.name}</button>
               <button type="button" disabled={busy || profile.revoked} onClick={() => void run(async () => {
                 const path = profile.backend === 'kubernetes' ? `/api/kubernetes/status?context=${encodeURIComponent(profile.context ?? '')}` : '/api/docker/status'
                 await apiGet(`/api/environments/${profile.id}${path}`); profiles.reload()
@@ -103,6 +105,10 @@ export function Environments() {
           </div></td>
         </tr>)}
       </tbody></table></div>
+      {metadata && <section className="drawerPanel" aria-label="Environment metadata"><h2>Names and fleet labels</h2><p className="mono">{metadata.id}</p><p>Editing labels never changes the endpoint, identity, capabilities or ownership. Existing fleet previews must be reviewed again.</p><form className="inspectorForm" onSubmit={(event) => {
+        event.preventDefault()
+        void run(async () => { await apiSend(`/api/environments/${metadata.id}/metadata`, 'PUT', { name: metadata.name, labels: labelsFrom(metadata.labels), revision: metadata.revision }); setMetadata(null); refresh() })
+      }}><label>Display name<input required value={metadata.name} onChange={(event) => setMetadata({ ...metadata, name: event.target.value })} /></label><label>Fleet labels and groups (JSON)<textarea value={metadata.labels} onChange={(event) => setMetadata({ ...metadata, labels: event.target.value })} /></label><button type="submit" disabled={busy}>Save environment metadata</button><button type="button" onClick={() => setMetadata(null)}>Cancel metadata edit</button></form></section>}
 
       <details className="drawerPanel"><summary>Register a remote host, compatible Docker endpoint or external Kubernetes context</summary>
         <p>Verify the server certificate out of band. Secrets are stored only in the OS credential store, with no plaintext fallback. External kubeconfig import never edits global kubeconfigs and rejects executable plugins, file references and insecure TLS.</p>

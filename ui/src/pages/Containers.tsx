@@ -157,7 +157,7 @@ export function Containers() {
   const filteredCount = standaloneContainers.length + composeGroups.reduce((count, group) => count + group.containers.length, 0)
   const selected = items.find((container) => container.id === selectedID) ?? null
   const runtimeAvailable = containers.snapshot?.available ?? status.data?.available ?? false
-  const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
+  const stale = Boolean(containers.snapshot?.stale || status.data?.stale || containers.error || status.error)
   const directCapabilities = containers.snapshot?.capabilities
   const directFeatureList = directCapabilities
     ? [
@@ -274,8 +274,8 @@ export function Containers() {
       <section className="fleetRail" aria-label="Docker status">
         <span className="fleetRailTitle">Docker signal</span>
         <span className="fleetDatum">
-          <StatusLamp state={available ? 'running' : stale ? 'starting' : 'crashed'} />
-          {available ? 'Live' : stale ? 'Stale' : 'Unavailable'}
+          <StatusLamp state={stale ? 'starting' : available ? 'running' : 'crashed'} />
+          {stale ? 'Stale' : available ? 'Live' : 'Unavailable'}
         </span>
         {status.data?.context && <span className="fleetDatum"><small>Context</small><strong>{status.data.context}</strong></span>}
         {containers.snapshot?.namespace && <span className="fleetDatum"><small>Namespace</small><strong>{containers.snapshot.namespace}</strong></span>}

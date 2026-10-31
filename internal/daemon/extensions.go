@@ -142,13 +142,14 @@ func (s *Server) extensionRoutes(mux *http.ServeMux) {
 	})
 	register("POST /api/extensions/catalog/install", func(w http.ResponseWriter, r *http.Request) {
 		var request struct {
-			ID     string `json:"id"`
-			SHA256 string `json:"sha256"`
+			ID        string `json:"id"`
+			SHA256    string `json:"sha256"`
+			Publisher string `json:"publisher"`
 		}
 		if !environments.Decode(w, r, &request) {
 			return
 		}
-		value, err := s.extensions.InstallCatalog(r.Context(), request.ID, request.SHA256)
+		value, err := s.extensions.InstallCatalog(r.Context(), request.ID, request.SHA256, request.Publisher)
 		if err != nil {
 			environments.WriteError(w, err)
 			return
