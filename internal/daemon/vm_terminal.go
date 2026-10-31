@@ -218,7 +218,7 @@ func bridgePTYTerminal(
 	defer connection.CloseNow()
 	connection.SetReadLimit(terminalReadLimit)
 
-	sessionContext, cancel := context.WithCancel(context.Background())
+	sessionContext, cancel := context.WithCancel(r.Context())
 	defer cancel()
 	processContext, cancelProcess := context.WithCancel(sessionContext)
 	defer cancelProcess()

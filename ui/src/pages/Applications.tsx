@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
+import { useEnvironmentID } from '../environment'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { InventoryList } from '../components/InventoryList'
@@ -19,6 +20,7 @@ const EMPTY_GIT = { repository: '', ref: 'main', path: 'compose.yaml' }
 const INITIAL_COMPOSE = 'services:\n  app:\n    image: ${APP_IMAGE:?Set an explicit image reference}\n'
 
 export function Applications() {
+  const environmentID = useEnvironmentID()
   const { notifyError, notifyNotice } = useMessages()
   const applications = usePolledResource<DeliveryApplication[]>((signal) => apiGet('/api/delivery', signal), 3000, [], 'delivery')
   const projects = usePolledResource<Project[]>((signal) => apiGet('/api/projects', signal), 3000, [], 'projects')
@@ -134,7 +136,7 @@ export function Applications() {
   }
 
   function apply() {
-    if (!preview || !window.confirm('Apply this preview to the selected local Compose project? Services may restart. Persistent volumes are retained; database schemas and application data are not rolled back.')) return
+    if (!preview || !window.confirm(`Apply this preview to environment ${environmentID}, project ${preview.projectId}? Services on that target may restart. Persistent volumes are retained; database schemas and application data are not rolled back.`)) return
     void run(async () => {
       await apiSend<LocalOperation>(`/api/delivery/${preview.projectId}/deployments`, 'POST', { preview: preview.token, confirm: true })
       setPreview(null)
@@ -156,7 +158,7 @@ export function Applications() {
 
   return <>
     <section className="fleetRail" aria-label="Application delivery status">
-      <span className="fleetRailTitle">Local application delivery</span>
+      <span className="fleetRailTitle">Application delivery / {environmentID}</span>
       <span className="fleetDatum">{applications.data?.length ?? 0} recorded application(s)</span>
       <span className="fleetMessage">Existing projects and Compose ownership. Automatic updates are opt-in.</span>
     </section>

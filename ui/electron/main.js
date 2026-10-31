@@ -220,7 +220,9 @@ function configureTray(enabled) {
 function assertTrustedDashboardRequest(event) {
   const senderURL = event.senderFrame?.url
   try {
-    if (new URL(senderURL).origin === DAEMON_URL) return
+    const parsed = new URL(senderURL)
+    if (event.senderFrame === event.sender.mainFrame && parsed.origin === DAEMON_URL &&
+      (parsed.pathname === '/' || parsed.pathname === '/index.html')) return
   } catch {
     // Fall through to the explicit rejection below.
   }

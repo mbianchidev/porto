@@ -9,6 +9,7 @@ import { DiveTerminal } from '../components/DiveTerminal'
 import { RuntimeFiles } from '../components/RuntimeFiles'
 import { ContainerResourceSaver } from '../components/ResourceManagement'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
+import { ExtensionContributions } from '../components/ResourceExtensions'
 import { InventoryList, type InventoryColumn } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { lampStateFor } from '../components/lampState'
@@ -155,8 +156,8 @@ export function Containers() {
     .filter((group) => group.containers.length > 0)
   const filteredCount = standaloneContainers.length + composeGroups.reduce((count, group) => count + group.containers.length, 0)
   const selected = items.find((container) => container.id === selectedID) ?? null
-  const available = containers.snapshot?.available ?? status.data?.available ?? false
-  const stale = containers.snapshot?.stale ?? status.data?.stale ?? false
+  const runtimeAvailable = containers.snapshot?.available ?? status.data?.available ?? false
+  const stale = Boolean(containers.snapshot?.stale || status.data?.stale || containers.error || status.error)
   const directCapabilities = containers.snapshot?.capabilities
   const directFeatureList = directCapabilities
     ? [
@@ -167,8 +168,11 @@ export function Containers() {
         directCapabilities.checkpointRestore,
       ]
     : []
-  const supportedDirectFeatures = directFeatureList.filter((capability) => capability.supported).length
-  const directCapabilityDetail = directFeatureList
+  const reportedFeatures = directFeatureList.filter((capability) => capability && typeof capability.supported === 'boolean')
+  const invalidCapabilities = reportedFeatures.length !== directFeatureList.length
+  const available = runtimeAvailable && !invalidCapabilities
+  const supportedDirectFeatures = reportedFeatures.filter((capability) => capability.supported).length
+  const directCapabilityDetail = reportedFeatures
     .filter((capability) => !capability.supported && capability.reason)
     .map((capability) => capability.reason)
     .join(' · ')
@@ -270,8 +274,8 @@ export function Containers() {
       <section className="fleetRail" aria-label="Docker status">
         <span className="fleetRailTitle">Docker signal</span>
         <span className="fleetDatum">
-          <StatusLamp state={available ? 'running' : stale ? 'starting' : 'crashed'} />
-          {available ? 'Live' : stale ? 'Stale' : 'Unavailable'}
+          <StatusLamp state={stale ? 'starting' : available ? 'running' : 'crashed'} />
+          {stale ? 'Stale' : available ? 'Live' : 'Unavailable'}
         </span>
         {status.data?.context && <span className="fleetDatum"><small>Context</small><strong>{status.data.context}</strong></span>}
         {containers.snapshot?.namespace && <span className="fleetDatum"><small>Namespace</small><strong>{containers.snapshot.namespace}</strong></span>}
@@ -394,7 +398,7 @@ export function Containers() {
           <RuntimeGate
             label="Docker"
             enabled={status.data?.enabled ?? false}
-            message={containers.snapshot?.message || containers.error || status.data?.message || status.error || (status.data?.enabled ? 'Confirm the configured Docker-compatible engine is running.' : undefined)}
+            message={invalidCapabilities ? 'The selected endpoint returned an incomplete capability report. Verify its supported Porto agent protocol and refresh; controls are unavailable and no local fallback was used.' : containers.snapshot?.message || containers.error || status.data?.message || status.error || (status.data?.enabled ? 'Confirm the configured Docker-compatible engine is running.' : undefined)}
           />
         ) : (
           <div className="containerInventoryGroups">
@@ -454,6 +458,7 @@ export function Containers() {
             {containerTab === 'overview' && dockerMode !== 'windows' && <ContainerResourceSaver key={selected.id} container={selected} onChanged={containers.reload} />}
             {containerTab === 'overview' && (
               <>
+                <ExtensionContributions resourceKind="container" resourceID={selected.id} />
                 <div className="drawerReadouts" aria-label="Container readouts">
                   <span><small>State</small><strong>{selected.state}</strong></span>
                   <span><small>Task</small><strong>{taskLabel(selected)}</strong></span>

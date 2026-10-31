@@ -1,6 +1,9 @@
 const { contextBridge, ipcRenderer } = require('electron')
 
-contextBridge.exposeInMainWorld('portoDesktop', Object.freeze({
+const dashboardFrame = process.isMainFrame && globalThis.location?.origin === 'http://127.0.0.1:37623' &&
+  ['/', '/index.html'].includes(globalThis.location?.pathname)
+
+if (dashboardFrame) contextBridge.exposeInMainWorld('portoDesktop', Object.freeze({
   openFiles: (attachmentID) => ipcRenderer.invoke('porto:files:open', attachmentID),
   getPreferences: () => ipcRenderer.invoke('porto:desktop-preferences:get'),
   setPreferences: (preferences) => ipcRenderer.invoke('porto:desktop-preferences:set', preferences),
