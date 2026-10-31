@@ -104,6 +104,15 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 		defer stop()
 		return localhttps.Run(ctx)
 	}
+	if args[0] == "environments" || args[0] == "environment" {
+		return environmentsCmd(args[1:])
+	}
+	if args[0] == "extension" || args[0] == "extensions" {
+		return extensionCmd(args[1:])
+	}
+	if args[0] == "agent" {
+		return agentCmd(args[1:])
+	}
 	if args[0] == "https" {
 		return httpsAction(args[1:])
 	}
@@ -728,13 +737,18 @@ func api(method, path string, body any, out io.Writer) error {
 }
 
 func usage() {
-	fmt.Println(`Porto - local project orchestrator
+	fmt.Println(`Porto - local-first orchestrator with explicit remote environments
 
 Commands:
   porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
   porto list
   porto version
   porto daemon start|status
+  porto environments list|add|request|enroll|listen|revoke|rotate|remove
+  porto environments fleet-preview|fleet-run|fleet-list|fleet-status|fleet-cancel
+  porto agent serve|connect|forget
+  porto extension list|install|enable|disable|invoke|cancel|remove|pack|keygen
+  porto extension catalog|catalog-import|catalog-install|trust|revoke-publisher|secret
   porto start|stop|restart|kill <project> [--no-pull]
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status

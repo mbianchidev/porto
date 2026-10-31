@@ -1,6 +1,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { apiGet, errorMessage, isAbortError } from './api'
 import { dockerModeURL, getDockerMode, subscribeDockerMode } from './dockerMode'
+import { environmentURL, getEnvironmentID, subscribeEnvironment } from './environment'
 import type { DockerContainer, DockerContainerSnapshot } from './types'
 
 type ContainerSnapshotState = {
@@ -33,6 +34,7 @@ let reconnectTimer: number | undefined
 let fallbackTimer: number | undefined
 let reconnectDelay = 1000
 let activeMode = getDockerMode()
+let activeEnvironment = getEnvironmentID()
 
 function emit(next: ContainerSnapshotState) {
   state = next
@@ -57,15 +59,16 @@ async function refresh() {
   request?.abort()
   const controller = new AbortController()
   const requestMode = activeMode
+  const requestEnvironment = activeEnvironment
   request = controller
   if (!state.snapshot) {
     emit({ ...state, loading: true, error: '' })
   }
   try {
-    const snapshot = await apiGet<DockerContainerSnapshot>(dockerModeURL('/api/docker/containers/snapshot', requestMode), controller.signal)
-    if (!controller.signal.aborted && requestMode === activeMode) acceptSnapshot(snapshot)
+    const snapshot = await apiGet<DockerContainerSnapshot>(dockerModeURL(environmentURL('/api/docker/containers/snapshot', requestEnvironment), requestMode), controller.signal)
+    if (!controller.signal.aborted && requestMode === activeMode && requestEnvironment === activeEnvironment) acceptSnapshot(snapshot)
   } catch (err) {
-    if (!isAbortError(err) && requestMode === activeMode) {
+    if (!isAbortError(err) && requestMode === activeMode && requestEnvironment === activeEnvironment) {
       emit({
         ...state,
         error: errorMessage(err, 'Unable to load container inventory'),
@@ -172,7 +175,7 @@ function getSnapshot() {
   return state
 }
 
-const unsubscribeMode = subscribeDockerMode(() => {
+function resetTarget() {
   source?.close()
   source = null
   request?.abort()
@@ -181,13 +184,17 @@ const unsubscribeMode = subscribeDockerMode(() => {
   clearFallbackTimer()
   reconnectDelay = 1000
   activeMode = getDockerMode()
+  activeEnvironment = getEnvironmentID()
   emit({ snapshot: null, error: '', loading: true, connected: false })
   if (consumers > 0) {
     void refresh()
     connect()
   }
-})
+}
+const unsubscribeMode = subscribeDockerMode(resetTarget)
+const unsubscribeEnvironment = subscribeEnvironment(resetTarget)
 import.meta.hot?.dispose(unsubscribeMode)
+import.meta.hot?.dispose(unsubscribeEnvironment)
 
 export function useContainerSnapshots(enabled = true): ContainerSnapshotResource {
   const current = useSyncExternalStore(subscribe, getSnapshot, getSnapshot)

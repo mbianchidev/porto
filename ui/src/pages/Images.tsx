@@ -8,6 +8,7 @@ import { DiveTerminal } from '../components/DiveTerminal'
 import { ImageAnalysis } from '../components/ImageAnalysis'
 import { RuntimeFiles } from '../components/RuntimeFiles'
 import { Inspector, InspectorTabs } from '../components/Inspector'
+import { ExtensionContributions } from '../components/ResourceExtensions'
 import { InventoryList } from '../components/InventoryList'
 import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
@@ -143,6 +144,7 @@ export function Images() {
         )}
         {selected && (
           <Inspector title={imageReference(selected)} subtitle={selected.id} onClose={closeInspector}>
+            <ExtensionContributions resourceKind="image" resourceID={selected.id} />
             <InspectorTabs
               tabs={[
                 { id: 'overview', label: 'Overview' },

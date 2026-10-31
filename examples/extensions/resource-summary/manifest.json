@@ -1,0 +1,16 @@
+{
+  "apiVersion": "porto.extensions/v1",
+  "id": "dev.porto.resource-summary",
+  "name": "Resource summary",
+  "version": "1.0.0",
+  "description": "Inspect container inventory on one explicitly granted Porto environment.",
+  "permissions": ["runtime.read"],
+  "views": [
+    { "id": "summary", "title": "Container inventory", "location": "tools" },
+    { "id": "container", "title": "Container detail", "location": "resource", "resourceKind": "container" }
+  ],
+  "actions": [
+    { "id": "inventory", "title": "Read selected environment inventory", "destructive": false },
+    { "id": "inspect", "title": "Inspect this container", "resourceKind": "container", "destructive": false }
+  ]
+}

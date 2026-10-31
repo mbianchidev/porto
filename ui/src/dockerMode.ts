@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from 'react'
+import { environmentStorageKey, environmentURL, subscribeEnvironment, targetAPIPath } from './environment'
 
 export type DockerMode = 'linux' | 'windows'
 const storageKey = 'porto.container-view.v1'
@@ -6,7 +7,7 @@ const listeners = new Set<() => void>()
 
 function storedMode(): DockerMode {
   try {
-    const value = window.localStorage.getItem(storageKey)
+    const value = window.localStorage.getItem(environmentStorageKey(storageKey))
     if (value === null || value === 'linux' || value === 'windows') return value ?? 'linux'
     console.error('Invalid saved container view; using the Linux view without changing either engine.')
   } catch (error) {
@@ -32,7 +33,7 @@ function updateMode(next: DockerMode) {
 
 export function setDockerMode(next: DockerMode) {
   if (next !== 'linux' && next !== 'windows') throw new Error('Container view must be Linux or Windows.')
-  window.localStorage.setItem(storageKey, next)
+  window.localStorage.setItem(environmentStorageKey(storageKey), next)
   updateMode(next)
 }
 
@@ -41,7 +42,7 @@ export function useDockerMode(): DockerMode {
 }
 
 function onStorage(event: StorageEvent) {
-  if (event.key === storageKey || event.key === null) updateMode(storedMode())
+  if (event.key === environmentStorageKey(storageKey) || event.key === null) updateMode(storedMode())
 }
 if (typeof window !== 'undefined') {
   window.addEventListener('storage', onStorage)
@@ -49,11 +50,13 @@ if (typeof window !== 'undefined') {
 }
 
 export function isDockerModePath(pathname: string) {
+  pathname = targetAPIPath(pathname)
   return pathname === '/api/runtime' || pathname === '/api/docker' || pathname.startsWith('/api/docker/') ||
     pathname === '/api/networking' || pathname.startsWith('/api/networking/')
 }
 
 export function dockerModeURL(input: string, selected?: DockerMode): string {
+  input = environmentURL(input)
   const url = new URL(input, window.location.href)
   if (url.host !== window.location.host || !isDockerModePath(url.pathname)) return input
   const existing = url.searchParams.get('containerMode')
@@ -62,3 +65,6 @@ export function dockerModeURL(input: string, selected?: DockerMode): string {
   else url.searchParams.delete('containerMode')
   return input.startsWith('/') ? `${url.pathname}${url.search}${url.hash}` : url.toString()
 }
+
+const unsubscribeEnvironment = subscribeEnvironment(() => updateMode(storedMode()))
+import.meta.hot?.dispose(unsubscribeEnvironment)

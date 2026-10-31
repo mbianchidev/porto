@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
 import { createPortal } from 'react-dom'
 import { apiGet, apiSend, errorMessage } from '../api'
+import { environmentURL, workloadURL } from '../environment'
+import { WorkloadLink } from '../components/WorkloadLink'
 import { writeClipboard } from '../clipboard'
 import { useContainerSnapshots } from '../containerSnapshots'
 import { formatRelativeTime } from '../format'
@@ -239,7 +241,7 @@ export function LocalhostIng({
 
   async function run(name: string, verb: string) {
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(name)}/${verb}`, { method: 'POST' })
+      const response = await fetch(environmentURL(`/api/projects/${encodeURIComponent(name)}/${verb}`), { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       reload()
     } catch (err) {
@@ -315,7 +317,7 @@ export function LocalhostIng({
 
   async function runSendbox(name: string, verb: 'start' | 'stop') {
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(name)}/sendbox/${verb}`, { method: 'POST' })
+      const response = await fetch(environmentURL(`/api/projects/${encodeURIComponent(name)}/sendbox/${verb}`), { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       reload()
       notifyNotice('localhost-ing', verb === 'start' ? 'Sendbox session started.' : 'Stopping Sendbox session.')
@@ -326,7 +328,7 @@ export function LocalhostIng({
 
   async function cleanup(name: string) {
     try {
-      const response = await fetch(`/api/projects/${encodeURIComponent(name)}/cleanup-branches`, { method: 'POST' })
+      const response = await fetch(environmentURL(`/api/projects/${encodeURIComponent(name)}/cleanup-branches`), { method: 'POST' })
       if (!response.ok) throw new Error(await response.text())
       const result: CleanupResult = await response.json()
       const deleted = [...result.localDeleted.map((b) => `local ${b}`), ...result.remoteDeleted.map((b) => `remote ${b}`)]
@@ -422,9 +424,9 @@ export function LocalhostIng({
                   <div>
                     <dt>HTTPS route</dt>
                     <dd>
-                      <a href={project.httpsUrl} target="_blank" rel="noreferrer">
+                      <WorkloadLink url={project.httpsUrl}>
                         {project.httpsUrl.replace(/^https:\/\//, '').replace(/\/$/, '')}
-                      </a>
+                      </WorkloadLink>
                     </dd>
                   </div>
                   <div>
@@ -649,8 +651,8 @@ export function LocalhostIng({
                           <ActionButton
                             label="Open route"
                             icon="open"
-                            disabled={!project.httpsUrl}
-                            onClick={() => window.open(project.httpsUrl, '_blank', 'noreferrer')}
+                            disabled={!workloadURL(project.httpsUrl)}
+                            onClick={() => { const url = workloadURL(project.httpsUrl); if (url) window.open(url, '_blank', 'noreferrer') }}
                           />
                           <ActionButton className="logsButton" label="View logs" icon="logs" onClick={() => selectProject(project.id, 'logs')} />
                         </div>

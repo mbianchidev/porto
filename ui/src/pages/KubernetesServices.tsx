@@ -9,6 +9,7 @@ import { StatusLamp } from '../components/StatusLamp'
 import { RuntimeGate } from '../components/SectionChrome'
 import { ResourceInput } from '../components/ResourceInput'
 import { KubernetesResourceLookup } from '../components/KubernetesResourceLookup'
+import { WorkloadLink } from '../components/WorkloadLink'
 import type { KubernetesContext, KubernetesService } from '../types'
 
 const COLUMNS_TEMPLATE = 'minmax(160px,1.2fr) minmax(110px,0.7fr) minmax(90px,0.6fr) minmax(120px,0.9fr) minmax(150px,1fr) minmax(70px,0.4fr)'
@@ -106,7 +107,7 @@ export function KubernetesServices({
                       <dt>{port.name || port.protocol}</dt>
                       <dd>
                         {port.port} → {port.targetPort}{port.nodePort ? ` (node ${port.nodePort})` : ''}
-                        {port.httpsUrl ? <> · <a href={port.httpsUrl} target="_blank" rel="noreferrer">{port.hostname}</a></> : ''}
+                        {port.httpsUrl ? <> · <WorkloadLink url={port.httpsUrl}>{port.hostname}</WorkloadLink></> : ''}
                         {port.hostname ? ` · ${port.gatewayReady ? 'ready' : 'waiting for gateway'}` : ''}
                         {port.localPort ? <> · <span className="mono">localhost:{port.localPort}</span></> : ''}
                         {port.gatewayError ? <><br /><small>{port.gatewayError}</small></> : ''}
