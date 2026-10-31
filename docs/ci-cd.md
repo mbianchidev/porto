@@ -785,10 +785,20 @@ It uses a named Dev Containers workspace volume and disables Ryuk while the
 harness owns cleanup; it does not grant an untrusted guest a host control socket.
 
 Client dependencies live under `scripts/docker-clients`, separate from the
-shipped dashboard/desktop. Their lockfile uses maintained glob 13 instead of
-archiver's deprecated glob 10. Optional protobuf/native SSH installation scripts
-are explicitly disabled; these tests use Unix sockets/named pipes, not SSH clients.
-Dependency installation and audit are required before these jobs run.
+shipped dashboard/desktop. Both package roots use npm overrides for glob 14.0.3
+and minimatch 11.0.3 in their configured installs to fix
+[glob's cancellation bypass](https://github.com/advisories/GHSA-3g3m-2fjr-6pw4)
+and [minimatch's pattern amplification](https://github.com/advisories/GHSA-g3hv-75wg-m249)
+without downgrading Testcontainers or the Electron packaging tools.
+The desktop overrides target glob 9+ and minimatch 5+, preserving the
+callback-based glob 7/minimatch 3 peer tree used by Windows Squirrel tooling.
+The existing desktop `.npmrc` omits optional and peer dependencies, and Porto's
+Windows packages use NSIS rather than Squirrel. That omitted peer tree still has
+a minimatch advisory; a peer-inclusive Squirrel build needs separate dependency
+modernization, not a forced override that breaks glob's internal matcher API.
+Optional protobuf/native SSH installation scripts are explicitly disabled;
+these tests use Unix sockets/named pipes, not SSH clients. Dependency installation
+and audit are required before these jobs run, without advisory suppressions.
 
 The Windows installer job also checksum-verifies and installs the official
 WinFsp 2.1 driver on its disposable runner, then tests the **installed**
