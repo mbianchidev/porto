@@ -1,0 +1,113 @@
+Porto bounded guest-agent health probes for Lima v2.2.1 (Apache-2.0).
+
+Windows still requires the QEMU virtserialport transport that upstream marks
+unreliable in lima-vm/lima#2064 and lima-vm/lima#2158. A stalled Info RPC otherwise holds
+the host agent's client lock until VM shutdown, preventing its existing
+reconnection loop from replacing the broken channel. Bound each health probe,
+preserve shorter caller deadlines, and keep the original startup acceptance
+and guest-agent requirements unchanged.
+
+diff --git a/pkg/guestagent/api/client/client.go b/pkg/guestagent/api/client/client.go
+--- a/pkg/guestagent/api/client/client.go
++++ b/pkg/guestagent/api/client/client.go
+@@ -65,3 +65,5 @@
+ func (c *GuestAgentClient) Info(ctx context.Context) (*api.Info, error) {
++	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
++	defer cancel()
+ 	return c.cli.GetInfo(ctx, &emptypb.Empty{})
+ }
+diff --git a/pkg/guestagent/api/client/probe_test.go b/pkg/guestagent/api/client/probe_test.go
+new file mode 100644
+--- /dev/null
++++ b/pkg/guestagent/api/client/probe_test.go
+@@ -0,0 +1,90 @@
++package client
++
++import (
++	"context"
++	"net"
++	"sync/atomic"
++	"testing"
++	"testing/synctest"
++	"time"
++
++	"github.com/lima-vm/lima/v2/pkg/guestagent/api"
++	"google.golang.org/grpc"
++	"google.golang.org/grpc/codes"
++	"google.golang.org/grpc/status"
++	"google.golang.org/grpc/test/bufconn"
++	"google.golang.org/protobuf/types/known/emptypb"
++)
++
++type stalledInfoService struct {
++	api.UnimplementedGuestServiceServer
++	stalled atomic.Bool
++}
++
++func (service *stalledInfoService) GetInfo(ctx context.Context, _ *emptypb.Empty) (*api.Info, error) {
++	if service.stalled.Load() {
++		<-ctx.Done()
++		return nil, status.FromContextError(ctx.Err()).Err()
++	}
++	return &api.Info{}, nil
++}
++
++func TestInfoProbeDeadlines(t *testing.T) {
++	for _, scenario := range []struct {
++		name     string
++		caller   time.Duration
++		expected time.Duration
++	}{
++		{"stalled-channel", time.Minute, 10 * time.Second},
++		{"shorter-caller", 3 * time.Second, 3 * time.Second},
++	} {
++		t.Run(scenario.name, func(t *testing.T) {
++			synctest.Test(t, func(t *testing.T) {
++				listener := bufconn.Listen(1 << 20)
++				defer listener.Close()
++				server := grpc.NewServer()
++				service := &stalledInfoService{}
++				service.stalled.Store(true)
++				api.RegisterGuestServiceServer(server, service)
++				go func() { _ = server.Serve(listener) }()
++				defer server.Stop()
++				dial := func(ctx context.Context) (net.Conn, error) {
++					return listener.DialContext(ctx)
++				}
++				client, err := NewGuestAgentClient(dial)
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer client.Close()
++				ctx, cancel := context.WithTimeout(context.Background(), scenario.caller)
++				defer cancel()
++				started := time.Now()
++				_, err = client.Info(ctx)
++				if status.Code(err) != codes.DeadlineExceeded || time.Since(started) != scenario.expected {
++					t.Fatalf("stalled Info returned %v after %s; want deadline at %s", err, time.Since(started), scenario.expected)
++				}
++				if scenario.caller == scenario.expected {
++					return
++				}
++				if ctx.Err() != nil {
++					t.Fatal("probe expiration canceled the longer-lived host-agent context")
++				}
++				if err := client.Close(); err != nil {
++					t.Fatal(err)
++				}
++				service.stalled.Store(false)
++				replacement, err := NewGuestAgentClient(dial)
++				if err != nil {
++					t.Fatal(err)
++				}
++				defer replacement.Close()
++				if _, err := replacement.Info(ctx); err != nil {
++					t.Fatalf("replacement guest-agent channel did not become ready: %v", err)
++				}
++				if elapsed := time.Since(started); elapsed != scenario.expected {
++					t.Fatalf("channel replacement delayed readiness by %s", elapsed-scenario.expected)
++				}
++			})
++		})
++	}
++}

@@ -124,8 +124,21 @@ per-user `override.yaml` configuration and QEMU executable selection. The
 installed Porto binary still creates the guest and its ownership record; the
 harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
-and dependency-provision fixture. Linux/macOS install their documented QEMU
+and dependency-provision fixture, including its previous-completed-UTC-day
+Ubuntu snapshot and bounded APT retries. Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
+Intel macOS TCG additionally uses Lima's upstream `no_timer_check` CI workaround
+with the same pinned guest image and matching SHA-256-pinned kernel/initrd.
+Only that emulated fixture skips the guest kernel's timer sanity check; all
+Porto rendering, ownership, lifecycle and preservation assertions remain.
+Production defaults and non-Intel fixtures are unchanged.
+Installed ARM64 TCG guests use measured host parallelism: at least two guest
+vCPUs, up to four, reserving a host CPU where capacity permits. The extra guest
+capacity is intended to reduce contention between container start and real
+dependency health probes on small hosted runners. Intel keeps two vCPUs;
+production defaults, guest memory/disk,
+the one-minute container-start budget and actual health/network assertions are
+unchanged. The chosen CPU allocation is logged.
 The host-only Windows archive download uses verified Git for Windows Bash
 without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.
 No WSL distribution is needed to prepare the installed Lima guest archive.

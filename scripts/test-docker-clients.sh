@@ -79,6 +79,11 @@ report udevadm info --query=property --name=/dev/vda13
 report udevadm info --query=property --name=/dev/vda15
 report systemctl show boot.mount boot-efi.mount local-fs.target systemd-udevd.service systemd-udev-trigger.service systemd-hwdb-update.service systemd-sysusers.service systemd-modules-load.service systemd-tmpfiles-setup-dev-early.service cloud-init-local.service cloud-init-network.service cloud-config.service cloud-final.service ssh.service systemd-networkd-wait-online.service -p Id -p ActiveState -p Result -p ActiveEnterTimestampMonotonic -p InactiveExitTimestampMonotonic -p ExecMainStartTimestampMonotonic -p ExecMainExitTimestampMonotonic -p CPUUsageNSec
 report sudo -n journalctl -b -u systemd-udevd.service -u systemd-udev-trigger.service -u systemd-hwdb-update.service -u systemd-sysusers.service -u systemd-modules-load.service -u boot.mount -u boot-efi.mount --no-pager -n 160
+report systemctl show lima-guestagent.service -p ActiveState -p SubState -p Result -p ExecMainStatus -p NRestarts
+report sudo -n journalctl -b -u lima-guestagent.service --no-pager -n 100
+if [ -d /dev/virtio-ports ]; then
+  report ls -l /dev/virtio-ports
+fi
 report sudo -n tail -n 200 /var/log/cloud-init-output.log
 exit "$status"
 `
@@ -190,7 +195,7 @@ PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cj
 export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
-  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt,accel=tcg -cpu neoverse-n1"
+  export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt -accel tcg,thread=multi,tb-size=512 -cpu neoverse-n1"
   export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
   echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."
 fi
@@ -270,6 +275,9 @@ else
     if [ "$suite/$goarch" = data/amd64 ]; then
       export QEMU_SYSTEM_X86_64="'$(command -v qemu-system-x86_64)' -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb"
       export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
+      PORTO_DOCKER_CLIENT_LIMA_IMAGES="$(node scripts/lima-containerd-archive.cjs --intel-tcg-images)"
+      export PORTO_DOCKER_CLIENT_LIMA_IMAGES
+      echo "::warning::Intel macOS TCG uses Lima's CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged."
       echo "::notice::Intel macOS data fixtures explicitly use bounded QEMU TCG; a hardware capability bit is not support for nested HVF on hosted runners."
     fi
   fi
@@ -279,6 +287,9 @@ else
   lima_options=(start --tty=false --timeout=20m --name=porto-engine --vm-type=qemu
     --cpus=2 "--memory=$memory" --disk=20 --mount-none --containerd=user
     "--set=$PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES")
+  if [ -n "${PORTO_DOCKER_CLIENT_LIMA_IMAGES:-}" ]; then
+    lima_options+=("--set=$PORTO_DOCKER_CLIENT_LIMA_IMAGES")
+  fi
   if [ "$PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION" = 1 ]; then
     if [ "$goarch" = arm64 ]; then
       lima_options+=('--set=.vmOpts.qemu.cpuType.aarch64 = "neoverse-n1"')

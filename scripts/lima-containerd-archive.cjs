@@ -1,5 +1,6 @@
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawnSync } = require('node:child_process')
 const { Transform } = require('node:stream')
@@ -55,7 +56,8 @@ function run(command, args, capture = false, env = process.env) {
 }
 
 function dependencyProvisionOverride(date = new Date()) {
-  const snapshot = `${date.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
+  const completedDay = new Date(date.getTime() - 24 * 60 * 60 * 1000)
+  const snapshot = `${completedDay.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
   const script = [
     '#!/bin/sh',
     'set -eu',
@@ -79,6 +81,36 @@ function dependencyProvisionOverride(date = new Date()) {
     '',
   ].join('\n')
   return `.provision += ${JSON.stringify([{ mode: 'dependency', script }])}`
+}
+
+function intelTCGImages() {
+  const release = 'https://cloud-images.ubuntu.com/releases/resolute/release-20260927'
+  const image = 'ubuntu-26.04-server-cloudimg-amd64'
+  return [{
+    location: `${release}/${image}.img`,
+    arch: 'x86_64',
+    variant: 'server',
+    digest: 'sha256:8800651811af9a85465ad1d552add729947bb16488dddb4a9b5305a3d97332b2',
+    kernel: {
+      location: `${release}/unpacked/${image}-vmlinuz-generic`,
+      arch: 'x86_64',
+      digest: 'sha256:7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117',
+      cmdline: 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check',
+    },
+    initrd: {
+      location: `${release}/unpacked/${image}-initrd-generic`,
+      arch: 'x86_64',
+      digest: 'sha256:c9f23b4ac34a20df6a1d344b44bf2597faa48799d814cbc206b3974c6ead5215',
+    },
+  }]
+}
+
+function tcgGuestCPUs(arch, available = os.availableParallelism()) {
+  if (!['amd64', 'arm64'].includes(arch)) throw new Error(`Unsupported TCG guest architecture: ${arch}`)
+  if (!Number.isSafeInteger(available) || available < 2) {
+    throw new Error('Installed TCG acceptance requires at least two available host CPUs')
+  }
+  return arch === 'arm64' ? Math.min(4, Math.max(2, available - 1)) : 2
 }
 
 async function prepareContainerdArchive(goarch, directory, {
@@ -113,8 +145,10 @@ if (require.main === module) {
   const args = process.argv.slice(2)
   if (args.length === 1 && args[0] === '--dependencies') {
     process.stdout.write(`${dependencyProvisionOverride()}\n`)
+  } else if (args.length === 1 && args[0] === '--intel-tcg-images') {
+    process.stdout.write(`.images = ${JSON.stringify(intelTCGImages())}\n`)
   } else if (args.length !== 2) {
-    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies')
+    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies | --intel-tcg-images')
     process.exitCode = 2
   } else {
     prepareContainerdArchive(...args).then((expression) => {
@@ -126,4 +160,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride, prepareContainerdArchive }
+module.exports = { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs, prepareContainerdArchive }

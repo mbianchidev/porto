@@ -33,6 +33,11 @@ claim that the upstream module-only advisory has disappeared.
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
+The Unix Git-timeout fixture reexecutes its already-running test binary instead
+of cold-starting a generated shell script and a separate `sleep` process under
+the Git deadlines. Locale checks, actual lock creation, process termination and
+owned-lock cleanup remain required; production timeouts are unchanged.
+
 The native platform-networking job runs on Ubuntu, Windows x64 and Windows
 ARM64. Disposable hosts install the real loopback HTTPS integration, check
 occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted
@@ -88,6 +93,32 @@ reading either a content-length or chunked binary upload. This catches a
 request-body draining race; in-memory response recorders alone cannot exercise
 that HTTP server behavior.
 
+BuildKit control and session channels share a one-minute connection-setup
+allowance for the owned SSH/stdio tunnel. gRPC's default 20-second dial attempt
+could discard a slow but valid emulated-guest connection before the caller's
+longer RPC deadline. A deterministic virtual-clock regression verifies a
+25-second tunnel connects once, while a caller's shorter ten-second deadline
+still expires on time. This does not retry builds or extend their request,
+container-start, provisioning or readiness budgets.
+
+Container identity checks on an available, matching owned Lima inventory use
+live containerd metadata over its established connection instead of forking
+`nerdctl inspect` for each guard. They do not trust cached snapshot names and do
+not reuse a connection after engine ownership changes. The metadata timeout and
+shorter caller deadlines remain unchanged; metadata failures stay explicit.
+The Resource Saver fixture keeps its inventory context alive until registered
+container, sharing and inventory cleanups finish. Returning from the test body
+must not close its RPC connection while synthetic-container cleanup still needs it.
+
+Windows QEMU still uses Lima's
+[known unreliable serial guest-agent channel](https://github.com/lima-vm/lima/issues/2158).
+Its `Info` health probe is bounded at ten seconds, allowing the existing reconnect
+loop to replace a stalled channel rather than hold its client lock until shutdown.
+Virtual-clock coverage verifies expiration, a shorter three-second caller deadline
+and a healthy replacement connection. The one-minute guest-agent startup check
+and all real forwarding assertions remain required. Failed boot diagnostics include
+the guest-agent service state, journal and available virtio ports.
+
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an
 empty or truncated archive. The preceding passing run used the same version.
@@ -102,6 +133,15 @@ Porto checks the actual grace context before canceling it, then performs the
 requested SIGKILL escalation and confirms task exit. An earlier caller deadline
 still returns cancellation without an extra kill. This avoids an intermittent
 Testcontainers stop failure without retrying its workflow.
+
+The disposable development-client Lima fixture is initially created by
+`limactl`, not Porto's installer. Before timed Resource Saver checks, it completes
+Porto's normal engine provisioning, including static QEMU/binfmt packages and
+BuildKit platform registration. Otherwise the first shutdown/wake would try to
+download and install those missing prerequisites inside its 60-second readiness
+budget. The configured wake deadline and real request/readiness assertions are
+unchanged; later wakes still verify the installed handlers through the normal
+production path.
 
 Development-client acceptance also runs Resource Saver against the same
 disposable backends: original binary POST preservation, shared concurrent wakes,
@@ -238,6 +278,15 @@ are scoped by runner OS/architecture, resolved Go version, workload, target,
 and dependency/runtime inputs, so a host-only cache cannot displace a
 cross-build or native-packaging cache. Go still validates compiler cache
 entries against current source and flags; test executions retain `-count=1`.
+After restoring those caches, setup resolves the locked module graph before
+builds, tests and import-policy checks. Source-built Windows runtimes, Lima and
+the synchronization tools use the same dependency-acquisition helper.
+`scripts/go-dependencies.cjs` retries recognized HTTP/2, transport, rate-limit
+and server failures at most three times, with two- and four-second backoffs.
+Each failed attempt retains its diagnostics; only the successful import graph
+reaches stdout. Integrity, authentication, missing-version and unknown errors
+still fail immediately. Compilation, tests and vulnerability checks are never
+retried, and the existing job deadlines are unchanged.
 Cache paths are exported through the job environment so post-job saves can
 resolve them even when setup actions are nested inside runtime acceptance.
 The same rule keeps nested Electron/builder download caches available at cleanup.
@@ -376,6 +425,9 @@ executable. Local-containerd cells have no Lima engine to restart; selecting the
 dedicated engine phase without an independently owned CI Lima runtime is an error.
 No job waits for another phase's artifacts. The 85-minute job, 55-minute
 executable, 40-minute acceptance and 20-minute setup/boot caps are unchanged.
+The source setup budget ends when its VM, Docker daemon and transport are ready.
+Synthetic image/resource seeding uses the existing acceptance budget instead of
+the last few seconds left after a slow emulated source boot and Docker install.
 Normal development-client jobs retain their existing scope. Linux installs
 FUSE3, `qemu-utils`, and only the host-architecture QEMU package:
 `qemu-system-x86` on x64 or `qemu-system-arm` on ARM64. All source and destination
@@ -607,7 +659,12 @@ the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
 Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
-on the date its fixture configuration was generated. The snapshot ID is logged
+on the previous completed UTC day, allowing a full day for snapshot publication
+and cache population rather than requiring the same-day endpoint. This trades
+one day of guest dependency freshness for a less time-sensitive fixture input.
+PR #173 exhausted APT's retry
+budget on same-day snapshot HTTP 503 responses, then reported missing
+`newuidmap` during rootless containerd setup. The snapshot ID is logged
 and reused for the destination, source VM, and restarts. Only the Ubuntu source
 URIs change; suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
@@ -643,6 +700,10 @@ Linux runners without `/dev/kvm` use the same host-side archive preparation.
 Software-emulated ARM64 guests select `neoverse-n1` for both the destination and
 source VM, avoiding the EDK2 LPA2 boot hang reported in
 [tianocore/edk2#11962](https://github.com/tianocore/edk2/issues/11962).
+Explicit ARM64 TCG executable overrides also retain Lima's full multi-threaded
+TCG profile and 512 MiB translation cache instead of overriding only the machine
+accelerator. This reduces avoidable translation-cache pressure during native
+ARM64 software emulation without extending installation or readiness deadlines.
 The 20-minute guest startup budget and resource assertions remain unchanged.
 The isolated Ubuntu guests omit APT translation, AppStream and
 command-not-found indexes and the post-install `needrestart` scanner; signed
@@ -660,7 +721,17 @@ a supported emulated CPU. Forcing just the accelerator while Lima selects its
 HVF configuration bypasses these TCG defaults. Serializing both guest vCPUs and
 reducing the translation cache slows the CPU-bound device discovery and rootless
 provisioning. The guest retains its two vCPUs and normal clock handling, without
-instruction counting. Raising Lima's outer timeout does not repair an
+instruction counting. Intel macOS TCG fixtures explicitly opt into Lima's
+[upstream CI workaround](https://github.com/lima-vm/lima/pull/2541) for the
+[intermittent IO-APIC timer panic](https://github.com/lima-vm/lima/issues/84).
+They boot the same checksum-pinned Ubuntu 26.04 image selected by Lima 2.2.1,
+with its matching dated-release kernel and initrd also pinned by SHA-256, and
+append only `no_timer_check` to the guest command line. This disables the guest
+kernel's hardware-timer sanity check in those emulated fixtures, not a Porto
+assertion. Both source and destination use the same override. CI emits an
+explicit warning; packaged runtime defaults, non-Intel fixtures and native
+hardware acceptance are unchanged. Keep all three dated image/kernel/initrd pins
+aligned when updating this fixture. Raising Lima's outer timeout does not repair an
 emergency-mode boot.
 The Intel runtime-data phases verify that both destination and source retain
 the image's `LABEL=BOOT` and `LABEL=UEFI` fstab entries, resolve those labels to

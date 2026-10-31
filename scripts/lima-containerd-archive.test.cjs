@@ -6,7 +6,7 @@ const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 const crypto = require('node:crypto')
 
-const { selectArchive, decompressArchive, dependencyProvisionOverride, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
+const { selectArchive, decompressArchive, dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs, prepareContainerdArchive } = require('./lima-containerd-archive.cjs')
 const { sha256 } = require('./verify-runtime-checksum.cjs')
 
 function fixture(t) {
@@ -15,22 +15,24 @@ function fixture(t) {
   return { source: path.join(directory, 'runtime.tar.gz'), destination: path.join(directory, 'runtime.tar') }
 }
 
-test('CI dependencies use one immutable Ubuntu snapshot for the current UTC date', () => {
+test('CI dependencies use one immutable Ubuntu snapshot from the previous completed UTC day', () => {
   const date = new Date('2026-10-22T14:35:00Z')
   const override = dependencyProvisionOverride(date)
   const entries = JSON.parse(override.slice('.provision += '.length))
   assert.equal(entries.length, 1)
   assert.equal(entries[0].mode, 'dependency')
-  assert.match(entries[0].script, /URIs: https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261022T000000Z\//)
+  assert.match(entries[0].script, /URIs: https:\/\/snapshot\.ubuntu\.com\/ubuntu\/20261021T000000Z\//)
   assert.doesNotMatch(entries[0].script, /APT::Snapshot/)
   assert.match(entries[0].script, /APT::Update::Error-Mode "any";/)
-  assert.match(entries[0].script, /Ubuntu snapshot: 20261022T000000Z/)
+  assert.match(entries[0].script, /Ubuntu snapshot: 20261021T000000Z/)
   assert.equal(override, dependencyProvisionOverride(date))
 })
 
 test('CI snapshot selection uses UTC boundaries and rejects an invalid date', () => {
   const override = dependencyProvisionOverride(new Date('2026-10-22T23:30:00-07:00'))
-  assert.match(override, /20261023T000000Z/)
+  assert.match(override, /20261022T000000Z/)
+  assert.match(dependencyProvisionOverride(new Date('2026-01-01T00:00:00Z')), /20251231T000000Z/)
+  assert.match(dependencyProvisionOverride(new Date('2024-03-01T23:59:59Z')), /20240229T000000Z/)
   assert.throws(() => dependencyProvisionOverride(new Date('invalid')), RangeError)
 })
 
@@ -45,6 +47,39 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
   assert.match(script, /Debug::Acquire::Retries "true";/)
   assert.match(script, /APT::Update::Error-Mode "any";/)
   assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
+})
+
+test('Intel TCG uses matching pinned guest, kernel and initrd with only the upstream timer-check workaround', () => {
+  const images = intelTCGImages()
+  assert.equal(images.length, 1)
+  const [image] = images
+  const disk = new URL(image.location)
+  assert.equal(disk.origin, 'https://cloud-images.ubuntu.com')
+  assert.match(disk.pathname, /\/release-\d{8}\/ubuntu-26\.04-server-cloudimg-amd64\.img$/)
+  for (const artifact of [image, image.kernel, image.initrd]) {
+    assert.equal(artifact.arch, 'x86_64')
+    assert.match(artifact.digest, /^sha256:[a-f0-9]{64}$/)
+  }
+  const base = image.location.slice(0, -4)
+  const directory = base.slice(0, base.lastIndexOf('/') + 1)
+  const name = base.slice(base.lastIndexOf('/') + 1)
+  assert.equal(image.kernel.location, `${directory}unpacked/${name}-vmlinuz-generic`)
+  assert.equal(image.initrd.location, `${directory}unpacked/${name}-initrd-generic`)
+  assert.equal(image.kernel.cmdline, 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check')
+  image.kernel.cmdline = 'synthetic mutation'
+  assert.notEqual(intelTCGImages()[0].kernel.cmdline, image.kernel.cmdline)
+})
+
+test('installed ARM TCG uses measured host parallelism without changing the Intel or minimum CPU allocation', () => {
+  for (const [available, expected] of [[2, 2], [3, 2], [4, 3], [8, 4], [64, 4]]) {
+    assert.equal(tcgGuestCPUs('arm64', available), expected)
+    assert.equal(tcgGuestCPUs('amd64', available), 2)
+    assert.ok(expected <= available)
+  }
+  for (const available of [0, 1, NaN, 2.5]) {
+    assert.throws(() => tcgGuestCPUs('arm64', available), /at least two available host CPUs/)
+  }
+  assert.throws(() => tcgGuestCPUs('unknown', 4), /Unsupported TCG guest architecture/)
 })
 
 test('CI Lima boot avoids the systemd v255 logind deadlock without weakening rootless coverage', () => {

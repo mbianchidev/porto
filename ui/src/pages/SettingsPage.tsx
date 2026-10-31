@@ -28,6 +28,7 @@ function editableSettings(settings: Settings | null): Settings | null {
     ...settings,
     dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false,
     logRetentionDays: settings.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS,
+    kubeconfigDirectory: settings.kubeconfigDirectory ?? '',
     ...normalizeExperiencePreferences(settings),
   } : null
 }
@@ -171,7 +172,9 @@ export function SettingsPage({
         saved.sendboxEnabled && !savedSendboxEnabled ? 'Sendbox' : '',
         saved.killSwitchEnabled && !savedKillSwitchEnabled ? 'KillSwitch' : '',
       ].filter(Boolean)
-      notifyNotice('settings', enabled.length > 0 ? `Settings saved. Enabled ${enabled.join(' and ')}.` : 'Settings saved.')
+      notifyNotice('settings', saved.kubeconfigRestartRequired
+        ? 'Settings saved. Restart Porto to move existing kubeconfigs and apply the new folder.'
+        : enabled.length > 0 ? `Settings saved. Enabled ${enabled.join(' and ')}.` : 'Settings saved.')
       onIntegrationsChanged()
     } catch (err) {
       notifyError('settings', errorMessage(err, 'Unable to save settings'))
@@ -310,6 +313,34 @@ export function SettingsPage({
       </section>
 
       <DesktopBehaviorSettings />
+
+      <section className="hygiene" aria-labelledby="kubeconfig-storage-title">
+        <div className="hygieneIntro">
+          <h2 id="kubeconfig-storage-title">Choose where kubeconfigs live.</h2>
+          <p>Keep Porto's per-cluster kubeconfigs and cluster metadata in a dedicated folder.</p>
+        </div>
+        <div className="hygieneControls">
+          <label className="settingsField">
+            <span>Kubeconfig storage folder</span>
+            <input
+              type="text"
+              value={draft?.kubeconfigDirectory ?? ''}
+              placeholder="Default Porto data folder"
+              disabled={draftDisabled}
+              onChange={(event) => updateDraft('kubeconfigDirectory', event.target.value)}
+            />
+            <small>Use an absolute path or ~/. Leave empty for Porto's default folder. The destination must be empty.</small>
+          </label>
+          {settings?.kubeconfigActiveDirectory && <p>Active folder: <code>{settings.kubeconfigActiveDirectory}</code></p>}
+          <p>Restart Porto after saving. Existing managed kubeconfigs and metadata move together; running clusters and ~/.kube/config stay unchanged.</p>
+          {settings?.kubeconfigStorageError && <p role="alert">Folder migration failed: {settings.kubeconfigStorageError}. The active folder above remains authoritative.</p>}
+          {settings?.kubeconfigRestartRequired && <p role="status">Restart required to apply the saved folder.</p>}
+          <div className="settingsActions">
+            <button type="button" disabled={draftDisabled} onClick={() => updateDraft('kubeconfigDirectory', '')}>Use default folder</button>
+            <button type="button" disabled={saveDisabled} onClick={save}>Save kubeconfig storage</button>
+          </div>
+        </div>
+      </section>
 
       <section className="hygiene" aria-labelledby="diagnostic-log-settings-title">
         <div className="hygieneIntro">

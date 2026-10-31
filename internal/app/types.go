@@ -37,25 +37,29 @@ type LogLine struct {
 }
 
 type Settings struct {
-	CleanupLocalMerged     bool     `json:"cleanupLocalMerged"`
-	CleanupRemoteMerged    bool     `json:"cleanupRemoteMerged"`
-	PruneRemoteTracking    bool     `json:"pruneRemoteTracking"`
-	ProtectedBranches      []string `json:"protectedBranches"`
-	SQLNotSoLiteEnabled    bool     `json:"sqlNotSoLiteEnabled"`
-	KillSwitchEnabled      bool     `json:"killSwitchEnabled"`
-	SendboxEnabled         bool     `json:"sendboxEnabled"`
-	DockerEnabled          bool     `json:"dockerEnabled"`
-	DockerAutoPruneEnabled bool     `json:"dockerAutoPruneEnabled"`
-	KubernetesEnabled      bool     `json:"kubernetesEnabled"`
-	VMsEnabled             bool     `json:"vmsEnabled"`
-	InterfaceDensity       string   `json:"interfaceDensity"`
-	Theme                  string   `json:"theme"`
-	ReduceMotion           bool     `json:"reduceMotion"`
-	TerminalFontSize       int      `json:"terminalFontSize"`
-	TerminalLineHeight     float64  `json:"terminalLineHeight"`
-	TerminalCursorBlink    bool     `json:"terminalCursorBlink"`
-	TerminalScrollback     int      `json:"terminalScrollback"`
-	LogRetentionDays       int      `json:"logRetentionDays"`
+	CleanupLocalMerged        bool     `json:"cleanupLocalMerged"`
+	CleanupRemoteMerged       bool     `json:"cleanupRemoteMerged"`
+	PruneRemoteTracking       bool     `json:"pruneRemoteTracking"`
+	ProtectedBranches         []string `json:"protectedBranches"`
+	SQLNotSoLiteEnabled       bool     `json:"sqlNotSoLiteEnabled"`
+	KillSwitchEnabled         bool     `json:"killSwitchEnabled"`
+	SendboxEnabled            bool     `json:"sendboxEnabled"`
+	DockerEnabled             bool     `json:"dockerEnabled"`
+	DockerAutoPruneEnabled    bool     `json:"dockerAutoPruneEnabled"`
+	KubernetesEnabled         bool     `json:"kubernetesEnabled"`
+	KubeconfigDirectory       string   `json:"kubeconfigDirectory"`
+	KubeconfigActiveDirectory string   `json:"kubeconfigActiveDirectory,omitempty"`
+	KubeconfigStorageError    string   `json:"kubeconfigStorageError,omitempty"`
+	KubeconfigRestartRequired bool     `json:"kubeconfigRestartRequired,omitempty"`
+	VMsEnabled                bool     `json:"vmsEnabled"`
+	InterfaceDensity          string   `json:"interfaceDensity"`
+	Theme                     string   `json:"theme"`
+	ReduceMotion              bool     `json:"reduceMotion"`
+	TerminalFontSize          int      `json:"terminalFontSize"`
+	TerminalLineHeight        float64  `json:"terminalLineHeight"`
+	TerminalCursorBlink       bool     `json:"terminalCursorBlink"`
+	TerminalScrollback        int      `json:"terminalScrollback"`
+	LogRetentionDays          int      `json:"logRetentionDays"`
 }
 
 const (

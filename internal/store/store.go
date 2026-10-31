@@ -122,6 +122,7 @@ CREATE TABLE IF NOT EXISTS settings (
  docker_enabled INTEGER NOT NULL DEFAULT 1,
  docker_auto_prune_enabled INTEGER NOT NULL DEFAULT 0,
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
+ kubeconfig_directory TEXT NOT NULL DEFAULT '',
  vms_enabled INTEGER NOT NULL DEFAULT 0,
  interface_density TEXT NOT NULL DEFAULT 'compact',
  theme TEXT NOT NULL DEFAULT 'dark',
@@ -185,6 +186,9 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("kubernetes_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("kubeconfig_directory", "TEXT NOT NULL DEFAULT ''"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("vms_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -520,7 +524,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,kubeconfig_directory,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
@@ -532,6 +536,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 			&dockerEnabled,
 			&dockerAutoPruneEnabled,
 			&kubernetesEnabled,
+			&settings.KubeconfigDirectory,
 			&vmsEnabled,
 			&settings.InterfaceDensity,
 			&settings.Theme,
@@ -595,7 +600,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,kubeconfig_directory=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -606,6 +611,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.DockerEnabled),
 		boolInt(settings.DockerAutoPruneEnabled),
 		boolInt(settings.KubernetesEnabled),
+		settings.KubeconfigDirectory,
 		boolInt(settings.VMsEnabled),
 		settings.InterfaceDensity,
 		settings.Theme,

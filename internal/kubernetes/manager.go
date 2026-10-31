@@ -343,6 +343,11 @@ func NewWithKubeconfigRoot(runner runtimes.Runner, kubeconfigRoot string) *Manag
 	}
 }
 
+// SetKubeconfigRoot is initialization-only, before any runtime workers start.
+func (m *Manager) SetKubeconfigRoot(directory string) {
+	m.kubeconfigRoot = directory
+}
+
 func (m *Manager) Status(ctx context.Context, contextName string) Status {
 	if contextName == "" {
 		contexts, err := m.Contexts(ctx)

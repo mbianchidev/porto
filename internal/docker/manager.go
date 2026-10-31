@@ -1731,6 +1731,9 @@ func (m *Manager) ContainerName(ctx context.Context, id string) (string, error) 
 }
 
 func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (string, string, error) {
+	if err := validateObjectID(id); err != nil {
+		return "", "", err
+	}
 	if m.IsNativeWindows() {
 		document, err := m.InspectContainer(ctx, id)
 		if err != nil {
@@ -1744,6 +1747,11 @@ func (m *Manager) resolveContainerIdentity(ctx context.Context, id string) (stri
 			return "", "", err
 		}
 		return value.ID, strings.TrimPrefix(value.Name, "/"), nil
+	}
+	if runtime, _, ok := m.inventoryLimaRuntime(); ok {
+		identityContext, cancel := context.WithTimeout(ctx, m.timeout)
+		defer cancel()
+		return runtime.containerIdentity(identityContext, id)
 	}
 	output, err := m.runStdout(ctx, "inspect Porto container identity", "container", "inspect", id)
 	if err != nil {
@@ -2566,6 +2574,13 @@ func (m *Manager) runStdoutCommand(ctx context.Context, timeout time.Duration, a
 }
 
 func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error) {
+	if _, origin, ok := m.inventoryLimaRuntime(); ok {
+		return origin, nil
+	}
+	return m.backend(ctx)
+}
+
+func (m *Manager) inventoryLimaRuntime() (*grpcContainerRuntime, commandBackend, bool) {
 	if !m.directCLI {
 		if inventory := m.activeContainerInventory(); inventory != nil {
 			if runtime, ok := inventory.activeRuntime().(*grpcContainerRuntime); ok {
@@ -2578,12 +2593,12 @@ func (m *Manager) backendForCommand(ctx context.Context) (commandBackend, error)
 						"shell", state.Instance, "--", "sh", "-c",
 						limaOwnedRuntimeCommand, "porto-runtime-command", state.OwnerID, "nerdctl",
 					}
-					return origin, nil
+					return runtime, origin, true
 				}
 			}
 		}
 	}
-	return m.backend(ctx)
+	return nil, commandBackend{}, false
 }
 
 func (m *Manager) runWithTimeout(ctx context.Context, timeout time.Duration, action string, stdin []byte, args ...string) ([]byte, error) {

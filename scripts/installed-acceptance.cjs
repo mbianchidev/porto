@@ -1,5 +1,6 @@
 const assert = require('node:assert/strict')
 const fs = require('node:fs')
+const os = require('node:os')
 const path = require('node:path')
 const { spawn } = require('node:child_process')
 
@@ -8,7 +9,7 @@ const {
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
-const { dependencyProvisionOverride } = require('./lima-containerd-archive.cjs')
+const { dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs } = require('./lima-containerd-archive.cjs')
 
 function reportCommandFailure(error, logImpl = console.error) {
   if (error?.code !== 'PORTO_COMMAND_FAILED') return
@@ -121,7 +122,7 @@ async function configureLima(fixture, env) {
   }
   const quotedQemu = `'${qemu.replaceAll('\\', '/').replaceAll("'", "'\\''")}'`
   env[arch === 'amd64' ? 'QEMU_SYSTEM_X86_64' : 'QEMU_SYSTEM_AARCH64'] = arch === 'arm64'
-    ? `${quotedQemu} -machine virt,accel=tcg -cpu neoverse-n1`
+    ? `${quotedQemu} -machine virt -accel tcg,thread=multi,tb-size=512 -cpu neoverse-n1`
     : `${quotedQemu} -machine q35,vmport=off -accel tcg,thread=multi,tb-size=512 -global ICH9-LPC.disable_s3=1 -global ICH9-LPC.disable_s4=1 -cpu max,-avx512vl,-pdpe1gb`
   if (fixture.snapshots) return
   console.log('Installed acceptance: preparing checksum-verified guest tools')
@@ -138,13 +139,21 @@ async function configureLima(fixture, env) {
   assert.ok(archive.stdout.trim().startsWith(prefix), 'Expected the existing checksum-verified Lima archive fixture')
   const archives = JSON.parse(archive.stdout.trim().slice(prefix.length))
   const dependencies = JSON.parse(dependencyProvisionOverride().slice('.provision += '.length))
+  const intel = fixture.target === 'darwin/amd64'
+  if (intel) {
+    console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
+  }
+  const availableCPUs = os.availableParallelism()
+  const cpus = tcgGuestCPUs(arch, availableCPUs)
+  console.log(`Installed acceptance: selected ${cpus} TCG guest CPUs from ${availableCPUs} available host CPUs`)
   write(path.join(fixture.limaHome, '_config', 'override.yaml'), JSON.stringify({
     vmType: 'qemu', arch: arch === 'amd64' ? 'x86_64' : 'aarch64',
-    cpus: 2, memory: '3GiB', disk: '20GiB',
+    cpus, memory: '3GiB', disk: '20GiB',
     ssh: { loadDotSSHPubKeys: false, forwardAgent: false, forwardX11: false },
     propagateProxyEnv: false,
     containerd: { archives },
     provision: dependencies,
+    ...(intel ? { images: intelTCGImages() } : {}),
     ...(arch === 'arm64' ? { vmOpts: { qemu: { cpuType: { aarch64: 'neoverse-n1' } } } } : {}),
   }))
 }

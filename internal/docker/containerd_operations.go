@@ -2027,6 +2027,25 @@ func (r *grpcContainerRuntime) resolveContainerID(ctx context.Context, identifie
 	}
 }
 
+func (r *grpcContainerRuntime) containerIdentity(ctx context.Context, identifier string) (string, string, error) {
+	if r.containers == nil {
+		return "", "", fmt.Errorf("%w: live container metadata is unavailable", ErrUnavailable)
+	}
+	id, err := r.resolveContainerID(ctx, identifier)
+	if err != nil {
+		return "", "", err
+	}
+	response, err := r.containers.Get(withContainerdNamespace(ctx, r.namespace), &containersapi.GetContainerRequest{ID: id})
+	if err != nil {
+		return "", "", containerdOperationError("inspect identity for", id, err)
+	}
+	record := response.GetContainer()
+	if record.GetID() == "" || record.GetID() != id {
+		return "", "", fmt.Errorf("%w: container identity changed while resolving %q", ErrConflict, identifier)
+	}
+	return id, strings.TrimPrefix(firstNonEmpty(record.GetLabels()[nerdctlNameLabel], id), "/"), nil
+}
+
 func (r *grpcContainerRuntime) requireContainer(ctx context.Context, id string) error {
 	_, err := r.containers.Get(
 		withContainerdNamespace(ctx, r.namespace),

@@ -26,7 +26,7 @@ source="$temporary/mutagen-0.18.1"
 (
   cd "$source"
   bash "$scripts/apply-runtime-patch.sh" "$PWD" "$scripts/patches/mutagen-0.18.1-version.patch"
-  GOWORK=off go get \
+  GOWORK=off node "$scripts/go-dependencies.cjs" get \
     github.com/klauspost/compress@v1.20.1 \
     golang.org/x/net@v0.60.0 \
     golang.org/x/sys@v0.49.0 \
@@ -34,6 +34,7 @@ source="$temporary/mutagen-0.18.1"
     golang.org/x/text@v0.43.0 \
     google.golang.org/grpc@v1.84.0 \
     google.golang.org/protobuf@v1.36.12
+  GOWORK=off node "$scripts/go-dependencies.cjs" mod download
   mkdir -p "$temporary/agents"
   for arch in amd64 arm64; do
     CGO_ENABLED=0 GOOS=linux GOARCH="$arch" GOWORK=off \

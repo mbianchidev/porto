@@ -39,6 +39,10 @@ export type Settings = {
   dockerEnabled: boolean
   dockerAutoPruneEnabled: boolean
   kubernetesEnabled: boolean
+  kubeconfigDirectory: string
+  kubeconfigActiveDirectory?: string
+  kubeconfigStorageError?: string
+  kubeconfigRestartRequired?: boolean
   vmsEnabled: boolean
   interfaceDensity: 'compact' | 'comfortable'
   theme: 'dark' | 'light' | 'system'
