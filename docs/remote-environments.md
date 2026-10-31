@@ -211,7 +211,7 @@ never deletes cluster infrastructure, workloads, namespaces or persistent data.
 Powerful native RBAC permissions remain powerful; import is not a replacement
 for a suitably scoped cluster identity.
 
-The bundled Kubernetes client/tooling version is **1.37.1**. Follow Kubernetes'
+The native client-go version is **1.37.1**; bundled `kubectl` is **1.36.1**. Follow Kubernetes'
 supported client/server version skew and use API discovery to check served
 resources. Registering a connection is not a claim that every optional API,
 chart, controller or unsupported server version works.

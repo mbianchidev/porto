@@ -893,6 +893,8 @@ while its build-only Jake dependency uses the maintained FileList 2 chain.
 `desktop-dependency-compat.test.cjs` exercises the actual archive matcher,
 FileList and EJS contracts; do not use audit's suggested obsolete packager or
 builder downgrades. Desktop and dashboard `npm audit` should remain clean.
+The development-client fixture has the same patched glob/minimatch floors;
+its independent `scripts/docker-clients` lockfile is also audited in CI.
 
 Remote-management coverage includes synthetic distinct TLS hosts, an external
 Kubernetes API, outbound Edge reconnect/revocation, escaped-path authorization,
