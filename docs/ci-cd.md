@@ -665,8 +665,8 @@ one day of guest dependency freshness for a less time-sensitive fixture input.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
-and reused for the destination, source VM, and restarts. Only the Ubuntu source
-URIs change; suites, components, archive signing keys, signature verification,
+and reused for the destination, source VM, and restarts. Ubuntu source URIs
+change, while suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
 from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
 indexes. APT retries transient download failures, including HTTP 503 responses,
@@ -674,7 +674,13 @@ up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
 and package downloads. An unavailable snapshot or failed index fetch remains
 an error after the retry budget is exhausted, with no fallback to mutable
-mirrors or relaxed checks. The 20-minute boot deadline is unchanged, and
+mirrors or relaxed checks. Disposable CI guests disable automatic APT updates
+and mask their daily/upgrade timers and services before explicit dependency
+installation. This prevents background package work from competing with TCG
+acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;
+snapshot-pinned installs remain explicit. Production guest update policy,
+Porto's shutdown budgets and acceptance assertions are unchanged.
+The 20-minute boot deadline is unchanged, and
 installed Porto environments are not reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,

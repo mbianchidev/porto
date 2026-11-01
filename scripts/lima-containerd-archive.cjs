@@ -76,7 +76,13 @@ function dependencyProvisionOverride(date = new Date()) {
     'Acquire::https::Timeout "30";',
     'Debug::Acquire::Retries "true";',
     'APT::Update::Error-Mode "any";',
+    'APT::Periodic::Enable "0";',
+    'APT::Periodic::Update-Package-Lists "0";',
+    'APT::Periodic::Download-Upgradeable-Packages "0";',
+    'APT::Periodic::Unattended-Upgrade "0";',
     'PORTO_APT_CONFIG',
+    'printf "%s\\n" "CI guest automatic APT updates disabled; dependency installation remains explicit and snapshot-pinned" >&2',
+    'systemctl mask --now apt-daily.timer apt-daily-upgrade.timer apt-daily.service apt-daily-upgrade.service unattended-upgrades.service',
     'rm -f /etc/apt/apt.conf.d/99needrestart',
     '',
   ].join('\n')
