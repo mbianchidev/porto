@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { MessagesContext } from './messagesContext'
 import type { ActivityEntry, ActivityLevel } from './types'
+import { environmentStorageKey } from './environment'
 
 const MAX_ACTIVITY_ENTRIES = 200
 const ERROR_BANNER_MS = 7000
@@ -24,9 +25,9 @@ function isActivityEntry(value: unknown): value is ActivityEntry {
     && !Number.isNaN(Date.parse(entry.at))
 }
 
-function loadActivity(): ActivityEntry[] {
+function loadActivity(key: string): ActivityEntry[] {
   try {
-    const stored = window.localStorage.getItem(ACTIVITY_STORAGE_KEY)
+    const stored = window.localStorage.getItem(key)
     if (!stored) return []
     const parsed: unknown = JSON.parse(stored)
     return Array.isArray(parsed) ? parsed.filter(isActivityEntry).slice(0, MAX_ACTIVITY_ENTRIES) : []
@@ -36,9 +37,9 @@ function loadActivity(): ActivityEntry[] {
   }
 }
 
-function saveActivity(entries: ActivityEntry[]) {
+function saveActivity(key: string, entries: ActivityEntry[]) {
   try {
-    window.localStorage.setItem(ACTIVITY_STORAGE_KEY, JSON.stringify(entries))
+    window.localStorage.setItem(key, JSON.stringify(entries))
   } catch (error) {
     console.error('Unable to save Porto activity history', error)
   }
@@ -50,7 +51,8 @@ function saveActivity(entries: ActivityEntry[]) {
  * while runtime event streams use recordActivity without showing a banner.
  */
 export function MessagesProvider({ children }: { children: ReactNode }) {
-  const [entries, setEntries] = useState<ActivityEntry[]>(loadActivity)
+  const [activityKey] = useState(() => environmentStorageKey(ACTIVITY_STORAGE_KEY))
+  const [entries, setEntries] = useState<ActivityEntry[]>(() => loadActivity(activityKey))
   const [errorBanner, setErrorBanner] = useState('')
   const [noticeBanner, setNoticeBanner] = useState('')
   const nextID = useRef(entries.reduce((highest, entry) => Math.max(highest, entry.id), 0) + 1)
@@ -77,7 +79,7 @@ export function MessagesProvider({ children }: { children: ReactNode }) {
   const dismissNotice = useCallback(() => setNoticeBanner(''), [])
   const clearActivity = useCallback(() => setEntries([]), [])
 
-  useEffect(() => saveActivity(entries), [entries])
+  useEffect(() => saveActivity(activityKey, entries), [activityKey, entries])
 
   useEffect(() => {
     if (!errorBanner) return

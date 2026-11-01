@@ -8,6 +8,7 @@ import { matchesNamespace, useKubernetesStatus } from '../kubernetes'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorErrorBoundary, InspectorTabs } from '../components/Inspector'
+import { ExtensionContributions } from '../components/ResourceExtensions'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { StatusLamp } from '../components/StatusLamp'
@@ -35,7 +36,7 @@ const TABS = [
   { id: 'manifest', label: 'Manifest' },
 ]
 
-function podPath(pod: KubernetesPod, suffix: string, context: string, extra = ''): string {
+function podPath(pod: Pick<KubernetesPod, 'namespace' | 'name'>, suffix: string, context: string, extra = ''): string {
   const contextParam = context ? `context=${encodeURIComponent(context)}` : ''
   const join = extra || contextParam ? '?' : ''
   const params = [contextParam, extra].filter(Boolean).join('&')
@@ -61,14 +62,14 @@ function isTerminalShell(value: string): value is TerminalShell {
   return TERMINAL_SHELLS.includes(value as TerminalShell)
 }
 
-function LogsTab({ pod, context }: { pod: KubernetesPod; context: string }) {
+export function PodLogs({ pod, context }: { pod: Pick<KubernetesPod, 'uid' | 'namespace' | 'name'> & { containers: Array<{ name: string; restartCount: number }> }; context: string }) {
   const [container, setContainer] = useState(pod.containers[0]?.name ?? '')
   const [previous, setPrevious] = useState(false)
   const selectedContainer = pod.containers.find((item) => item.name === container)
   const previousAvailable = (selectedContainer?.restartCount ?? 0) > 0
   const showPrevious = previous && previousAvailable
   const logs = usePolledResource<string>(
-    (signal) => apiGet(podPath(pod, '/logs', context, `container=${encodeURIComponent(container)}&previous=${showPrevious}&tail=500`), signal),
+    (signal) => apiGet(podPath(pod, '/logs', context, `uid=${encodeURIComponent(pod.uid)}&container=${encodeURIComponent(container)}&previous=${showPrevious}&tail=500`), signal),
     4000,
     [context, pod.namespace, pod.name, container, showPrevious],
     `kubernetes:${context}:pod:${pod.uid}:logs:${container}:${showPrevious}`,
@@ -639,6 +640,7 @@ export function Pods({
 
         {selected && (
           <Inspector title={selected.name} subtitle={`${selected.namespace} · ${selected.phase}`} onClose={() => setSelectedKey(null)}>
+            <ExtensionContributions resourceKind="pod" resourceID={`${selected.namespace}/${selected.name}`} />
             <InspectorTabs tabs={TABS} activeID={tab} onSelect={setTab} />
             <InspectorErrorBoundary key={`${context}:${selectedKey}:${tab}:${inspectorGeneration}`}>
               {tab === 'overview' && (
@@ -663,7 +665,7 @@ export function Pods({
                   </dl>
                 </section>
               )}
-              {tab === 'logs' && <LogsTab pod={selected} context={context} />}
+              {tab === 'logs' && <PodLogs pod={selected} context={context} />}
               {tab === 'terminal' && (
                 <PodTerminalTab
                   key={`${selected.uid}:${selected.namespace}/${selected.name}`}

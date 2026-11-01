@@ -2,6 +2,12 @@
 
 Porto can manage native development applications, Docker resources, local Kubernetes clusters, and standalone Linux virtual machines from the same daemon, CLI, and dashboard.
 
+For authorized remote hosts, outbound Edge agents or explicit external
+Kubernetes imports, use [authenticated environments](remote-environments.md).
+Those targets have distinct identities, capabilities and caches. Registering an
+external cluster does not make its infrastructure Porto-owned or change global
+kubeconfigs.
+
 Native project orchestration remains the default. The Docker API server is enabled by default. Its containerd execution backend, Kubernetes, and VM providers report clear unavailable states when required tools are not installed or running.
 
 Enable providers independently:

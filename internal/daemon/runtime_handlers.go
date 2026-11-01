@@ -1596,7 +1596,7 @@ func (s *Server) setRuntimeFeature(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) requireRuntime(feature string, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if s.windowsWorker && feature == "docker" {
+		if (s.windowsWorker && feature == "docker") || (s.externalKubernetes && feature == "kubernetes") {
 			next(w, r)
 			return
 		}

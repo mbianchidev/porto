@@ -1,4 +1,5 @@
 import { apiGet, apiSend, errorMessage } from '../api'
+import { environmentURL } from '../environment'
 import { bytesLabel, type DataOperation, type DataRequest } from '../dataTypes'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
@@ -46,7 +47,7 @@ export function DataOperations({ resourceName, onComplete, onReviewMigration, re
         <td>{run.status === 'running' && <button type="button" onClick={() => void cancel(run.id)}>Cancel operation {run.id}</button>}
           {onReviewMigration && run.request.action === 'migration' && ['failed', 'cancelled', 'interrupted'].includes(run.status) &&
             <button type="button" disabled={reviewDisabled} onClick={() => onReviewMigration(run.request)}>Review migration {run.id}</button>}
-          {run.result.archive?.path && <a href={`/api/data/operations/${run.id}/archive`} download>Download verified archive</a>}
+          {run.result.archive?.path && <a href={environmentURL(`/api/data/operations/${run.id}/archive`)} download>Download verified archive</a>}
           {run.phase === 'archive-expired' && <span>Archive expired under retention</span>}
         </td>
       </tr>)}</tbody>

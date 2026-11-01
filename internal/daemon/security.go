@@ -13,7 +13,7 @@ func (s *Server) secureHandler(next http.Handler) http.Handler {
 		w.Header().Set("Referrer-Policy", "no-referrer")
 		w.Header().Set(
 			"Content-Security-Policy",
-			"default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'",
+			"default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-src 'self'",
 		)
 		if strings.HasPrefix(r.URL.Path, "/api/") {
 			if !isLocalRequestHost(r.Host) {
@@ -22,6 +22,11 @@ func (s *Server) secureHandler(next http.Handler) http.Handler {
 			}
 			if origin := strings.TrimSpace(r.Header.Get("Origin")); origin != "" && !isLocalOrigin(origin) {
 				http.Error(w, "Porto API requests must come from a loopback origin", http.StatusForbidden)
+				return
+			}
+			if target := r.Header.Get("X-Porto-Environment-ID"); target != "" && target != "local" &&
+				!strings.HasPrefix(r.URL.Path, "/api/environments/"+target+"/api/") {
+				http.Error(w, "A non-local target must use its explicit environment API path; local fallback is forbidden", http.StatusBadRequest)
 				return
 			}
 			headerMode, queryMode := r.Header.Get("X-Porto-Container-Mode"), r.URL.Query().Get("containerMode")

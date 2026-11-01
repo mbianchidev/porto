@@ -46,6 +46,9 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
   assert.match(script, /Acquire::https::Timeout "30";/)
   assert.match(script, /Debug::Acquire::Retries "true";/)
   assert.match(script, /APT::Update::Error-Mode "any";/)
+  assert.match(script, /APT::Periodic::Enable "0";/)
+  assert.match(script, /APT::Periodic::Unattended-Upgrade "0";/)
+  assert.match(script, /systemctl mask --now apt-daily\.timer apt-daily-upgrade\.timer apt-daily\.service apt-daily-upgrade\.service unattended-upgrades\.service/)
   assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
 })
 

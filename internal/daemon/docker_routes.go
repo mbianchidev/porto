@@ -1,6 +1,9 @@
 package daemon
 
-import "net/http"
+import (
+	"encoding/json"
+	"net/http"
+)
 
 // The native worker reuses resource contracts without registering projects,
 // user settings, Linux data helpers, Kubernetes or VM handlers.
@@ -24,6 +27,7 @@ func (s *Server) dockerResourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/containers/events", s.requireRuntime("docker", s.dockerContainerEvents))
 	mux.HandleFunc("GET /api/docker/containers/stats", s.requireRuntime("docker", s.dockerContainerStats))
 	mux.HandleFunc("GET /api/docker/containers/{id}", s.requireRuntime("docker", s.dockerContainer))
+	mux.HandleFunc("GET /api/docker/containers/{id}/identity", s.requireRuntime("docker", s.dockerContainerIdentity))
 	mux.HandleFunc("GET /api/docker/containers/{id}/logs", s.requireRuntime("docker", s.dockerContainerLogs))
 	mux.HandleFunc("GET /api/docker/containers/{id}/terminal", s.requireRuntime("docker", s.dockerContainerTerminal))
 	mux.HandleFunc("POST /api/docker/containers/{id}/exec", s.requireRuntime("docker", s.dockerContainerExec))
@@ -32,6 +36,7 @@ func (s *Server) dockerResourceRoutes(mux *http.ServeMux) {
 	if !s.windowsWorker {
 		mux.HandleFunc("GET /api/docker/images/{id}/dive", s.requireRuntime("docker", s.dockerImageDiveTerminal))
 	}
+
 	mux.HandleFunc("GET /api/docker/images/{id}", s.requireRuntime("docker", s.dockerImage))
 	mux.HandleFunc("POST /api/docker/images/pull", s.requireRuntime("docker", s.dockerPullImage))
 	mux.HandleFunc("DELETE /api/docker/images/{id}", s.requireRuntime("docker", s.dockerRemoveImage))
@@ -47,4 +52,25 @@ func (s *Server) dockerResourceRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerVolume))
 	mux.HandleFunc("POST /api/docker/volumes", s.requireRuntime("docker", s.dockerCreateVolume))
 	mux.HandleFunc("DELETE /api/docker/volumes/{name}", s.requireRuntime("docker", s.dockerRemoveVolume))
+}
+
+func (s *Server) dockerContainerIdentity(w http.ResponseWriter, r *http.Request) {
+	document, err := s.docker.InspectContainer(r.Context(), r.PathValue("id"))
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	var value struct {
+		ID    string `json:"Id"`
+		State struct {
+			Status  string
+			Running bool
+			Paused  bool
+		}
+	}
+	if err := json.Unmarshal(document, &value); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, value)
 }

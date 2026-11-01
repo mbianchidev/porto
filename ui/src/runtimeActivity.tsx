@@ -5,6 +5,7 @@ import { cleanupRunSummary } from './dockerCleanup'
 import { usePolledResource } from './hooks'
 import { useMessages } from './useMessages'
 import { getDockerMode, useDockerMode } from './dockerMode'
+import { environmentStorageKey } from './environment'
 import type {
   ActivityLevel,
   DockerCleanupState,
@@ -24,7 +25,7 @@ type DockerActivityCursor = {
 
 function loadCursor(): DockerActivityCursor | null {
   try {
-    const raw = window.localStorage.getItem(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY)
+    const raw = window.localStorage.getItem(environmentStorageKey(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY))
     if (!raw) return null
     const value: unknown = JSON.parse(raw)
     if (!value || typeof value !== 'object') return null
@@ -39,7 +40,7 @@ function loadCursor(): DockerActivityCursor | null {
 
 function saveCursor(cursor: DockerActivityCursor) {
   try {
-    window.localStorage.setItem(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY, JSON.stringify(cursor))
+    window.localStorage.setItem(environmentStorageKey(getDockerMode() === 'windows' ? `${DOCKER_CURSOR_KEY}.windows` : DOCKER_CURSOR_KEY), JSON.stringify(cursor))
   } catch (error) {
     console.error('Unable to save Docker activity cursor', error)
   }
@@ -92,7 +93,7 @@ function newEvents(snapshot: DockerContainerSnapshot, cursor: DockerActivityCurs
 
 function loadCleanupCursor(): string[] {
   try {
-    const raw = window.localStorage.getItem(CLEANUP_CURSOR_KEY)
+    const raw = window.localStorage.getItem(environmentStorageKey(CLEANUP_CURSOR_KEY))
     const value: unknown = raw ? JSON.parse(raw) : []
     return Array.isArray(value) ? value.filter((key): key is string => typeof key === 'string').slice(-CLEANUP_CURSOR_LIMIT) : []
   } catch (error) {
@@ -126,7 +127,7 @@ function DockerCleanupActivity() {
     }
     if (changed) {
       try {
-        window.localStorage.setItem(CLEANUP_CURSOR_KEY, JSON.stringify(cursor.current))
+        window.localStorage.setItem(environmentStorageKey(CLEANUP_CURSOR_KEY), JSON.stringify(cursor.current))
       } catch (error) {
         console.error('Unable to save runtime cleanup activity cursor', error)
       }

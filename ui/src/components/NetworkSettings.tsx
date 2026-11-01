@@ -5,6 +5,7 @@ import { usePolledResource } from '../hooks'
 import type { CertificateImport, ConnectivityReport, NetworkStatus, ProxyConfig, ProxyStatus } from '../platformTypes'
 import { useMessages } from '../useMessages'
 import { useDockerMode } from '../dockerMode'
+import { WorkloadLink } from './WorkloadLink'
 
 function editableProxy(proxy: ProxyStatus): ProxyConfig {
   return {
@@ -206,7 +207,7 @@ export function NetworkSettings() {
             {status.warnings.map((warning) => <p className="hintLine" key={warning}>{warning}</p>)}
             {status.routes.length > 0 && (
               <ul className="platformRoutes">
-                {status.routes.map((route) => <li key={route.containerId}><a href={route.httpsURL} target="_blank" rel="noreferrer">{route.hostname}.porto.localhost</a></li>)}
+                {status.routes.map((route) => <li key={route.containerId}><WorkloadLink url={route.httpsURL}>{route.hostname}.porto.localhost</WorkloadLink></li>)}
               </ul>
             )}
           </>

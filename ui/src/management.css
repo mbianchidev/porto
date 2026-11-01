@@ -1,0 +1,32 @@
+.environmentBar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-3, 12px);
+  padding: 8px 16px;
+  border-bottom: 1px solid var(--line-strong);
+  background: var(--panel-sunken);
+  color: var(--ink-soft);
+  font-family: var(--mono);
+}
+.environmentBar label { display: flex; align-items: center; gap: 8px; color: var(--ink); min-width: 0; max-width: 100%; }
+.environmentBar select { flex: 1; min-width: 0; max-width: min(460px, 70vw); }
+.environmentBar > span { min-width: 0; overflow-wrap: anywhere; }
+.environmentBar .mono { overflow-wrap: anywhere; }
+.environmentWarning { color: var(--amber-text); flex-basis: 100%; }
+.managementArea { display: flex; flex-direction: column; gap: 16px; }
+.managementArea .drawerPanel { max-width: 100%; }
+.managementArea > *, .managementArea .inspectorForm, .managementArea .inspectorForm label { min-width: 0; }
+.managementArea input[type="file"] { width: 100%; min-width: 0; max-width: 100%; }
+.managementArea details > summary { cursor: pointer; color: var(--ink); font-weight: 600; }
+.managementArea fieldset { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--line); padding: 12px; min-width: 0; }
+.managementArea fieldset label { display: flex; align-items: center; gap: 8px; }
+.managementArea textarea { min-height: 100px; resize: vertical; }
+.managementArea p, .managementArea code { overflow-wrap: anywhere; }
+.managementArea .dataTable caption { text-align: left; padding-block: 8px; color: var(--ink-soft); }
+.extensionFrame { display: block; width: 100%; min-height: 160px; border: 1px solid var(--line); background: var(--field); }
+@media (max-width: 860px) {
+  .environmentBar { padding: 8px; }
+  .environmentBar label { flex-basis: 100%; }
+  .managementArea .actions { flex-direction: column; align-items: stretch; }
+}

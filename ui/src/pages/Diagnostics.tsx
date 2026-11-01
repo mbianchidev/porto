@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
+import { environmentURL } from '../environment'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { StatusLamp } from '../components/StatusLamp'
@@ -81,7 +82,7 @@ export function Diagnostics() {
   async function downloadBundle() {
     setDownloadBusy(true)
     try {
-      const response = await fetch('/api/diagnostics/bundle')
+      const response = await fetch(environmentURL('/api/diagnostics/bundle'))
       if (!response.ok) throw new Error((await response.text()) || `Bundle request failed with status ${response.status}`)
       const blob = await response.blob()
       const disposition = response.headers.get('content-disposition') ?? ''

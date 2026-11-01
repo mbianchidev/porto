@@ -1,5 +1,6 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import './App.css'
+import './management.css'
 import { apiGet } from './api'
 import { usePolledResource, useNarrowViewport } from './hooks'
 import { MessagesProvider } from './messages'
@@ -31,8 +32,10 @@ import { Secrets } from './pages/Secrets'
 import { Nodes } from './pages/Nodes'
 import { Machines } from './pages/Machines'
 import { Databases } from './pages/Databases'
-import { Diagnostics } from './pages/Diagnostics'
 import { Activity } from './pages/Activity'
+import { EnvironmentSelector } from './components/EnvironmentSelector'
+import { useEnvironmentID } from './environment'
+import { environmentSupportsRoute, type EnvironmentProfile } from './managementTypes'
 import type {
   IntegrationStatus,
   KillSwitchStatus,
@@ -44,6 +47,7 @@ import type {
 } from './types'
 
 const KNOWN_ROUTES: RouteID[] = [
+  'environments', 'extensions',
   'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
@@ -57,6 +61,9 @@ const Applications = lazy(async () => ({ default: (await import('./pages/Applica
 const KubernetesAdmin = lazy(async () => ({ default: (await import('./pages/KubernetesAdmin')).KubernetesAdmin }))
 const Helm = lazy(async () => ({ default: (await import('./pages/Helm')).Helm }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
+const Environments = lazy(async () => ({ default: (await import('./pages/Environments')).Environments }))
+const Extensions = lazy(async () => ({ default: (await import('./pages/Extensions')).Extensions }))
+const Diagnostics = lazy(async () => ({ default: (await import('./pages/Diagnostics')).Diagnostics }))
 
 function routeFromHash(): RouteID {
   const raw = window.location.hash.replace(/^#\/?/, '')
@@ -66,6 +73,10 @@ function routeFromHash(): RouteID {
 function AppShell() {
   const { errorBanner, noticeBanner } = useMessages()
   const dockerMode = useDockerMode()
+  const environmentID = useEnvironmentID()
+  const environments = usePolledResource<EnvironmentProfile[]>((signal) => apiGet('/api/environments', signal), 10000, [])
+  const environment = environments.data?.find((profile) => profile.id === environmentID)
+  const backend = environmentID === 'local' ? 'local' : environment?.backend || 'unknown'
   const [route, setRoute] = useState<RouteID>(routeFromHash)
   const [railOpen, setRailOpen] = useState(false)
   const [kubeContext, setKubeContext] = useState('')
@@ -73,6 +84,7 @@ function AppShell() {
   const [podDebugContainers, setPodDebugContainers] = useState<Record<string, KubernetesDebugContainer>>({})
   const [podDebugOperations, setPodDebugOperations] = useState(0)
   const narrow = useNarrowViewport(860)
+  const supportedRoute = environmentSupportsRoute(backend, route)
 
   useEffect(() => {
     if (window.location.hash === '' || window.location.hash === '#/') {
@@ -84,10 +96,11 @@ function AppShell() {
   }, [])
 
   const settingsResource = usePolledResource<Settings>((signal) => apiGet('/api/settings', signal), 0, [])
+  const interfaceSettings = usePolledResource<Settings | null>((signal) => environmentID === 'local' ? Promise.resolve(null) : apiGet('/api/environments/local/api/settings', signal), 0, [])
   const settings = settingsOverride ?? settingsResource.data
-  const sqlNotSoLite = usePolledResource<IntegrationStatus>((signal) => apiGet('/api/integrations/sql-not-so-lite', signal), 5000, [])
-  const sendbox = usePolledResource<IntegrationStatus>((signal) => apiGet('/api/integrations/sendbox', signal), 5000, [])
-  const killSwitch = usePolledResource<KillSwitchStatus>((signal) => apiGet('/api/integrations/kill-switch', signal), 5000, [])
+  const sqlNotSoLite = usePolledResource<IntegrationStatus | null>((signal) => environmentID === 'local' ? apiGet('/api/integrations/sql-not-so-lite', signal) : Promise.resolve(null), 5000, [])
+  const sendbox = usePolledResource<IntegrationStatus | null>((signal) => environmentID === 'local' ? apiGet('/api/integrations/sendbox', signal) : Promise.resolve(null), 5000, [])
+  const killSwitch = usePolledResource<KillSwitchStatus | null>((signal) => environmentID === 'local' ? apiGet('/api/integrations/kill-switch', signal) : Promise.resolve(null), 5000, [])
   const kubernetesContexts = usePolledResource<KubernetesContext[]>((signal) => apiGet('/api/kubernetes/contexts', signal), 10000, [])
   const kubernetesClusters = usePolledResource<KubernetesCluster[]>((signal) => apiGet('/api/kubernetes/clusters', signal), 10000, [])
   const kubeContexts = kubernetesContexts.data ?? []
@@ -128,7 +141,7 @@ function AppShell() {
   }
 
   return (
-    <PreferencesProvider settings={settings}>
+    <PreferencesProvider settings={environmentID === 'local' ? settings : interfaceSettings.data}>
       <div className={`appShell ${railOpen ? 'railOpen' : ''}`}>
         {/*
           THESIS: Porto is one dense operations desk, not a dashboard of cards, spanning
@@ -150,11 +163,13 @@ function AppShell() {
           aria-expanded={railOpen}
           onClick={() => setRailOpen((value) => !value)}
         />
-        <Rail route={route} open={railOpen} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
+        <Rail route={route} open={railOpen} backend={backend} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
         {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
         <main className="appMain">
+          <EnvironmentSelector profiles={environments.data ?? []} error={environments.error} />
+          {!supportedRoute ? <section className="empty unavailableNotice" role="status"><h1>Unsupported target capability</h1><p>This workflow is not exposed by the selected {backend} environment. Choose a supported resource view or explicitly switch environments. No local fallback is used.</p></section> : <>
           {['containers', 'images', 'builds', 'volumes', 'networks', 'docker-storage', 'migration'].includes(route) && <ContainerModeSelector />}
-          <RuntimeActivity key={`runtime-activity:${dockerMode}`} dockerEnabled={settings?.dockerEnabled ?? false} />
+          {backend === 'local' && <RuntimeActivity key={`runtime-activity:${dockerMode}`} dockerEnabled={settings?.dockerEnabled ?? false} />}
           {errorBanner && <div className="errorBanner banner" role="alert">{errorBanner}</div>}
           {noticeBanner && <div className="notice banner" role="status">{noticeBanner}</div>}
 
@@ -176,7 +191,7 @@ function AppShell() {
           />
         )}
         {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
-        {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
+        {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} terminalAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('terminal.open'))} /></Suspense>}
         {route === 'helm' && <Suspense fallback={<p role="status">Loading Helm administration...</p>}><Helm key={`helm:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
         {route === 'pods' && (
           <Pods
@@ -205,8 +220,10 @@ function AppShell() {
         {route === 'nodes' && <Nodes key={`nodes:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'databases' && <Databases />}
         {route === 'machines' && <Machines />}
-        {route === 'diagnostics' && <Diagnostics />}
+        {route === 'diagnostics' && <Suspense fallback={<p role="status">Loading diagnostics...</p>}><Diagnostics /></Suspense>}
         {route === 'activity' && <Activity />}
+        {route === 'environments' && <Suspense fallback={<p role="status">Loading environment management...</p>}><Environments /></Suspense>}
+        {route === 'extensions' && <Suspense fallback={<p role="status">Loading extensions...</p>}><Extensions /></Suspense>}
         {route === 'settings' && (
           <Suspense fallback={<p role="status">Loading settings...</p>}>
           <SettingsPage
@@ -219,6 +236,7 @@ function AppShell() {
           />
           </Suspense>
         )}
+        </>}
         </main>
       </div>
     </PreferencesProvider>
@@ -226,9 +244,10 @@ function AppShell() {
 }
 
 function App() {
+  const environmentID = useEnvironmentID()
   return (
-    <MessagesProvider>
-      <KubernetesAdminTargetProvider><AppShell /></KubernetesAdminTargetProvider>
+    <MessagesProvider key={environmentID}>
+      <KubernetesAdminTargetProvider key={environmentID}><AppShell /></KubernetesAdminTargetProvider>
     </MessagesProvider>
   )
 }

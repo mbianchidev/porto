@@ -10,6 +10,10 @@ desktop and web
 
 Porto is primarily for a solo developer or home-lab owner managing runnable projects and services on one development machine, NAS, or home system.
 
+Explicitly enrolled remote hosts, outbound Edge agents and imported cluster
+identities can extend that same local-first dashboard. They do not turn Porto
+into an account-dependent enterprise multi-user or production management service.
+
 ## Product Purpose
 
 Porto gives one place to discover, start, stop, inspect, and troubleshoot local or self-hosted projects, containers, Kubernetes workloads, and Linux virtual machines. The desktop app and web dashboard should make it immediately clear what is running, unhealthy, or needs attention, then provide fast operational controls without requiring the user to remember process IDs, ports, commands, contexts, or log locations.
@@ -28,6 +32,10 @@ The user opens Porto while developing, maintaining a home server, or diagnosing 
 - Projects may use Make, Docker Compose, Node.js, Python, Go, or Rust run strategies.
 - Optional providers expose Docker resources, Kubernetes contexts and Porto-created clusters, and Lima-backed Linux VMs.
 - The dashboard must represent starting, running, stopped, and crashed states clearly.
+- Remote targets must display their identity, capabilities and offline/revoked
+  state; same-named resources must never be treated as the same target.
+- Extensions require verified artifacts, explicit scoped grants and isolated
+  execution/views, without inheriting daemon or desktop privileges.
 - Project controls can change processes, branches, ports, worktrees, and persisted logs, so destructive or disruptive actions need explicit feedback.
 - The interface must remain effective across small and large project collections without becoming a flat wall of controls.
 

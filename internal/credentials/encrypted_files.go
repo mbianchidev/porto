@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strings"
 	"sync"
 
 	"github.com/mbianchidev/porto/internal/config"
@@ -25,6 +26,7 @@ type EncryptedFiles struct {
 	store         Store
 	mu            sync.Mutex
 	key           []byte
+	destroyed     bool
 }
 
 func NewEncryptedFiles(root, service string, store Store) *EncryptedFiles {
@@ -37,6 +39,9 @@ func NewEncryptedFiles(root, service string, store Store) *EncryptedFiles {
 func (s *EncryptedFiles) cipher() (cipher.AEAD, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.destroyed {
+		return nil, errors.New("the owned credential store was removed")
+	}
 	if s.key == nil {
 		sum := sha256.Sum256([]byte(s.root))
 		account := "state-key-" + hex.EncodeToString(sum[:12])
@@ -120,6 +125,36 @@ func (s *EncryptedFiles) Delete(name string) error {
 	}
 	err := os.Remove(filepath.Join(s.root, name+".sealed"))
 	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	return err
+}
+
+// Destroy is for an explicitly removed owner, after its operations have stopped.
+func (s *EncryptedFiles) Destroy() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.destroyed = true
+	for i := range s.key {
+		s.key[i] = 0
+	}
+	s.key = nil
+	entries, err := os.ReadDir(s.root)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	for _, entry := range entries {
+		name := strings.TrimSuffix(entry.Name(), ".sealed")
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sealed") || !sealedName.MatchString(name) {
+			return errors.New("unexpected entry in owned encrypted state; cleanup refused")
+		}
+		if err := os.Remove(filepath.Join(s.root, entry.Name())); err != nil {
+			return err
+		}
+	}
+	sum := sha256.Sum256([]byte(s.root))
+	err = s.store.Delete(s.service, "state-key-"+hex.EncodeToString(sum[:12]))
+	if errors.Is(err, keyring.ErrNotFound) {
 		return nil
 	}
 	return err

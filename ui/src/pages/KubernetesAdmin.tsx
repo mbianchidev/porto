@@ -5,6 +5,8 @@ import { useKubernetesStatus } from '../kubernetes'
 import { useKubernetesResourceNames } from '../kubernetesResourceNames'
 import { useMessages } from '../useMessages'
 import { Inspector } from '../components/Inspector'
+import { ExtensionContributions } from '../components/ResourceExtensions'
+import { KubernetesPodSessions } from '../components/KubernetesPodSessions'
 import { InventoryList } from '../components/InventoryList'
 import { KubernetesContextSelect } from '../components/KubernetesContextSelect'
 import { LocalOperations } from '../components/LocalOperations'
@@ -16,7 +18,7 @@ import { useKubernetesAdminTarget } from '../kubeAdminTargetContext'
 import type { AdminAccess, AdminDiscovery, AdminObject, AdminObjectList, AdminPreview, AdminSchema, AdminTarget, RolloutRevision } from '../kubeAdminTypes'
 import type { KubernetesContext } from '../types'
 
-export function KubernetesAdmin({ context, contexts, onContextChange }: { context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void }) {
+export function KubernetesAdmin({ context, contexts, onContextChange, operateAllowed = true, terminalAllowed = true }: { context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void; operateAllowed?: boolean; terminalAllowed?: boolean }) {
   const { notifyError, notifyNotice } = useMessages()
   const { target: pendingTarget, setTarget } = useKubernetesAdminTarget()
   const [incoming] = useState(pendingTarget)
@@ -63,7 +65,7 @@ export function KubernetesAdmin({ context, contexts, onContextChange }: { contex
   const selected = !detail.error && detail.data?.target.context === context && detail.data.target.namespace === scope
     && detail.data.target.group === target.group && detail.data.target.version === target.version
     && detail.data.target.resource === target.resource && detail.data.target.name === selectedName ? detail.data : null
-  const permitted = (verb: string) => Boolean(access.data?.verbs[verb]?.allowed)
+  const permitted = (verb: string) => (['get', 'list', 'watch'].includes(verb) || operateAllowed) && Boolean(access.data?.verbs[verb]?.allowed)
   const readOnly = !['create', 'patch', 'update', 'delete'].some(permitted)
   const actionPermission = selectedAction === 'delete' ? 'delete' : selectedAction === 'scale' && resource?.group === 'apps' ? 'scale' : 'patch'
   const storageAction = selectedAction === 'delete' && ['persistentvolumes', 'persistentvolumeclaims', 'namespaces', 'customresourcedefinitions'].includes(resource?.resource ?? '')
@@ -162,6 +164,8 @@ export function KubernetesAdmin({ context, contexts, onContextChange }: { contex
       {open && <Inspector title={selected?.target.name || selectedName || `New ${resource?.kind ?? 'resource'}`} subtitle={`${context} / ${scope || 'cluster scope'} / ${resource?.version ?? ''}`} onClose={closeInspector}>
         {detail.error && <p role="alert">{detail.error}</p>}
         {selected && <section className="drawerPanel">
+          <ExtensionContributions resourceKind={selected.kind.toLowerCase()} resourceID={`${scope ? `${scope}/` : ''}${selected.target.name}`} />
+          <KubernetesPodSessions key={`${selected.target.uid}:${context}`} resource={selected} context={context} terminalAllowed={terminalAllowed} />
           <h3>{selected.secret ? 'Secret metadata (values hidden by default)' : 'Current resource and conditions'}</h3>
           <pre className="definitionText">{JSON.stringify(selected.manifest, null, 2)}</pre>
           {!selected.secret && <button type="button" disabled={busy || !permitted('patch')} onClick={() => { setManifest(JSON.stringify(selected.manifest, null, 2)); setMode('apply'); setPreview(null) }}>Edit manifest</button>}

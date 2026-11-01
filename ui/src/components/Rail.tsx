@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Icon, type IconName } from './Icon'
 import { StatusLamp } from './StatusLamp'
 import type { RouteID } from '../types'
+import { environmentSupportsRoute } from '../managementTypes'
 
 type NavItem = { id: RouteID; label: string; icon: IconName; badge?: string }
 type NavGroup = { id: string; title: string; items: NavItem[]; collapsible?: boolean }
@@ -50,6 +51,8 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'System',
     collapsible: true,
     items: [
+      { id: 'environments', label: 'Environments and fleets', icon: 'networks' },
+      { id: 'extensions', label: 'Extensions', icon: 'configs' },
       { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
       { id: 'activity', label: 'Activity', icon: 'activity' },
       { id: 'settings', label: 'Settings', icon: 'settings' },
@@ -62,11 +65,13 @@ export function Rail({
   open,
   kubernetesRunningCount,
   onNavigate,
+  backend = 'local',
 }: {
   route: RouteID
   open: boolean
   kubernetesRunningCount: number
   onNavigate: () => void
+  backend?: string
 }) {
   const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
 
@@ -81,6 +86,8 @@ export function Rail({
       </a>
       <div className="railGroups">
         {NAV_GROUPS.map((group) => {
+          const items = group.items.filter((item) => environmentSupportsRoute(backend, item.id))
+          if (!items.length) return null
           const collapsed = group.collapsible && collapsedGroups[group.id]
           const groupContentID = `rail-group-${group.id}`
           const titleContent = (
@@ -113,7 +120,7 @@ export function Rail({
                 <span className="railGroupTitle">{titleContent}</span>
               )}
               <div className="railGroupItems" id={groupContentID} hidden={collapsed}>
-                {group.items.map((item) => (
+                {items.map((item) => (
                   <a
                     key={item.id}
                     href={`#/${item.id}`}

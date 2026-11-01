@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import type { DependencyList } from 'react'
 import { errorMessage, isAbortError } from './api'
 import { useDockerMode } from './dockerMode'
+import { useEnvironmentID } from './environment'
 
 type PolledResource<T> = {
   data: T | null
@@ -46,7 +47,8 @@ export function usePolledResource<T>(
   unscopedCacheKey?: string,
 ): PolledResource<T> {
   const mode = useDockerMode()
-  const cacheKey = unscopedCacheKey?.startsWith('docker:') ? `${mode}:${unscopedCacheKey}` : unscopedCacheKey
+  const environmentID = useEnvironmentID()
+  const cacheKey = unscopedCacheKey ? `${environmentID}:${unscopedCacheKey.startsWith('docker:') ? `${mode}:` : ''}${unscopedCacheKey}` : undefined
   const initialData = cachedResource<T>(cacheKey)
   const [resource, setResource] = useState<ResourceState<T>>({ cacheKey, data: initialData })
   const [error, setError] = useState('')
@@ -97,7 +99,7 @@ export function usePolledResource<T>(
       if (timer !== undefined) window.clearInterval(timer)
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cacheKey, intervalMs, reloadToken, ...deps])
+  }, [cacheKey, environmentID, intervalMs, reloadToken, ...deps])
 
   const reload = useCallback(() => setReloadToken((value) => value + 1), [])
   const update = useCallback((updater: (current: T | null) => T | null) => {

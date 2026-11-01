@@ -32,10 +32,13 @@ import (
 	"github.com/mbianchidev/porto/internal/certificates"
 	"github.com/mbianchidev/porto/internal/compose"
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/credentials"
 	"github.com/mbianchidev/porto/internal/dataops"
 	"github.com/mbianchidev/porto/internal/delivery"
 	"github.com/mbianchidev/porto/internal/discovery"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/environments"
+	"github.com/mbianchidev/porto/internal/extensions"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/imageanalysis"
 	"github.com/mbianchidev/porto/internal/killswitch"
@@ -73,6 +76,17 @@ const (
 var errProjectSetupConflict = errors.New("project setup conflict")
 
 type Server struct {
+	environments       *environments.Manager
+	environmentsErr    error
+	extensions         *extensions.Manager
+	extensionsErr      error
+	fleet              *environments.Fleet
+	managementRoot     string
+	managementVault    credentials.Store
+	managementMu       sync.Mutex
+	environmentKube    map[string]*Server
+	externalKubernetes bool
+	coreHandler        http.Handler
 	syncShares         *syncshares.Manager
 	resourceSaverMu    sync.Mutex
 	resourceSaver      *resourcesaver.Manager
@@ -253,6 +267,13 @@ func New(st *store.Store, ui fs.FS) *Server {
 	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
 	server.imageAnalysis = imageanalysis.New(filepath.Join(syncRoot, "image-analysis"), dockerManager, nil)
 	server.operations = operations.New(filepath.Join(syncRoot, "operations"))
+	server.managementRoot = filepath.Join(syncRoot, "environments")
+	server.environments, server.environmentsErr = environments.Open(server.managementRoot, nil)
+	server.extensions, server.extensionsErr = extensions.Open(filepath.Join(syncRoot, "extensions"), nil, server.targetJSON)
+	server.environmentKube = map[string]*Server{}
+	if server.environments != nil {
+		server.fleet = environments.NewFleet(filepath.Join(server.managementRoot, "fleet"), server.environments, server.operations, server.targetJSON)
+	}
 	server.delivery = delivery.New(filepath.Join(syncRoot, "delivery"), st, deliveryBackend{server}, server.operations, nil, nil)
 	server.kubeAdmin = kubeadmin.New(filepath.Join(syncRoot, "kubernetes-administration"), server.kubernetes, server.operations, nil, nil)
 	if integration, ok := server.compose.(*compose.Integration); ok {
@@ -388,6 +409,11 @@ func (s *Server) Run(ctx context.Context) error {
 	tlsAddress := config.RouterTLSAddress()
 	mux := http.NewServeMux()
 	s.routes(mux)
+	if s.environments != nil && s.environments.Listener() != nil {
+		if _, err := s.environments.StartListener(ctx, *s.environments.Listener(), s.secureHandler(mux)); err != nil {
+			return fmt.Errorf("restore explicitly enabled secure environment listener: %w", err)
+		}
+	}
 	srv := &http.Server{Addr: config.DaemonAddr, Handler: s.secureHandler(mux), ReadHeaderTimeout: 5 * time.Second}
 	router := &http.Server{Addr: config.RouterAddr, Handler: http.HandlerFunc(s.proxyByHost), ReadHeaderTimeout: 5 * time.Second}
 	tlsRouter := &http.Server{
@@ -513,6 +539,17 @@ func (s *Server) shutdown(servers ...*http.Server) error {
 	s.runtimeClosing = true
 	s.runtimeOpsMu.Unlock()
 	cleanupContext, cancelCleanup := context.WithTimeout(context.Background(), runtimeOperationTimeout)
+	if s.extensions != nil {
+		shutdownErrors = append(shutdownErrors, s.extensions.Close(cleanupContext))
+	}
+	if s.environments != nil {
+		shutdownErrors = append(shutdownErrors, s.environments.Close(cleanupContext))
+	}
+	s.managementMu.Lock()
+	for _, scoped := range s.environmentKube {
+		shutdownErrors = append(shutdownErrors, scoped.operations.Close(cleanupContext))
+	}
+	s.managementMu.Unlock()
 	if err := s.stopDataOperations(cleanupContext); err != nil {
 		shutdownErrors = append(shutdownErrors, err)
 	}
@@ -753,6 +790,9 @@ func tlsRouterListenError(address string, err error) error {
 }
 
 func (s *Server) routes(mux *http.ServeMux) {
+	s.coreHandler = mux
+	s.environmentRoutes(mux)
+	s.extensionRoutes(mux)
 	mux.HandleFunc("GET /api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, map[string]any{
 			"status":         "ok",
@@ -2671,6 +2711,10 @@ func (s *Server) projectCertificateHostnames(ctx context.Context) ([]string, err
 }
 
 func (s *Server) uiHandler(w http.ResponseWriter, r *http.Request) {
+	if strings.HasPrefix(r.URL.Path, "/api/") {
+		http.NotFound(w, r)
+		return
+	}
 	if s.ui != nil {
 		if r.URL.Path == "/" || r.URL.Path == "/index.html" {
 			index, err := fs.ReadFile(s.ui, "index.html")

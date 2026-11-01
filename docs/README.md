@@ -10,6 +10,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 
 ## Use Porto
 
+- [Remote environments and Edge fleets](remote-environments.md): authenticated enrollment, imported identities, scoped actions, offline behavior and revocation
 - [Project management](project-management.md) — CLI commands, discovery, dependency setup, lifecycle, ports, state, and logs
 - [Local runtimes](runtimes.md) — Docker endpoint, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
 - [Kubernetes upgrades](kubernetes-upgrades.md): distribution-specific upgrades, persistent-volume restoration, and recovery
@@ -21,6 +22,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 
 ## Integrations
 
+- [Permission-scoped extensions](extensions.md): verified installation, grants, isolated actions/views, reference integration and signed discovery
 - [Windows development integration](windows-integration.md): selected WSL tooling,
   shared paths, watch policy, native credentials, ConPTY and validation boundaries
 - [Optional integrations](integrations.md) — sql-not-so-lite, KillSwitch, and Sendbox

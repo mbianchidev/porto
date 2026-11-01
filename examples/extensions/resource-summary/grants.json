@@ -1,0 +1,8 @@
+{
+  "permissions": ["runtime.read"],
+  "environments": ["local"],
+  "files": [],
+  "commands": [],
+  "secrets": [],
+  "destinations": []
+}

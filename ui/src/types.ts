@@ -831,6 +831,8 @@ export type VMCreateRequest = {
 // --- Shell / navigation ---------------------------------------------------------
 
 export type RouteID =
+  | 'environments'
+  | 'extensions'
   | 'localhost-ing'
   | 'applications'
   | 'containers'

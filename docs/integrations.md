@@ -2,6 +2,12 @@
 
 Porto's optional integrations are disabled until enabled from the dashboard. They do not install or run when no compatible managed project is present.
 
+Separately installed tooling uses the [permission-scoped extension system](extensions.md).
+Those packages have independent verification, explicit grants and isolated
+execution; they do not replace or automatically activate the built-in
+integrations below. Local image analysis remains its own
+[Syft/Grype workflow](image-inspection.md), not a duplicate scanner extension.
+
 ## sql-not-so-lite
 
 Enable [sql-not-so-lite](https://github.com/mbianchidev/sql-not-so-lite) from the dashboard's **Optional integration** panel. Porto checks managed project roots for files with SQLite extensions and validates the SQLite file header before doing external work.

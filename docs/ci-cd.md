@@ -665,8 +665,8 @@ one day of guest dependency freshness for a less time-sensitive fixture input.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
-and reused for the destination, source VM, and restarts. Only the Ubuntu source
-URIs change; suites, components, archive signing keys, signature verification,
+and reused for the destination, source VM, and restarts. Ubuntu source URIs
+change, while suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
 from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
 indexes. APT retries transient download failures, including HTTP 503 responses,
@@ -674,7 +674,13 @@ up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
 and package downloads. An unavailable snapshot or failed index fetch remains
 an error after the retry budget is exhausted, with no fallback to mutable
-mirrors or relaxed checks. The 20-minute boot deadline is unchanged, and
+mirrors or relaxed checks. Disposable CI guests disable automatic APT updates
+and mask their daily/upgrade timers and services before explicit dependency
+installation. This prevents background package work from competing with TCG
+acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;
+snapshot-pinned installs remain explicit. Production guest update policy,
+Porto's shutdown budgets and acceptance assertions are unchanged.
+The 20-minute boot deadline is unchanged, and
 installed Porto environments are not reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
@@ -889,11 +895,36 @@ fix for the missing-authority server panic,
 containing the fix when updating this dependency; keep the vulnerability
 scan enabled.
 
-The module graph keeps `golang.org/x/net` at `v0.60.0` or newer for the HTTP/2
-security fixes. Standard-library fixes, including compromised intermediate
+The module graph keeps `golang.org/x/net` at `v0.62.0` or newer for the HTTP/2
+and HTML namespace/text-coalescing security fixes. Standard-library fixes, including compromised intermediate
 certificate distrust ([GO-2026-6809](https://pkg.go.dev/vuln/GO-2026-6809)),
 are included in the minimum supported Go `1.27.3`; use that release or a newer
 security-patched toolchain for local builds and vulnerability scans.
+
+## Management and packaging validation
+
+The desktop lockfile also overrides build-only glob/minimatch dependencies to
+patched glob 14 and minimatch 11 releases. EJS retains its existing renderer API
+while its build-only Jake dependency uses the maintained FileList 2 chain.
+`desktop-dependency-compat.test.cjs` exercises the actual archive matcher,
+FileList and EJS contracts; do not use audit's suggested obsolete packager or
+builder downgrades. Desktop and dashboard `npm audit` should remain clean.
+The development-client fixture has the same patched glob/minimatch floors;
+its independent `scripts/docker-clients` lockfile is also audited in CI.
+
+Remote-management coverage includes synthetic distinct TLS hosts, an external
+Kubernetes API, outbound Edge reconnect/revocation, escaped-path authorization,
+redirect rejection, immutable fleet targets, terminal cleanup and native-sized
+OS credential records. Extension coverage includes real Go-built WASI reference
+execution, explicit grants, cancellation, provenance, update rollback and opaque
+UI/desktop-bridge boundaries. `go test -race ./internal/environments
+./internal/extensions ./internal/credentials` and
+`npm --prefix ui test -- phase-six.spec.ts` provide focused checks.
+
+`golang.org/x/crypto/openpgp` has an upstream unmaintained-package advisory with
+no fixed version. Porto does not import it. Keep reachable-package vulnerability
+scanning enabled and distinguish that module-level notice from an affected
+package rather than suppressing checks or removing the maintained SSH packages.
 
 ## Cutting a release
 
