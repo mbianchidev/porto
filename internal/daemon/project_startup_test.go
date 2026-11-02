@@ -402,7 +402,7 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
 	directory := t.TempDir()
 	writeStartupFiles(t, directory, map[string]string{
-		"Makefile":         "run:\n\tpython\n",
+		"Makefile":         "run:\n\t@command -v python\n\tpython\n",
 		"requirements.txt": "",
 	})
 	st, project := testProject(t, app.Project{
@@ -431,18 +431,24 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 	var err error
 	for time.Now().Before(deadline) {
 		environment, err = os.ReadFile(filepath.Join(directory, "python.used"))
-		if err == nil {
+		if err == nil && len(environment) > 0 {
 			break
 		}
-		if !errors.Is(err, os.ErrNotExist) {
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
 			t.Fatal(err)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	if err != nil {
-		t.Fatalf("Make did not use the installed Python executable: %v", err)
+		runtime, runtimeErr := st.GetProjectByID(context.Background(), project.ID)
+		logs, logErr := st.Logs(context.Background(), project.ID, 20)
+		t.Fatalf("Make did not use the installed Python executable: %v; runtime = %+v (%v); logs = %+v (%v)", err, runtime, runtimeErr, logs, logErr)
 	}
-	if got, want := strings.TrimSpace(string(environment)), filepath.Join(directory, ".venv"); got != want {
+	want, err := filepath.EvalSymlinks(filepath.Join(directory, ".venv"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.TrimSpace(string(environment)); got != want {
 		t.Fatalf("Python VIRTUAL_ENV = %q, want %q", got, want)
 	}
 }
