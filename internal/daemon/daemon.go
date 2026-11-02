@@ -178,10 +178,12 @@ var (
 )
 
 type projectProcess struct {
-	cmd      *exec.Cmd
-	done     chan struct{}
-	project  app.Project
-	stopping bool
+	cmd         *exec.Cmd
+	done        chan struct{}
+	project     app.Project
+	stopping    bool
+	cancelSetup context.CancelFunc
+	setupDone   chan struct{}
 }
 
 type sendboxIntegration interface {
@@ -1351,14 +1353,20 @@ func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (proj
 		s.mu.Unlock()
 	}()
 
-	setupContext := context.WithoutCancel(ctx)
+	return s.executeProjectSetup(context.WithoutCancel(ctx), project)
+}
+
+func (s *Server) executeProjectSetup(ctx context.Context, project app.Project) (projectsetup.Result, error) {
 	if s.delivery != nil && project.Strategy == "compose" {
 		definition, err := s.delivery.DefinitionPath(project)
 		if err != nil {
 			return projectsetup.Result{}, err
 		}
-		project.ComposeFile = definition
+		if definition != "" {
+			project.ComposeFile = definition
+		}
 	}
+	logContext := context.WithoutCancel(ctx)
 	var logMu sync.Mutex
 	emit := func(stream, line string) error {
 		logMu.Lock()
@@ -1366,21 +1374,19 @@ func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (proj
 		if s.delivery != nil {
 			line = s.delivery.Redact(project.ID, line)
 		}
-		return s.store.AddLog(setupContext, project.ID, stream, line)
+		return s.store.AddLog(logContext, project.ID, stream, line)
 	}
 	if err := emit("system", "Dependency setup started."); err != nil {
 		return projectsetup.Result{}, err
 	}
 	if project.Strategy == "compose" {
-		if err := s.compose.Check(setupContext); err != nil {
-			_ = emit("system", "Dependency setup failed: "+err.Error())
-			return projectsetup.Result{}, err
+		if err := s.compose.Check(ctx); err != nil {
+			return projectsetup.Result{}, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
 		}
 	}
-	result, err := s.setupRunner.Run(setupContext, project, emit)
+	result, err := s.setupRunner.Run(ctx, project, emit)
 	if err != nil {
-		_ = emit("system", "Dependency setup failed: "+err.Error())
-		return result, err
+		return result, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
 	}
 	if err := emit("system", "Dependency setup completed."); err != nil {
 		return result, err
@@ -1398,18 +1404,18 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	if s.operations != nil && s.operations.BusyFor(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
 		return p, errors.New("another operation owns this project")
 	}
-	if s.settingUp[p.ID] {
-		return p, fmt.Errorf("%s dependency setup is running", p.Name)
-	}
 	if s.deleting[p.ID] {
 		return p, fmt.Errorf("%s instance is being deleted", p.Name)
 	}
 	if s.stopping[p.ID] {
 		return p, fmt.Errorf("%s is stopping", p.Name)
 	}
-	if running := s.running[p.ID]; running != nil && running.cmd != nil && running.cmd.Process != nil {
+	if running := s.running[p.ID]; running != nil {
 		p.Status = running.project.Status
 		return p, nil
+	}
+	if s.settingUp[p.ID] {
+		return p, fmt.Errorf("%s dependency setup is running", p.Name)
 	}
 	if projectUsesCompose(p) {
 		if err := s.compose.Check(ctx); err != nil {
@@ -1464,12 +1470,90 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			return p, fmt.Errorf("git pull failed: %w", err)
 		}
 	}
+	runtimeProject := p
+	runtimeProject.Port = port
+	runtimeProject.PID = 0
+	runtimeProject.Status = "starting"
+	running := &projectProcess{
+		done:    make(chan struct{}),
+		project: runtimeProject,
+	}
+	if !recordedDelivery {
+		if _, setupErr := projectsetup.Plan(p); setupErr == nil {
+			if err := s.store.SetRuntime(ctx, p.ID, "starting", 0, port); err != nil {
+				delete(s.composePorts, p.ID)
+				return p, err
+			}
+			setupContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
+			running.cancelSetup = cancel
+			running.setupDone = make(chan struct{})
+			s.running[p.ID] = running
+			s.settingUp[p.ID] = true
+			go s.prepareAndStartProject(setupContext, p, running, composePlan)
+			return runtimeProject, nil
+		} else if !errors.Is(setupErr, projectsetup.ErrUnsupported) {
+			delete(s.composePorts, p.ID)
+			return p, setupErr
+		}
+	}
+	if err := s.launchProject(ctx, p, running, composePlan, recordedDelivery); err != nil {
+		delete(s.composePorts, p.ID)
+		return p, err
+	}
+	return s.store.GetProject(ctx, name)
+}
+
+func (s *Server) prepareAndStartProject(ctx context.Context, project app.Project, running *projectProcess, composePlan compose.PortPlan) {
+	defer running.cancelSetup()
+	defer close(running.setupDone)
+	_, err := s.executeProjectSetup(ctx, project)
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.settingUp, project.ID)
+	if err == nil {
+		err = ctx.Err()
+	}
+	if err == nil && running.stopping {
+		err = context.Canceled
+	}
+	if err == nil {
+		err = s.launchProject(ctx, project, running, composePlan, false)
+	}
+	if err == nil {
+		return
+	}
+	status := "crashed"
+	message := "Project startup failed: " + err.Error()
+	if running.stopping {
+		status = "stopped"
+		message = "Project startup canceled."
+	}
+	running.project.Status = status
+	delete(s.running, project.ID)
+	delete(s.composePorts, project.ID)
+	if storeErr := s.store.SetRuntime(context.Background(), project.ID, status, 0, running.project.Port); storeErr != nil {
+		log.Printf("record startup failure for %s: %v", project.Name, storeErr)
+	}
+	if s.delivery != nil {
+		message = s.delivery.Redact(project.ID, message)
+	}
+	if logErr := s.store.AddLog(context.Background(), project.ID, "system", message); logErr != nil {
+		log.Printf("store startup failure for %s: %v", project.Name, logErr)
+	}
+	close(running.done)
+}
+
+// launchProject requires s.mu so setup completion and Stop cannot race the launch.
+func (s *Server) launchProject(ctx context.Context, p app.Project, running *projectProcess, composePlan compose.PortPlan, recordedDelivery bool) error {
+	port := running.project.Port
 	command := projectsetup.RuntimeCommand(p, port)
 	if composePlan.OverridePath != "" {
 		command = compose.UpCommandWithOverride(composePlan.ConfigFile, composePlan.OverridePath)
 	}
 	var cmd *exec.Cmd
 	var stdout, stderr io.ReadCloser
+	var err error
 	if p.Strategy == "compose" && composePlan.ConfigFile != "" {
 		cmd, stdout, stderr, err = process.Command(context.Background(), p.Path, "docker", compose.UpArguments(p, composePlan, recordedDelivery)...)
 		if err == nil {
@@ -1479,9 +1563,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		cmd, stdout, stderr, err = process.ShellCommand(context.Background(), p.Path, command, port)
 	}
 	if err != nil {
-		delete(s.composePorts, p.ID)
-		return p, err
+		return err
 	}
+	cmd.Env = projectsetup.RuntimeEnvironment(p, cmd.Env)
 	if projectUsesCompose(p) {
 		cmd.Env = process.WithEnvironment(
 			cmd.Env,
@@ -1491,33 +1575,31 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		)
 	}
 	if err := cmd.Start(); err != nil {
-		delete(s.composePorts, p.ID)
 		_ = stdout.Close()
 		_ = stderr.Close()
-		return p, err
+		return err
 	}
-	runtimeProject := p
-	runtimeProject.Port = port
-	runtimeProject.PID = cmd.Process.Pid
-	runtimeProject.Status = "starting"
-	running := &projectProcess{
-		cmd:     cmd,
-		done:    make(chan struct{}),
-		project: runtimeProject,
+	if err := s.store.SetRuntime(ctx, p.ID, "starting", cmd.Process.Pid, port); err != nil {
+		killErr := process.Kill(cmd)
+		waitErr := cmd.Wait()
+		_ = stdout.Close()
+		_ = stderr.Close()
+		return errors.Join(err, killErr, waitErr)
 	}
+	running.cmd = cmd
+	running.project.PID = cmd.Process.Pid
 	s.running[p.ID] = running
-	_ = s.store.SetRuntime(ctx, p.ID, "starting", cmd.Process.Pid, port)
 	go s.captureLogs(p, "stdout", stdout)
 	go s.captureLogs(p, "stderr", stderr)
-	go s.waitForProject(runtimeProject, running)
+	go s.waitForProject(running.project, running)
 	if recordedDelivery {
 		if s.operations == nil || !s.operations.InJob(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
-			go s.waitForDeliveryReady(runtimeProject, running)
+			go s.waitForDeliveryReady(running.project, running)
 		}
 	} else {
-		go s.waitForProjectReady(runtimeProject, running, port)
+		go s.waitForProjectReady(running.project, running, port)
 	}
-	return s.store.GetProject(ctx, name)
+	return nil
 }
 
 func (s *Server) waitForProjectReady(project app.Project, running *projectProcess, assignedPort int) {
@@ -1753,6 +1835,12 @@ func stopProjectProcess(running *projectProcess) error {
 	if running == nil || projectProcessDone(running) {
 		return nil
 	}
+	if err := stopProjectSetup(running); err != nil {
+		return err
+	}
+	if projectProcessDone(running) {
+		return nil
+	}
 	terminateErr := process.Terminate(running.cmd)
 	if waitForProjectProcess(running, projectProcessExitTimeout) {
 		return nil
@@ -1772,11 +1860,32 @@ func forceStopProjectProcess(running *projectProcess) error {
 	if running == nil || projectProcessDone(running) {
 		return nil
 	}
+	if err := stopProjectSetup(running); err != nil {
+		return err
+	}
+	if projectProcessDone(running) {
+		return nil
+	}
 	killErr := process.Kill(running.cmd)
 	if waitForProjectProcess(running, projectProcessExitTimeout) {
 		return nil
 	}
 	return errors.Join(killErr, errors.New("timed out waiting for project launcher to exit"))
+}
+
+func stopProjectSetup(running *projectProcess) error {
+	if running.cancelSetup == nil {
+		return nil
+	}
+	running.cancelSetup()
+	timer := time.NewTimer(projectProcessExitTimeout)
+	defer timer.Stop()
+	select {
+	case <-running.setupDone:
+		return nil
+	case <-timer.C:
+		return errors.New("timed out waiting for project dependency setup to stop")
+	}
 }
 
 func projectProcessDone(running *projectProcess) bool {
@@ -2263,12 +2372,12 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 		ps[i].HTTPSURL = config.ProjectHTTPSURL(ps[i].Hostname)
 		s.mu.Lock()
 		running := s.running[ps[i].ID]
-		s.mu.Unlock()
 		if running != nil {
 			ps[i].Status = running.project.Status
 		} else if ps[i].Status == "running" || ps[i].Status == "starting" {
 			ps[i].Status = "stopped"
 		}
+		s.mu.Unlock()
 		s.setSendboxMetadata(&ps[i], settings.SendboxEnabled)
 	}
 	return ps, nil

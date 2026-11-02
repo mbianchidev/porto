@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -12,6 +13,10 @@ import (
 )
 
 func TestPlanSelectsSupportedEcosystems(t *testing.T) {
+	python := "python3"
+	if runtime.GOOS == "windows" {
+		python = "python"
+	}
 	tests := []struct {
 		name     string
 		strategy string
@@ -34,13 +39,13 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 			name:     "pnpm",
 			strategy: "package",
 			files:    map[string]string{"package.json": "{}", "pnpm-lock.yaml": ""},
-			want:     []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile"}}},
+			want:     []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile", "--prod=false"}}},
 		},
 		{
 			name:     "npm lock",
 			strategy: "package",
 			files:    map[string]string{"package.json": "{}", "package-lock.json": "{}"},
-			want:     []Command{{Name: "npm", Args: []string{"ci"}}},
+			want:     []Command{{Name: "npm", Args: []string{"ci", "--include=dev"}}},
 		},
 		{
 			name:     "production node build",
@@ -50,7 +55,7 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 				"package-lock.json": "{}",
 			},
 			want: []Command{
-				{Name: "npm", Args: []string{"ci"}},
+				{Name: "npm", Args: []string{"ci", "--include=dev"}},
 				{Name: "npm", Args: []string{"run", "build"}},
 			},
 		},
@@ -59,7 +64,7 @@ func TestPlanSelectsSupportedEcosystems(t *testing.T) {
 			strategy: "make",
 			files:    map[string]string{"Makefile": "run:\n\tpython3 app.py\n", "requirements.txt": "fastapi\n"},
 			want: []Command{
-				{Name: "python3", Args: []string{"-m", "venv", ".venv"}},
+				{Name: python, Args: []string{"-m", "venv", ".venv"}},
 				{Name: "VENVPYTHON", Args: []string{"-m", "pip", "install", "-r", "requirements.txt"}},
 			},
 		},
@@ -173,6 +178,40 @@ func TestRuntimeCommandConfiguresVite(t *testing.T) {
 			project := app.Project{Path: dir, Strategy: "package", Command: tt.command}
 			if got := RuntimeCommand(project, 41001); got != tt.wantCommand {
 				t.Fatalf("command = %q, want %q", got, tt.wantCommand)
+			}
+		})
+	}
+}
+
+func TestPythonRunCommandUsesPackageManagerEnvironment(t *testing.T) {
+	for _, tt := range []struct {
+		lockfile string
+		manager  string
+	}{
+		{"poetry.lock", "poetry"},
+		{"Pipfile.lock", "pipenv"},
+	} {
+		t.Run(tt.manager, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, tt.lockfile), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			want := Command{Name: tt.manager, Args: []string{"run", "python", "manage.py", "runserver", "0.0.0.0:" + portVariable()}}
+			if got := PythonRunCommand(dir, "manage.py"); !reflect.DeepEqual(got, want) {
+				t.Fatalf("Python command = %#v, want %#v", got, want)
+			}
+			legacy := Command{Name: venvPython(dir), Args: []string{"app.py"}}.ShellString()
+			project := app.Project{Path: dir, Strategy: "python", Command: legacy}
+			if got := RuntimeCommand(project, 41001); got != tt.manager+" run python app.py" {
+				t.Fatalf("legacy Python runtime = %q", got)
+			}
+			project.Strategy = "make"
+			project.Command = "make run"
+			if err := os.WriteFile(filepath.Join(dir, "pyproject.toml"), nil, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if got := RuntimeCommand(project, 41001); got != tt.manager+" run make run" {
+				t.Fatalf("Make Python runtime = %q", got)
 			}
 		})
 	}
