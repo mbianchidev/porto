@@ -107,6 +107,20 @@ func NodeRunCommand(dir, script string) Command {
 }
 
 func RuntimeCommand(project app.Project, port int) string {
+	if project.Strategy == "python" {
+		for _, entry := range []string{"manage.py", "main.py", "app.py"} {
+			legacy := Command{Name: venvPython(project.Path), Args: pythonArguments(entry)}
+			if project.Command == legacy.ShellString() {
+				return PythonRunCommand(project.Path, entry).ShellString()
+			}
+		}
+	}
+	if project.Strategy == "make" && makeSetupTarget(project.Path) == "" && !has(project.Path, "package.json") &&
+		(has(project.Path, "requirements.txt") || has(project.Path, "pyproject.toml")) {
+		if manager := pythonEnvironmentManager(project.Path); manager != "" {
+			return manager + " run " + project.Command
+		}
+	}
 	if project.Strategy != "package" || port <= 0 {
 		return project.Command
 	}
@@ -132,11 +146,52 @@ func RuntimeCommand(project app.Project, port int) string {
 }
 
 func PythonRunCommand(dir, entry string) Command {
+	args := pythonArguments(entry)
+	if manager := pythonEnvironmentManager(dir); manager != "" {
+		return Command{Name: manager, Args: append([]string{"run", "python"}, args...)}
+	}
+	return Command{Name: venvPython(dir), Args: args}
+}
+
+func RuntimeEnvironment(project app.Project, environment []string) []string {
+	python := venvPython(project.Path)
+	if (project.Strategy != "python" && project.Strategy != "make") ||
+		pythonEnvironmentManager(project.Path) != "" || !has(filepath.Dir(python), filepath.Base(python)) {
+		return environment
+	}
+	path := ""
+	for _, entry := range environment {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok && (key == "PATH" || (runtime.GOOS == "windows" && strings.EqualFold(key, "PATH"))) {
+			path = value
+			break
+		}
+	}
+	return process.WithEnvironment(environment,
+		"VIRTUAL_ENV="+filepath.Join(project.Path, ".venv"),
+		"PATH="+filepath.Dir(python)+string(os.PathListSeparator)+path,
+	)
+}
+
+func pythonArguments(entry string) []string {
 	args := []string{entry}
 	if entry == "manage.py" {
 		args = append(args, "runserver", "0.0.0.0:"+portVariable())
 	}
-	return Command{Name: venvPython(dir), Args: args}
+	return args
+}
+
+func pythonEnvironmentManager(dir string) string {
+	switch {
+	case has(dir, "uv.lock"):
+		return ""
+	case has(dir, "poetry.lock"):
+		return "poetry"
+	case has(dir, "Pipfile.lock"):
+		return "pipenv"
+	default:
+		return ""
+	}
 }
 
 func (c Command) String() string {
@@ -160,15 +215,15 @@ func nodeCommands(dir string, includeBuild bool) []Command {
 	var commands []Command
 	switch {
 	case has(dir, "pnpm-lock.yaml"):
-		commands = []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile"}}}
+		commands = []Command{{Name: "pnpm", Args: []string{"install", "--frozen-lockfile", "--prod=false"}}}
 	case has(dir, "yarn.lock"):
 		commands = []Command{{Name: "yarn", Args: []string{"install", "--frozen-lockfile"}}}
 	case has(dir, "bun.lock"), has(dir, "bun.lockb"):
 		commands = []Command{{Name: "bun", Args: []string{"install", "--frozen-lockfile"}}}
 	case has(dir, "package-lock.json"), has(dir, "npm-shrinkwrap.json"):
-		commands = []Command{{Name: "npm", Args: []string{"ci"}}}
+		commands = []Command{{Name: "npm", Args: []string{"ci", "--include=dev"}}}
 	default:
-		commands = []Command{{Name: "npm", Args: []string{"install"}}}
+		commands = []Command{{Name: "npm", Args: []string{"install", "--include=dev"}}}
 	}
 	if includeBuild && packageHasScript(dir, "build") {
 		commands = append(commands, NodeRunCommand(dir, "build"))
@@ -186,17 +241,24 @@ func pythonCommands(dir string) []Command {
 		return []Command{{Name: "pipenv", Args: []string{"sync"}}}
 	case has(dir, "requirements.txt"):
 		return []Command{
-			{Name: "python3", Args: []string{"-m", "venv", ".venv"}},
+			{Name: systemPython(), Args: []string{"-m", "venv", ".venv"}},
 			{Name: venvPython(dir), Args: []string{"-m", "pip", "install", "-r", "requirements.txt"}},
 		}
 	case has(dir, "pyproject.toml"):
 		return []Command{
-			{Name: "python3", Args: []string{"-m", "venv", ".venv"}},
+			{Name: systemPython(), Args: []string{"-m", "venv", ".venv"}},
 			{Name: venvPython(dir), Args: []string{"-m", "pip", "install", "-e", "."}},
 		}
 	default:
 		return nil
 	}
+}
+
+func systemPython() string {
+	if runtime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
 }
 
 func venvPython(dir string) string {
@@ -278,12 +340,24 @@ func usesStartScript(command string) bool {
 }
 
 func runCommand(ctx context.Context, project app.Project, command Command, emit func(stream, line string) error) error {
-	if _, err := exec.LookPath(command.Name); err != nil && !filepath.IsAbs(command.Name) {
+	executable, err := exec.LookPath(command.Name)
+	if err != nil && !filepath.IsAbs(command.Name) {
 		return fmt.Errorf("%s is not available in the Porto daemon PATH: %w", command.Name, err)
 	}
-	cmd, stdout, stderr, err := process.Command(ctx, project.Path, command.Name, command.Args...)
+	name, args := command.Name, command.Args
+	if runtime.GOOS == "windows" && (strings.EqualFold(filepath.Ext(executable), ".cmd") || strings.EqualFold(filepath.Ext(executable), ".bat")) {
+		name = "cmd.exe"
+		args = append([]string{"/d", "/c", command.Name}, command.Args...)
+	}
+	cmd, stdout, stderr, err := process.Command(ctx, project.Path, name, args...)
 	if err != nil {
 		return err
+	}
+	switch command.Name {
+	case "npm", "pnpm", "yarn", "bun":
+		if len(command.Args) > 0 && (command.Args[0] == "install" || command.Args[0] == "ci") {
+			cmd.Env = process.WithEnvironment(os.Environ(), "NODE_ENV=development")
+		}
 	}
 	if project.Strategy == "compose" {
 		cmd.Env = process.WithEnvironment(os.Environ(), "COMPOSE_PROJECT_NAME="+compose.ProjectName(project))

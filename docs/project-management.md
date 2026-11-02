@@ -43,18 +43,40 @@ Porto selects the first matching run strategy:
 
 ## Dependency setup
 
-The dashboard's **Setup dependencies** action runs one setup at a time per project, writes output to the process console, and continues if the browser disconnects. Stop a project before setting it up.
+**Run**, `porto start`, and restarts automatically prepare dependencies after
+the optional Git update and before launching the application. This also applies
+to automatic restarts after switching branches. Each start uses the current
+manifests and lockfiles, including when dependencies were installed on an
+earlier run. Skipping Git with `--no-pull` does not skip dependency setup.
+
+The project stays `starting` while setup runs. Commands and their stdout/stderr
+appear in the process console, and other projects remain usable. A failed
+install or build marks the project `crashed` without launching its run command.
+**Stop**, **Kill**, and daemon shutdown cancel an in-progress startup setup and
+its subprocesses. Closing the browser does not cancel startup.
+
+The dashboard's **Setup dependencies** action remains available to prepare a
+stopped project without starting it. It runs one setup at a time per project,
+writes output to the same process console, and continues if the browser
+disconnects. Stop a project before using this standalone action.
 
 The setup strategy follows the detected project type:
 
-- Make projects use the first available `install`, `setup`, `bootstrap`, `deps`, or `dependencies` target.
+- Make projects use the first available `install`, `setup`, `bootstrap`, `deps`, or `dependencies` target, falling back to a supported language manifest when no setup target exists.
 - Compose projects run `docker compose build --no-cache`.
-- Node projects use pnpm, Yarn, Bun, or npm according to their lockfile, and run the build script when Porto detected a production `start` script.
-- Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip.
+- Node projects use pnpm, Yarn, Bun, or npm according to their lockfile, include development dependencies needed by tools such as Vite, and run the build script when Porto detected a production `start` script. Installer processes use `NODE_ENV=development`; build and application processes retain their original environment. npm explicitly includes dev dependencies even if `.npmrc` omits them.
+- Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip. Python runs through the selected manager's environment; local `.venv` executables are also on `PATH` for Make-based Python projects.
 - Go and Rust projects run `go mod download` or `cargo fetch`.
 
 Porto checks its native Docker and BuildKit backend before Compose setup and
 startup, and points Compose at the Porto socket automatically.
+Recorded application-delivery definitions retain their existing controlled
+build/activation pipeline rather than running a duplicate automatic build.
+Make projects without a setup target or supported manifest, and custom
+commands without a supported manifest, continue to launch directly.
+Language runtimes, package managers, Git, and build tools must already be
+available in the daemon's `PATH`; Porto installs project dependencies, not
+host toolchains.
 
 ## Starting and stopping projects
 
@@ -75,7 +97,10 @@ do not leave new pending index locks behind.
 
 Automatic port assignment begins at `41000` and avoids collisions. Use `porto port <project> <port>` to pin a port. Compose projects that publish fixed host ports use the responsive published port instead, including projects that wrap Compose commands in Make targets.
 
-After launch, a project remains `starting` until `http://127.0.0.1:<assigned-port>/` returns HTTP 200. A live process stays in that state while its frontend is unavailable and becomes `crashed` if it exits before readiness succeeds.
+From dependency setup onward, a project remains `starting` until its application
+is launched and `http://127.0.0.1:<assigned-port>/` returns HTTP 200. A live
+process stays in that state while its frontend is unavailable and becomes
+`crashed` if it exits before readiness succeeds.
 
 For Compose projects, `porto kill` runs `docker compose down --remove-orphans`. Compose first applies each service's graceful shutdown behavior, then Porto removes running, created, exited, and orphaned containers before reaping the local launcher.
 

@@ -18,7 +18,7 @@ Porto runs its own containerd backends rather than proxying another Docker engin
 
 - **Manage authorized environments.** Enroll remote Porto hosts and outbound Edge agents, import an explicit Kubernetes identity, and operate target-scoped resources or previewed fleets. Local access still needs no account. See [remote environments](docs/remote-environments.md).
 - **Install scoped tooling.** Add verified extension packages with explicit grants, static isolated views and bounded WebAssembly actions. See [extensions and authoring](docs/extensions.md).
-- **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; set up dependencies; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
+- **Run mixed-stack projects.** Discover Make, Compose, Node.js, Python, Go, and Rust applications; install dependencies automatically before startup; and manage processes, stable ports, HTTP readiness, and persistent stdout/stderr logs.
 - **Deliver local applications.** Create or edit multi-service Compose stacks with dependencies, shared storage/networks and replica-aware readiness. Upload definitions, use versioned templates or explicit Git refs, preview changes, and record controlled updates/rollback. Polling and signed webhooks are opt-in. See [application delivery](docs/project-management.md#application-delivery).
 - **Use Docker tooling and inspect runtime data.** Manage containers, images, builds, networks, and volumes with Docker, Compose, and Buildx. Inspect layers with Dive and generate local Syft SBOMs with Grype vulnerability matching, browse runtime files and stats, create local volume backups, and preview protected cleanup.
 - **Manage local Kubernetes.** Create k3s, k0s, or kind clusters with scoped kubeconfigs and k9s terminals. Preview/apply manifests, operate workloads, manage native Helm releases and generic/RBAC resources with the selected identity. Perform [cluster upgrades](docs/kubernetes-upgrades.md), provision bounded k3s/k0s workers with Karpenter, and scale replicas with KEDA. See [administration](docs/runtimes.md#manifest-workload-and-permission-administration) and [autoscaling](docs/kubernetes-autoscaling.md).
@@ -129,7 +129,7 @@ porto logs api --stream stdout -n 100
 porto stop api
 ```
 
-Replace `api` with a project name shown by `porto list`. Startup normally runs `git pull --ff-only`; use `porto start --no-pull api` to skip it. Install project dependencies yourself or use the dashboard's **Setup dependencies** action before starting.
+Replace `api` with a project name shown by `porto list`. Startup normally runs `git pull --ff-only`; use `porto start --no-pull api` to skip it. Porto then installs the project's dependencies before launching it. Setup output appears in the process logs; missing tools or failed installs stop startup. See [dependency setup](docs/project-management.md#dependency-setup) for supported package managers and build steps.
 
 Automatic port assignment starts at `41000`; Compose-published ports are also supported. Porto marks an application ready when its HTTP endpoint returns 200. Pin a port with `porto port api 8080`. Running projects are also available at `http://<project>.porto.localhost:37680` without DNS setup.
 
