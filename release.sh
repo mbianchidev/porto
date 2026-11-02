@@ -4,16 +4,17 @@ set -euo pipefail
 
 usage() {
   printf '%s\n' \
-    'Usage: ./release.sh [--dry-run] [--push] <version>' \
+    'Usage: ./release.sh [--mock] [--push] <version>' \
     '' \
     'Prepare a Porto release from main. The version may be written as 0.2.0 or' \
-    'v0.2.0. By default the release commit and annotated tag are created locally.' \
-    'Pass --push to atomically push main and the tag to origin.' \
+    'v0.2.0. By default the script switches to main, fast-forward pulls' \
+    'origin/main and tags, then creates and atomically pushes the release.' \
     '' \
     'Options:' \
-    '  --dry-run  Run preflight checks and validation without changing versions,' \
-    '             creating a commit or tag, fetching, or pushing.' \
-    '  --push     Push the prepared release commit and tag to origin.' \
+    '  --mock     Run preflight checks and validation from main using cached' \
+    '             refs, without switching, pulling, changing versions, creating' \
+    '             a commit or tag, or pushing. Takes precedence over --push.' \
+    '  --push     Explicitly request the default publishing behavior.' \
     '  -h, --help Show this help.'
 }
 
@@ -158,128 +159,132 @@ push_release() {
   git push --atomic origin "HEAD:refs/heads/main" "refs/tags/${tag}"
 }
 
-push=false
-dry_run=false
-version_input=""
+# Parse the whole release before switching or pulling can replace this script.
+main() {
+  local mock=false
+  local version_input=""
+  local version tag repo_root branch upstream remote_main head_sha
 
-while [ "$#" -gt 0 ]; do
-  case "$1" in
-    --push)
-      push=true
-      ;;
-    --dry-run)
-      dry_run=true
-      ;;
-    -h | --help)
-      usage
-      exit 0
-      ;;
-    -*)
-      fail "unknown option: $1"
-      ;;
-    *)
-      [ -z "$version_input" ] || fail "only one version argument is allowed"
-      version_input="$1"
-      ;;
-  esac
-  shift
-done
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --push)
+        ;;
+      --mock)
+        mock=true
+        ;;
+      -h | --help)
+        usage
+        exit 0
+        ;;
+      -*)
+        fail "unknown option: $1"
+        ;;
+      *)
+        [ -z "$version_input" ] || fail "only one version argument is allowed"
+        version_input="$1"
+        ;;
+    esac
+    shift
+  done
 
-[ -n "$version_input" ] || {
-  usage >&2
-  exit 1
-}
+  [ -n "$version_input" ] || {
+    usage >&2
+    exit 1
+  }
 
-version="${version_input#v}"
-is_strict_semver "$version" ||
-  fail "'${version_input}' is not a valid semantic version"
-tag="v${version}"
+  version="${version_input#v}"
+  is_strict_semver "$version" ||
+    fail "'${version_input}' is not a valid semantic version"
+  tag="v${version}"
 
-repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-cd "$repo_root"
-[ "$(git rev-parse --show-toplevel)" = "$repo_root" ] ||
-  fail "release.sh must be run from the repository containing it"
+  repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+  cd "$repo_root"
+  [ "$(git rev-parse --show-toplevel)" = "$repo_root" ] ||
+    fail "release.sh must be run from the repository containing it"
 
-branch="$(git symbolic-ref --quiet --short HEAD)" ||
-  fail "releases must be prepared from a branch, not detached HEAD"
-[ "$branch" = "main" ] ||
-  fail "releases must be prepared from main (current branch: ${branch})"
+  branch="$(git symbolic-ref --quiet --short HEAD)" ||
+    fail "releases must be prepared from a branch, not detached HEAD"
+  [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
+    fail "the working tree must be clean before preparing a release"
+  git remote get-url origin >/dev/null 2>&1 ||
+    fail "the origin remote is not configured"
 
-[ -z "$(git status --porcelain --untracked-files=normal)" ] ||
-  fail "the working tree must be clean before preparing a release"
+  if $mock; then
+    [ "$branch" = "main" ] ||
+      fail "mock runs require main to be checked out (current branch: ${branch})"
+  elif [ "$branch" != "main" ]; then
+    echo "Switching to main"
+    git switch main ||
+      fail "could not switch to main; check that it exists and is not checked out in another worktree"
+  fi
 
-upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" ||
-  fail "main must track origin/main"
-[ "$upstream" = "origin/main" ] ||
-  fail "main must track origin/main (current upstream: ${upstream})"
+  upstream="$(git rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)" ||
+    fail "main must track origin/main"
+  [ "$upstream" = "origin/main" ] ||
+    fail "main must track origin/main (current upstream: ${upstream})"
 
-git remote get-url origin >/dev/null 2>&1 ||
-  fail "the origin remote is not configured"
+  if ! $mock; then
+    echo "Pulling origin/main and tags"
+    git pull --ff-only --tags origin main ||
+      fail "could not update main from origin/main; resolve the Git error before releasing"
+  fi
 
-if [ "$(uname -s)" = "Darwin" ]; then
-  echo "Checking macOS desktop packaging toolchain"
-  DEVELOPER_DIR="$(node scripts/macos-toolchain.cjs)"
-  export DEVELOPER_DIR
-fi
+  remote_main="$(git rev-parse refs/remotes/origin/main 2>/dev/null)" ||
+    fail "origin/main is not available; fetch it before using --mock"
+  head_sha="$(git rev-parse HEAD)"
 
-if ! $dry_run; then
-  echo "Fetching origin/main and tags"
-  git fetch --quiet origin "refs/heads/main:refs/remotes/origin/main" --tags
-fi
+  if [ "$(uname -s)" = "Darwin" ]; then
+    echo "Checking macOS desktop packaging toolchain"
+    DEVELOPER_DIR="$(node scripts/macos-toolchain.cjs)"
+    export DEVELOPER_DIR
+  fi
 
-remote_main="$(git rev-parse refs/remotes/origin/main 2>/dev/null)" ||
-  fail "origin/main is not available; fetch it before using --dry-run"
-head_sha="$(git rev-parse HEAD)"
+  if git show-ref --verify --quiet "refs/tags/${tag}"; then
+    [ "$(git cat-file -t "refs/tags/${tag}")" = "tag" ] ||
+      fail "${tag} is not an annotated tag"
+    [ "$(git rev-parse "${tag}^{}")" = "$head_sha" ] ||
+      fail "${tag} does not point to the current main commit"
+    verify_release_versions
+    run_validation
+    [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
+      fail "release validation changed the working tree"
+    if $mock; then
+      echo "Mock run complete; ${tag} is ready to push"
+    else
+      push_release
+    fi
+    exit 0
+  fi
 
-if git show-ref --verify --quiet "refs/tags/${tag}"; then
-  $push || fail "tag ${tag} already exists locally"
-  [ "$(git cat-file -t "refs/tags/${tag}")" = "tag" ] ||
-    fail "${tag} is not an annotated tag"
-  [ "$(git rev-parse "${tag}^{}")" = "$head_sha" ] ||
-    fail "${tag} does not point to the current main commit"
+  [ "$head_sha" = "$remote_main" ] ||
+    fail "main must match origin/main before preparing a new release"
+
+  if $mock; then
+    run_validation
+    [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
+      fail "release validation changed the working tree"
+    echo "Mock run complete; would prepare and push main and ${tag} to origin"
+    exit 0
+  fi
+
+  echo "Updating release metadata to ${version}"
+  update_release_versions
   verify_release_versions
   run_validation
-  [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
-    fail "release validation changed the working tree"
-  if $dry_run; then
-    echo "Dry run complete; ${tag} is ready to push"
-  else
-    push_release
+  verify_only_release_changes
+
+  if ! git diff --quiet -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json; then
+    git add -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json
+    git commit --no-gpg-sign -m "chore(release): ${tag}"
   fi
-  exit 0
-fi
 
-[ "$head_sha" = "$remote_main" ] ||
-  fail "main must match origin/main before preparing a new release"
-
-if $dry_run; then
-  run_validation
   [ -z "$(git status --porcelain --untracked-files=normal)" ] ||
-    fail "release validation changed the working tree"
-  echo "Dry run complete; would prepare ${tag} locally"
-  $push && echo "Dry run complete; would then push main and ${tag} to origin"
-  exit 0
-fi
+    fail "the working tree changed while preparing ${tag}"
 
-echo "Updating release metadata to ${version}"
-update_release_versions
-verify_release_versions
-run_validation
-verify_only_release_changes
+  git tag -a "$tag" -m "Porto ${tag}"
+  echo "Created annotated tag ${tag} at $(git rev-parse --short HEAD)"
 
-if ! git diff --quiet -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json; then
-  git add -- internal/config/config.go ui/package.json ui/package-lock.json ui/electron/package.json ui/electron/package-lock.json
-  git commit --no-gpg-sign -m "chore(release): ${tag}"
-fi
-
-[ -z "$(git status --porcelain --untracked-files=normal)" ] ||
-  fail "the working tree changed while preparing ${tag}"
-
-git tag -a "$tag" -m "Porto ${tag}"
-echo "Created annotated tag ${tag} at $(git rev-parse --short HEAD)"
-
-if $push; then
   push_release
-else
-  echo "Release remains local. Publish it with: ./release.sh ${version} --push"
-fi
+}
+
+main "$@"

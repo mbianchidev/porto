@@ -878,14 +878,16 @@ the current command, without changing the global `xcode-select` setting. A custo
 or versioned Xcode installation can be selected explicitly:
 
 ```sh
-DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./release.sh 0.2.0 --dry-run
+DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./release.sh 0.2.0 --mock
 ```
 
 `node scripts/macos-toolchain.cjs` checks Xcode and `actool` and prints the selected
-developer directory. On macOS, `release.sh` runs this preflight before fetching,
-changing release versions, or running validation; the native installer script
-also checks before building or downloading runtime inputs. Missing or unsupported
-tools fail with setup instructions rather than a late packaging assertion.
+developer directory. On macOS, a normal `release.sh` run switches to `main` and
+fast-forward pulls `origin/main` and tags before this preflight, then checks the
+toolchain before changing release versions or running validation. `--mock` runs
+the preflight without switching or pulling. The native installer script also
+checks before building or downloading runtime inputs. Missing or unsupported tools
+fail with setup instructions rather than a late packaging assertion.
 
 Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
 
@@ -928,30 +930,48 @@ package rather than suppressing checks or removing the maintained SSH packages.
 
 ## Cutting a release
 
-1. Make sure `main` is green, checked out, clean, and tracking `origin/main`.
+1. Make sure `main` is green and tracks `origin/main`, and the working tree is
+   clean. Normal runs switch to `main` automatically. If `main` is checked out in
+   another worktree, run the script in that checkout instead; it never takes over
+   another worktree or discards local changes.
 2. Optionally run the complete release validation without changing tracked files or Git history:
 
    ```sh
-   ./release.sh 0.2.0 --dry-run
+   ./release.sh 0.2.0 --mock
    ```
 
-3. Prepare the release locally:
+   Mock runs require `main` to be checked out. For a new release it must match
+   the cached `origin/main` ref; an existing local tagged release can be checked
+   before retrying its push. Mock runs do not switch branches, pull or fetch,
+   update versions, create commits or tags, or push. Update `main` yourself before
+   the trial if needed.
+
+3. Prepare and publish the release:
 
    ```sh
    ./release.sh 0.2.0
    ```
 
-   The script accepts `0.2.0` or `v0.2.0`, validates strict SemVer, updates the Go CLI version plus the dashboard and Electron package manifests and lockfiles, runs the local checks below, creates a `chore(release): v0.2.0` commit when release metadata changed, and creates an annotated tag. Nothing is pushed by default.
+   The script accepts `0.2.0` or `v0.2.0` and validates strict SemVer before any
+   Git changes. It switches to `main` and runs
+   `git pull --ff-only --tags origin main` before toolchain checks, version
+   changes, or validation. Diverged branches and unrelated local commits stop
+   the release rather than being merged or published.
 
-4. Inspect the local commit and tag, then publish them explicitly:
+   It then updates the Go CLI version plus the dashboard and Electron package
+   manifests and lockfiles, runs the local checks, creates a
+   `chore(release): v0.2.0` commit when release metadata changed, and creates an
+   annotated tag. It atomically pushes `main` and the tag by default, so the
+   release workflow cannot start from a tag without its release commit.
+   `--push` remains accepted for compatibility but is no longer required.
+   Only `--mock` selects a trial, even when combined with `--push`; the old
+   `--dry-run` flag is rejected.
 
-   ```sh
-   ./release.sh 0.2.0 --push
-   ```
+   If the atomic push fails, rerun the same command to validate and publish the
+   existing local release commit and annotated tag. Already-published matching
+   releases are detected without creating another commit or tag.
 
-   Pass `--push` on the initial invocation to prepare and publish in one step. The script fetches first and atomically pushes `main` and the tag, so the release workflow cannot start from a tag without its release commit.
-
-5. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, creates macOS DMGs and Windows NSIS EXE installers on native runners, and publishes a GitHub release with generated notes.
+4. The `Release` workflow runs the Go test suite, lints and builds the dashboard, packages CLI/web and standalone desktop archives for every target, creates macOS DMGs and Windows NSIS EXE installers on native runners, and publishes a GitHub release with generated notes.
 
 Tags must contain a strict SemVer prefixed with `v`. A suffix such as
 `v1.2.3-rc.1` is published as a pre-release. Release assets are assembled and
