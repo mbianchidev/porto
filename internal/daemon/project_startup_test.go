@@ -399,24 +399,23 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 	if _, err := exec.LookPath("make"); err != nil {
 		t.Skip("make is required for the Python environment fixture")
 	}
-	t.Setenv("PORTO_DAEMON_HTTP_HELPER_PROCESS", "1")
-	t.Setenv("PORTO_DAEMON_HTTP_HELPER_STATUS", strconv.Itoa(http.StatusOK))
+	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
 	directory := t.TempDir()
 	writeStartupFiles(t, directory, map[string]string{
-		"Makefile":         "run:\n\tpython -test.run=TestDaemonHTTPHelperProcess\n",
+		"Makefile":         "run:\n\tpython\n",
 		"requirements.txt": "",
 	})
 	st, project := testProject(t, app.Project{
 		Name: "synthetic", Path: directory, Strategy: "make", Command: "make run",
 	})
 	server := New(st, nil)
-	server.readinessDelay = 10 * time.Millisecond
 	server.setupRunner = projectSetupRunnerFunc(func(_ context.Context, project app.Project, _ func(string, string) error) (projectsetup.Result, error) {
 		bin := filepath.Join(project.Path, ".venv", "bin")
 		if err := os.MkdirAll(bin, 0o700); err != nil {
 			return projectsetup.Result{}, err
 		}
-		return projectsetup.Result{}, os.Symlink(os.Args[0], filepath.Join(bin, "python"))
+		script := "#!/bin/sh\nprintf '%s\\n' \"$VIRTUAL_ENV\" > python.used\nexec " + daemonHelperCommand() + "\n"
+		return projectsetup.Result{}, os.WriteFile(filepath.Join(bin, "python"), []byte(script), 0o700)
 	})
 	t.Cleanup(func() {
 		if _, err := server.stopProject(context.Background(), project.Name, true); err != nil {
@@ -427,7 +426,25 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStartupSetup(t, server, project.ID)
-	waitForProjectStatus(t, st, project.ID, "running")
+	deadline := time.Now().Add(3 * time.Second)
+	var environment []byte
+	var err error
+	for time.Now().Before(deadline) {
+		environment, err = os.ReadFile(filepath.Join(directory, "python.used"))
+		if err == nil {
+			break
+		}
+		if !errors.Is(err, os.ErrNotExist) {
+			t.Fatal(err)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if err != nil {
+		t.Fatalf("Make did not use the installed Python executable: %v", err)
+	}
+	if got, want := strings.TrimSpace(string(environment)), filepath.Join(directory, ".venv"); got != want {
+		t.Fatalf("Python VIRTUAL_ENV = %q, want %q", got, want)
+	}
 }
 
 func writeStartupFiles(t *testing.T, directory string, files map[string]string) {
