@@ -38,6 +38,11 @@ of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and
 owned-lock cleanup remain required; production timeouts are unchanged.
 
+The real npm dependency-startup fixture allows one minute for a cold installer
+on Windows; synthetic setup fixtures retain their 15-second deadline. It still
+requires the installed development dependency and an HTTP-ready application.
+Setup timeouts include stored command output instead of only a generic failure.
+
 The native platform-networking job runs on Ubuntu, Windows x64 and Windows
 ARM64. Disposable hosts install the real loopback HTTPS integration, check
 occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted

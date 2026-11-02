@@ -390,7 +390,7 @@ createServer((_, response) => response.end(ready)).listen(Number(process.env.POR
 	if _, err := server.startProject(context.Background(), project.Name, true); err != nil {
 		t.Fatal(err)
 	}
-	waitForStartupSetup(t, server, project.ID)
+	waitForStartupSetupWithin(t, server, project.ID, time.Minute)
 	waitForProjectStatus(t, st, project.ID, "running")
 }
 
@@ -471,6 +471,11 @@ func writeStartupFiles(t *testing.T, directory string, files map[string]string) 
 
 func waitForStartupSetup(t *testing.T, server *Server, projectID int64) {
 	t.Helper()
+	waitForStartupSetupWithin(t, server, projectID, 15*time.Second)
+}
+
+func waitForStartupSetupWithin(t *testing.T, server *Server, projectID int64, timeout time.Duration) {
+	t.Helper()
 	server.mu.Lock()
 	running := server.running[projectID]
 	server.mu.Unlock()
@@ -479,7 +484,10 @@ func waitForStartupSetup(t *testing.T, server *Server, projectID int64) {
 	}
 	select {
 	case <-running.setupDone:
-	case <-time.After(15 * time.Second):
-		t.Fatal("dependency setup did not finish")
+	case <-time.After(timeout):
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		logs, err := server.store.Logs(ctx, projectID, 100)
+		t.Fatalf("dependency setup did not finish within %s; logs = %+v (%v)", timeout, logs, err)
 	}
 }
