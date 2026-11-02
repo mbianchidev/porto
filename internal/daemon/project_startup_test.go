@@ -396,15 +396,18 @@ createServer((_, response) => response.end(ready)).listen(Number(process.env.POR
 
 func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 	skipWindowsShellHelper(t)
-	if _, err := exec.LookPath("make"); err != nil {
-		t.Skip("make is required for the Python environment fixture")
-	}
 	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
 	directory := t.TempDir()
 	writeStartupFiles(t, directory, map[string]string{
-		"Makefile":         "run:\n\t@command -v python\n\tpython\n",
+		"Makefile":         "run:\n\tpython\n",
 		"requirements.txt": "",
+		"tools/make":       "#!/bin/sh\n[ \"$1\" = run ] || exit 2\ncommand -v python\nexec python\n",
 	})
+	makePath := filepath.Join(directory, "tools", "make")
+	if err := os.Chmod(makePath, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", filepath.Dir(makePath)+string(os.PathListSeparator)+os.Getenv("PATH"))
 	st, project := testProject(t, app.Project{
 		Name: "synthetic", Path: directory, Strategy: "make", Command: "make run",
 	})
