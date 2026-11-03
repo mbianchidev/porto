@@ -350,7 +350,13 @@ downloads, recent resource counters, and sensitive metadata. These browser
 tests do not connect to a user's daemon or require a workload shell.
 Storage fixtures also cover exact category/object confirmation, referenced
 volume protection, visible mount ownership, backup-policy edits, cancellation
-and importing before a volume exists. Linux unit tests verify authoritative
+and importing before a volume exists. Storage Center layout checks use synthetic
+resources at 1440px, 1024px and 390px in both themes, with the volume inspector
+open and closed. They capture screenshots and check aligned controls,
+keyboard-scrollable tables, focus restoration, explicit cleanup scopes,
+filter/selection resets, unavailable measurements and changed protections.
+Run `npm --prefix ui test -- storage.spec.ts` for this focused coverage.
+Linux unit tests verify authoritative
 metadata allocation and stable native volume identity across data replacement.
 Migration fixtures additionally verify source-bound retry selections, reset
 sensitive/helper consent, exact image dependencies, IPv6/exposed-port fidelity,

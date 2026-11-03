@@ -2409,29 +2409,241 @@ button:disabled {
   grid-template-columns: minmax(0, 1fr) var(--inspector-width);
 }
 
-.storageControls {
-  flex-wrap: wrap;
+.storageWorkArea > .dataWorkArea {
+  padding-block: 0;
+  gap: 16px;
 }
 
-.storageControls label {
+.storageSummary {
+  flex-wrap: wrap;
+  overflow: visible;
+}
+
+.storageSummary > .fleetRailTitle {
+  min-height: 56px;
+}
+
+.storageSummaryMetrics {
+  display: grid;
+  flex: 1 1 360px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 0;
+}
+
+.storageSummaryMetrics > div {
+  min-width: 0;
+  padding: 10px 14px;
+  border-right: 1px solid var(--instrument-line);
+}
+
+.storageSummaryMetrics > div:last-child {
+  border-right: 0;
+}
+
+.storageSummaryMetrics dt {
+  color: var(--instrument-ink-soft);
+  font-size: 10px;
+}
+
+.storageSummaryMetrics dd {
+  color: var(--instrument-ink);
+  font: 600 14px/1.4 var(--mono);
+}
+
+.storageControls {
+  align-items: end;
+  gap: 12px;
+}
+
+.storageField {
   display: grid;
   min-width: 0;
-  gap: 4px;
+  gap: 6px;
+}
+
+.storageControls > .storageField {
+  flex: 1 1 150px;
+}
+
+.storageControls > .storageSearch {
+  flex: 2 1 260px;
+}
+
+.storageField > label {
+  color: var(--ink-soft);
   font: 10px/1.2 var(--mono);
+  letter-spacing: 0.06em;
   text-transform: uppercase;
 }
 
-.storageControls select {
-  border: 1px solid var(--line);
+.storageField > input,
+.storageField > select {
+  width: 100%;
+  min-width: 0;
+  min-height: 36px;
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
-  padding: 7px 9px;
-  background: var(--panel-raised);
+  padding: 8px 10px;
+  background: var(--field);
   color: var(--ink);
-  font: 12px/1.3 var(--sans);
+  font: 13px/1.3 var(--sans);
 }
 
-.storageControls select,
-.storageControls input,
+.storageControls > button {
+  min-height: 36px;
+}
+
+.storageField > input:focus-visible,
+.storageField > select:focus-visible,
+.storageWorkArea .dataTableScroll:focus-visible,
+.storageTable input:focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.storageAccounting .runtimeGrid {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 160px), 1fr));
+  gap: 12px;
+  margin-block: 12px;
+}
+
+.storageAccounting > :last-child,
+.storageCleanupScopes .dataActions,
+.storageProtection,
+.storageWorkArea .filterResultCount {
+  margin-bottom: 0;
+}
+
+.storageWorkArea .drawerPanelHeading {
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+.storageWorkArea .dataTable {
+  font-family: var(--sans);
+}
+
+.storageWorkArea .dataTable th,
+.storageWorkArea .dataTable td {
+  padding: 10px 8px;
+  vertical-align: top;
+}
+
+.storageTable {
+  min-width: 860px;
+  table-layout: fixed;
+}
+
+.storageSelectColumn {
+  width: 40px;
+}
+
+.storageResourceColumn {
+  width: 32%;
+}
+
+.storageSizeColumn {
+  width: 100px;
+}
+
+.storageTable th,
+.storageTable .storageSize {
+  white-space: nowrap;
+}
+
+.storageTable .storageSize {
+  text-align: right;
+  font: 12px/1.5 var(--mono);
+  font-variant-numeric: tabular-nums;
+}
+
+.storageTable th:nth-child(n+3):nth-child(-n+5) {
+  text-align: right;
+}
+
+.storageTable tbody tr:hover {
+  background: var(--panel-hover);
+}
+
+.storageTable .storageRowSelected {
+  background: var(--panel-selected);
+  box-shadow: inset 2px 0 0 var(--olive);
+}
+
+.storageResourceName {
+  display: block;
+  font-size: 13px;
+}
+
+.storageResourceKind {
+  display: block;
+  color: var(--ink-soft);
+}
+
+.storageManageVolume {
+  max-width: 100%;
+  margin-top: 8px;
+  overflow-wrap: anywhere;
+}
+
+.storageProtection > span,
+.storageOwners span {
+  display: block;
+  margin-top: 4px;
+}
+
+.storageProtection.protected > strong {
+  color: var(--amber-text);
+}
+
+.storageOwners {
+  display: grid;
+  gap: 8px;
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.storageCleanupScopes {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr));
+  gap: 12px;
+}
+
+.storageCleanupScopes > fieldset {
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+.storageCleanupScopes legend {
+  padding-inline: 5px;
+  color: var(--ink);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.storageCleanupScopes button,
+.storageCleanupPreview button {
+  max-width: 100%;
+}
+
+.storageCleanupPreview {
+  border-color: var(--amber);
+  overflow-wrap: anywhere;
+}
+
+.storagePreviewScope {
+  color: var(--ink-soft);
+  font-weight: 600;
+}
+
+.storageEmpty {
+  padding-block: 16px;
+}
+
 .dataWorkArea select {
   max-width: 100%;
 }
@@ -2451,6 +2663,10 @@ button:disabled {
   font: 12px/1.5 var(--mono);
 }
 
+.dataOperationsTable {
+  min-width: 560px;
+}
+
 .dataTable th,
 .dataTable td {
   padding: 6px;
@@ -2466,6 +2682,32 @@ button:disabled {
 @media (max-width: 860px) {
   .storageWorkArea:has(> .inspector) {
     grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+@media (max-width: 620px) {
+  .storageControls > .storageField,
+  .storageControls > button {
+    flex-basis: 100%;
+  }
+
+  .storageSummary > .fleetRailTitle {
+    min-height: 36px;
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--instrument-line);
+  }
+
+  .storageSummaryMetrics {
+    flex-basis: 100%;
+  }
+
+  .storageSummaryMetrics > div {
+    padding-inline: 10px;
+  }
+
+  .storageSummaryMetrics dd {
+    font-size: 13px;
   }
 }
 
