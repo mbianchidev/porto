@@ -197,6 +197,9 @@ func (m *Manager) helmAdmission(ctx context.Context, scope HelmScope, manifest s
 			if err != nil {
 				return nil, nil, apiError(err)
 			}
+			if err := rejectGitOpsWriter(current); err != nil {
+				return nil, nil, err
+			}
 			if err := client.require(ctx, target, "patch", ""); err != nil {
 				return nil, nil, err
 			}

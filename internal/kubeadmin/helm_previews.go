@@ -158,6 +158,9 @@ func (m *Manager) PreviewHelm(ctx context.Context, request HelmRequest) (HelmPre
 	if err != nil {
 		return HelmPreview{}, err
 	}
+	if err := client.rejectGitOpsHelm(ctx, request.HelmScope, request.Release); err != nil {
+		return HelmPreview{}, err
+	}
 	for _, verb := range []string{"list", "get", "update"} {
 		if err := client.require(ctx, releaseStore(request.HelmScope), verb, ""); err != nil {
 			return HelmPreview{}, err
@@ -334,6 +337,9 @@ func (m *Manager) ApplyHelm(ctx context.Context, scope HelmScope, token string, 
 		}
 		if client.identity != prepared.Identity {
 			return operations.Failure("Kubernetes identity changed after Helm preview. Preview again; no global identity was substituted.")
+		}
+		if err := client.rejectGitOpsHelm(ctx, scope, prepared.Request.Release); err != nil {
+			return operations.Failure(publicError(err))
 		}
 		current, err := m.helmRelease(ctx, scope, prepared.Request.Release)
 		if err != nil && !missingHelmRelease(err) {

@@ -195,7 +195,7 @@ Insecure TLS, credential/CA file references, executable/auth-provider plugins,
 basic authentication, kubeconfig proxy URLs and impersonation are rejected.
 Input kubeconfig content is limited to 1 MiB.
 
-The imported environment exposes **Resources and RBAC**, **Helm**, resource
+The imported environment exposes **Resources and RBAC**, **Helm**, **GitOps applications**, resource
 inspection and authorized pod logs. `operate: true` separately permits workload
 operations; native Kubernetes RBAC remains authoritative. Optional
 `capabilities: ["terminal.open", "secrets.read"]` must be explicitly requested
@@ -210,6 +210,13 @@ deletes that environment's local administration state and vault records, and
 never deletes cluster infrastructure, workloads, namespaces or persistent data.
 Powerful native RBAC permissions remain powerful; import is not a replacement
 for a suitably scoped cluster identity.
+
+[GitOps delivery](kubernetes-gitops.md) uses the same explicit identity adapter.
+Application operations require workload authority. Controller installation and
+removal use separate infrastructure authority and native permissions; importing
+a connection does not confer those privileges. Removing an import forgets its
+local GitOps registrations, encrypted previews and recovery state without
+uninstalling native sources, applications, controllers or storage.
 
 The native client-go version is **1.37.1**; bundled `kubectl` is **1.36.1**. Follow Kubernetes'
 supported client/server version skew and use API discovery to check served

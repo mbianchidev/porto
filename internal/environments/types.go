@@ -242,6 +242,18 @@ func RequiredCapability(method, target string, query url.Values) (string, error)
 		if len(parts) < 2 {
 			return deny()
 		}
+		if parts[1] == "gitops" {
+			if len(parts) == 3 && read && slices.Contains([]string{"controller", "applications", "application", "sources"}, parts[2]) {
+				return InventoryRead, nil
+			}
+			if len(parts) == 4 && parts[2] == "controller" && method == "POST" && slices.Contains([]string{"previews", "apply"}, parts[3]) {
+				return InfrastructureOperate, nil
+			}
+			if len(parts) == 3 && method == "POST" && slices.Contains([]string{"previews", "apply", "sources"}, parts[2]) || len(parts) == 4 && method == "DELETE" && parts[2] == "sources" {
+				return WorkloadOperate, nil
+			}
+			return deny()
+		}
 		if parts[1] == "clusters" && !read {
 			return InfrastructureOperate, nil
 		}

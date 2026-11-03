@@ -102,6 +102,9 @@ func (m *Manager) Workload(ctx context.Context, request WorkloadRequest) (operat
 		if string(object.GetUID()) != request.UID || object.GetResourceVersion() != request.ResourceVersion {
 			return operations.Failure("The selected resource changed or was recreated. Refresh its UID/resourceVersion; no action was applied.")
 		}
+		if err := rejectGitOpsWriter(object); err != nil {
+			return operations.Failure(publicError(err))
+		}
 		if err := progress("submitting the explicitly selected resource action"); err != nil {
 			return err
 		}

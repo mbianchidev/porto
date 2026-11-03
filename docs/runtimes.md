@@ -483,10 +483,12 @@ Rollback warnings include resources in both the current release and the retained
 target revision. A PVC present only in the current release still requires storage
 acknowledgement before rollback, even when the target manifest contains no PVC.
 
-Kubernetes-native GitOps application delivery with Flux and Argo CD is tracked
-separately in [#174](https://github.com/mbianchidev/porto/issues/174). The current
-direct administration/Helm workflow and local Compose Git polling are not a
-Flux or Argo CD reconciliation controller.
+For controller-owned application delivery, use
+[Kubernetes-native GitOps](kubernetes-gitops.md). Flux and Argo CD discovery,
+explicit pinned bootstrap, scoped sources, native reconciliation and reviewed
+ownership/deletion are separate from direct administration and Compose polling.
+Direct manifest/workload and Helm mutations reject GitOps-owned or staged
+handoff resources instead of creating competing writers.
 
 Synthetic API fixtures exercise served schemas/version changes, context/
 namespace isolation, native RBAC denial, Secret redaction/reveal, concurrent

@@ -158,6 +158,9 @@ func (m *Manager) PreviewManifest(ctx context.Context, request ManifestRequest) 
 		managers := []string{}
 		beforeJSON := json.RawMessage("null")
 		if exists {
+			if err := rejectGitOpsWriter(before); err != nil {
+				return Preview{}, err
+			}
 			if expected := object.GetResourceVersion(); expected != "" && expected != before.GetResourceVersion() {
 				return Preview{}, conflict("Manifest resourceVersion no longer matches the selected object. Refresh before editing.")
 			}
@@ -234,6 +237,9 @@ func publicObject(object *unstructured.Unstructured) json.RawMessage {
 	if object == nil {
 		return json.RawMessage("null")
 	}
+	if api, ok := gitOpsAPIs[object.GetKind()]; ok && object.GroupVersionKind().Group == api.group {
+		return gitOpsPublic(object)
+	}
 	visible := object.DeepCopy()
 	if visible.GetKind() == "Secret" {
 		visible = redactSecret(visible)
@@ -302,6 +308,9 @@ func (m *Manager) ApplyManifest(ctx context.Context, contextName, namespace, tok
 				if object.Exists {
 					if err != nil {
 						return operations.Failure(publicError(apiError(err)))
+					}
+					if err := rejectGitOpsWriter(current); err != nil {
+						return operations.Failure(publicError(err))
 					}
 					if string(current.GetUID()) != object.Target.UID || current.GetResourceVersion() != object.Target.ResourceVersion {
 						return operations.Failure("An object changed or was recreated after preview. Refresh and compare ownership; nothing was applied.")

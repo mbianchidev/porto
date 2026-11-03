@@ -82,6 +82,8 @@ type fakeAPI struct {
 	mutated          chan struct{}
 	concurrentCreate bool
 	listPageSize     int
+	afterApply       func(*unstructured.Unstructured)
+	strictNamespaces bool
 }
 
 func object(t *testing.T, document string) *unstructured.Unstructured {
@@ -199,7 +201,11 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		items := []any{}
 		keys := []string{}
 		for objectKey := range f.objects {
-			if strings.HasPrefix(objectKey, group+"/"+resource+"/"+namespace+"/") {
+			prefix := group + "/" + resource + "/"
+			if namespace != "" {
+				prefix += namespace + "/"
+			}
+			if strings.HasPrefix(objectKey, prefix) {
 				keys = append(keys, objectKey)
 			}
 		}
@@ -297,9 +303,18 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 		key = group + "/" + resource + "/" + namespace + "/" + name
 		current = f.objects[key]
 	}
+	if f.strictNamespaces && namespace != "" && r.Method == "POST" && f.objects["/namespaces//"+namespace] == nil {
+		status(w, 404, "NotFound")
+		return
+	}
 	if r.Method == "DELETE" {
 		if current == nil {
 			status(w, 404, "NotFound")
+			return
+		}
+		deleteDryRun, _, _ := unstructured.NestedStringSlice(desired.Object, "dryRun")
+		if r.URL.Query().Get("dryRun") == "All" || len(deleteDryRun) > 0 && deleteDryRun[0] == "All" {
+			respond(map[string]any{"apiVersion": "v1", "kind": "Status", "status": "Success"})
 			return
 		}
 		if len(current.GetFinalizers()) > 0 {
@@ -336,6 +351,10 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 	if current != nil {
 		next = current.DeepCopy()
 		mergeObject(next.Object, desired.Object)
+		if r.Method == "PUT" {
+			next.SetAnnotations(desired.GetAnnotations())
+			next.SetLabels(desired.GetLabels())
+		}
 		if jsonPatch {
 			template, _, _ := unstructured.NestedMap(desired.Object, "spec", "template")
 			_ = unstructured.SetNestedMap(next.Object, template, "spec", "template")
@@ -365,6 +384,9 @@ func (f *fakeAPI) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		f.objects[key] = next
+		if f.afterApply != nil {
+			f.afterApply(next)
+		}
 		if f.mutated != nil {
 			select {
 			case f.mutated <- struct{}{}:

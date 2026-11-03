@@ -15,6 +15,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 - [Local runtimes](runtimes.md) — Docker endpoint, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
 - [Kubernetes upgrades](kubernetes-upgrades.md): distribution-specific upgrades, persistent-volume restoration, and recovery
 - [Kubernetes autoscaling](kubernetes-autoscaling.md): real local Karpenter workers, KEDA triggers, budgets, and ownership
+- [Kubernetes GitOps](kubernetes-gitops.md): Flux/Argo CD discovery, explicit bootstrap, scoped sources, reconciliation, ownership handoff and deletion
 - [Porto Docker Engine](docker-engine.md) — Docker context setup, native containerd architecture, API compatibility, persistence, and limitations
 - [Runtime data management](data-management.md) — deep inspection, protected storage cleanup, local backups, migration, and native filesystem capabilities
 - [Branch management](branch-management.md) — branch switching, concurrent instances, managed worktrees, and cleanup

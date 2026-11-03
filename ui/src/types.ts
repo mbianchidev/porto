@@ -845,6 +845,7 @@ export type RouteID =
   | 'kubernetes'
   | 'kubernetes-admin'
   | 'helm'
+  | 'gitops'
   | 'deployments'
   | 'pods'
   | 'services'

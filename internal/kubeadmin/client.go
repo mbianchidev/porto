@@ -34,22 +34,23 @@ type ConfigProvider interface {
 	AdminConfig(string) (*rest.Config, clientcmdapi.Config, error)
 }
 type Manager struct {
-	root         string
-	configs      ConfigProvider
-	operations   *operations.Manager
-	vault        *credentials.EncryptedFiles
-	runner       localtools.Runner
-	mu           sync.Mutex
-	previews     map[string]pendingManifest
-	helmPreviews map[string]pendingHelm
-	repoMu       sync.Mutex
+	root           string
+	configs        ConfigProvider
+	operations     *operations.Manager
+	vault          *credentials.EncryptedFiles
+	runner         localtools.Runner
+	mu             sync.Mutex
+	previews       map[string]pendingManifest
+	helmPreviews   map[string]pendingHelm
+	gitOpsPreviews map[string]pendingGitOps
+	repoMu         sync.Mutex
 }
 
 func New(root string, configs ConfigProvider, ops *operations.Manager, vault credentials.Store, runner localtools.Runner) *Manager {
 	if runner == nil {
 		runner = localtools.ExecRunner{}
 	}
-	return &Manager{root: root, configs: configs, operations: ops, vault: credentials.NewEncryptedFiles(filepath.Join(root, "sealed"), "dev.mbianchi.porto.kubernetes-admin", vault), runner: runner, previews: map[string]pendingManifest{}, helmPreviews: map[string]pendingHelm{}}
+	return &Manager{root: root, configs: configs, operations: ops, vault: credentials.NewEncryptedFiles(filepath.Join(root, "sealed"), "dev.mbianchi.porto.kubernetes-admin", vault), runner: runner, previews: map[string]pendingManifest{}, helmPreviews: map[string]pendingHelm{}, gitOpsPreviews: map[string]pendingGitOps{}}
 }
 
 type warningCount struct{ count atomic.Int32 }

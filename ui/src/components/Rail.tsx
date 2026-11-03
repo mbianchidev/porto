@@ -31,6 +31,7 @@ const NAV_GROUPS: NavGroup[] = [
       { id: 'kubernetes', label: 'Overview', icon: 'kubernetes' },
       { id: 'kubernetes-admin', label: 'Resources and RBAC', icon: 'configs' },
       { id: 'helm', label: 'Helm releases', icon: 'deployments' },
+      { id: 'gitops', label: 'GitOps applications', icon: 'deployments' },
       { id: 'deployments', label: 'Deployments', icon: 'deployments' },
       { id: 'pods', label: 'Pods', icon: 'pods' },
       { id: 'services', label: 'Services', icon: 'services' },

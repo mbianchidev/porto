@@ -199,6 +199,9 @@ func objectView(target Target, object *unstructured.Unstructured, reveal bool) O
 		visible = redactSecret(visible)
 	}
 	data, _ := json.MarshalIndent(visible.Object, "", "  ")
+	if api, ok := gitOpsAPIs[visible.GetKind()]; ok && visible.GroupVersionKind().Group == api.group {
+		data = gitOpsPublic(visible)
+	}
 	return Object{Target: target, Kind: object.GetKind(), Manifest: data, Secret: secret, Revealed: secret && reveal}
 }
 
