@@ -44,6 +44,11 @@ verified [Helm toolchain](runtimes.md#helm-repositories-and-releases).
 
 The selected Kubernetes identity must be able to inspect the served APIs and
 CRDs and create the installation's namespace, CRDs, RBAC and workload resources.
+The application namespace must already exist. Ownership activation also needs
+permission to create ConfigMaps there in server-side dry run so Porto can verify
+an allowed synthetic request and a denied competing-owner request without
+persisting probe resources. Native `admissionregistration.k8s.io/v1` validating
+admission policies and bindings must be available.
 Read-only identities cannot bootstrap. Native RBAC, admission, binding and
 escalation checks remain authoritative; Porto never substitutes an administrator
 kubeconfig, global context, insecure connection or force-overwrite.
@@ -64,8 +69,11 @@ Preview shows namespace/CRD/RBAC consequences and requires extra acknowledgement
 When the controller namespace is absent, its creation and cluster resources can
 be dry-run, but namespaced admission is explicitly deferred until activation.
 Admission, quota or rollout failure can leave a partial installation.
-Controller updates use non-forcing server-side apply so generated Secret values
-and separately managed settings are not claimed or replaced.
+Controller updates use non-forcing server-side apply. A resource originally
+created by Porto's own Update field manager can use a previewed,
+resourceVersion-guarded merge patch for those same owned fields. Foreign manager
+conflicts are still rejected. Generated Secret values and undeclared settings
+are not claimed or replaced.
 
 An encrypted installation inventory records resource UIDs as work progresses.
 Recover an interrupted bootstrap by inspecting operation history and previewing
@@ -89,13 +97,17 @@ the controller.
 
 The policy rejects changes between Flux, Argo CD and native Helm owners,
 multiple native owners, adoption of an existing controller-generated child and
-application adoption of Porto control/credential resources. Its namespace
+application adoption of Porto control/credential resources. Existing direct
+resources need a staged handoff to the exact new native application owner.
+Its namespace
 selector does not enable bindings in unrelated namespaces. Evaluation errors
 fail closed. Existing conflicting ownership can require deliberate repair before
 reconciliation will be admitted.
 
 Native API support, policy type-checking, the exact policy/binding contract and
-read permission are checked before application mutation. No automatic exception
+read permission are checked before application mutation. Explicit guard setup
+waits for real synthetic admission allow/deny decisions, not only binding
+existence. No automatic exception
 or force ownership is used. Status/scale subresources remain delegated to their
 native owners. Controller removal preserves the shared policy and namespace
 binding, just as it preserves namespaces and CRDs. Infrastructure administrators
@@ -220,14 +232,16 @@ npm --prefix ui test -- gitops.spec.ts
 Native acceptance bootstraps real pinned controllers and serves a generated,
 authenticated synthetic Git/Helm source over verified HTTPS. It requires an
 explicitly disposable `porto-gitops-acceptance-*` managed cluster, reachable
-source hostname and its exact owned kubeconfig/context:
+source hostname, full Git including `git-http-backend`, and its exact owned
+kubeconfig/context. If the selected Git installation is stripped, set
+`PORTO_TEST_GIT_HTTP_BACKEND` to a full installation's backend executable:
 
 ```sh
 PORTO_TEST_GITOPS_CONFIRM=disposable \
 PORTO_TEST_GITOPS_KUBECONFIG=/absolute/path/to/disposable-kubeconfig.yaml \
 PORTO_TEST_GITOPS_CONTEXT=porto-porto-gitops-acceptance-example \
 PORTO_TEST_GITOPS_SOURCE_HOST=host.lima.internal \
-go test ./internal/kubeadmin -run '^TestNativeGitOpsDelivery$' -count=1 -timeout=30m
+go test ./internal/kubeadmin -run '^TestNativeGitOps(Delivery|OwnershipGuard)$' -count=1 -timeout=30m
 ```
 
 This opt-in test installs controllers only in that disposable cluster, tests

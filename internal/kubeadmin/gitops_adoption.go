@@ -9,6 +9,7 @@ import (
 )
 
 const gitOpsAdoptionInventory = "porto.dev/gitops-adoption-inventory"
+const gitOpsHandoffTarget = "porto.dev/gitops-handoff-target"
 
 func (m *Manager) stageGitOpsAdoption(ctx context.Context, s *session, prepared *storedGitOps, preview *GitOpsPreview, root *unstructured.Unstructured) error {
 	request := prepared.Request
@@ -64,6 +65,7 @@ func (m *Manager) stageGitOpsAdoption(ctx context.Context, s *session, prepared 
 			annotations = map[string]string{}
 		}
 		annotations[gitOpsHandoff] = owner
+		annotations[gitOpsHandoffTarget] = gitOpsNativeOwner(request.GitOpsScope, root, current)
 		desired.SetAnnotations(annotations)
 		if err := s.gitOpsPrepare(ctx, prepared, preview, target, desired, false); err != nil {
 			return err
@@ -142,10 +144,12 @@ func (m *Manager) previewGitOpsAdoptionVerification(ctx context.Context, client 
 		desired := cleanEditable(current)
 		annotations := desired.GetAnnotations()
 		delete(annotations, gitOpsHandoff)
+		delete(annotations, gitOpsHandoffTarget)
 		desired.SetAnnotations(annotations)
 		if err := client.gitOpsPrepare(ctx, &prepared, &preview, target, desired, false); err != nil {
 			return preview, err
 		}
+
 	}
 	desired := cleanEditable(root)
 	annotations := desired.GetAnnotations()
@@ -155,6 +159,16 @@ func (m *Manager) previewGitOpsAdoptionVerification(ctx context.Context, client 
 		return preview, err
 	}
 	return m.storeGitOpsPreview(prepared, preview)
+}
+
+func gitOpsNativeOwner(scope GitOpsScope, root, resource *unstructured.Unstructured) string {
+	if scope.Controller == "argocd" {
+		return "argo/" + root.GetName() + ":" + resource.GroupVersionKind().Group + "/" + resource.GetKind() + ":" + resource.GetNamespace() + "/" + resource.GetName()
+	}
+	if root.GetKind() == "HelmRelease" {
+		return "helm/" + scope.Namespace + "/" + gitOpsString(root, "spec", "releaseName")
+	}
+	return "flux/" + root.GetNamespace() + "/" + root.GetName()
 }
 
 func (s *session) gitOpsAdoptionProof(ctx context.Context, scope GitOpsScope, root *unstructured.Unstructured) ([]gitOpsGuard, error) {

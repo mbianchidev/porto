@@ -91,6 +91,9 @@ func (m *Manager) SaveGitOpsSource(request GitOpsSourceRequest) (GitOpsSource, e
 		return source.GitOpsScope == request.GitOpsScope && source.Name == request.Name
 	})
 	source := GitOpsSource{GitOpsScope: request.GitOpsScope, Name: request.Name, Kind: request.Kind, URL: request.URL}
+	if index < 0 && request.Username != "" && request.Password == nil {
+		return GitOpsSource{}, invalid("A new private GitOps source requires its explicit password/token; missing access is not converted into public access.")
+	}
 	if index >= 0 {
 		previous := sources[index]
 		if (previous.URL != source.URL || previous.Kind != source.Kind) && request.Password == nil {

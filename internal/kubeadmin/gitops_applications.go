@@ -106,22 +106,11 @@ func (m *Manager) gitOpsApplicationObjects(ctx context.Context, client *session,
 			spec["install"] = map[string]any{"createNamespace": false, "disableTakeOwnership": true, "remediation": map[string]any{"retries": int64(0)}}
 			spec["upgrade"] = map[string]any{"disableTakeOwnership": true, "remediation": map[string]any{"retries": int64(0)}}
 		}
-		if len(request.Dependencies) > 16 {
-			return nil, "", nil, invalid("A GitOps application supports at most 16 explicit same-namespace dependencies.")
+		dependencies, dependencyGuards, err := client.gitOpsDependencyGraph(ctx, request)
+		if err != nil {
+			return nil, "", nil, err
 		}
-		dependencies := []any{}
-		for _, name := range request.Dependencies {
-			if len(validation.IsDNS1123Label(name)) > 0 || name == request.Name {
-				return nil, "", nil, invalid("GitOps dependencies require distinct valid same-namespace application names, not self-dependencies.")
-			}
-			target := gitOpsTarget(scope, request.Kind, name)
-			dependency, err := client.gitOpsRead(ctx, target)
-			if err != nil {
-				return nil, "", nil, err
-			}
-			guards = append(guards, gitOpsGuardFor(target, dependency))
-			dependencies = append(dependencies, map[string]any{"name": name})
-		}
+		guards = append(guards, dependencyGuards...)
 		if len(dependencies) > 0 {
 			spec["dependsOn"] = dependencies
 		}

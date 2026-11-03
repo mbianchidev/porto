@@ -35,7 +35,7 @@ func gitOpsOwnershipObjects(scope GitOpsScope) []*unstructured.Unstructured {
 		release := value(annotations, "meta.helm.sh/release-name")
 		entries := []struct{ condition, identity string }{
 			{flux + " != ''", "'flux/' + " + value(labels, "kustomize.toolkit.fluxcd.io/namespace") + " + '/' + " + flux},
-			{helm + " != ''", "'flux-helm/' + " + value(labels, "helm.toolkit.fluxcd.io/namespace") + " + '/' + " + helm},
+			{helm + " != '' && (" + release + " == '' || " + value(labels, "app.kubernetes.io/managed-by") + " != 'Helm')", "'flux-helm/' + " + value(labels, "helm.toolkit.fluxcd.io/namespace") + " + '/' + " + helm},
 			{argo + " != ''", "'argo/' + " + argo},
 			{argo + " == '' && " + argoLabel + " != ''", "'argo-label/' + " + argoLabel},
 			{release + " != '' && " + value(labels, "app.kubernetes.io/managed-by") + " == 'Helm'", "'helm/' + " + value(annotations, "meta.helm.sh/release-namespace") + " + '/' + " + release},
@@ -49,10 +49,12 @@ func gitOpsOwnershipObjects(scope GitOpsScope) []*unstructured.Unstructured {
 	variables = append(variables, map[string]any{"name": "newOwners", "expression": ownerExpression("nl", "na")}, map[string]any{"name": "oldOwners", "expression": ownerExpression("ol", "oa")})
 	policy := &unstructured.Unstructured{Object: map[string]any{"apiVersion": "admissionregistration.k8s.io/v1", "kind": "ValidatingAdmissionPolicy", "metadata": metadata(gitOpsOwnershipPolicy), "spec": map[string]any{
 		"failurePolicy": "Fail", "matchConstraints": map[string]any{"matchPolicy": "Equivalent", "namespaceSelector": map[string]any{}, "objectSelector": map[string]any{}, "resourceRules": []any{map[string]any{"operations": []any{"CREATE", "UPDATE"}, "apiGroups": []any{"*"}, "apiVersions": []any{"*"}, "resources": []any{"*"}, "scope": "Namespaced"}}},
-		"matchConditions": []any{map[string]any{"name": "main-resources", "expression": "request.subResource == ''"}},
+		"matchConditions": []any{map[string]any{"name": "main-resources", "expression": "!has(request.subResource) || request.subResource == ''"}},
 		"variables":       variables, "validations": []any{
 			map[string]any{"expression": "size(variables.newOwners) <= 1", "message": "Porto ownership protection: one resource cannot have competing Flux, Argo CD or native Helm owners."},
 			map[string]any{"expression": "size(variables.oldOwners) == 0 || variables.oldOwners == variables.newOwners", "message": "Porto ownership protection: suspend/remove the old reconciler and complete an approved ownership handoff before changing native ownership."},
+			map[string]any{"expression": "oldObject == null || size(variables.oldOwners) > 0 || size(variables.newOwners) == 0 || ('porto.dev/gitops-handoff' in variables.oa && 'porto.dev/gitops-handoff-target' in variables.oa && variables.oa['porto.dev/gitops-handoff-target'] == variables.newOwners[0])", "message": "Porto ownership protection: adopting an existing direct-managed resource requires a staged handoff to this exact application owner."},
+			map[string]any{"expression": "!('helm.toolkit.fluxcd.io/name' in variables.ol) || ('helm.toolkit.fluxcd.io/name' in variables.nl && variables.ol['helm.toolkit.fluxcd.io/name'] == variables.nl['helm.toolkit.fluxcd.io/name'] && ('helm.toolkit.fluxcd.io/namespace' in variables.ol ? variables.ol['helm.toolkit.fluxcd.io/namespace'] : '') == ('helm.toolkit.fluxcd.io/namespace' in variables.nl ? variables.nl['helm.toolkit.fluxcd.io/namespace'] : ''))", "message": "Porto ownership protection: a Helm release cannot change between Flux HelmRelease controllers."},
 			map[string]any{"expression": "!('porto.dev/gitops-controller' in variables.ol) || size(variables.oldOwners) > 0 || size(variables.newOwners) == 0", "message": "Porto ownership protection: application sources cannot adopt controller installation, GitOps control or credential resources."},
 			map[string]any{"expression": "oldObject == null || size(variables.oldOwners) > 0 || size(variables.newOwners) == 0 || !has(oldObject.metadata.ownerReferences) || !oldObject.metadata.ownerReferences.exists(ref, has(ref.controller) && ref.controller)", "message": "Porto ownership protection: an existing controller-generated child is not a top-level application adoption target."},
 		},
@@ -134,7 +136,13 @@ func (m *Manager) waitGitOpsProtection(parent context.Context, scope GitOpsScope
 			return operations.Partial(publicError(err))
 		}
 		if protected {
-			return progress("reviewed ownership policy and namespace-scoped deny binding are active")
+			enforced, err := client.gitOpsEnforcementProbe(ctx, scope)
+			if err != nil {
+				return operations.Partial(publicError(err))
+			}
+			if enforced {
+				return progress("reviewed namespace ownership guard accepted a synthetic dry run and denied competing owners")
+			}
 		}
 		select {
 		case <-ctx.Done():
@@ -142,4 +150,32 @@ func (m *Manager) waitGitOpsProtection(parent context.Context, scope GitOpsScope
 		case <-ticker.C:
 		}
 	}
+
+}
+
+func (s *session) gitOpsEnforcementProbe(ctx context.Context, scope GitOpsScope) (bool, error) {
+	target := Target{Context: scope.Context, Namespace: scope.Namespace, Version: "v1", Resource: "configmaps"}
+	if err := s.require(ctx, target, "create", ""); err != nil {
+		return false, err
+	}
+	id, err := randomID()
+	if err != nil {
+		return false, err
+	}
+	probe := &unstructured.Unstructured{Object: map[string]any{
+		"apiVersion": "v1", "kind": "ConfigMap",
+		"metadata": map[string]any{"name": "porto-gitops-probe-" + id[:12], "namespace": scope.Namespace},
+	}}
+	options := metav1.CreateOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: gitOpsFieldManager, FieldValidation: metav1.FieldValidationStrict}
+	if _, err := s.objects(target).Create(ctx, probe, options); err != nil {
+		return false, apiError(err)
+	}
+	probe.SetLabels(map[string]string{"kustomize.toolkit.fluxcd.io/name": "synthetic-first", "kustomize.toolkit.fluxcd.io/namespace": scope.Namespace, "argocd.argoproj.io/instance": "synthetic-competing"})
+	if _, err := s.objects(target).Create(ctx, probe, options); err != nil {
+		if (apierrors.IsForbidden(err) || apierrors.IsInvalid(err)) && strings.Contains(err.Error(), "one resource cannot have competing Flux, Argo CD or native Helm owners") {
+			return true, nil
+		}
+		return false, apiError(err)
+	}
+	return false, nil
 }

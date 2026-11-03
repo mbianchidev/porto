@@ -116,7 +116,18 @@ func nativeGitOpsSources(t *testing.T, host string) (string, []string, []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	backend := &cgi.Handler{Path: gitPath, Args: []string{"http-backend"}, Dir: root, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1"}}
+	backendPath := os.Getenv("PORTO_TEST_GIT_HTTP_BACKEND")
+	if backendPath == "" {
+		output, err := exec.Command(gitPath, "--exec-path").Output()
+		if err != nil {
+			t.Fatal("the full Git HTTP backend is required")
+		}
+		backendPath = filepath.Join(strings.TrimSpace(string(output)), "git-http-backend")
+	}
+	if info, err := os.Stat(backendPath); err != nil || !info.Mode().IsRegular() {
+		t.Fatal("Install full Git with git-http-backend, or set PORTO_TEST_GIT_HTTP_BACKEND to its executable path.")
+	}
+	backend := &cgi.Handler{Path: backendPath, Dir: root, Env: []string{"GIT_PROJECT_ROOT=" + root, "GIT_HTTP_EXPORT_ALL=1", "GIT_EXEC_PATH=" + filepath.Dir(backendPath)}}
 	chart := nativeGitOpsChart(t)
 	server := &http.Server{ReadHeaderTimeout: 5 * time.Second, TLSConfig: &tls.Config{MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{{Certificate: [][]byte{der}, PrivateKey: private}}}, Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/ready" {
@@ -195,6 +206,7 @@ func nativeGitOpsChart(t *testing.T) []byte {
 
 func nativeGitOpsOperation(t *testing.T, manager *Manager, scope GitOpsScope, preview GitOpsPreview, controller bool) {
 	t.Helper()
+	t.Logf("native %s: %s %s/%s", preview.Action, preview.Kind, scope.Namespace, preview.Name)
 	var op operations.Operation
 	var err error
 	if controller {
@@ -246,9 +258,14 @@ func TestNativeGitOpsDelivery(t *testing.T) {
 		}
 	})
 	address, commits, ca := nativeGitOpsSources(t, host)
+	runID, err := randomID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	suffix := runID[:6]
 	for _, controller := range []string{"flux", "argocd"} {
 		t.Run(controller, func(t *testing.T) {
-			scope := GitOpsScope{Context: name, Namespace: "porto-gitops-fixture-" + controller, Controller: controller, ControllerNamespace: "flux-system"}
+			scope := GitOpsScope{Context: name, Namespace: "porto-gitops-" + controller + "-" + suffix, Controller: controller, ControllerNamespace: "flux-system"}
 			if controller == "argocd" {
 				scope.ControllerNamespace = "argocd"
 			}
@@ -285,8 +302,8 @@ func TestNativeGitOpsDelivery(t *testing.T) {
 				if _, err := core.CoreV1().ConfigMaps(scope.ControllerNamespace).Update(context.Background(), trust, metav1.UpdateOptions{}); err != nil {
 					t.Fatal(err)
 				}
-				project := gitOpsObject(scope, "AppProject", "synthetic-project", "", map[string]any{"sourceRepos": []any{address + "/fixture.git", address + "/charts/"}, "destinations": []any{map[string]any{"server": "https://kubernetes.default.svc", "namespace": scope.Namespace}}, "clusterResourceWhitelist": []any{}, "namespaceResourceWhitelist": []any{map[string]any{"group": "", "kind": "ConfigMap"}}})
-				if _, err := client.objects(gitOpsTarget(scope, "AppProject", "synthetic-project")).Create(context.Background(), project, metav1.CreateOptions{}); err != nil {
+				project := gitOpsObject(scope, "AppProject", "synthetic-project-"+suffix, "", map[string]any{"sourceRepos": []any{address + "/fixture.git", address + "/charts/"}, "destinations": []any{map[string]any{"server": "https://kubernetes.default.svc", "namespace": scope.Namespace}}, "clusterResourceWhitelist": []any{}, "namespaceResourceWhitelist": []any{map[string]any{"group": "", "kind": "ConfigMap"}}})
+				if _, err := client.objects(gitOpsTarget(scope, "AppProject", "synthetic-project-"+suffix)).Create(context.Background(), project, metav1.CreateOptions{}); err != nil {
 					t.Fatal(err)
 				}
 				deployment, err := core.AppsV1().Deployments(scope.ControllerNamespace).Get(context.Background(), "argocd-repo-server", metav1.GetOptions{})
@@ -315,11 +332,11 @@ func TestNativeGitOpsDelivery(t *testing.T) {
 						kind = "Application"
 					}
 					sourceName := "synthetic-" + sourceKind
-					appName := controller + "-synthetic-" + sourceKind
+					appName := controller + "-synthetic-" + sourceKind + "-" + suffix
 					if _, err := manager.SaveGitOpsSource(GitOpsSourceRequest{GitOpsScope: scope, Name: sourceName, Kind: sourceKind, URL: sourceURL, Username: "synthetic", Password: &password}); err != nil {
 						t.Fatal(err)
 					}
-					request := GitOpsRequest{GitOpsScope: scope, Action: "install", Name: appName, Kind: kind, Source: sourceName, Revision: revision, Path: path, Chart: chart, Renderer: "kustomize", ServiceAccount: "synthetic-reconciler", Project: "synthetic-project"}
+					request := GitOpsRequest{GitOpsScope: scope, Action: "install", Name: appName, Kind: kind, Source: sourceName, Revision: revision, Path: path, Chart: chart, Renderer: "kustomize", ServiceAccount: "synthetic-reconciler", Project: "synthetic-project-" + suffix}
 					preview, err := manager.PreviewGitOps(context.Background(), request)
 					if err != nil {
 						t.Fatal(err)

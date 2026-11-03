@@ -2,6 +2,8 @@ package kubeadmin
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"slices"
 	"time"
@@ -183,6 +185,19 @@ func (m *Manager) previewGitOpsLifecycle(ctx context.Context, client *session, p
 			return preview, err
 		}
 		for _, object := range objects {
+			if object.GetKind() == root.GetKind() && object.GetName() == root.GetName() {
+				annotations := object.GetAnnotations()
+				for _, key := range []string{"porto.dev/gitops-adoption", gitOpsAdoptionInventory, "porto.dev/gitops-adopted-release"} {
+					if value := root.GetAnnotations()[key]; value != "" {
+						annotations[key] = value
+					}
+				}
+				object.SetAnnotations(annotations)
+				if root.GetAnnotations()["porto.dev/gitops-adopted-release"] != "" {
+					_ = unstructured.SetNestedField(object.Object, false, "spec", "install", "disableTakeOwnership")
+					_ = unstructured.SetNestedField(object.Object, false, "spec", "upgrade", "disableTakeOwnership")
+				}
+			}
 			objectTarget, _, err := client.targetForObject(scope.Context, target.Namespace, object)
 			if err != nil {
 				return preview, err
@@ -323,7 +338,7 @@ func (m *Manager) previewGitOpsLifecycle(ctx context.Context, client *session, p
 	return m.storeGitOpsPreview(prepared, preview)
 }
 
-func (m *Manager) waitGitOps(parent context.Context, client *session, prepared storedGitOps, progress func(string) error) error {
+func (m *Manager) waitGitOps(parent context.Context, client *session, prepared storedGitOps, expected *unstructured.Unstructured, progress func(string) error) error {
 	ctx, cancel := context.WithTimeout(parent, 3*time.Minute)
 	defer cancel()
 	ticker := time.NewTicker(time.Second)
@@ -336,6 +351,9 @@ func (m *Manager) waitGitOps(parent context.Context, client *session, prepared s
 		}
 		if request.UID != "" && string(root.GetUID()) != request.UID {
 			return operations.Partial("Application identity changed during reconciliation; a replacement was not retargeted.")
+		}
+		if expected == nil || root.GetUID() != expected.GetUID() || gitOpsSpecHash(root) != gitOpsSpecHash(expected) || root.GetLabels()[gitOpsOwnerLabel] != expected.GetLabels()[gitOpsOwnerLabel] {
+			return operations.Partial("Application desired configuration or ownership changed during reconciliation. No convergence or automatic retargeting was inferred.")
 		}
 		state, err := client.gitOpsState(ctx, request.GitOpsScope, root)
 		if err != nil {
@@ -385,7 +403,7 @@ func (s *session) pauseGitOps(ctx context.Context, prepared storedGitOps, change
 		if err != nil {
 			return err
 		}
-		if current.GetUID() != expected.GetUID() || current.GetGeneration() != expected.GetGeneration() {
+		if current.GetUID() != expected.GetUID() || gitOpsSpecHash(current) != gitOpsSpecHash(expected) || current.GetLabels()[gitOpsOwnerLabel] != expected.GetLabels()[gitOpsOwnerLabel] {
 			return conflict("The one-shot resource was replaced or its desired configuration changed; automatic suspension was not retargeted.")
 		}
 		if err := s.require(ctx, target, "update", ""); err != nil {
@@ -400,6 +418,20 @@ func (s *session) pauseGitOps(ctx context.Context, prepared storedGitOps, change
 		}
 	}
 	return nil
+}
+
+func gitOpsSpecHash(object *unstructured.Unstructured) [32]byte {
+	normalized := object.DeepCopy()
+	if object.GetAPIVersion() == "argoproj.io/v1alpha1" && object.GetKind() == "Application" {
+		for _, renderer := range []string{"kustomize", "helm", "directory"} {
+			options, found, _ := unstructured.NestedMap(normalized.Object, "spec", "source", renderer)
+			if found && len(options) == 0 {
+				unstructured.RemoveNestedField(normalized.Object, "spec", "source", renderer)
+			}
+		}
+	}
+	data, _ := json.Marshal(normalized.Object["spec"])
+	return sha256.Sum256(data)
 }
 
 func gitOpsTerminalCondition(object *unstructured.Unstructured) bool {

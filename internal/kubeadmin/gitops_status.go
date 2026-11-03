@@ -13,7 +13,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
-var gitOpsRevisionSuffix = regexp.MustCompile(`(?:^|@sha1:|@sha256:|sha256:)([a-fA-F0-9]{40}|[a-fA-F0-9]{64})$`)
+var gitOpsRevisionSuffix = regexp.MustCompile(`(?:^|@sha1:|@sha256:|sha1:|sha256:)([a-fA-F0-9]{40}|[a-fA-F0-9]{64})$`)
 
 func gitOpsRevision(value string) string {
 	if match := gitOpsRevisionSuffix.FindStringSubmatch(value); len(match) > 1 {

@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
@@ -112,11 +113,15 @@ func gitOpsBootstrapObjects(scope GitOpsScope, data []byte) ([]*unstructured.Uns
 	}
 	result := []*unstructured.Unstructured{}
 	for _, object := range objects {
+		if err := normalizeGitOpsBootstrapDefaults(object); err != nil {
+			return nil, err
+		}
 		if scope.Controller == "flux" {
 			extra := false
 			for _, prefix := range []string{"image-automation-controller", "image-reflector-controller", "notification-controller", "source-watcher"} {
 				extra = extra || strings.HasPrefix(object.GetName(), prefix)
 			}
+
 			if object.GetKind() == "CustomResourceDefinition" {
 				group := gitOpsString(object, "spec", "group")
 				extra = group != "source.toolkit.fluxcd.io" && group != "kustomize.toolkit.fluxcd.io" && group != "helm.toolkit.fluxcd.io"
@@ -256,7 +261,12 @@ func (m *Manager) previewGitOpsControllerObjects(ctx context.Context, request Gi
 			return preview, conflict("A bootstrap resource belongs to another installation. Discover its controller and use its installation owner; existing CRDs/RBAC are never force-adopted.")
 		}
 		if err := client.gitOpsPrepare(ctx, &prepared, &preview, target, object, false); err != nil {
-			return preview, err
+			safe := apiError(err)
+			var known *Error
+			if errors.As(safe, &known) {
+				return preview, &Error{known.Code, fmt.Sprintf("Controller preview for %s %s/%s: %s", object.GetKind(), target.Namespace, target.Name, known.Message)}
+			}
+			return preview, safe
 		}
 	}
 	preview.Warnings = append(preview.Warnings, "Pinned bundle SHA-256: "+gitOpsBundleFor(request.Controller).sha256)

@@ -120,3 +120,20 @@ func TestGitOpsBootstrapDefersNamespacedAdmissionUntilReviewedNamespaceCreation(
 		t.Fatal("bootstrap preview created a namespace")
 	}
 }
+
+func TestGitOpsBootstrapCanonicalizesNativeResourceQuantities(t *testing.T) {
+	scope := GitOpsScope{Context: "porto-synthetic", Namespace: "default", Controller: "flux", ControllerNamespace: "flux-system"}
+	document := []byte("apiVersion: v1\nkind: ResourceQuota\nmetadata:\n  name: synthetic\n  namespace: flux-system\nspec:\n  hard:\n    pods: \"1000\"\n---\napiVersion: apps/v1\nkind: Deployment\nmetadata:\n  name: synthetic\n  namespace: flux-system\nspec:\n  template:\n    spec:\n      containers:\n      - name: synthetic\n        resources:\n          limits:\n            memory: 1024Mi\n")
+	objects, err := gitOpsBootstrapObjects(scope, document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gitOpsString(objects[0], "spec", "hard", "pods") != "1k" {
+		t.Fatal("quota quantity differs from the native canonical value")
+	}
+	containers, _, _ := unstructured.NestedSlice(objects[1].Object, "spec", "template", "spec", "containers")
+	container := &unstructured.Unstructured{Object: containers[0].(map[string]any)}
+	if gitOpsString(container, "resources", "limits", "memory") != "1Gi" {
+		t.Fatal("container quantity differs from native canonical value")
+	}
+}

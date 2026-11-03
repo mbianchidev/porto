@@ -17,7 +17,6 @@ import (
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
-	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 
@@ -49,7 +48,7 @@ func gitOpsPublic(object *unstructured.Unstructured) json.RawMessage {
 	}
 	visible := cleanEditable(object)
 	annotations := map[string]string{}
-	for _, key := range []string{"argocd.argoproj.io/skip-reconcile", "reconcile.fluxcd.io/requestedAt", gitOpsInstallation, gitOpsHandoff, "porto.dev/gitops-adoption", "porto.dev/gitops-namespace", "porto.dev/gitops-controller-namespace", "porto.dev/gitops-once"} {
+	for _, key := range []string{"argocd.argoproj.io/skip-reconcile", "reconcile.fluxcd.io/requestedAt", gitOpsInstallation, gitOpsHandoff, gitOpsHandoffTarget, "porto.dev/gitops-adoption", "porto.dev/gitops-namespace", "porto.dev/gitops-controller-namespace", "porto.dev/gitops-once"} {
 		if value := object.GetAnnotations()[key]; value != "" {
 			annotations[key] = value
 		}
@@ -149,6 +148,9 @@ func (s *session) gitOpsPrepare(ctx context.Context, prepared *storedGitOps, pre
 	} else if exists && current.GetLabels()[gitOpsOwnerLabel] != desired.GetLabels()[gitOpsOwnerLabel] {
 		return conflict("A native resource with this name belongs to another application or installation. Porto will not take its ownership or overwrite it.")
 	}
+	if exists && !deleting && !step.Apply && prepared.Request.Action != "delete" {
+		desired.SetFinalizers(current.GetFinalizers())
+	}
 	if err := s.require(ctx, target, verb, ""); err != nil {
 		return err
 	}
@@ -174,12 +176,11 @@ func (s *session) gitOpsPrepare(ctx context.Context, prepared *storedGitOps, pre
 		} else if exists {
 			desired.SetResourceVersion(current.GetResourceVersion())
 			if step.Apply {
-				data, encodeErr := json.Marshal(desired.Object)
-				if encodeErr != nil {
-					return encodeErr
+				var migrated bool
+				after, migrated, err = s.gitOpsControllerApply(ctx, target, desired, current, true)
+				if migrated {
+					preview.Warnings = append(preview.Warnings, "This installation resource was created by Porto's Update field manager. Its own fields use a resourceVersion-guarded merge patch; generated/undeclared fields remain untouched and foreign field-manager conflicts are still rejected.")
 				}
-				force := false
-				after, err = s.objects(target).Patch(ctx, target.Name, types.ApplyPatchType, data, metav1.PatchOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: gitOpsFieldManager, Force: &force, FieldValidation: metav1.FieldValidationStrict})
 			} else {
 				after, err = s.objects(target).Update(ctx, desired, metav1.UpdateOptions{DryRun: []string{metav1.DryRunAll}, FieldManager: gitOpsFieldManager, FieldValidation: metav1.FieldValidationStrict})
 			}
@@ -530,12 +531,7 @@ func (m *Manager) runGitOps(ctx context.Context, prepared storedGitOps, progress
 			} else {
 				desired.SetResourceVersion(current.GetResourceVersion())
 				if step.Apply {
-					data, encodeErr := json.Marshal(desired.Object)
-					if encodeErr != nil {
-						return mutationError(encodeErr, applied)
-					}
-					force := false
-					changed[gitOpsTargetKey(step.Target)], err = client.objects(step.Target).Patch(ctx, step.Target.Name, types.ApplyPatchType, data, metav1.PatchOptions{FieldManager: gitOpsFieldManager, Force: &force, FieldValidation: metav1.FieldValidationStrict})
+					changed[gitOpsTargetKey(step.Target)], _, err = client.gitOpsControllerApply(ctx, step.Target, &desired, current, false)
 				} else {
 					changed[gitOpsTargetKey(step.Target)], err = client.objects(step.Target).Update(ctx, &desired, metav1.UpdateOptions{FieldManager: gitOpsFieldManager, FieldValidation: metav1.FieldValidationStrict})
 				}
@@ -559,6 +555,9 @@ func (m *Manager) runGitOps(ctx context.Context, prepared storedGitOps, progress
 			if err := m.waitGitOpsController(ctx, scope, progress); err != nil {
 				return err
 			}
+			if err := m.waitGitOpsProtection(ctx, scope, progress); err != nil {
+				return err
+			}
 		}
 		if err := m.persistGitOpsController(prepared, changed, true); err != nil {
 			return operations.Partial(publicError(err))
@@ -566,12 +565,16 @@ func (m *Manager) runGitOps(ctx context.Context, prepared storedGitOps, progress
 		return progress("reviewed controller lifecycle completed; namespaces, CRDs and unrelated workloads were not removed")
 	}
 	if prepared.Wait {
-		result := m.waitGitOps(ctx, client, prepared, progress)
+		result := m.waitGitOps(ctx, client, prepared, changed[gitOpsTargetKey(gitOpsTarget(scope, prepared.Request.Kind, prepared.Request.Name))], progress)
 		if prepared.OneShot {
 			cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 15*time.Second)
 			defer cancel()
 			if err := client.pauseGitOps(cleanupCtx, prepared, changed); err != nil {
-				return operations.Partial("One-shot reconciliation ended, but re-suspension could not be verified. Inspect native state and explicitly suspend this application before retrying. " + operations.PublicMessage(result))
+				message := "One-shot reconciliation ended, but re-suspension could not be verified. Inspect native state and explicitly suspend this application before retrying. " + publicError(err)
+				if result != nil {
+					message += " Reconciliation result: " + operations.PublicMessage(result)
+				}
+				return operations.Partial(message)
 			}
 		}
 		return result

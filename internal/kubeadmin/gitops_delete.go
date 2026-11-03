@@ -131,6 +131,7 @@ func (m *Manager) previewGitOpsDelete(ctx context.Context, client *session, prep
 			updated := cleanEditable(current)
 			annotations := updated.GetAnnotations()
 			delete(annotations, gitOpsHandoff)
+			delete(annotations, gitOpsHandoffTarget)
 			updated.SetAnnotations(annotations)
 			if err := client.gitOpsPrepare(ctx, &prepared, &preview, resourceTarget, updated, false); err != nil {
 				return preview, err

@@ -116,6 +116,7 @@ func (m *Manager) stageGitOpsHelmAdoption(ctx context.Context, client *session, 
 		annotations = map[string]string{}
 	}
 	annotations[gitOpsHandoff] = root.GetLabels()[gitOpsOwnerLabel]
+	annotations[gitOpsHandoffTarget] = gitOpsNativeOwner(request.GitOpsScope, root, current)
 	desired.SetAnnotations(annotations)
 	if err := client.gitOpsPrepare(ctx, prepared, preview, target, desired, false); err != nil {
 		return err
