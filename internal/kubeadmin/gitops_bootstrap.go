@@ -23,13 +23,13 @@ import (
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 )
 
-type gitOpsBundle struct{ version, url, sha256 string }
+type gitOpsBundle struct{ version, url, sha256, filename string }
 
 func gitOpsBundleFor(controller string) gitOpsBundle {
 	if controller == "argocd" {
-		return gitOpsBundle{ArgoCDVersion, "https://raw.githubusercontent.com/argoproj/argo-cd/v" + ArgoCDVersion + "/manifests/install.yaml", "09bfbb9041b4a8503c6e4fa22cf41c403fa62be17526de353648a4551f5beb77"}
+		return gitOpsBundle{ArgoCDVersion, "https://raw.githubusercontent.com/argoproj/argo-cd/v" + ArgoCDVersion + "/manifests/install.yaml", "09bfbb9041b4a8503c6e4fa22cf41c403fa62be17526de353648a4551f5beb77", "argocd-" + ArgoCDVersion + ".yaml"}
 	}
-	return gitOpsBundle{FluxVersion, "https://github.com/fluxcd/flux2/releases/download/v" + FluxVersion + "/install.yaml", "a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba1bc3b9840829f267f28"}
+	return gitOpsBundle{FluxVersion, "https://github.com/fluxcd/flux2/releases/download/v" + FluxVersion + "/install.yaml", "a8c838ccd9be5d30eba9df87cd229b7c4eb80c0049fba1bc3b9840829f267f28", "flux-" + FluxVersion + ".yaml"}
 }
 
 func verifyGitOpsBundle(data []byte, expected string) error {
@@ -41,8 +41,11 @@ func verifyGitOpsBundle(data []byte, expected string) error {
 }
 
 func (m *Manager) gitOpsBundle(ctx context.Context, controller string) ([]byte, error) {
+	if controller != "flux" && controller != "argocd" {
+		return nil, invalid("Select either Flux or Argo CD before accessing a pinned controller bundle.")
+	}
 	bundle := gitOpsBundleFor(controller)
-	cache := filepath.Join(m.root, "gitops-bundles", controller+"-"+bundle.version+".yaml")
+	cache := filepath.Join(m.root, "gitops-bundles", bundle.filename)
 	if data, err := os.ReadFile(cache); err == nil {
 		if err := verifyGitOpsBundle(data, bundle.sha256); err != nil {
 			return nil, err
