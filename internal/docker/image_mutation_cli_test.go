@@ -57,6 +57,50 @@ func TestImageRemovalUsesStorageBudgetWithoutExtendingCallerDeadlines(t *testing
 	}
 }
 
+func TestInspectImagePlatformResolutionUsesImageOperationBudget(t *testing.T) {
+	for _, scenario := range []struct {
+		name                     string
+		configured, caller, want time.Duration
+	}{
+		{name: "image operation budget", configured: defaultTimeout, want: imageTransferTimeout},
+		{name: "longer configured operation", configured: 45 * time.Minute, want: 45 * time.Minute},
+		{name: "caller deadline", configured: defaultTimeout, caller: 2 * time.Second, want: 2 * time.Second},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			var remaining time.Duration
+			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				switch command.Name + " " + strings.Join(command.Args, " ") {
+				case "nerdctl images --digests --no-trunc --format {{json .}}":
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						return nil, errors.New("image platform lookup has no bounded operation deadline")
+					}
+					remaining = time.Until(deadline)
+					return []byte(`{"ID":"sha256:index","Repository":"alpine","Tag":"3.22","Digest":"sha256:index","Name":"docker.io/library/alpine:3.22","Platform":"linux/amd64"}` + "\n"), nil
+				case "nerdctl image inspect --platform linux/amd64 alpine:3.22":
+					return []byte(`[{"Id":"sha256:config","Architecture":"amd64","Os":"linux"}]`), nil
+				default:
+					return nil, fmt.Errorf("unexpected image inspection command: %s %s", command.Name, strings.Join(command.Args, " "))
+				}
+			})
+			manager := New(runner)
+			manager.timeout = scenario.configured
+			ctx := context.Background()
+			if scenario.caller > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, scenario.caller)
+				defer cancel()
+			}
+			if _, err := manager.InspectImage(ctx, "alpine:3.22", ""); err != nil {
+				t.Fatal(err)
+			}
+			if remaining <= scenario.want-time.Second || remaining > scenario.want {
+				t.Fatalf("image platform lookup budget = %s, want %s with caller deadline preserved", remaining, scenario.want)
+			}
+		})
+	}
+}
+
 func TestDockerCLIImageLoadTagAndPushCompatibility(t *testing.T) {
 	if _, err := exec.LookPath("docker"); err != nil {
 		t.Skip("Docker CLI is not installed")
