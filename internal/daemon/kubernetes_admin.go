@@ -22,6 +22,7 @@ func (s *Server) kubernetesAdminRoutes(mux *http.ServeMux) {
 	register := func(pattern string, handler http.HandlerFunc) {
 		mux.HandleFunc(pattern, s.requireRuntime("kubernetes", handler))
 	}
+	s.kubernetesGitOpsRoutes(register)
 	register("GET /api/kubernetes/admin/discovery", func(w http.ResponseWriter, r *http.Request) {
 		value, err := s.kubeAdmin.Discover(r.Context(), r.URL.Query().Get("context"))
 		writeKubernetesAdmin(w, value, err)

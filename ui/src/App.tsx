@@ -51,7 +51,7 @@ const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
-  'kubernetes', 'kubernetes-admin', 'helm', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
+  'kubernetes', 'kubernetes-admin', 'helm', 'gitops', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
 
@@ -60,6 +60,7 @@ const Migration = lazy(async () => ({ default: (await import('./pages/Migration'
 const Applications = lazy(async () => ({ default: (await import('./pages/Applications')).Applications }))
 const KubernetesAdmin = lazy(async () => ({ default: (await import('./pages/KubernetesAdmin')).KubernetesAdmin }))
 const Helm = lazy(async () => ({ default: (await import('./pages/Helm')).Helm }))
+const GitOps = lazy(async () => ({ default: (await import('./pages/GitOps')).GitOps }))
 const SettingsPage = lazy(async () => ({ default: (await import('./pages/SettingsPage')).SettingsPage }))
 const Environments = lazy(async () => ({ default: (await import('./pages/Environments')).Environments }))
 const Extensions = lazy(async () => ({ default: (await import('./pages/Extensions')).Extensions }))
@@ -193,6 +194,7 @@ function AppShell() {
         {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
         {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} terminalAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('terminal.open'))} /></Suspense>}
         {route === 'helm' && <Suspense fallback={<p role="status">Loading Helm administration...</p>}><Helm key={`helm:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
+        {route === 'gitops' && <Suspense fallback={<p role="status">Loading Kubernetes GitOps...</p>}><GitOps key={`gitops:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} infrastructureAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('infrastructure.operate'))} /></Suspense>}
         {route === 'pods' && (
           <Pods
             key={`pods:${activeKubeContext}`}

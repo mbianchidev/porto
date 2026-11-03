@@ -45,7 +45,7 @@ export type ExtensionCatalogEntry = { id: string; name: string; version: string;
 export function environmentSupportsRoute(backend: string, route: string) {
   if (['environments', 'extensions', 'activity'].includes(route)) return true
   if (backend === 'local') return true
-  if (backend === 'kubernetes') return ['kubernetes-admin', 'helm'].includes(route)
+  if (backend === 'kubernetes') return ['kubernetes-admin', 'helm', 'gitops'].includes(route)
   if (backend === 'docker') return route === 'containers'
   if (backend === 'porto' || backend === 'edge') return !['settings', 'diagnostics', 'docker-storage', 'migration', 'databases'].includes(route)
   return false

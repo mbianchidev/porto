@@ -79,6 +79,7 @@ type ClusterProvisioner struct {
 	registrySyncMu sync.Mutex
 	registrySync   map[string]registrySyncState
 	registryConfig func(context.Context) ([]byte, error)
+	kindRemovals   map[string]kindRemovalGrant
 }
 
 type ClusterProvisionerOption func(*ClusterProvisioner)
@@ -689,7 +690,7 @@ func (p *ClusterProvisioner) createKind(ctx context.Context, request ClusterRequ
 	}
 	commandContext, cancel := provisioningContext(ctx, "create kind cluster", kindCreationTimeout)
 	defer cancel()
-	output, err := p.runKindCreate(commandContext, args)
+	output, err := p.runKindCreate(commandContext, request, args)
 	if err != nil || commandContext.Err() != nil {
 		commandErr := provisioningCommandError(commandContext, "create kind cluster", output, err)
 		if kindCreateCollision(commandErr) {
@@ -972,7 +973,7 @@ func (p *ClusterProvisioner) clusterNodesToDelete(
 	return result, nil
 }
 
-func (p *ClusterProvisioner) ProtectContainerRemoval(_ context.Context, containerName string) error {
+func (p *ClusterProvisioner) ProtectContainerRemoval(ctx context.Context, containerName string) error {
 	containerName = strings.TrimPrefix(strings.TrimSpace(containerName), "/")
 	entries, err := os.ReadDir(p.kubeconfigRoot)
 	if errors.Is(err, os.ErrNotExist) {
@@ -998,8 +999,11 @@ func (p *ClusterProvisioner) ProtectContainerRemoval(_ context.Context, containe
 		}
 		nodes := kindNodeNames(request)
 		if len(nodes) > 0 && nodes[0] == containerName {
+			if p.kindRemovalAuthorized(ctx, request, containerName) {
+				return nil
+			}
 			return fmt.Errorf(
-				"container %s is the control plane for managed Kubernetes cluster %s; delete cluster %s from the Kubernetes dashboard instead",
+				"container %s is the control plane for managed Kubernetes cluster %s; use porto kubernetes cluster delete %s or the Kubernetes dashboard instead",
 				containerName,
 				request.Name,
 				request.Name,
@@ -1011,10 +1015,15 @@ func (p *ClusterProvisioner) ProtectContainerRemoval(_ context.Context, containe
 
 func (p *ClusterProvisioner) runKindDelete(ctx context.Context, request ClusterRequest) ([]byte, error) {
 	runtimeName := clusterRuntimeName(request)
+	environment, revoke, err := p.kindRemovalEnvironment(ctx, request, p.portoDockerEnv())
+	if err != nil {
+		return nil, err
+	}
+	defer revoke()
 	return p.runner.Run(ctx, runtimes.Command{
 		Name: "kind",
 		Args: []string{"delete", "cluster", "--name", "porto-" + runtimeName},
-		Env:  p.portoDockerEnv(),
+		Env:  environment,
 	})
 }
 

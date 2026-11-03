@@ -42,12 +42,17 @@ type dockerHelperCredential struct {
 	Secret   string `json:"Secret"`
 }
 
-func (p *ClusterProvisioner) runKindCreate(ctx context.Context, args []string) ([]byte, error) {
+func (p *ClusterProvisioner) runKindCreate(ctx context.Context, request ClusterRequest, args []string) ([]byte, error) {
 	environment, cleanup, err := p.kindCreateDockerEnv(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer cleanup()
+	environment, revoke, err := p.kindRemovalEnvironment(ctx, request, environment)
+	if err != nil {
+		return nil, err
+	}
+	defer revoke()
 	return p.runner.Run(ctx, runtimes.Command{Name: "kind", Args: args, Env: environment})
 }
 

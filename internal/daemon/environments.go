@@ -435,7 +435,7 @@ func (s *Server) serveImportedKubernetes(w http.ResponseWriter, r *http.Request,
 		s.environments.RecordHealth(profile.ID, true)
 		writeJSON(w, kubernetes.Status{Enabled: true, Available: true, Context: profile.Context, ServerVersion: version.GitVersion})
 	default:
-		if strings.HasPrefix(r.URL.Path, "/api/kubernetes/admin/") || strings.HasPrefix(r.URL.Path, "/api/kubernetes/helm/") || strings.HasPrefix(r.URL.Path, "/api/operations") {
+		if strings.HasPrefix(r.URL.Path, "/api/kubernetes/admin/") || strings.HasPrefix(r.URL.Path, "/api/kubernetes/helm/") || strings.HasPrefix(r.URL.Path, "/api/kubernetes/gitops/") || strings.HasPrefix(r.URL.Path, "/api/operations") {
 			scoped, err := s.importedScope(profile)
 			if err != nil {
 				environments.WriteError(w, err)

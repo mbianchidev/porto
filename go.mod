@@ -21,6 +21,7 @@ require (
 	github.com/distribution/reference v0.6.0
 	github.com/ebitengine/purego v0.11.2
 	github.com/go-logr/logr v1.4.4
+	github.com/google/cel-go v0.30.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/moby/buildkit v0.34.1
 	github.com/moby/moby/api v1.56.1
@@ -92,7 +93,6 @@ require (
 	github.com/go-openapi/swag/typeutils v0.28.0 // indirect
 	github.com/go-openapi/swag/yamlutils v0.28.0 // indirect
 	github.com/godbus/dbus/v5 v5.2.2 // indirect
-	github.com/google/cel-go v0.30.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect

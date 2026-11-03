@@ -34,22 +34,23 @@ type ConfigProvider interface {
 	AdminConfig(string) (*rest.Config, clientcmdapi.Config, error)
 }
 type Manager struct {
-	root         string
-	configs      ConfigProvider
-	operations   *operations.Manager
-	vault        *credentials.EncryptedFiles
-	runner       localtools.Runner
-	mu           sync.Mutex
-	previews     map[string]pendingManifest
-	helmPreviews map[string]pendingHelm
-	repoMu       sync.Mutex
+	root           string
+	configs        ConfigProvider
+	operations     *operations.Manager
+	vault          *credentials.EncryptedFiles
+	runner         localtools.Runner
+	mu             sync.Mutex
+	previews       map[string]pendingManifest
+	helmPreviews   map[string]pendingHelm
+	gitOpsPreviews map[string]pendingGitOps
+	repoMu         sync.Mutex
 }
 
 func New(root string, configs ConfigProvider, ops *operations.Manager, vault credentials.Store, runner localtools.Runner) *Manager {
 	if runner == nil {
 		runner = localtools.ExecRunner{}
 	}
-	return &Manager{root: root, configs: configs, operations: ops, vault: credentials.NewEncryptedFiles(filepath.Join(root, "sealed"), "dev.mbianchi.porto.kubernetes-admin", vault), runner: runner, previews: map[string]pendingManifest{}, helmPreviews: map[string]pendingHelm{}}
+	return &Manager{root: root, configs: configs, operations: ops, vault: credentials.NewEncryptedFiles(filepath.Join(root, "sealed"), "dev.mbianchi.porto.kubernetes-admin", vault), runner: runner, previews: map[string]pendingManifest{}, helmPreviews: map[string]pendingHelm{}, gitOpsPreviews: map[string]pendingGitOps{}}
 }
 
 type warningCount struct{ count atomic.Int32 }
@@ -124,6 +125,14 @@ func apiError(err error) error {
 		code, message = 401, "The selected Kubernetes identity is not authenticated."
 	case apierrors.IsConflict(err):
 		code, message = 409, "Kubernetes reported a resourceVersion or field-manager conflict. Refresh the object and review ownership; force-overwrite is not used."
+		var status apierrors.APIStatus
+		if errors.As(err, &status) && status.Status().Details != nil {
+			for _, cause := range status.Status().Details.Causes {
+				if len(cause.Field) > 0 && len(cause.Field) <= 512 && !strings.ContainsAny(cause.Field, "\r\n\x00") {
+					message += " Conflicting field: " + cause.Field + "."
+				}
+			}
+		}
 	case apierrors.IsAlreadyExists(err):
 		code, message = 409, "The selected Kubernetes object already exists. Refresh and preview an explicit edit."
 	case apierrors.IsNotFound(err):

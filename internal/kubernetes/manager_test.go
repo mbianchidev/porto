@@ -1830,7 +1830,7 @@ func TestManagedKindControlPlaneCannotBeRemovedAsContainer(t *testing.T) {
 	}
 
 	err := provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-control-plane")
-	if err == nil || !strings.Contains(err.Error(), "delete cluster dev") {
+	if err == nil || !strings.Contains(err.Error(), "porto kubernetes cluster delete dev") {
 		t.Fatalf("control-plane removal error = %v", err)
 	}
 	if err := provisioner.ProtectContainerRemoval(context.Background(), "porto-dev-worker"); err != nil {

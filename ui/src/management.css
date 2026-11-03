@@ -30,3 +30,30 @@
   .environmentBar label { flex-basis: 100%; }
   .managementArea .actions { flex-direction: column; align-items: stretch; }
 }
+.gitOpsRevisionRail {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1px;
+  margin-block: 12px;
+  background: var(--line);
+  border: 1px solid var(--line);
+}
+
+.gitOpsRevisionRail > div {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 10px;
+  background: var(--panel-sunken);
+  overflow-wrap: anywhere;
+}
+
+.gitOpsRevisionRail small {
+  color: var(--ink-soft);
+}
+
+@media (max-width: 480px) {
+  .gitOpsRevisionRail {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
