@@ -24,13 +24,14 @@ export function DataOperations({ resourceName, onComplete, onReviewMigration, re
     try { await apiSend(`/api/data/operations/${id}`, 'DELETE'); operations.reload() }
     catch (err) { notifyError('data', errorMessage(err, 'Unable to cancel data operation')) }
   }
-  return <section className="drawerPanel">
+  return <section className="drawerPanel" aria-label={resourceName ? `Data operations for ${resourceName}` : 'Data operation history'}>
     <h3>Data operation history</h3>
     {operations.error && <p role="alert" className="errorLine">{operations.error}</p>}
-    <p className="hintLine">Jobs continue when this view closes. Cancel explicitly to stop a transfer; originals remain intact before a verified publish.</p>
-    {!rows.length && <p>No data operations recorded.</p>}
-    <div className="dataTableScroll"><table className="dataTable">
-      <thead><tr><th>Operation / source</th><th>Progress / result</th><th>Controls</th></tr></thead>
+    <p className="hintLine">Jobs continue when this view closes. Cancel running jobs below. Completed and partial results also appear in Activity.</p>
+    {operations.loading && !operations.data && <p role="status">Loading data operations...</p>}
+    {!operations.loading && !operations.error && !rows.length && <p>No data operations recorded.</p>}
+    {rows.length > 0 && <div className="dataTableScroll" role="region" aria-label="Scrollable data operations" tabIndex={0}><table className="dataTable dataOperationsTable" aria-label="Data operations">
+      <thead><tr><th scope="col">Operation / source</th><th scope="col">Progress / result</th><th scope="col">Controls</th></tr></thead>
       <tbody>{rows.map((run) => <tr key={run.id}>
         <td><strong>#{run.id} {run.request.action}</strong><br />{run.request.resource?.name || run.request.context}
           {run.request.destination && <p>Destination: {run.request.destination}</p>}
@@ -39,9 +40,9 @@ export function DataOperations({ resourceName, onComplete, onReviewMigration, re
           {run.request.scheduleId && <p>Backup schedule {run.request.scheduleId} / {run.request.trigger}</p>}
           <br />{new Date(run.startedAt).toLocaleString()}</td>
         <td><span role={run.status === 'running' ? 'status' : undefined}>{run.status} · {run.phase} · {bytesLabel(run.bytes)}</span>
-          {run.error && <p className="errorLine">{run.error}</p>}
+          {run.error && <p role="alert" className="errorLine">{run.error}</p>}
           {run.result.message && <p>{run.result.message}</p>}
-          {run.request.action === 'prune' && <p>Actual reclaimed bytes: {bytesLabel(run.result.bytesReclaimed)}</p>}
+          {run.request.action === 'prune' && run.status !== 'running' && <p>Actual reclaimed bytes: {bytesLabel(run.result.bytesReclaimed)}</p>}
           {run.result.steps?.map((step, index) => <p key={index}>{step.kind}: {step.source} → {step.destination || 'removed'} · {step.status} {step.message}</p>)}
         </td>
         <td>{run.status === 'running' && <button type="button" onClick={() => void cancel(run.id)}>Cancel operation {run.id}</button>}
@@ -51,7 +52,7 @@ export function DataOperations({ resourceName, onComplete, onReviewMigration, re
           {run.phase === 'archive-expired' && <span>Archive expired under retention</span>}
         </td>
       </tr>)}</tbody>
-    </table></div>
+    </table></div>}
   </section>
 }
 import { useEffect, useRef } from 'react'

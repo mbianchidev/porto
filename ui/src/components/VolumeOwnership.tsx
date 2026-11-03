@@ -8,9 +8,9 @@ export function VolumeOwnership({ volume }: { volume: StorageResource }) {
       <div><dt>Allocated storage</dt><dd>{bytesLabel(volume.allocatedBytes)}</dd></div>
     </dl>
     {volume.reason && <p className="hintLine">{volume.reason}</p>}
-    {!volume.owners.length ? <p>No container mounts reference this volume.</p> : <div className="dataTableScroll">
+    {!volume.owners.length ? <p>No container mounts reference this volume.</p> : <div className="dataTableScroll" role="region" aria-label="Scrollable volume mount owners" tabIndex={0}>
       <table className="dataTable" aria-label="Volume mount owners">
-        <thead><tr><th>Container / application</th><th>State</th><th>Mounts</th></tr></thead>
+        <thead><tr><th scope="col">Container / application</th><th scope="col">State</th><th scope="col">Mounts</th></tr></thead>
         <tbody>{volume.owners.map((owner) => <tr key={owner.id}>
           <td><strong>{owner.name}</strong><br />{owner.composeProject ? `${owner.composeProject}/${owner.composeService || ''}` : 'Standalone'}{owner.managed && <p>Managed Kubernetes node</p>}</td>
           <td>{owner.state}</td>

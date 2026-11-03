@@ -56,6 +56,26 @@ Search resource names, owning containers or Compose applications and filter by
 resource type, in-use, unused or dangling state. Select individual unused objects
 or choose one explicit cleanup category. No broad cleanup is selected by default.
 
+The summary separates unique content, snapshots and volumes. Writable snapshots
+are already included in snapshots; build cache and metadata have their own
+measurements below. Resource rows label **Logical**, **Allocated** and **Shared**
+sizes separately, show **In use**, **Unused** or **Protected**, and retain readable
+columns in a keyboard-scrollable table when the window narrows or a volume
+inspector opens. **Manage volume** opens allocation, mount ownership, transfers
+and backups without selecting the volume for cleanup. Closing the inspector
+returns keyboard focus to that action.
+
+**Selected resources** previews only checked, eligible objects and shows the
+selection count. Changing search or resource filters clears the selection and
+any pending preview; **Clear filters** restores the full inventory.
+**Category cleanup** previews an entire explicitly chosen category, regardless
+of resource filters or checked rows. Both paths show their scope, exact
+candidates, exclusions and allocation upper bound before **Confirm exact
+cleanup** asks for confirmation. Canceling preparation does not cancel an
+already-started cleanup; use its control in **Data operation history**.
+Loading, no resources, no filter matches and failed measurements are distinct
+states, and a measurement error disables cleanup until a successful refresh.
+
 Content blobs and snapshots are counted once; snapshot usage excludes parents.
 Per-image logical sizes are locally stored packed blobs, overlap and cannot be
 summed. Partially pulled multi-platform images retain their missing-content
