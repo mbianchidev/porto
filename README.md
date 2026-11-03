@@ -218,6 +218,10 @@ On macOS this prepares a cached **Porto Dev.app** tied to the source checkout, w
 The packaging guide also documents parallel target builds and the optional
 checksum-verified download cache.
 
+For maintainers, `./release.sh <version>` switches to and updates `main`, then
+prepares and publishes the release. Only `--mock` runs a trial without changing
+versions or Git history. See [cutting a release](docs/ci-cd.md#cutting-a-release).
+
 ## Documentation
 
 Start with the [documentation index](docs/README.md), or go directly to a guide:
