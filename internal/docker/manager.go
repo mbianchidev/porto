@@ -2239,7 +2239,7 @@ func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.R
 		}
 	}
 	options := appendStringFlag(nil, "--platform", platform)
-	return m.inspect(ctx, "image", normalized, options...)
+	return m.inspectWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "image", normalized, options...)
 }
 
 func (m *Manager) imagePlatform(ctx context.Context, id string) (string, error) {
@@ -2452,6 +2452,10 @@ func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextS
 }
 
 func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
+	return m.inspectWithTimeout(ctx, m.timeout, kind, id, options...)
+}
+
+func (m *Manager) inspectWithTimeout(ctx context.Context, timeout time.Duration, kind, id string, options ...string) (json.RawMessage, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
@@ -2465,7 +2469,7 @@ func (m *Manager) inspect(ctx context.Context, kind, id string, options ...strin
 	args := []string{kind, "inspect"}
 	args = append(args, options...)
 	args = append(args, id)
-	output, err := m.runStdout(ctx, "inspect Porto "+kind, args...)
+	output, err := m.runStdoutWithTimeout(ctx, timeout, "inspect Porto "+kind, args...)
 	if err != nil {
 		if missingDockerObject(err, kind) {
 			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)

@@ -67,7 +67,7 @@ func TestInspectImagePlatformResolutionUsesImageOperationBudget(t *testing.T) {
 		{name: "caller deadline", configured: defaultTimeout, caller: 2 * time.Second, want: 2 * time.Second},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
-			var remaining time.Duration
+			var imageListRemaining, imageInspectRemaining time.Duration
 			runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
 				switch command.Name + " " + strings.Join(command.Args, " ") {
 				case "nerdctl images --digests --no-trunc --format {{json .}}":
@@ -75,9 +75,14 @@ func TestInspectImagePlatformResolutionUsesImageOperationBudget(t *testing.T) {
 					if !ok {
 						return nil, errors.New("image platform lookup has no bounded operation deadline")
 					}
-					remaining = time.Until(deadline)
+					imageListRemaining = time.Until(deadline)
 					return []byte(`{"ID":"sha256:index","Repository":"alpine","Tag":"3.22","Digest":"sha256:index","Name":"docker.io/library/alpine:3.22","Platform":"linux/amd64"}` + "\n"), nil
 				case "nerdctl image inspect --platform linux/amd64 alpine:3.22":
+					deadline, ok := ctx.Deadline()
+					if !ok {
+						return nil, errors.New("image inspection has no bounded operation deadline")
+					}
+					imageInspectRemaining = time.Until(deadline)
 					return []byte(`[{"Id":"sha256:config","Architecture":"amd64","Os":"linux"}]`), nil
 				default:
 					return nil, fmt.Errorf("unexpected image inspection command: %s %s", command.Name, strings.Join(command.Args, " "))
@@ -94,8 +99,16 @@ func TestInspectImagePlatformResolutionUsesImageOperationBudget(t *testing.T) {
 			if _, err := manager.InspectImage(ctx, "alpine:3.22", ""); err != nil {
 				t.Fatal(err)
 			}
-			if remaining <= scenario.want-time.Second || remaining > scenario.want {
-				t.Fatalf("image platform lookup budget = %s, want %s with caller deadline preserved", remaining, scenario.want)
+			for _, operation := range []struct {
+				name      string
+				remaining time.Duration
+			}{
+				{name: "image platform lookup", remaining: imageListRemaining},
+				{name: "image inspection", remaining: imageInspectRemaining},
+			} {
+				if operation.remaining <= scenario.want-time.Second || operation.remaining > scenario.want {
+					t.Errorf("%s budget = %s, want %s with caller deadline preserved", operation.name, operation.remaining, scenario.want)
+				}
 			}
 		})
 	}
