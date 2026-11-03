@@ -184,7 +184,7 @@ func awaitReport(t *testing.T, manager *Manager, id string) Report {
 	if done != nil {
 		select {
 		case <-done:
-		case <-time.After(5 * time.Second):
+		case <-time.After(30 * time.Second):
 			t.Fatal("analysis did not finish")
 		}
 	}

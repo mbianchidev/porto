@@ -1324,7 +1324,11 @@ func validateContainerDevice(device ContainerDevice) error {
 }
 
 func (m *Manager) Images(ctx context.Context) ([]Image, error) {
-	output, err := m.runStdout(ctx, "list Porto images", "images", "--digests", "--no-trunc", "--format", "{{json .}}")
+	return m.imagesWithTimeout(ctx, m.timeout)
+}
+
+func (m *Manager) imagesWithTimeout(ctx context.Context, timeout time.Duration) ([]Image, error) {
+	output, err := m.runStdoutWithTimeout(ctx, timeout, "list Porto images", "images", "--digests", "--no-trunc", "--format", "{{json .}}")
 	if err != nil {
 		return nil, err
 	}
@@ -2235,11 +2239,11 @@ func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.R
 		}
 	}
 	options := appendStringFlag(nil, "--platform", platform)
-	return m.inspect(ctx, "image", normalized, options...)
+	return m.inspectWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "image", normalized, options...)
 }
 
 func (m *Manager) imagePlatform(ctx context.Context, id string) (string, error) {
-	images, err := m.Images(ctx)
+	images, err := m.imagesWithTimeout(ctx, max(m.timeout, imageTransferTimeout))
 	if err != nil {
 		return "", fmt.Errorf("resolve Porto image platform: %w", err)
 	}
@@ -2448,6 +2452,10 @@ func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextS
 }
 
 func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
+	return m.inspectWithTimeout(ctx, m.timeout, kind, id, options...)
+}
+
+func (m *Manager) inspectWithTimeout(ctx context.Context, timeout time.Duration, kind, id string, options ...string) (json.RawMessage, error) {
 	if err := validateObjectID(id); err != nil {
 		return nil, err
 	}
@@ -2461,7 +2469,7 @@ func (m *Manager) inspect(ctx context.Context, kind, id string, options ...strin
 	args := []string{kind, "inspect"}
 	args = append(args, options...)
 	args = append(args, id)
-	output, err := m.runStdout(ctx, "inspect Porto "+kind, args...)
+	output, err := m.runStdoutWithTimeout(ctx, timeout, "inspect Porto "+kind, args...)
 	if err != nil {
 		if missingDockerObject(err, kind) {
 			return nil, fmt.Errorf("%w: %w", ErrNotFound, err)
@@ -2552,11 +2560,15 @@ func (m *Manager) run(ctx context.Context, action string, args ...string) ([]byt
 }
 
 func (m *Manager) runStdout(ctx context.Context, action string, args ...string) ([]byte, error) {
+	return m.runStdoutWithTimeout(ctx, m.timeout, action, args...)
+}
+
+func (m *Manager) runStdoutWithTimeout(ctx context.Context, timeout time.Duration, action string, args ...string) ([]byte, error) {
 	backend, err := m.backendForCommand(ctx)
 	if err != nil {
 		return nil, err
 	}
-	return m.runBackendStdout(ctx, backend, m.timeout, action, args...)
+	return m.runBackendStdout(ctx, backend, timeout, action, args...)
 }
 
 func (m *Manager) runBackendStdout(ctx context.Context, backend commandBackend, timeout time.Duration, action string, args ...string) ([]byte, error) {
