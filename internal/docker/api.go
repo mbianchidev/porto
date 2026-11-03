@@ -74,6 +74,11 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": err.Error()})
 		return
 	}
+	if r.Method == http.MethodDelete && strings.HasPrefix(path, "/containers/") {
+		if token := r.Header.Get(runtimes.ManagedContainerRemovalHeader); token != "" {
+			requestContext = runtimes.WithManagedContainerRemovalToken(requestContext, token)
+		}
+	}
 	if a.manager.IsNativeWindows() && (nativeWindowsUnsupported(path, r.Method) ||
 		(path == "/images/create" && r.URL.Query().Get("fromSrc") != "")) {
 		writeDockerUnsupported(w, "native Windows build, checkpoint, archive, data, or Linux helper surface: "+path)

@@ -812,9 +812,15 @@ The renamed cluster appears immediately in the dashboard, and its previous
 logical name can be reused at once; Porto allocates a distinct internal runtime
 name when the original containers or VMs still use that identity.
 
-KinD control-plane containers cannot be removed through Porto's Docker API while
-their managed cluster exists; delete the cluster from the Kubernetes dashboard
-instead. If an older installation already lost its control-plane container,
+KinD control-plane containers cannot be removed directly through Porto's Docker
+API while their managed cluster exists. Use
+`porto kubernetes cluster delete <name>` or the Kubernetes dashboard instead.
+Managed deletion and creation cleanup authorize only their own control-plane
+Docker requests for the duration of the command; other requests and clusters
+remain protected, and authorization is revoked after success, failure or
+cancellation. Renamed clusters retain their original runtime-node identity.
+Failed deletion retains ownership and kubeconfig state for an explicit retry.
+If an older installation already lost its control-plane container,
 starting that KinD cluster recreates it from the saved cluster configuration and
 reports that recovery to the user.
 
