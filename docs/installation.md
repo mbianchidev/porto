@@ -107,6 +107,11 @@ and only a newly created failed guest is eligible for cleanup.
 While a boot or setup command is quiet, the progress stream repeats its last
 actual stage to keep idle transports alive. This does not invent a new stage,
 mark setup complete, or extend the existing installation deadline.
+The desktop bounds the complete installation at 30 minutes, separately from
+the unchanged 20-minute Lima boot limit. A valid slow boot must leave time
+for post-boot packages, helper transfer and verification. Closing the window,
+caller cancellation, or a shorter explicit request timeout still wins; progress
+heartbeats do not reset the total allowance.
 Uploading and validating the bundled runtime-helper binary uses the existing
 20-minute provisioning command budget rather than a 30-second metadata-probe
 limit. Any shorter remaining caller deadline or cancellation still wins.

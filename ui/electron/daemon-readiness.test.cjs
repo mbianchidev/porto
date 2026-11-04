@@ -614,6 +614,57 @@ test('fails closed if the progress reader fails after a complete event', async (
   })
 })
 
+test('default installation deadline includes configuration after a valid guest boot', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let stream
+  let requestSignal
+  let observedProgress
+  const observed = new Promise((resolve) => { observedProgress = resolve })
+  const result = installDockerEngine({
+    fetchImpl: async (_url, { signal }) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(controller) { stream = controller },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+    },
+    onProgress: () => observedProgress(),
+  })
+  await Promise.resolve()
+  stream.enqueue(new TextEncoder().encode(engineEvent('progress', guestDownloadProgress)))
+  await observed
+  t.mock.timers.tick(22 * 60 * 1000)
+  assert.equal(requestSignal.aborted, false, 'A valid boot must leave time for helper setup and verification')
+  stream.enqueue(new TextEncoder().encode(engineEvent('complete', { available: true, backend: 'fixture' })))
+  stream.close()
+  assert.deepEqual(await result, { available: true, backend: 'fixture' })
+})
+
+test('default installation remains bounded after the boot and configuration allowance', async (t) => {
+  t.mock.timers.enable({ apis: ['setTimeout'] })
+  let requestSignal
+  let cancelled = false
+  let observedProgress
+  const observed = new Promise((resolve) => { observedProgress = resolve })
+  const result = installDockerEngine({
+    fetchImpl: async (_url, { signal }) => {
+      requestSignal = signal
+      return new Response(new ReadableStream({
+        start(controller) {
+          controller.enqueue(new TextEncoder().encode(engineEvent('progress', guestDownloadProgress)))
+        },
+        cancel() { cancelled = true },
+      }), { headers: { 'Content-Type': 'application/x-ndjson' } })
+    },
+    onProgress: () => observedProgress(),
+  })
+  const rejected = assert.rejects(result, (error) => error.code === 'cancelled')
+  await observed
+  t.mock.timers.tick(30 * 60 * 1000)
+  await rejected
+  assert.equal(requestSignal.aborted, true)
+  assert.equal(cancelled, true)
+})
+
 test('cancels the request and its progress reader on timeout', async () => {
   let requestSignal
   let cancelled = false
