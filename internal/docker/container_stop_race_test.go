@@ -83,6 +83,7 @@ func TestStopDoesNotHideMissingSignalTargetsThatAreStillRunning(t *testing.T) {
 }
 
 func TestStopReconcilesExitedOrReapedTasksWithoutHidingOtherFailures(t *testing.T) {
+	unknownWaitErr := status.Error(codes.Unknown, "synthetic wait failure")
 	for _, test := range []struct {
 		name       string
 		signal     uint32
@@ -105,7 +106,13 @@ func TestStopReconcilesExitedOrReapedTasksWithoutHidingOtherFailures(t *testing.
 		{name: "network cleanup fails", signal: 9, taskState: tasktypes.Status_STOPPED, cleanupErr: true},
 		{name: "shim cancels wait after exit", taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Canceled, "shim wait stream closed after exit")},
 		{name: "shim cancels forced wait after exit", force: true, taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Canceled, "shim wait stream closed after exit")},
+		{name: "shim times out wait after exit", taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.DeadlineExceeded, "shim wait reached its grace deadline")},
+		{name: "shim reports untyped cancellation after exit", taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Unknown, context.Canceled.Error())},
+		{name: "shim reports untyped deadline after exit", taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Unknown, context.DeadlineExceeded.Error())},
+		{name: "shim reports untyped forced deadline after exit", force: true, taskState: tasktypes.Status_STOPPED, waitErr: status.Error(codes.Unknown, context.DeadlineExceeded.Error())},
 		{name: "cancelled wait does not prove a running task stopped", taskState: tasktypes.Status_RUNNING, waitErr: status.Error(codes.Canceled, "shim wait stream closed"), wantErr: context.Canceled},
+		{name: "untyped wait deadline does not prove a running task stopped", taskState: tasktypes.Status_RUNNING, waitErr: status.Error(codes.Unknown, context.DeadlineExceeded.Error()), wantErr: context.DeadlineExceeded},
+		{name: "unrelated wait failure remains explicit", taskState: tasktypes.Status_STOPPED, waitErr: unknownWaitErr, wantErr: unknownWaitErr},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			containers := &fakeContainersClient{container: &containersapi.Container{ID: "demo", Labels: map[string]string{}}}

@@ -19,6 +19,7 @@ type canceledGraceTasks struct {
 	*fakeTasksClient
 	waits       int
 	remoteEarly bool
+	waitErr     error
 }
 
 func (tasks *canceledGraceTasks) Wait(ctx context.Context, request *tasksapi.WaitRequest, _ ...grpc.CallOption) (*tasksapi.WaitResponse, error) {
@@ -28,44 +29,60 @@ func (tasks *canceledGraceTasks) Wait(ctx context.Context, request *tasksapi.Wai
 		if !tasks.remoteEarly {
 			<-ctx.Done()
 		}
+		if tasks.waitErr != nil {
+			return nil, tasks.waitErr
+		}
 		return nil, status.Error(codes.Canceled, "shim wait canceled at grace deadline")
 	}
 	return &tasksapi.WaitResponse{ExitStatus: 137}, nil
 }
 
-func TestStopHandlesRemoteGraceCancellationBeforeTheLocalDeadline(t *testing.T) {
-	for _, callerDeadline := range []bool{false, true} {
-		t.Run(map[bool]string{false: "remote grace cancellation", true: "shorter caller deadline"}[callerDeadline], func(t *testing.T) {
-			tasks := &canceledGraceTasks{
-				fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING}},
-				remoteEarly:     true,
-			}
-			backend := &grpcContainerRuntime{namespace: "default", tasks: tasks,
-				containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}}
-			ctx := context.Background()
-			if callerDeadline {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, 10*time.Millisecond)
-				defer cancel()
-			}
-			started := time.Now()
-			err := backend.Stop(ctx, "demo", 1)
-			expected := []uint32{15, 9}
-			if callerDeadline {
-				expected = []uint32{15}
-				if !errors.Is(err, context.DeadlineExceeded) {
-					t.Fatalf("remote stream cancellation replaced the shorter caller deadline: %v", err)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("a remote grace wait canceled before the local clock caused stop to fail: %v", err)
-				}
-				if time.Since(started) < time.Second {
-					t.Fatal("remote cancellation shortened the configured stop grace")
-				}
-			}
-			if !reflect.DeepEqual(tasks.killSignals, expected) {
-				t.Fatalf("stop signals = %v, want %v", tasks.killSignals, expected)
+func TestStopHandlesRemoteGraceInterruptionBeforeTheLocalDeadline(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+	}{
+		{"canceled", status.Error(codes.Canceled, "shim wait canceled at grace deadline")},
+		{"deadline exceeded", status.Error(codes.DeadlineExceeded, "shim wait reached its grace deadline")},
+		{"unknown cancellation", status.Error(codes.Unknown, context.Canceled.Error())},
+		{"unknown deadline", status.Error(codes.Unknown, context.DeadlineExceeded.Error())},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			for _, callerDeadline := range []bool{false, true} {
+				t.Run(map[bool]string{false: "remote grace interruption", true: "shorter caller deadline"}[callerDeadline], func(t *testing.T) {
+					tasks := &canceledGraceTasks{
+						fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING}},
+						remoteEarly:     true,
+						waitErr:         test.err,
+					}
+					backend := &grpcContainerRuntime{namespace: "default", tasks: tasks,
+						containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}}}
+					ctx := context.Background()
+					if callerDeadline {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 10*time.Millisecond)
+						defer cancel()
+					}
+					started := time.Now()
+					err := backend.Stop(ctx, "demo", 1)
+					expected := []uint32{15, 9}
+					if callerDeadline {
+						expected = []uint32{15}
+						if !errors.Is(err, context.DeadlineExceeded) {
+							t.Fatalf("remote wait interruption replaced the shorter caller deadline: %v", err)
+						}
+					} else {
+						if err != nil {
+							t.Fatalf("a remote grace wait interrupted before the local clock caused stop to fail: %v", err)
+						}
+						if time.Since(started) < time.Second {
+							t.Fatal("remote interruption shortened the configured stop grace")
+						}
+					}
+					if !reflect.DeepEqual(tasks.killSignals, expected) {
+						t.Fatalf("stop signals = %v, want %v", tasks.killSignals, expected)
+					}
+				})
 			}
 		})
 	}
