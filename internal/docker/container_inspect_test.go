@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
@@ -185,7 +186,7 @@ func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
 	for _, test := range []struct {
 		name, output, message string
 		legacy, cancel        bool
-		caller                time.Duration
+		configured, caller    time.Duration
 		failure, wantErr      error
 	}{
 		{name: "advertised helper"},
@@ -195,12 +196,17 @@ func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
 		{name: "missing identity remains explicit", output: "[]", wantErr: ErrUnavailable},
 		{name: "conflicting identities remain explicit", output: `[{"Name":"synthetic-first","ID":"one"},{"Name":"synthetic-first","ID":"two"}]`, wantErr: ErrConflict},
 		{name: "shorter caller deadline", caller: 2 * time.Second},
+		{name: "longer configured deadline", configured: 2 * time.Minute},
 		{name: "caller cancellation", cancel: true, wantErr: context.Canceled},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			caller := time.Minute
+			caller := 3 * time.Minute
 			if test.caller > 0 {
 				caller = test.caller
+			}
+			configured := defaultTimeout
+			if test.configured > 0 {
+				configured = test.configured
 			}
 			ctx, cancel := context.WithTimeout(context.Background(), caller)
 			defer cancel()
@@ -224,7 +230,7 @@ func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
 					return nil, fmt.Errorf("canonical lookup used the wrong helper/namespace or inspected containers: %+v", command)
 				}
 				deadline, ok := commandContext.Deadline()
-				budget := min(defaultTimeout, caller)
+				budget := min(max(configured, networkIdentityReadTimeout), caller)
 				if remaining := time.Until(deadline); !ok || remaining <= budget-time.Second || remaining > budget {
 					return nil, fmt.Errorf("metadata lookup changed its bounded caller/probe budget: %s", remaining)
 				}
@@ -241,6 +247,7 @@ func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
 				return []byte(document), nil
 			})
 			manager := NewWithStateDir(runner, t.TempDir())
+			manager.timeout = configured
 			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
 				t.Fatal(err)
 			}
@@ -267,6 +274,52 @@ func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
 			if queries != 1 {
 				t.Fatalf("identity lookup retried or hid a helper failure: %d queries", queries)
 			}
+		})
+	}
+}
+
+func TestContainerNetworkIdentityReadsAllowSlowBackendWithoutExtendingCallers(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "slow metadata read", true: "shorter caller deadline"}[callerDeadline], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				id := strings.Repeat("a", 64)
+				queries := 0
+				runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+					if command.Name != "nerdctl" || strings.Join(command.Args, " ") != "network inspect synthetic-stack" {
+						return nil, fmt.Errorf("unexpected network identity command: %+v", command)
+					}
+					queries++
+					timer := time.NewTimer(25 * time.Second)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, context.Cause(ctx)
+					case <-timer.C:
+						return []byte(`[{"Name":"synthetic-stack","ID":"` + id + `"}]`), nil
+					}
+				})
+				manager := New(runner)
+				ctx := context.Background()
+				if callerDeadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
+				}
+				started := time.Now()
+				identities, err := manager.containerNetworkIdentities(ctx, []string{"synthetic-stack"})
+				wantElapsed := 25 * time.Second
+				if callerDeadline {
+					wantElapsed = 10 * time.Second
+					if !errors.Is(err, context.DeadlineExceeded) || len(identities) != 0 {
+						t.Fatalf("shorter caller deadline was extended or returned partial identities: %+v, %v", identities, err)
+					}
+				} else if err != nil || len(identities) != 1 || identities["synthetic-stack"] != id {
+					t.Fatalf("a slow authoritative read lost its actual canonical identity: %+v, %v", identities, err)
+				}
+				if queries != 1 || time.Since(started) != wantElapsed {
+					t.Fatalf("metadata read retried or exceeded its bounded allowance: queries=%d elapsed=%s", queries, time.Since(started))
+				}
+			})
 		})
 	}
 }

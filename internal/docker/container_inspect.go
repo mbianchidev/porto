@@ -6,7 +6,10 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 )
+
+const networkIdentityReadTimeout = time.Minute
 
 type recordedContainerMount struct {
 	Type, Name, Source, Destination, Driver string
@@ -76,6 +79,9 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 	if len(selected) == 0 || m.IsNativeWindows() {
 		return selected, nil
 	}
+	timeout := max(m.timeout, networkIdentityReadTimeout)
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
 	selectedNames := sortedStringKeys(selected)
 	var output []byte
 	var err error
@@ -84,10 +90,10 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 		if commandErr != nil {
 			return nil, commandErr
 		}
-		output, err = m.runBufferedCommand(ctx, m.timeout, "inspect Porto container network identities", command)
+		output, err = m.runBufferedCommand(ctx, timeout, "read Porto CNI network identities", command)
 	} else {
 		args := append([]string{"network", "inspect"}, selectedNames...)
-		output, err = m.runStdout(ctx, "inspect Porto container network identities", args...)
+		output, err = m.runStdoutWithTimeout(ctx, timeout, "inspect Porto container network identities", args...)
 	}
 	if err != nil {
 		return nil, err

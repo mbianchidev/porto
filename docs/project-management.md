@@ -182,8 +182,11 @@ canonical network IDs are read directly from the selected namespace's CNI
 configuration. Identity lookup stays live and ownership-checked without
 traversing every attached container through `nerdctl network inspect`.
 Older helpers retain the compatibility query; a supported helper's read,
-decode or permission failure remains explicit, without a fallback or a longer
-deadline.
+decode or permission failure remains explicit, without a fallback.
+Canonical identity reads share one bounded allowance of at least one minute,
+not the shorter backend-probe cutoff. Larger configured timeouts are retained;
+shorter caller deadlines and cancellation still win. The allowance is not reset
+between backend discovery and reading the selected identities.
 Runtime helper teardown stops its
 owned process group, including SSH descendants, so repeated health checks and
 lifecycle operations release their transport sessions.
