@@ -32,11 +32,12 @@ import (
 )
 
 const (
-	defaultTimeout     = 20 * time.Second
-	engineStartTimeout = 20 * time.Minute
-	engineInstanceName = "porto-engine"
-	engineStateFile    = "engine.json"
-	engineLockFile     = "engine-install.lock"
+	defaultTimeout          = 20 * time.Second
+	objectInspectionTimeout = time.Minute
+	engineStartTimeout      = 20 * time.Minute
+	engineInstanceName      = "porto-engine"
+	engineStateFile         = "engine.json"
+	engineLockFile          = "engine-install.lock"
 )
 
 const limaRuntimeHelperInstallCommand = `set -eu
@@ -2452,7 +2453,7 @@ func (m *Manager) ContextStatus(ctx context.Context, socketPath string) ContextS
 }
 
 func (m *Manager) inspect(ctx context.Context, kind, id string, options ...string) (json.RawMessage, error) {
-	return m.inspectWithTimeout(ctx, m.timeout, kind, id, options...)
+	return m.inspectWithTimeout(ctx, max(m.timeout, objectInspectionTimeout), kind, id, options...)
 }
 
 func (m *Manager) inspectWithTimeout(ctx context.Context, timeout time.Duration, kind, id string, options ...string) (json.RawMessage, error) {

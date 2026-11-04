@@ -800,9 +800,11 @@ func composeContainerName(labels map[string]string, networks []ContainerNetwork)
 }
 
 func (a *API) inspectContainer(w http.ResponseWriter, r *http.Request) {
-	value, err := a.manager.InspectContainer(r.Context(), r.PathValue("id"))
+	ctx, cancel := context.WithTimeout(r.Context(), max(a.manager.timeout, objectInspectionTimeout))
+	defer cancel()
+	value, err := a.manager.InspectContainer(ctx, r.PathValue("id"))
 	if err == nil && !a.manager.IsNativeWindows() {
-		value, err = a.manager.completeInspectNetworkIdentities(r.Context(), value)
+		value, err = a.manager.completeInspectNetworkIdentities(ctx, value)
 	}
 	if err == nil {
 		value, err = dockerInspectForVersion(value, dockerRequestVersion(r), false)

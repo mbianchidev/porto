@@ -6,10 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-	"time"
 )
-
-const networkIdentityReadTimeout = time.Minute
 
 type recordedContainerMount struct {
 	Type, Name, Source, Destination, Driver string
@@ -79,7 +76,7 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 	if len(selected) == 0 || m.IsNativeWindows() {
 		return selected, nil
 	}
-	timeout := max(m.timeout, networkIdentityReadTimeout)
+	timeout := max(m.timeout, objectInspectionTimeout)
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	selectedNames := sortedStringKeys(selected)
