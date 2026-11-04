@@ -1659,8 +1659,9 @@ func TestGRPCContainerOperationsDeleteFallsBackBeforeManagedCleanup(t *testing.T
 
 func TestContainerdOperationErrorPreservesTypedErrors(t *testing.T) {
 	tests := []struct {
-		code codes.Code
-		want error
+		code    codes.Code
+		message string
+		want    error
 	}{
 		{code: codes.Canceled, want: context.Canceled},
 		{code: codes.DeadlineExceeded, want: context.DeadlineExceeded},
@@ -1668,11 +1669,26 @@ func TestContainerdOperationErrorPreservesTypedErrors(t *testing.T) {
 		{code: codes.FailedPrecondition, want: ErrConflict},
 		{code: codes.Unavailable, want: ErrUnavailable},
 		{code: codes.Unimplemented, want: ErrUnsupported},
+		{code: codes.Unknown, message: context.Canceled.Error(), want: context.Canceled},
+		{code: codes.Unknown, message: context.DeadlineExceeded.Error(), want: context.DeadlineExceeded},
+		{code: codes.Unknown, message: "context deadline exceeded while saving metadata"},
+		{code: codes.Unknown, message: "synthetic backend failure"},
 	}
 	for _, test := range tests {
-		err := containerdOperationError("pause", "demo", status.Error(test.code, "failure"))
-		if !errors.Is(err, test.want) {
+		message := test.message
+		if message == "" {
+			message = "failure"
+		}
+		source := status.Error(test.code, message)
+		err := containerdOperationError("pause", "demo", source)
+		if test.want != nil && !errors.Is(err, test.want) {
 			t.Fatalf("%s error = %v, want %v", test.code, err, test.want)
+		}
+		if test.want == nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
+			t.Fatalf("an unrelated %s error was classified as a context interruption: %v", test.code, err)
+		}
+		if !strings.Contains(err.Error(), source.Error()) {
+			t.Fatalf("operation error lost its original diagnostics: %v", err)
 		}
 	}
 }

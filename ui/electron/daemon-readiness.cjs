@@ -68,7 +68,7 @@ async function inspectDockerStatus({
 async function installDockerEngine({
   daemonURL = DEFAULT_DAEMON_URL,
   fetchImpl = globalThis.fetch,
-  timeoutMs = 20 * 60 * 1000,
+  timeoutMs = 30 * 60 * 1000,
   onProgress,
   signal,
 } = {}) {

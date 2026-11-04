@@ -163,6 +163,9 @@ When the inventory has a healthy connection, lifecycle and removal operations
 borrow that same verified backend instead of opening another SSH tunnel and
 repeating health probes. Finishing an operation never closes the
 inventory-owned connection; the inventory still owns reconnect and shutdown.
+Engine-idle and update guards also issue fresh all-namespace task queries over
+that verified Lima connection. Its cached container snapshot is never proof
+of idleness, and active or unobservable tasks still prevent shutdown.
 This keeps slow emulated guests on native cleanup, including `docker rm -v`,
 rather than sending Porto-owned OCI metadata to nerdctl after a redundant
 connection probe times out.
@@ -556,6 +559,10 @@ docker --context porto compose up --build
 Lima BuildKit tunnels, including build-history connections, stay alive until
 their connection closes. Completion of gRPC dialing does not stop the tunnel;
 finishing or canceling a history request still closes and reaps its subprocess.
+The local `/grpc` and `/session` HTTP upgrades complete before remote tunnel
+setup, so guest discovery and SSH startup do not consume the client's local
+connection-handshake allowance. Upstream connections still verify the selected
+engine's ownership, and individual RPC deadlines and cancellation remain intact.
 This behavior is shared by macOS, Windows, and Linux.
 
 The Porto CLI and legacy Docker build API also pass comma-separated platforms

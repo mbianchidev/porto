@@ -113,7 +113,7 @@ func findCNIConfig(directories []string, network string) (string, bool, error) {
 				Plugins []json.RawMessage `json:"plugins"`
 			}
 			if err := json.Unmarshal(document, &metadata); err != nil {
-				continue
+				return "", false, fmt.Errorf("decode CNI configuration %s: %w", path, err)
 			}
 			if metadata.Name == network {
 				return path, len(metadata.Plugins) > 0 || extension == ".conflist", nil
@@ -127,8 +127,47 @@ func findCNIConfig(directories []string, network string) (string, bool, error) {
 		)
 	}
 	return "", false, fmt.Errorf(
-		"CNI network %q was not found in %s",
+		"no network found matching: %s (checked %s)",
 		network,
 		strings.Join(available, ", "),
 	)
+}
+
+type cniNetworkIdentity struct {
+	Name, ID string
+}
+
+func readCNINetworkIdentities(directories, networks []string) ([]cniNetworkIdentity, error) {
+	if len(networks) == 0 {
+		return nil, fmt.Errorf("at least one CNI network is required")
+	}
+	identities := make([]cniNetworkIdentity, 0, len(networks))
+	for _, network := range networks {
+		if network == "" || strings.ContainsAny(network, "\x00\r\n") {
+			return nil, fmt.Errorf("valid CNI network name is required")
+		}
+		file, _, err := findCNIConfig(directories, network)
+		if err != nil {
+			return nil, err
+		}
+		document, err := os.ReadFile(file)
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("no network found matching: %s: %w", network, err)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("read CNI network identity %q: %w", network, err)
+		}
+		var metadata struct {
+			Name string `json:"name"`
+			ID   string `json:"nerdctlID"`
+		}
+		if err := json.Unmarshal(document, &metadata); err != nil {
+			return nil, fmt.Errorf("decode CNI network identity %q: %w", network, err)
+		}
+		if metadata.Name != network {
+			return nil, fmt.Errorf("CNI network %q changed during identity lookup", network)
+		}
+		identities = append(identities, cniNetworkIdentity{Name: metadata.Name, ID: metadata.ID})
+	}
+	return identities, nil
 }

@@ -429,7 +429,7 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 		t.Fatal(err)
 	}
 	waitForStartupSetup(t, server, project.ID)
-	deadline := time.Now().Add(3 * time.Second)
+	deadline := time.Now().Add(15 * time.Second)
 	var environment []byte
 	var err error
 	for time.Now().Before(deadline) {

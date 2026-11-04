@@ -789,28 +789,43 @@ func (r *grpcContainerRuntime) directNetworkState(
 }
 
 func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...string) ([]byte, error) {
-	command := runtimes.Command{StdoutOnly: true}
-	if r.lima != "" {
-		command.Name = "limactl"
-		command.Args = []string{
-			"shell", "--workdir=/", r.lima, "--", "sh", "-c",
-			`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
-			"porto-runtime-helper", r.namespace,
-		}
-		command.Args = append(command.Args, args...)
-	} else {
-		if r.helperPath == "" {
-			return nil, fmt.Errorf("%w: Porto runtime helper is unavailable", ErrUnsupported)
-		}
-		command.Name = r.helperPath
-		command.Args = append([]string(nil), args...)
-		command.Env = process.WithEnvironment(os.Environ(), "CONTAINERD_NAMESPACE="+r.namespace)
+	command, err := r.runtimeHelperCommand(args...)
+	if err != nil {
+		return nil, err
 	}
 	output, err := r.runner.Run(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("run Porto runtime helper %s: %w: %s", args[0], err, strings.TrimSpace(string(output)))
 	}
 	return output, nil
+}
+
+func (r *grpcContainerRuntime) runtimeHelperCommand(args ...string) (runtimes.Command, error) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return runtimes.Command{}, errors.New("Porto runtime helper command is required")
+	}
+	command := runtimes.Command{StdoutOnly: true}
+	if r.lima != "" {
+		command.Name = "limactl"
+		arguments := []string{"sh", "-c",
+			`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+			"porto-runtime-helper", r.namespace,
+		}
+		arguments = append(arguments, args...)
+		if r.commandSource.ownerID != "" {
+			arguments = append([]string{"sh", "-c", limaOwnedRuntimeCommand,
+				"porto-runtime-command", r.commandSource.ownerID}, arguments...)
+		}
+		command.Args = append([]string{"shell", "--workdir=/", r.lima, "--"}, arguments...)
+	} else {
+		if r.helperPath == "" {
+			return runtimes.Command{}, fmt.Errorf("%w: Porto runtime helper is unavailable", ErrUnsupported)
+		}
+		command.Name = r.helperPath
+		command.Args = append([]string(nil), args...)
+		command.Env = process.WithEnvironment(os.Environ(), "CONTAINERD_NAMESPACE="+r.namespace)
+	}
+	return command, nil
 }
 
 func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {
@@ -916,16 +931,17 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		withContainerdNamespace(waitContext, r.namespace),
 		&tasksapi.WaitRequest{ContainerID: id},
 	)
+	waitErr = containerdOperationError("wait for stopped", id, waitErr)
 	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded) || !time.Now().Before(graceDeadline)
 	if waitErr == nil {
 		return r.cleanupNetworksResolved(ctx, id)
 	}
-	if status.Code(waitErr) == codes.Canceled && !graceExpired {
-		stopErr := r.reconcileStoppedTask(ctx, id, containerdOperationError("wait for stopped", id, waitErr))
-		if stopErr == nil || !errors.Is(stopErr, context.Canceled) {
+	if (errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded)) && !graceExpired {
+		stopErr := r.reconcileStoppedTask(ctx, id, waitErr)
+		if stopErr == nil || (!errors.Is(stopErr, context.Canceled) && !errors.Is(stopErr, context.DeadlineExceeded)) {
 			return stopErr
 		}
-		// A remote grace cancellation can arrive before the local deadline.
+		// A remote grace interruption can arrive before the local deadline.
 		// A still-running task keeps its remaining grace, never an early SIGKILL.
 		<-waitContext.Done()
 		graceExpired = errors.Is(waitContext.Err(), context.DeadlineExceeded)
@@ -936,8 +952,8 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if deadline, ok := ctx.Deadline(); ok && !time.Now().Before(deadline) {
 		return context.DeadlineExceeded
 	}
-	if status.Code(waitErr) != codes.DeadlineExceeded && !graceExpired {
-		return r.reconcileStoppedTask(ctx, id, containerdOperationError("wait for stopped", id, waitErr))
+	if !errors.Is(waitErr, context.DeadlineExceeded) && !graceExpired {
+		return r.reconcileStoppedTask(ctx, id, waitErr)
 	}
 	if err := r.Kill(ctx, id, 9); err != nil {
 		return r.reconcileStoppedTask(ctx, id, fmt.Errorf("force stop container %q: %w", id, err))
@@ -956,7 +972,7 @@ func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id stri
 	if err := context.Cause(ctx); err != nil {
 		return err
 	}
-	if !errors.Is(stopErr, ErrNotFound) && !errors.Is(stopErr, context.Canceled) {
+	if !errors.Is(stopErr, ErrNotFound) && !errors.Is(stopErr, context.Canceled) && !errors.Is(stopErr, context.DeadlineExceeded) {
 		return stopErr
 	}
 	// Exit can race a signal or wait. Verify the task is no longer runnable
@@ -2108,7 +2124,17 @@ func containerdOperationError(operation, id string, err error) error {
 	if err == nil {
 		return nil
 	}
-	switch status.Code(err) {
+	code := status.Code(err)
+	if code == codes.Unknown {
+		// A shim can return an untyped Go context error through ttrpc.
+		switch status.Convert(err).Message() {
+		case context.Canceled.Error():
+			code = codes.Canceled
+		case context.DeadlineExceeded.Error():
+			code = codes.DeadlineExceeded
+		}
+	}
+	switch code {
 	case codes.Canceled:
 		return fmt.Errorf("%s container %q: %w", operation, id, errors.Join(context.Canceled, err))
 	case codes.DeadlineExceeded:

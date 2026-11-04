@@ -29,16 +29,20 @@ func (*updateNamespaces) List(context.Context, *namespacesapi.ListNamespacesRequ
 
 type updateTasks struct {
 	tasksapi.TasksClient
-	state tasktypes.Status
-	err   error
+	state      tasktypes.Status
+	err        error
+	namespaces []string
 }
 
 func (tasks *updateTasks) List(ctx context.Context, _ *tasksapi.ListTasksRequest, _ ...grpc.CallOption) (*tasksapi.ListTasksResponse, error) {
+	headers, _ := metadata.FromOutgoingContext(ctx)
+	namespace := headers.Get(containerdNamespaceHeader)
+	if len(namespace) > 0 {
+		tasks.namespaces = append(tasks.namespaces, namespace[len(namespace)-1])
+	}
 	if tasks.err != nil {
 		return nil, tasks.err
 	}
-	headers, _ := metadata.FromOutgoingContext(ctx)
-	namespace := headers.Get(containerdNamespaceHeader)
 	response := &tasksapi.ListTasksResponse{}
 	if len(namespace) > 0 && namespace[len(namespace)-1] == "unmanaged" && tasks.state != tasktypes.Status_UNKNOWN {
 		response.Tasks = []*tasktypes.Process{{ID: "synthetic-unmanaged-task", Status: tasks.state}}
@@ -238,4 +242,54 @@ func TestPrepareEngineUpdateReaderWaitRemainsCancellable(t *testing.T) {
 		t.Fatal("cancelled update left a queued writer blocking other readers")
 	}
 	manager.dataMu.RUnlock()
+}
+
+func TestPrepareEngineUpdateUsesFreshQueriesOnTheOwnedInventoryConnection(t *testing.T) {
+	unavailable := errors.New("synthetic live namespace unavailable")
+	for _, test := range []struct {
+		name  string
+		state tasktypes.Status
+		err   error
+	}{
+		{name: "running unmanaged task", state: tasktypes.Status_RUNNING},
+		{name: "paused unmanaged task", state: tasktypes.Status_PAUSED},
+		{name: "unobservable task state", err: unavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			tasks := &updateTasks{state: test.state, err: test.err}
+			shared := updateSafetyRuntime(t, tasks)
+			shared.commandSource = commandBackend{name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner"}
+			runner := &fakeRunner{outputs: map[string][]byte{
+				"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+				`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
+			}}
+			manager := NewWithStateDir(runner, t.TempDir())
+			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+				t.Fatal(err)
+			}
+			manager.inventoryCancel = func() {}
+			manager.inventory = &containerInventory{snapshot: ContainerSnapshot{Available: true}, runtimeClient: shared}
+			manager.runtimeConnector = func(context.Context) (containerRuntime, error) {
+				t.Fatal("update preflight reopened discovery/SSH despite a matching live inventory connection")
+				return nil, ErrUnavailable
+			}
+			stopped, err := manager.PrepareEngineUpdate(context.Background())
+			want := ErrConflict
+			if test.err != nil {
+				want = test.err
+			}
+			if stopped || !errors.Is(err, want) {
+				t.Fatalf("cached empty inventory bypassed live workload refusal: stopped=%t error=%v", stopped, err)
+			}
+			if len(tasks.namespaces) == 0 || (test.err == nil && strings.Join(tasks.namespaces, ",") != "default,unmanaged") {
+				t.Fatalf("update did not query fresh task state across all namespaces: %v", tasks.namespaces)
+			}
+			if shared.connection.GetState() == connectivity.Shutdown {
+				t.Fatal("update preflight closed the inventory-owned connection")
+			}
+			if len(runner.commands) != 2 {
+				t.Fatalf("refused update skipped ownership verification or attempted shutdown: %+v", runner.commands)
+			}
+		})
+	}
 }

@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -173,6 +176,255 @@ func TestDockerContainerSummaryReportsCanonicalNetworkIdentityForCompose(t *test
 	}
 	if len(summaries) != 1 || summaries[0].NetworkSettings.Networks["synthetic-stack"].NetworkID != networkID {
 		t.Fatalf("Compose would recreate an unchanged service because its actual network ID is missing or abbreviated: %s", response.Body.String())
+	}
+}
+
+func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
+	firstID, secondID := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	document := fmt.Sprintf(`[{"Name":"synthetic-first","ID":%q},{"Name":"synthetic-second","ID":%q}]`, firstID, secondID)
+	denied := errors.New("synthetic helper permission denied")
+	for _, test := range []struct {
+		name, output, message string
+		legacy, cancel        bool
+		configured, caller    time.Duration
+		failure, wantErr      error
+	}{
+		{name: "advertised helper"},
+		{name: "legacy helper", legacy: true},
+		{name: "helper failure remains explicit", failure: denied, wantErr: denied},
+		{name: "invalid JSON remains explicit", output: "{", message: "decode canonical container network identities"},
+		{name: "missing identity remains explicit", output: "[]", wantErr: ErrUnavailable},
+		{name: "conflicting identities remain explicit", output: `[{"Name":"synthetic-first","ID":"one"},{"Name":"synthetic-first","ID":"two"}]`, wantErr: ErrConflict},
+		{name: "shorter caller deadline", caller: 2 * time.Second},
+		{name: "longer configured deadline", configured: 2 * time.Minute},
+		{name: "caller cancellation", cancel: true, wantErr: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caller := 3 * time.Minute
+			if test.caller > 0 {
+				caller = test.caller
+			}
+			configured := defaultTimeout
+			if test.configured > 0 {
+				configured = test.configured
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), caller)
+			defer cancel()
+			queries := 0
+			runner := lifecycleDeadlineRunner(func(commandContext context.Context, command runtimes.Command) ([]byte, error) {
+				if command.Name != "limactl" || !command.StdoutOnly ||
+					!containsArgumentSequence(command.Args, []string{
+						"sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner",
+					}) {
+					return nil, fmt.Errorf("network metadata omitted owned structured execution: %+v", command)
+				}
+				if command.Args[len(command.Args)-1] == "probe" {
+					return json.Marshal(runtimeHelperProbe{CNI: true, NetworkIdentities: !test.legacy})
+				}
+				queries++
+				want := []string{"porto-runtime-helper", "synthetic-namespace", "cni-identities", "synthetic-first", "synthetic-second"}
+				if test.legacy {
+					want = []string{"nerdctl", "network", "inspect", "synthetic-first", "synthetic-second"}
+				}
+				if !containsArgumentSequence(command.Args, want) {
+					return nil, fmt.Errorf("canonical lookup used the wrong helper/namespace or inspected containers: %+v", command)
+				}
+				deadline, ok := commandContext.Deadline()
+				budget := min(max(configured, objectInspectionTimeout), caller)
+				if remaining := time.Until(deadline); !ok || remaining <= budget-time.Second || remaining > budget {
+					return nil, fmt.Errorf("metadata lookup changed its bounded caller/probe budget: %s", remaining)
+				}
+				if test.cancel {
+					cancel()
+					return nil, context.Cause(commandContext)
+				}
+				if test.failure != nil {
+					return nil, test.failure
+				}
+				if test.output != "" {
+					return []byte(test.output), nil
+				}
+				return []byte(document), nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			manager.timeout = configured
+			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &grpcContainerRuntime{
+				runner: runner, lima: engineInstanceName, namespace: "synthetic-namespace",
+				commandSource: commandBackend{name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner"},
+			}
+			runtime.Capabilities(context.Background())
+			manager.inventoryCancel = func() {}
+			manager.inventory = &containerInventory{snapshot: ContainerSnapshot{Available: true}, runtimeClient: runtime}
+			identities, err := manager.containerNetworkIdentities(ctx, []string{"synthetic-second", "none", "synthetic-first", "synthetic-first"})
+			switch {
+			case test.wantErr != nil:
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("network identity error = %v, want %v", err, test.wantErr)
+				}
+			case test.message != "":
+				if err == nil || !strings.Contains(err.Error(), test.message) {
+					t.Fatalf("network identity error = %v, want %q", err, test.message)
+				}
+			case err != nil || len(identities) != 2 || identities["synthetic-first"] != firstID || identities["synthetic-second"] != secondID:
+				t.Fatalf("actual selected identities were not preserved: %+v, %v", identities, err)
+			}
+			if queries != 1 {
+				t.Fatalf("identity lookup retried or hid a helper failure: %d queries", queries)
+			}
+		})
+	}
+}
+
+func TestContainerNetworkIdentityReadsAllowSlowBackendWithoutExtendingCallers(t *testing.T) {
+	for _, callerDeadline := range []bool{false, true} {
+		t.Run(map[bool]string{false: "slow metadata read", true: "shorter caller deadline"}[callerDeadline], func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				id := strings.Repeat("a", 64)
+				queries := 0
+				runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+					if command.Name != "nerdctl" || strings.Join(command.Args, " ") != "network inspect synthetic-stack" {
+						return nil, fmt.Errorf("unexpected network identity command: %+v", command)
+					}
+					queries++
+					timer := time.NewTimer(25 * time.Second)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, context.Cause(ctx)
+					case <-timer.C:
+						return []byte(`[{"Name":"synthetic-stack","ID":"` + id + `"}]`), nil
+					}
+				})
+				manager := New(runner)
+				ctx := context.Background()
+				if callerDeadline {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+					defer cancel()
+				}
+				started := time.Now()
+				identities, err := manager.containerNetworkIdentities(ctx, []string{"synthetic-stack"})
+				wantElapsed := 25 * time.Second
+				if callerDeadline {
+					wantElapsed = 10 * time.Second
+					if !errors.Is(err, context.DeadlineExceeded) || len(identities) != 0 {
+						t.Fatalf("shorter caller deadline was extended or returned partial identities: %+v, %v", identities, err)
+					}
+				} else if err != nil || len(identities) != 1 || identities["synthetic-stack"] != id {
+					t.Fatalf("a slow authoritative read lost its actual canonical identity: %+v, %v", identities, err)
+				}
+				if queries != 1 || time.Since(started) != wantElapsed {
+					t.Fatalf("metadata read retried or exceeded its bounded allowance: queries=%d elapsed=%s", queries, time.Since(started))
+				}
+			})
+		})
+	}
+}
+
+func TestDockerObjectInspectionAllowsSlowReadsWithoutExtendingCallers(t *testing.T) {
+	for _, kind := range []string{"container", "network", "volume"} {
+		for _, callerDeadline := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/caller-deadline=%t", kind, callerDeadline), func(t *testing.T) {
+				synctest.Test(t, func(t *testing.T) {
+					queries := 0
+					runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+						if strings.Join(command.Args, " ") != kind+" inspect synthetic-object" {
+							return nil, fmt.Errorf("unexpected object inspection: %+v", command)
+						}
+						queries++
+						timer := time.NewTimer(25 * time.Second)
+						defer timer.Stop()
+						select {
+						case <-ctx.Done():
+							return nil, context.Cause(ctx)
+						case <-timer.C:
+							return []byte(`[{"Id":"synthetic-object"}]`), nil
+						}
+					})
+					ctx := context.Background()
+					if callerDeadline {
+						var cancel context.CancelFunc
+						ctx, cancel = context.WithTimeout(ctx, 10*time.Second)
+						defer cancel()
+					}
+					started := time.Now()
+					document, err := New(runner).inspect(ctx, kind, "synthetic-object")
+					wantElapsed := 25 * time.Second
+					if callerDeadline {
+						wantElapsed = 10 * time.Second
+						if !errors.Is(err, context.DeadlineExceeded) || len(document) != 0 {
+							t.Fatalf("shorter caller deadline was lost: %s, %v", document, err)
+						}
+					} else if err != nil || string(document) != `{"Id":"synthetic-object"}` {
+						t.Fatalf("slow authoritative object inspection failed: %s, %v", document, err)
+					}
+					if queries != 1 || time.Since(started) != wantElapsed {
+						t.Fatalf("object inspection retried or exceeded its allowance: queries=%d elapsed=%s", queries, time.Since(started))
+					}
+				})
+			})
+		}
+	}
+}
+
+func TestDockerContainerInspectionSharesBudgetWithNetworkIdentityLookup(t *testing.T) {
+	for _, scenario := range []struct {
+		name                               string
+		objectDelay, identityDelay, caller time.Duration
+		wantElapsed                        time.Duration
+		wantSuccess                        bool
+	}{
+		{"complete object and network", 25 * time.Second, 25 * time.Second, 0, 50 * time.Second, true},
+		{"one shared allowance", 40 * time.Second, 40 * time.Second, 0, time.Minute, false},
+		{"shorter caller", 25 * time.Second, 25 * time.Second, 10 * time.Second, 10 * time.Second, false},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				id := strings.Repeat("a", 64)
+				runner := lifecycleDeadlineRunner(func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+					var delay time.Duration
+					var document string
+					switch strings.Join(command.Args, " ") {
+					case "container inspect synthetic-object":
+						delay = scenario.objectDelay
+						document = `[{"Id":"synthetic-object","Config":{"Labels":{}},"State":{"Status":"running","Running":true,"Pid":42},"NetworkSettings":{"Networks":{"synthetic-stack":{"IPAddress":"10.88.0.2"}}}}]`
+					case "network inspect synthetic-stack":
+						delay = scenario.identityDelay
+						document = `[{"Name":"synthetic-stack","ID":"` + id + `"}]`
+					default:
+						return nil, fmt.Errorf("unexpected combined inspection: %+v", command)
+					}
+					timer := time.NewTimer(delay)
+					defer timer.Stop()
+					select {
+					case <-ctx.Done():
+						return nil, context.Cause(ctx)
+					case <-timer.C:
+						return []byte(document), nil
+					}
+				})
+				ctx := context.Background()
+				if scenario.caller > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, scenario.caller)
+					defer cancel()
+				}
+				request := httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic-object/json", nil).WithContext(ctx)
+				response := httptest.NewRecorder()
+				started := time.Now()
+				NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response, request)
+				if (response.Code == http.StatusOK) != scenario.wantSuccess || time.Since(started) != scenario.wantElapsed {
+					t.Fatalf("combined inspection reset or exceeded its budget: status=%d elapsed=%s body=%s", response.Code, time.Since(started), response.Body.String())
+				}
+				if scenario.wantSuccess && (!strings.Contains(response.Body.String(), id) ||
+					!strings.Contains(response.Body.String(), `"Pid":42`) || !strings.Contains(response.Body.String(), "10.88.0.2")) {
+					t.Fatalf("combined inspection lost authoritative object/network state: %s", response.Body.String())
+				}
+			})
+		})
 	}
 }
 

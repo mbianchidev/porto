@@ -74,11 +74,16 @@ func (m *Manager) CheckEngineIdle(ctx context.Context) error {
 func (m *Manager) checkEngineWorkloadsIdle(ctx context.Context) (err error) {
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
-	runtimeClient, err := m.runtimeConnector(ctx)
-	if err != nil {
-		return fmt.Errorf("fresh all-namespace engine inventory is unavailable: %w", err)
+	var runtimeClient containerRuntime
+	if shared, _, ok := m.inventoryLimaRuntime(); ok {
+		runtimeClient = shared
+	} else {
+		runtimeClient, err = m.runtimeConnector(ctx)
+		if err != nil {
+			return fmt.Errorf("fresh all-namespace engine inventory is unavailable: %w", err)
+		}
+		defer func() { err = errors.Join(err, runtimeClient.Close()) }()
 	}
-	defer func() { err = errors.Join(err, runtimeClient.Close()) }()
 	backend, ok := runtimeClient.(*grpcContainerRuntime)
 	if !ok || backend.client == nil {
 		return fmt.Errorf("%w: a direct all-namespace inventory is required before suspending or reconfiguring the engine", ErrUnsupported)
