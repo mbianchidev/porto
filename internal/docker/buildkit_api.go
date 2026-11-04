@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"net/http"
 	"strings"
@@ -21,23 +22,15 @@ import (
 func (a *API) buildKitControl(w http.ResponseWriter, r *http.Request) {
 	tunnelContext, cancel := context.WithCancel(dockerServerContext(r.Context()))
 	defer cancel()
-	backend, err := a.manager.DialBuildKit(tunnelContext)
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	a.hijackBuildKitControl(tunnelContext, w, r, backend)
+	a.hijackBuildKitControl(tunnelContext, w, r)
 }
 
 func (a *API) buildKitSession(w http.ResponseWriter, r *http.Request) {
 	tunnelContext, cancel := context.WithCancel(dockerServerContext(r.Context()))
 	defer cancel()
-	session, err := dialBuildKitSession(tunnelContext, a.manager.DialBuildKit, r.Header)
-	if err != nil {
-		writeDockerError(w, err)
-		return
-	}
-	a.hijackBuildKit(tunnelContext, w, r, session, nil)
+	a.hijackBuildKit(tunnelContext, w, r, func(ctx context.Context) (net.Conn, error) {
+		return dialBuildKitSession(ctx, a.manager.DialBuildKit, r.Header)
+	})
 }
 
 func dialBuildKitSession(
@@ -62,96 +55,63 @@ func (a *API) hijackBuildKit(
 	ctx context.Context,
 	w http.ResponseWriter,
 	r *http.Request,
-	backend net.Conn,
-	closeBackendClient func() error,
+	dial func(context.Context) (net.Conn, error),
 ) {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "h2c") {
-		_ = backend.Close()
-		if closeBackendClient != nil {
-			_ = closeBackendClient()
-		}
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "BuildKit requires an h2c connection upgrade"})
 		return
 	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		_ = backend.Close()
-		if closeBackendClient != nil {
-			_ = closeBackendClient()
-		}
 		writeDockerJSON(w, http.StatusInternalServerError, map[string]string{"message": "Docker API connection cannot be hijacked"})
 		return
 	}
 	client, buffered, err := hijacker.Hijack()
 	if err != nil {
-		_ = backend.Close()
-		if closeBackendClient != nil {
-			_ = closeBackendClient()
-		}
 		return
 	}
+	defer client.Close()
 	if err := writeBuildKitUpgrade(buffered); err != nil {
-		_ = client.Close()
-		_ = backend.Close()
-		if closeBackendClient != nil {
-			_ = closeBackendClient()
-		}
+		return
+	}
+	backend, err := dial(ctx)
+	if err != nil {
+		log.Printf("connect Docker BuildKit session: %v", err)
 		return
 	}
 	bridgeConnections(ctx, client, backend)
-	if closeBackendClient != nil {
-		_ = closeBackendClient()
-	}
 }
 
 func (a *API) hijackBuildKitControl(
 	ctx context.Context,
 	w http.ResponseWriter,
 	r *http.Request,
-	backend net.Conn,
 ) {
 	if !strings.EqualFold(r.Header.Get("Upgrade"), "h2c") {
-		_ = backend.Close()
 		writeDockerJSON(w, http.StatusBadRequest, map[string]string{"message": "BuildKit requires an h2c connection upgrade"})
 		return
 	}
 	hijacker, ok := w.(http.Hijacker)
 	if !ok {
-		_ = backend.Close()
 		writeDockerJSON(w, http.StatusInternalServerError, map[string]string{"message": "Docker API connection cannot be hijacked"})
 		return
 	}
+	// Lazy upstream dialing keeps SSH setup out of the local HTTP upgrade deadline.
+	connection, err := newBuildKitControlConnection(a.manager.DialBuildKit)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
+	defer connection.Close()
+
 	client, buffered, err := hijacker.Hijack()
 	if err != nil {
-		_ = backend.Close()
 		return
 	}
 	if err := writeBuildKitUpgrade(buffered); err != nil {
 		_ = client.Close()
-		_ = backend.Close()
 		return
 	}
-
-	var backendMu sync.Mutex
-	firstBackend := backend
-	connection, err := newBuildKitControlConnection(func(dialContext context.Context) (net.Conn, error) {
-		backendMu.Lock()
-		if firstBackend != nil {
-			connection := firstBackend
-			firstBackend = nil
-			backendMu.Unlock()
-			return connection, nil
-		}
-		backendMu.Unlock()
-		return a.manager.DialBuildKit(dialContext)
-	})
-	if err != nil {
-		_ = client.Close()
-		_ = backend.Close()
-		return
-	}
-	defer connection.Close()
-	defer backend.Close()
 
 	listener := newSingleConnListener(client)
 	server := grpc.NewServer(

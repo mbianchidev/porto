@@ -556,6 +556,10 @@ docker --context porto compose up --build
 Lima BuildKit tunnels, including build-history connections, stay alive until
 their connection closes. Completion of gRPC dialing does not stop the tunnel;
 finishing or canceling a history request still closes and reaps its subprocess.
+The local `/grpc` and `/session` HTTP upgrades complete before remote tunnel
+setup, so guest discovery and SSH startup do not consume the client's local
+connection-handshake allowance. Upstream connections still verify the selected
+engine's ownership, and individual RPC deadlines and cancellation remain intact.
 This behavior is shared by macOS, Windows, and Linux.
 
 The Porto CLI and legacy Docker build API also pass comma-separated platforms
