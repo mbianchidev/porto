@@ -789,28 +789,43 @@ func (r *grpcContainerRuntime) directNetworkState(
 }
 
 func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...string) ([]byte, error) {
-	command := runtimes.Command{StdoutOnly: true}
-	if r.lima != "" {
-		command.Name = "limactl"
-		command.Args = []string{
-			"shell", "--workdir=/", r.lima, "--", "sh", "-c",
-			`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
-			"porto-runtime-helper", r.namespace,
-		}
-		command.Args = append(command.Args, args...)
-	} else {
-		if r.helperPath == "" {
-			return nil, fmt.Errorf("%w: Porto runtime helper is unavailable", ErrUnsupported)
-		}
-		command.Name = r.helperPath
-		command.Args = append([]string(nil), args...)
-		command.Env = process.WithEnvironment(os.Environ(), "CONTAINERD_NAMESPACE="+r.namespace)
+	command, err := r.runtimeHelperCommand(args...)
+	if err != nil {
+		return nil, err
 	}
 	output, err := r.runner.Run(ctx, command)
 	if err != nil {
 		return nil, fmt.Errorf("run Porto runtime helper %s: %w: %s", args[0], err, strings.TrimSpace(string(output)))
 	}
 	return output, nil
+}
+
+func (r *grpcContainerRuntime) runtimeHelperCommand(args ...string) (runtimes.Command, error) {
+	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {
+		return runtimes.Command{}, errors.New("Porto runtime helper command is required")
+	}
+	command := runtimes.Command{StdoutOnly: true}
+	if r.lima != "" {
+		command.Name = "limactl"
+		arguments := []string{"sh", "-c",
+			`namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`,
+			"porto-runtime-helper", r.namespace,
+		}
+		arguments = append(arguments, args...)
+		if r.commandSource.ownerID != "" {
+			arguments = append([]string{"sh", "-c", limaOwnedRuntimeCommand,
+				"porto-runtime-command", r.commandSource.ownerID}, arguments...)
+		}
+		command.Args = append([]string{"shell", "--workdir=/", r.lima, "--"}, arguments...)
+	} else {
+		if r.helperPath == "" {
+			return runtimes.Command{}, fmt.Errorf("%w: Porto runtime helper is unavailable", ErrUnsupported)
+		}
+		command.Name = r.helperPath
+		command.Args = append([]string(nil), args...)
+		command.Env = process.WithEnvironment(os.Environ(), "CONTAINERD_NAMESPACE="+r.namespace)
+	}
+	return command, nil
 }
 
 func (r *grpcContainerRuntime) Start(ctx context.Context, id string) error {

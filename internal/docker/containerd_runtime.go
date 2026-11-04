@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	eventtypes "github.com/containerd/containerd/api/events"
@@ -74,26 +75,27 @@ exit 1
 `
 
 type grpcContainerRuntime struct {
-	connection      *grpc.ClientConn
-	client          *containerd.Client
-	namespace       string
-	snapshotter     string
-	backend         string
-	stateDir        string
-	logDir          string
-	fifoDir         string
-	runner          runtimes.Runner
-	lima            string
-	commandSource   commandBackend
-	helperPath      string
-	address         string
-	networkLocks    *containerMutexes
-	containerNameMu *sync.Mutex
-	containers      containersapi.ContainersClient
-	snapshots       snapshotsapi.SnapshotsClient
-	tasks           tasksapi.TasksClient
-	events          eventsapi.EventsClient
-	enrich          func(context.Context) ([]Container, error)
+	connection        *grpc.ClientConn
+	client            *containerd.Client
+	namespace         string
+	snapshotter       string
+	backend           string
+	stateDir          string
+	logDir            string
+	fifoDir           string
+	runner            runtimes.Runner
+	lima              string
+	commandSource     commandBackend
+	helperPath        string
+	networkIdentities atomic.Bool
+	address           string
+	networkLocks      *containerMutexes
+	containerNameMu   *sync.Mutex
+	containers        containersapi.ContainersClient
+	snapshots         snapshotsapi.SnapshotsClient
+	tasks             tasksapi.TasksClient
+	events            eventsapi.EventsClient
+	enrich            func(context.Context) ([]Container, error)
 
 	enrichMu          sync.Mutex
 	enrichmentReady   bool
@@ -103,10 +105,11 @@ type grpcContainerRuntime struct {
 }
 
 type runtimeHelperProbe struct {
-	CNI        bool   `json:"cni"`
-	CNIReason  string `json:"cniReason,omitempty"`
-	CRIU       bool   `json:"criu"`
-	CRIUReason string `json:"criuReason,omitempty"`
+	CNI               bool   `json:"cni"`
+	CNIReason         string `json:"cniReason,omitempty"`
+	CRIU              bool   `json:"criu"`
+	CRIUReason        string `json:"criuReason,omitempty"`
+	NetworkIdentities bool   `json:"networkIdentities,omitempty"`
 }
 
 func (r *grpcContainerRuntime) Capabilities(ctx context.Context) ContainerCapabilities {
@@ -142,6 +145,7 @@ func (r *grpcContainerRuntime) Capabilities(ctx context.Context) ContainerCapabi
 		}
 		return capabilities
 	}
+	r.networkIdentities.Store(probe.NetworkIdentities)
 	capabilities.NetworkUpdates = RuntimeCapability{
 		Supported: probe.CNI,
 		Reason: firstNonEmpty(

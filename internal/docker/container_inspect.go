@@ -76,8 +76,19 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 	if len(selected) == 0 || m.IsNativeWindows() {
 		return selected, nil
 	}
-	args := append([]string{"network", "inspect"}, sortedStringKeys(selected)...)
-	output, err := m.runStdout(ctx, "inspect Porto container network identities", args...)
+	selectedNames := sortedStringKeys(selected)
+	var output []byte
+	var err error
+	if runtime, _, ok := m.inventoryLimaRuntime(); ok && runtime.networkIdentities.Load() {
+		command, commandErr := runtime.runtimeHelperCommand(append([]string{"cni-identities"}, selectedNames...)...)
+		if commandErr != nil {
+			return nil, commandErr
+		}
+		output, err = m.runBufferedCommand(ctx, m.timeout, "inspect Porto container network identities", command)
+	} else {
+		args := append([]string{"network", "inspect"}, selectedNames...)
+		output, err = m.runStdout(ctx, "inspect Porto container network identities", args...)
+	}
 	if err != nil {
 		return nil, err
 	}

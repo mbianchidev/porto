@@ -16,7 +16,7 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "6"
+const helperVersion = "7"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -29,10 +29,11 @@ type cniRequest struct {
 }
 
 type runtimeProbe struct {
-	CNI        bool   `json:"cni"`
-	CNIReason  string `json:"cniReason,omitempty"`
-	CRIU       bool   `json:"criu"`
-	CRIUReason string `json:"criuReason,omitempty"`
+	CNI               bool   `json:"cni"`
+	CNIReason         string `json:"cniReason,omitempty"`
+	CRIU              bool   `json:"criu"`
+	CRIUReason        string `json:"criuReason,omitempty"`
+	NetworkIdentities bool   `json:"networkIdentities,omitempty"`
 }
 
 type cniEndpointResult struct {
@@ -63,7 +64,17 @@ func main() {
 			fail(err)
 		}
 	case "probe":
-		if err := json.NewEncoder(os.Stdout).Encode(probeRuntime()); err != nil {
+		probe := probeRuntime()
+		probe.NetworkIdentities = true
+		if err := json.NewEncoder(os.Stdout).Encode(probe); err != nil {
+			fail(err)
+		}
+	case "cni-identities":
+		identities, err := readCNINetworkIdentities(cniConfigDirectories(), os.Args[2:])
+		if err != nil {
+			fail(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(identities); err != nil {
 			fail(err)
 		}
 	case "task-metrics":

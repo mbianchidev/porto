@@ -177,6 +177,13 @@ labels before canonical-ID inspection and refresh once if a selected network
 disappears concurrently. Persistent missing identities, invalid JSON, permission
 errors and other backend failures remain explicit; a removed unrelated network
 cannot break another stack's filtered inventory.
+On an owned Lima backend that advertises runtime-helper identity queries,
+canonical network IDs are read directly from the selected namespace's CNI
+configuration. Identity lookup stays live and ownership-checked without
+traversing every attached container through `nerdctl network inspect`.
+Older helpers retain the compatibility query; a supported helper's read,
+decode or permission failure remains explicit, without a fallback or a longer
+deadline.
 Runtime helper teardown stops its
 owned process group, including SSH descendants, so repeated health checks and
 lifecycle operations release their transport sessions.

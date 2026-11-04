@@ -4,12 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -173,6 +175,99 @@ func TestDockerContainerSummaryReportsCanonicalNetworkIdentityForCompose(t *test
 	}
 	if len(summaries) != 1 || summaries[0].NetworkSettings.Networks["synthetic-stack"].NetworkID != networkID {
 		t.Fatalf("Compose would recreate an unchanged service because its actual network ID is missing or abbreviated: %s", response.Body.String())
+	}
+}
+
+func TestContainerNetworkIdentitiesUseAdvertisedOwnedHelper(t *testing.T) {
+	firstID, secondID := strings.Repeat("a", 64), strings.Repeat("b", 64)
+	document := fmt.Sprintf(`[{"Name":"synthetic-first","ID":%q},{"Name":"synthetic-second","ID":%q}]`, firstID, secondID)
+	denied := errors.New("synthetic helper permission denied")
+	for _, test := range []struct {
+		name, output, message string
+		legacy, cancel        bool
+		caller                time.Duration
+		failure, wantErr      error
+	}{
+		{name: "advertised helper"},
+		{name: "legacy helper", legacy: true},
+		{name: "helper failure remains explicit", failure: denied, wantErr: denied},
+		{name: "invalid JSON remains explicit", output: "{", message: "decode canonical container network identities"},
+		{name: "missing identity remains explicit", output: "[]", wantErr: ErrUnavailable},
+		{name: "conflicting identities remain explicit", output: `[{"Name":"synthetic-first","ID":"one"},{"Name":"synthetic-first","ID":"two"}]`, wantErr: ErrConflict},
+		{name: "shorter caller deadline", caller: 2 * time.Second},
+		{name: "caller cancellation", cancel: true, wantErr: context.Canceled},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			caller := time.Minute
+			if test.caller > 0 {
+				caller = test.caller
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), caller)
+			defer cancel()
+			queries := 0
+			runner := lifecycleDeadlineRunner(func(commandContext context.Context, command runtimes.Command) ([]byte, error) {
+				if command.Name != "limactl" || !command.StdoutOnly ||
+					!containsArgumentSequence(command.Args, []string{
+						"sh", "-c", limaOwnedRuntimeCommand, "porto-runtime-command", "synthetic-owner",
+					}) {
+					return nil, fmt.Errorf("network metadata omitted owned structured execution: %+v", command)
+				}
+				if command.Args[len(command.Args)-1] == "probe" {
+					return json.Marshal(runtimeHelperProbe{CNI: true, NetworkIdentities: !test.legacy})
+				}
+				queries++
+				want := []string{"porto-runtime-helper", "synthetic-namespace", "cni-identities", "synthetic-first", "synthetic-second"}
+				if test.legacy {
+					want = []string{"nerdctl", "network", "inspect", "synthetic-first", "synthetic-second"}
+				}
+				if !containsArgumentSequence(command.Args, want) {
+					return nil, fmt.Errorf("canonical lookup used the wrong helper/namespace or inspected containers: %+v", command)
+				}
+				deadline, ok := commandContext.Deadline()
+				budget := min(defaultTimeout, caller)
+				if remaining := time.Until(deadline); !ok || remaining <= budget-time.Second || remaining > budget {
+					return nil, fmt.Errorf("metadata lookup changed its bounded caller/probe budget: %s", remaining)
+				}
+				if test.cancel {
+					cancel()
+					return nil, context.Cause(commandContext)
+				}
+				if test.failure != nil {
+					return nil, test.failure
+				}
+				if test.output != "" {
+					return []byte(test.output), nil
+				}
+				return []byte(document), nil
+			})
+			manager := NewWithStateDir(runner, t.TempDir())
+			if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+				t.Fatal(err)
+			}
+			runtime := &grpcContainerRuntime{
+				runner: runner, lima: engineInstanceName, namespace: "synthetic-namespace",
+				commandSource: commandBackend{name: "limactl", limaInstance: engineInstanceName, ownerID: "synthetic-owner"},
+			}
+			runtime.Capabilities(context.Background())
+			manager.inventoryCancel = func() {}
+			manager.inventory = &containerInventory{snapshot: ContainerSnapshot{Available: true}, runtimeClient: runtime}
+			identities, err := manager.containerNetworkIdentities(ctx, []string{"synthetic-second", "none", "synthetic-first", "synthetic-first"})
+			switch {
+			case test.wantErr != nil:
+				if !errors.Is(err, test.wantErr) {
+					t.Fatalf("network identity error = %v, want %v", err, test.wantErr)
+				}
+			case test.message != "":
+				if err == nil || !strings.Contains(err.Error(), test.message) {
+					t.Fatalf("network identity error = %v, want %q", err, test.message)
+				}
+			case err != nil || len(identities) != 2 || identities["synthetic-first"] != firstID || identities["synthetic-second"] != secondID:
+				t.Fatalf("actual selected identities were not preserved: %+v, %v", identities, err)
+			}
+			if queries != 1 {
+				t.Fatalf("identity lookup retried or hid a helper failure: %d queries", queries)
+			}
+		})
 	}
 }
 
