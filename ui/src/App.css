@@ -162,6 +162,11 @@
   color: var(--ink-soft);
 }
 
+.pageIntro .releaseVersion {
+  margin-top: 8px;
+  font-size: 13px;
+}
+
 .pageIntro h1 {
   max-width: 28ch;
 }
@@ -1258,7 +1263,7 @@ dd a {
 .hygiene,
 .integration {
   display: grid;
-  grid-template-columns: minmax(220px, 0.72fr) minmax(340px, 1.28fr);
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
   gap: 32px;
   margin-bottom: 16px;
   padding: 20px;
@@ -1286,6 +1291,7 @@ dd a {
 
 .hygieneControls {
   display: grid;
+  min-width: 0;
   gap: 12px;
 }
 
@@ -1335,7 +1341,9 @@ dd a {
 .settingsField input[type="text"],
 .settingsField input[type="password"],
 .settingsField input[type="number"],
-.settingsField select {
+.settingsField select,
+.environmentPicker select,
+.environmentFilter input {
   width: 100%;
   border: 1px solid var(--line-strong);
   border-radius: var(--radius-md);
@@ -1348,7 +1356,9 @@ dd a {
 
 .protectedField input:focus-visible,
 .settingsField input:focus-visible,
-.settingsField select:focus-visible {
+.settingsField select:focus-visible,
+.environmentPicker select:focus-visible,
+.environmentFilter input:focus-visible {
   border-color: var(--line-strong);
   box-shadow: inset 2px 0 0 var(--olive);
 }
@@ -1384,6 +1394,11 @@ dd a {
   flex-wrap: wrap;
   justify-content: space-between;
   gap: 7px;
+}
+
+.softwareUpdateActions {
+  justify-content: flex-start;
+  gap: 8px;
 }
 
 .platformSettings,

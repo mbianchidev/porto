@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { DesktopBehaviorSettings } from '../components/DesktopBehaviorSettings'
+import { SoftwareUpdateSettings } from '../components/SoftwareUpdateSettings'
 import { DockerCleanupSettings } from '../components/DockerCleanupSettings'
 import { RegistrySettings } from '../components/RegistrySettings'
 import { NetworkSettings } from '../components/NetworkSettings'
@@ -216,7 +217,7 @@ export function SettingsPage({
         <div>
           <h1>System settings</h1>
           <p>Configure the desktop experience, runtime access, registries, cleanup, and optional integrations.</p>
-          <p role={releaseVersion.error ? 'alert' : 'status'}>
+          <p className="releaseVersion" role={releaseVersion.error ? 'alert' : 'status'}>
             <strong>Release version:</strong>{' '}
             {releaseVersion.error
               ? `Unavailable. ${releaseVersion.error}`
@@ -230,6 +231,8 @@ export function SettingsPage({
         </div>
         <a className="buttonLink" href="#/localhost-ing">Back to localhost-ing</a>
       </header>
+
+      <SoftwareUpdateSettings />
 
       <section className="hygiene experienceSettings" aria-labelledby="experience-settings-title">
         <div className="hygieneIntro">

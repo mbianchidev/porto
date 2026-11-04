@@ -318,7 +318,7 @@ test('logs remain bounded, searchable, stream-filtered and close on tab switch',
       await page.goto('/#/containers')
       await page.getByText('fixture-api', { exact: true }).first().click()
       await page.getByRole('tab', { name: 'Inspect', exact: true }).click()
-      await page.getByText('Environment', { exact: true }).click()
+      await page.getByRole('tabpanel', { name: 'Inspect', exact: true }).getByText('Environment', { exact: true }).click()
       await expect(page.getByText(/FIXTURE_TOKEN=\[redacted\]/).first()).toBeVisible()
       await expect(page.getByText(/synthetic-secret/)).toHaveCount(0)
       page.once('dialog', (dialog) => dialog.accept())

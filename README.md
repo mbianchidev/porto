@@ -183,7 +183,7 @@ Set environment variables in the environment that launches Porto. Keep the same 
 
 The default state directory is `~/Library/Application Support/porto` on macOS, `${XDG_CONFIG_HOME:-~/.config}/porto` on Linux, and `%APPDATA%\porto` on Windows. Project state and output live in `porto.db`; application diagnostics live separately in `logs/porto.log`. Completed diagnostic days are compressed, with seven calendar days retained by default. See [diagnostic logs](docs/daily-use.md#application-diagnostic-logs).
 
-Use **Settings** for runtime and desktop preferences, log retention, and optional cleanup schedules. Installed desktop builds offer **Help > Check for updates**, plus update actions in Settings and the menu bar/system tray. See [desktop updates](docs/installation.md#desktop-updates).
+Use **Settings** for runtime and desktop preferences, log retention, and optional cleanup schedules. Installed desktop builds offer **Check for updates** under **Settings > Software updates**, in **Help**, and in the menu bar/system tray. See [desktop updates](docs/installation.md#desktop-updates).
 
 ## Important limitations
 

@@ -1,32 +1,13 @@
 import { useEffect, useState } from 'react'
 import { errorMessage } from '../api'
 import { useMessages } from '../useMessages'
-import type { DesktopPreferences, DesktopUpdatePhase, DesktopUpdateStatus } from '../types'
+import type { DesktopPreferences } from '../types'
 
 const BROWSER_DEFAULTS: DesktopPreferences = {
   openAtLogin: false,
   keepInTray: false,
   automaticallyDownloadUpdates: false,
   loginItemSupported: false,
-}
-
-const BROWSER_UPDATE_STATUS: DesktopUpdateStatus = {
-  phase: 'unsupported',
-  currentVersion: '',
-  availableVersion: '',
-  progressPercent: null,
-  releaseURL: '',
-  message: 'Open Porto as the installed desktop app to check for updates.',
-}
-
-function updateStatusTone(phase: DesktopUpdatePhase) {
-  if (phase === 'downloaded' || phase === 'up-to-date') return 'ready'
-  if (phase === 'error') return 'error'
-  if (phase === 'unsupported') return 'unsupported'
-  if (phase === 'checking' || phase === 'available' || phase === 'downloading' || phase === 'installing') {
-    return 'checking'
-  }
-  return 'ready'
 }
 
 export function DesktopBehaviorSettings() {
@@ -37,10 +18,6 @@ export function DesktopBehaviorSettings() {
   )
   const [loadError, setLoadError] = useState('')
   const [saving, setSaving] = useState(false)
-  const [updateStatus, setUpdateStatus] = useState<DesktopUpdateStatus | null>(
-    bridge ? null : BROWSER_UPDATE_STATUS,
-  )
-  const [updateAction, setUpdateAction] = useState('')
 
   useEffect(() => {
     if (!bridge) return
@@ -58,32 +35,6 @@ export function DesktopBehaviorSettings() {
       })
     return () => {
       active = false
-    }
-  }, [bridge])
-
-  useEffect(() => {
-    if (!bridge) return
-
-    let active = true
-    const unsubscribe = bridge.onUpdateStatus((status) => {
-      if (active) setUpdateStatus(status)
-    })
-    void bridge.getUpdateStatus()
-      .then((status) => {
-        if (active) setUpdateStatus(status)
-      })
-      .catch((error) => {
-        if (active) {
-          setUpdateStatus({
-            ...BROWSER_UPDATE_STATUS,
-            phase: 'error',
-            message: errorMessage(error, 'Unable to load Porto update status'),
-          })
-        }
-      })
-    return () => {
-      active = false
-      unsubscribe()
     }
   }, [bridge])
 
@@ -106,31 +57,10 @@ export function DesktopBehaviorSettings() {
     }
   }
 
-  async function runUpdateAction(
-    actionName: string,
-    action: () => Promise<DesktopUpdateStatus>,
-    fallbackMessage: string,
-  ) {
-    setUpdateAction(actionName)
-    try {
-      setUpdateStatus(await action())
-    } catch (error) {
-      notifyError('settings', errorMessage(error, fallbackMessage))
-    } finally {
-      setUpdateAction('')
-    }
-  }
-
   const current = preferences ?? BROWSER_DEFAULTS
-  const currentUpdate = updateStatus ?? BROWSER_UPDATE_STATUS
   const desktopAvailable = bridge !== undefined
   const loading = desktopAvailable && preferences === null && loadError === ''
   const desktopReady = desktopAvailable && loadError === '' && preferences !== null
-  const updateReady = desktopAvailable && updateStatus !== null && currentUpdate.phase !== 'unsupported'
-  const updateBusy = updateAction !== '' ||
-    currentUpdate.phase === 'checking' ||
-    currentUpdate.phase === 'downloading' ||
-    currentUpdate.phase === 'installing'
   const state = loadError ? 'error' : loading ? 'checking' : desktopAvailable ? 'ready' : 'unsupported'
   const message = loadError ||
     (loading
@@ -144,8 +74,8 @@ export function DesktopBehaviorSettings() {
   return (
     <section className="integration desktopBehaviorSettings" aria-labelledby="desktop-behavior-title">
       <div className="hygieneIntro">
-        <h2 id="desktop-behavior-title">Keep Porto close and current.</h2>
-        <p>Control desktop startup, background behavior, and verified updates from GitHub Releases.</p>
+        <h2 id="desktop-behavior-title">Desktop behavior</h2>
+        <p>Control desktop startup, background behavior, and automatic update downloads.</p>
       </div>
       <div className="hygieneControls">
         <div className={`integrationStatus ${state}`} role={loadError ? 'alert' : 'status'}>
@@ -182,53 +112,6 @@ export function DesktopBehaviorSettings() {
         <button type="button" onClick={save} disabled={!desktopReady || saving}>
           {saving ? 'Saving…' : 'Save desktop preferences'}
         </button>
-        <div
-          className={`integrationStatus ${updateStatusTone(currentUpdate.phase)}`}
-          role={currentUpdate.phase === 'error' ? 'alert' : 'status'}
-          aria-atomic="true"
-        >
-          <strong>software updates</strong>
-          <span>{updateStatus === null ? 'Loading Porto update status.' : currentUpdate.message}</span>
-        </div>
-        <div className="settingsActions">
-          <button
-            type="button"
-            disabled={!updateReady || updateBusy}
-            onClick={() => bridge && void runUpdateAction(
-              'check',
-              bridge.checkForUpdates,
-              'Unable to check for Porto updates',
-            )}
-          >
-            {currentUpdate.phase === 'checking' || updateAction === 'check' ? 'Checking…' : 'Check for updates'}
-          </button>
-          {currentUpdate.phase === 'available' && (
-            <button
-              type="button"
-              disabled={!updateReady || updateBusy}
-              onClick={() => bridge && void runUpdateAction(
-                'download',
-                bridge.downloadUpdate,
-                'Unable to download the Porto update',
-              )}
-            >
-              Download Porto {currentUpdate.availableVersion}
-            </button>
-          )}
-          {currentUpdate.phase === 'downloaded' && (
-            <button
-              type="button"
-              disabled={!updateReady || updateBusy}
-              onClick={() => bridge && void runUpdateAction(
-                'restart',
-                bridge.restartAndInstallUpdate,
-                'Unable to restart Porto for the update',
-              )}
-            >
-              Restart and update
-            </button>
-          )}
-        </div>
       </div>
     </section>
   )

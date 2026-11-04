@@ -13,6 +13,12 @@ configuration, global kubeconfigs, or the meaning of ordinary local CLI
 commands. Use `porto environments request ENVIRONMENT_ID ...` for explicit
 headless remote access.
 
+Choose **Manage environments** beside the selector to filter authorized targets,
+edit their names and labels, or open the registration and secure-listener
+sections. Fleet operations remain a separate section with an explicit target
+preview and confirmation. The selector keeps the selected target ID, identity,
+and remote connection warnings visible across resource views.
+
 ```mermaid
 flowchart LR
   UI[Desktop or browser dashboard] --> Local[Loopback Porto daemon]
