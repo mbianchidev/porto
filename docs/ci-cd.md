@@ -33,6 +33,15 @@ claim that the upstream module-only advisory has disappeared.
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
+The ordinary Go suite exercises the native-mount and WSL helper CLI contracts
+in owned subprocesses without mounting filesystems or starting WSL. It also
+covers backup schedule bounds and resource keys, local-tool stream limits,
+environment isolation and cancellation, and the synthetic registry's OCI,
+HTTP/HTTPS/SOCKS and destination-confinement contracts. Stream-limit tests use
+both `io.Copy` and real subprocess output so optimized copy paths cannot bypass
+the bound. These checks do not replace native-driver, installed-package or
+VM-backed acceptance.
+
 The Unix Git-timeout fixture reexecutes its already-running test binary instead
 of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and

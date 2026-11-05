@@ -47,23 +47,24 @@ func (ExecRunner) Run(ctx context.Context, command runtimes.Command) (Output, er
 	if stdout.exceeded || stderr.exceeded {
 		err = errors.Join(err, errors.New("local tool exceeded its output limit"))
 	}
-	return Output{Stdout: stdout.Bytes(), Stderr: stderr.Bytes()}, err
+	return Output{Stdout: stdout.buffer.Bytes(), Stderr: stderr.buffer.Bytes()}, err
 }
 
 type boundedBuffer struct {
-	bytes.Buffer
+	// Embedding bytes.Buffer would let io.Copy bypass Write via ReadFrom.
+	buffer   bytes.Buffer
 	limit    int
 	cancel   context.CancelFunc
 	exceeded bool
 }
 
 func (b *boundedBuffer) Write(value []byte) (int, error) {
-	if len(value) > b.limit-b.Len() {
+	if len(value) > b.limit-b.buffer.Len() {
 		b.exceeded = true
 		b.cancel()
 		return 0, errors.New("local tool output limit exceeded")
 	}
-	return b.Buffer.Write(value)
+	return b.buffer.Write(value)
 }
 
 func CopyBounded(destination io.Writer, source io.Reader, limit int64) (int64, error) {

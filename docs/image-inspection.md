@@ -127,7 +127,10 @@ pull, removal and Dive do not depend on scanner/database availability.
 There are at most two active scans and 16 admitted jobs, with deduplication for
 the same image/platform/options, a ten-minute deadline, cancellation, an 8 GiB
 image-export limit, bounded tool output, two tool workers and a 1 GiB Go memory
-target per scanner process. Temporary archives are private and removed after
+target per scanner process. Tool stdout is limited to 64 MiB and stderr to
+64 KiB, including streamed output. Exceeding either limit cancels the owned
+tool process and fails the operation rather than accepting truncated output.
+Temporary archives are private and removed after
 completion/cancellation. Cached reports and SBOMs are private local files;
 new scans are blocked when saved analysis storage reaches the 1 GiB admission
 limit (already admitted jobs can finish within their individual bounds).
