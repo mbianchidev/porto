@@ -34,6 +34,14 @@ zero and never applies its existing CPU-aware cipher preferences. The patch
 retains the upstream OpenSSH 8.1 minimum for cipher reordering and the actual
 Windows processor feature check; it does not force AES on unsupported CPUs.
 
+Windows ARM64 runtime-data CI explicitly selects the trusted native OS OpenSSH
+client through Lima's supported `SSH` setting, checking the ARM64 executable
+headers of `ssh`, `scp`, and `ssh-keygen` before boot. This avoids Git's Cygwin
+client and repeated path-conversion subprocesses in metadata requests. Missing
+or non-native clients fail setup instead of falling back to emulation. The
+20-second metadata budget and all guest/acceptance deadlines are unchanged.
+This selection is confined to the disposable CI fixture.
+
 The bundle also backports
 [Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)
 for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
