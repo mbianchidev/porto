@@ -289,6 +289,10 @@ porto wsl apply-mounts --restart-engine
 Removal stops only the owned distribution bridge and removes only its tools and
 hooks. Windows vault credentials, persistent scoped CLI configuration and Linux
 engine data remain. Apply mount changes separately to release old shares.
+The bridge flushes its complete ownership-bound stop acknowledgement before
+closing connections. A successful stop also waits for its serving lease to
+be released within the existing one-second shutdown budget, so immediate
+repair does not race the previous bridge. Other owners remain refused.
 **Disable and release shares before externally deleting, renaming or reimporting
 a distribution.** Registration-identity mismatches are refused rather than
 automatically adopting a replacement distribution.

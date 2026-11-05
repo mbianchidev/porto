@@ -105,6 +105,18 @@ func removeStaleSocket(configuration Config) error {
 	return os.Remove(configuration.Socket)
 }
 
+func acknowledgeControl(w http.ResponseWriter, owner string, stop context.CancelFunc) error {
+	w.Header().Set(OwnerHeader, owner)
+	w.Header().Set("Content-Length", "0")
+	w.WriteHeader(http.StatusOK)
+	if stop == nil {
+		return nil
+	}
+	err := http.NewResponseController(w).Flush()
+	stop()
+	return err
+}
+
 func Serve(ctx context.Context, configuration Config, dial func(context.Context) (net.Conn, error)) (err error) {
 	if err := prepareDirectory(configuration.Socket); err != nil {
 		return err
@@ -160,10 +172,12 @@ func Serve(ctx context.Context, configuration Config, dial func(context.Context)
 				http.Error(w, "WSL bridge ownership mismatch", http.StatusForbidden)
 				return
 			}
-			w.Header().Set(OwnerHeader, configuration.Owner)
-			w.WriteHeader(http.StatusOK)
+			var stop context.CancelFunc
 			if r.URL.Path == "/_porto/stop" {
-				go cancel()
+				stop = cancel
+			}
+			if err := acknowledgeControl(w, configuration.Owner, stop); err != nil {
+				slog.Error("WSL control acknowledgement failed", "error", err)
 			}
 			return
 		}
@@ -263,15 +277,17 @@ func Stop(ctx context.Context, configuration Config) error {
 		}
 		return nil
 	}
-	for range 100 {
-		if _, err := os.Lstat(configuration.Socket); errors.Is(err, os.ErrNotExist) {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(10 * time.Millisecond):
-		}
+	stopping, cancel := context.WithTimeout(ctx, time.Second)
+	defer cancel()
+	lease, err := lock(stopping, configuration.Socket+".serve.lock", true)
+	if err != nil {
+		return fmt.Errorf("WSL bridge did not release its ownership: %w", err)
+	}
+	defer lease.Close()
+	if _, err := os.Lstat(configuration.Socket); errors.Is(err, os.ErrNotExist) {
+		return nil
+	} else if err != nil {
+		return err
 	}
 	return errors.New("WSL bridge did not release its owned socket")
 }
