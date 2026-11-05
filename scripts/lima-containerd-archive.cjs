@@ -74,6 +74,7 @@ function dependencyProvisionOverride(date = new Date()) {
     'Acquire::Retries::Delay::Maximum "30";',
     'Acquire::http::Timeout "30";',
     'Acquire::https::Timeout "30";',
+    'Acquire::By-Hash "force";',
     'Debug::Acquire::Retries "true";',
     'APT::Update::Error-Mode "any";',
     'APT::Periodic::Enable "0";',

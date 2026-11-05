@@ -689,7 +689,12 @@ and reused for the destination, source VM, and restarts. Ubuntu source URIs
 change, while suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
 from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
-indexes. APT retries transient download failures, including HTTP 503 responses,
+indexes. CI requires APT's supported `Acquire::By-Hash "force"` mode for
+content-addressed index downloads. A temporary hash-URI failure must not
+silently switch to a named `Packages` URL that the snapshot service does not
+provide. Signed release hashes remain authoritative, and an unavailable
+content-addressed index still fails within the same budgets.
+APT retries transient download failures, including HTTP 503 responses,
 up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
 and package downloads. An unavailable snapshot or failed index fetch remains

@@ -44,6 +44,7 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
   assert.match(script, /Acquire::Retries::Delay::Maximum "30";/)
   assert.match(script, /Acquire::http::Timeout "30";/)
   assert.match(script, /Acquire::https::Timeout "30";/)
+  assert.match(script, /Acquire::By-Hash "force";/)
   assert.match(script, /Debug::Acquire::Retries "true";/)
   assert.match(script, /APT::Update::Error-Mode "any";/)
   assert.match(script, /APT::Periodic::Enable "0";/)
