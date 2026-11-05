@@ -685,7 +685,14 @@ up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
 and package downloads. An unavailable snapshot or failed index fetch remains
 an error after the retry budget is exhausted, with no fallback to mutable
-mirrors or relaxed checks. Disposable CI guests disable automatic APT updates
+mirrors or relaxed checks. Multi-platform QEMU setup honors an explicitly
+configured APT retry policy instead of shortening CI's ten retries to three;
+guests without a configured policy retain the existing three-retry default.
+Reading that configuration must succeed before package setup continues.
+Source-VM preparation records package-index and Docker-install progress so an
+exhausted setup deadline retains the failing download or installation stage
+rather than an empty quiet-command result. The setup and acceptance deadlines
+are unchanged. Disposable CI guests disable automatic APT updates
 and mask their daily/upgrade timers and services before explicit dependency
 installation. This prevents background package work from competing with TCG
 acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;

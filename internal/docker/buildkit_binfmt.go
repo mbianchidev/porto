@@ -47,7 +47,12 @@ if ! static_qemu_installed; then
     echo "Porto multi-platform setup requires an Ubuntu/Debian Lima guest with apt-get" >&2
     exit 1
   fi
-  apt-get -o Acquire::Retries=3 update
+  configured_retries="$(apt-config shell configured Acquire::Retries)"
+  set -- update
+  if [ -z "$configured_retries" ]; then
+    set -- -o Acquire::Retries=3 "$@"
+  fi
+  apt-get "$@"
   if apt-cache show qemu-user-static 2>/dev/null | grep -qx 'Package: qemu-user-static'; then
     package=qemu-user-static
   else
