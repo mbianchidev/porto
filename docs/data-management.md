@@ -331,6 +331,10 @@ itself evidence that a mount succeeded: the real host mount must become ready.
 Standalone VM bridges use the scoped SFTP integration for their guest home.
 Porto installs a checksum-verified, version-scoped guest helper
 only after native-access consent, without replacing the VM's other tooling.
+The helper's binary input reaches Lima through a pipe rather than an inherited
+host disk handle, including when using native Windows SSH. Its one-minute
+installation budget is unchanged; failures retain cancellation/deadline causes
+and at most 4 KiB of captured diagnostics.
 WinFsp is the maintained OS filesystem driver; installation requires your
 administrator approval. Porto never installs a kernel driver silently. The
 capability report distinguishes **driver missing** from **guest disconnected**.

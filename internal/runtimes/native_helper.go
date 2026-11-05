@@ -63,13 +63,11 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	size, err := io.Copy(hash, file)
+	if err != nil {
 		return "", err
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return "", err
-	}
 	streamer, ok := runner.(interface {
 		RunStreaming(context.Context, Command, func(OutputChunk) error) ([]byte, error)
 	})
@@ -77,7 +75,8 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 		return "", errors.New("native VM helper installation requires streaming input")
 	}
 	command.Args = append(command.Args, "sh", "-c", installNativeHelperScript, "porto-native-helper", digest)
-	command.StdinReader = file
+	// Keep subprocess stdin piped instead of inheriting the helper's disk handle.
+	command.StdinReader = io.NewSectionReader(file, 0, size)
 	var diagnostics strings.Builder
 	_, err = streamer.RunStreaming(ctx, command, func(chunk OutputChunk) error {
 		if remaining := 4096 - diagnostics.Len(); remaining > 0 {
@@ -86,7 +85,7 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 		return nil
 	})
 	if err != nil {
-		return "", fmt.Errorf("install checksum-verified native VM helper: %w: %s", err, diagnostics.String())
+		return "", fmt.Errorf("install checksum-verified native VM helper: %w: %s", errors.Join(ctx.Err(), err), diagnostics.String())
 	}
 	return digest, nil
 }
