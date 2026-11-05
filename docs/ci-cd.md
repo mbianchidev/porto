@@ -608,6 +608,10 @@ spaces, rather than only checking that its binaries exist. It also starts
 synthetic consoleless processes and verifies that a forced stop terminates the
 host agent and its descendants, releases the log files, and preserves VM data.
 A failed termination must return an error without removing the PID files.
+Fixture removal is asynchronous with bounded filesystem retries, so pending
+process-close callbacks can run before Windows releases copied executables and
+directories. Persistent removal failures still fail the check; process-exit,
+log-release and VM-preservation assertions are unchanged.
 The same job runs the Windows update helper against that installed package,
 covering silent in-place replacement and NSIS installation paths containing
 spaces without launching the updated desktop.
