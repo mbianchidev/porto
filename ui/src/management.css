@@ -2,33 +2,389 @@
   display: flex;
   flex-wrap: wrap;
   align-items: center;
-  gap: var(--space-3, 12px);
-  padding: 8px 16px;
-  border-bottom: 1px solid var(--line-strong);
-  background: var(--panel-sunken);
+  gap: 12px;
+  min-width: 0;
+  margin-bottom: 20px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  padding: 12px;
+  background: var(--panel);
   color: var(--ink-soft);
-  font-family: var(--mono);
+  font: 13px/1.4 var(--sans);
 }
-.environmentBar label { display: flex; align-items: center; gap: 8px; color: var(--ink); min-width: 0; max-width: 100%; }
-.environmentBar select { flex: 1; min-width: 0; max-width: min(460px, 70vw); }
-.environmentBar > span { min-width: 0; overflow-wrap: anywhere; }
-.environmentBar .mono { overflow-wrap: anywhere; }
-.environmentWarning { color: var(--amber-text); flex-basis: 100%; }
-.managementArea { display: flex; flex-direction: column; gap: 16px; }
-.managementArea .drawerPanel { max-width: 100%; }
-.managementArea > *, .managementArea .inspectorForm, .managementArea .inspectorForm label { min-width: 0; }
-.managementArea input[type="file"] { width: 100%; min-width: 0; max-width: 100%; }
-.managementArea details > summary { cursor: pointer; color: var(--ink); font-weight: 600; }
-.managementArea fieldset { display: flex; flex-wrap: wrap; gap: 12px; border: 1px solid var(--line); padding: 12px; min-width: 0; }
-.managementArea fieldset label { display: flex; align-items: center; gap: 8px; }
-.managementArea textarea { min-height: 100px; resize: vertical; }
-.managementArea p, .managementArea code { overflow-wrap: anywhere; }
-.managementArea .dataTable caption { text-align: left; padding-block: 8px; color: var(--ink-soft); }
-.extensionFrame { display: block; width: 100%; min-height: 160px; border: 1px solid var(--line); background: var(--field); }
+
+.environmentPicker {
+  display: flex;
+  flex: 0 1 440px;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.environmentPicker > span {
+  flex: 0 0 auto;
+  font: 10px/1.2 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.environmentPicker select {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.environmentFacts {
+  display: flex;
+  flex: 1 1 180px;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  min-width: 0;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
+.environmentFacts .environmentID {
+  max-width: 24ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.environmentFacts strong {
+  color: var(--ink);
+  font-weight: 500;
+}
+
+.environmentManage {
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+
+.environmentWarning,
+.environmentError,
+.environmentNotice {
+  flex-basis: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.environmentWarning {
+  color: var(--amber-text);
+}
+
+.environmentError {
+  color: var(--red-text);
+}
+
+.environmentControls {
+  align-items: end;
+}
+
+.environmentFilter {
+  display: grid;
+  min-width: 0;
+  gap: 6px;
+  color: var(--ink-soft);
+  font-size: 13px;
+}
+
+.environmentPicker select:focus-visible,
+.environmentFilter input:focus-visible,
+.managementArea :is(input, select, textarea, summary):focus-visible {
+  outline: 3px solid var(--amber);
+  outline-offset: 2px;
+}
+
+.managementArea {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.managementArea .drawerPanel {
+  max-width: 100%;
+}
+
+.managementArea > *,
+.managementArea .inspectorForm,
+.managementArea .inspectorForm label {
+  min-width: 0;
+}
+
+.managementArea input[type="file"] {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.managementArea details > summary {
+  cursor: pointer;
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.managementArea details.drawerPanel > summary {
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.managementArea details.drawerPanel[open] > summary {
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 12px;
+}
+
+.managementArea .inspectorForm label {
+  color: var(--ink-soft);
+  font: 13px/1.45 var(--sans);
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.managementArea .inspectorForm label:has(> input[type="checkbox"]) {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.managementArea input[type="checkbox"] {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin: 2px 0 0;
+  accent-color: var(--olive);
+}
+
+.managementArea fieldset {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  min-width: 0;
+  margin: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: 12px;
+}
+
+.managementArea fieldset legend {
+  padding-inline: 4px;
+  color: var(--ink-soft);
+}
+
+.managementArea fieldset label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.managementArea textarea {
+  min-height: 100px;
+  resize: vertical;
+}
+
+.managementArea p,
+.managementArea code {
+  overflow-wrap: anywhere;
+}
+
+.managementArea .actions {
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.managementArea .inspectorForm > button {
+  justify-self: start;
+  max-width: 100%;
+}
+
+.managementArea .dataTable caption {
+  padding-block: 8px;
+  color: var(--ink-soft);
+  text-align: left;
+}
+
+.environmentManagement .drawerPanel {
+  padding: 20px;
+}
+
+.environmentManagement h2 {
+  margin-bottom: 16px;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.3;
+  letter-spacing: -0.01em;
+}
+
+.environmentManagement h3 {
+  margin: 0;
+  font-size: 14px;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.environmentPanelBody {
+  display: grid;
+  grid-template-columns: minmax(0, 0.72fr) minmax(0, 1.28fr);
+  align-items: start;
+  gap: 32px;
+}
+
+.environmentPanelBody > * {
+  min-width: 0;
+}
+
+.environmentPanelBody > p {
+  margin-bottom: 0;
+  color: var(--ink-soft);
+}
+
+.environmentListenerControls,
+.environmentFleetControls,
+.environmentIdentities {
+  display: grid;
+  min-width: 0;
+  gap: 20px;
+}
+
+.environmentInventory {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+}
+
+.environmentTable {
+  min-width: 720px;
+  table-layout: fixed;
+  font: 13px/1.45 var(--sans);
+}
+
+.environmentTable th:nth-child(1) {
+  width: 33%;
+}
+
+.environmentTable th:nth-child(2) {
+  width: 31%;
+}
+
+.environmentTable th,
+.environmentTable td {
+  padding: 14px;
+  vertical-align: top;
+}
+
+.managementArea .environmentTable caption {
+  border-bottom: 1px solid var(--line);
+  padding: 12px 14px;
+}
+
+.environmentTable caption,
+.environmentTable th {
+  font: 11px/1.4 var(--mono);
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.environmentTable td {
+  color: var(--ink-soft);
+}
+
+.environmentTable td > strong {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+.environmentTable .mono {
+  font: 11px/1.5 var(--mono);
+}
+
+.environmentTable .actions {
+  align-items: flex-start;
+}
+
+.environmentTable .actions button {
+  max-width: 100%;
+  text-align: left;
+}
+
+.environmentTable tr:last-child td {
+  border-bottom: 0;
+}
+
+.environmentIdentityRow {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 12px;
+}
+
+.environmentIdentityRow > div {
+  flex: 1 1 180px;
+  min-width: 0;
+}
+
+.environmentIdentityRow p {
+  margin-block: 4px;
+  color: var(--ink-soft);
+  font-size: 12px;
+}
+
+.environmentEnrollment,
+.environmentFleetPreview {
+  display: grid;
+  gap: 12px;
+  border-top: 1px solid var(--line);
+  padding-top: 20px;
+}
+
+.environmentEnrollment p,
+.environmentFleetPreview p,
+.environmentEnrollment .definitionText,
+.environmentFleetPreview .definitionText {
+  margin: 0;
+}
+
+.extensionFrame {
+  display: block;
+  width: 100%;
+  min-height: 160px;
+  border: 1px solid var(--line);
+  background: var(--field);
+}
+
 @media (max-width: 860px) {
-  .environmentBar { padding: 8px; }
-  .environmentBar label { flex-basis: 100%; }
-  .managementArea .actions { flex-direction: column; align-items: stretch; }
+  .environmentPicker {
+    flex-basis: 100%;
+  }
+
+  .environmentPanelBody {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .managementArea .actions {
+    flex-direction: column;
+    align-items: stretch;
+  }
+}
+
+@media (max-width: 620px) {
+  .environmentManagement .drawerPanel {
+    padding: 16px;
+  }
+
+  .environmentFacts {
+    flex-basis: 100%;
+  }
+
+  .environmentManage {
+    margin-left: 0;
+  }
 }
 .gitOpsRevisionRail {
   display: grid;

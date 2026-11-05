@@ -8,18 +8,20 @@ export function EnvironmentSelector({ profiles, error }: { profiles: Environment
   const { notifyError } = useMessages()
   const selected = profiles.find((profile) => profile.id === active)
   return <section className="environmentBar" aria-label="Selected environment">
-    <label>Environment<select value={active} onChange={(event) => {
+    <label className="environmentPicker"><span>Environment</span><select value={active} onChange={(event) => {
       try { setEnvironmentID(event.target.value) } catch (error) { notifyError('environments', errorMessage(error, 'Unable to select environment')) }
     }}>
       {!selected && <option value={active}>{active === 'local' ? 'This machine' : `Unavailable target ${active}`}</option>}
       {profiles.map((profile) => <option key={profile.id} value={profile.id}>{profile.name} / {profile.backend} / {profile.state}</option>)}
     </select></label>
-    <span className="mono">{active}</span>
-    <span>{selected?.identity || (active === 'local' ? 'Local OS user' : 'Unknown identity')}</span>
-    {active !== 'local' && <strong role="status">{selected?.revoked ? 'Revoked' : selected?.state || 'Unavailable'}{selected?.lastSeen ? ` / last contact ${new Date(selected.lastSeen).toLocaleTimeString()}` : ''}</strong>}
-    <a href="#/environments">Manage targets</a>
-    {error && <span role="alert">{error}</span>}
+    <div className="environmentFacts">
+      <span className="mono environmentID" title={`Environment ID: ${active}`}>{active}</span>
+      <span className="environmentIdentity">{selected?.identity || (active === 'local' ? 'Local OS user' : 'Unknown identity')}</span>
+      {active !== 'local' && <strong role="status">{selected?.revoked ? 'Revoked' : selected?.state || 'Unavailable'}{selected?.lastSeen ? ` / last contact ${new Date(selected.lastSeen).toLocaleTimeString()}` : ''}</strong>}
+    </div>
+    <a className="buttonLink environmentManage" href="#/environments">Manage environments</a>
+    {error && <span className="environmentError" role="alert">{error}</span>}
     {active !== 'local' && (!selected || selected.revoked || selected.state !== 'online') && <span className="environmentWarning">Inventory may be stale. Actions never fall back to this machine or replay automatically.</span>}
-    {active !== 'local' && <span>{SOURCE_HOST_URL_NOTICE}</span>}
+    {active !== 'local' && <span className="environmentNotice">{SOURCE_HOST_URL_NOTICE}</span>}
   </section>
 }

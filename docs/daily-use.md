@@ -43,9 +43,11 @@ metadata are preserved. Opening Settings reads the version locally without
 checking GitHub for updates; a failed read shows an error and **Retry version**.
 
 For a fresh release check, choose **Help > Check for updates**, **Check for
-updates** in Porto's menu bar/system tray, or the software-update button in
-Settings. Installed builds show the result and reuse the verified download and
-restart flow; source builds and browser dashboards cannot update the desktop.
+updates** in Porto's menu bar/system tray, or **Settings > Software updates >
+Check for updates**. Software updates is the first Settings section, above
+appearance preferences. Installed builds show progress and errors there and reuse
+the verified download and restart flow; source builds and browser dashboards
+cannot update the desktop.
 
 The Settings page persists the theme, interface density, reduced motion,
 terminal font size, terminal line height, cursor blinking, and terminal

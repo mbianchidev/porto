@@ -184,6 +184,25 @@ red, slate), a visible tooltip, an `aria-label`, and visually hidden text.
 `--field` background, `--line-strong` border, 6px radius. Focus darkens the
 border and adds the olive underline glow.
 
+### Environment controls
+The global environment selector shares the settings field styles and lives in
+a bordered panel separated from page content by 20px. Identity and connection
+facts use compact text, with the target ID in monospace. **Manage environments**
+uses the standard button-link treatment rather than a browser-default link.
+Warnings retain their own full-width rows.
+
+Environment management uses a joined, bordered inventory with top-aligned
+details and wrapping actions. Expanded registration, listener, metadata, and
+fleet panels pair explanatory text with consistently spaced forms; they stack
+below 860px. Capability checkboxes stay beside their sentence-case labels.
+Wide environment tables scroll within their panel rather than widening the page.
+
+### Software updates
+**Software updates** is the first Settings panel, with a visible **Check for
+updates** action and an inline status readout. It uses the same two-column
+section layout and three-signal status treatment as the other settings panels.
+Desktop startup and automatic-download preferences remain in **Desktop behavior**.
+
 ### Navigation rail
 Dark in every theme. Sections use native-button toggles with chevrons and
 `aria-expanded`. The active route gets a subtle light fill and a neutral inset

@@ -258,8 +258,10 @@ or Linux desktop archive. Every download is verified against the release's
 `SHA256SUMS` file.
 
 Choose **Help > Check for updates** in the desktop menu, **Check for updates**
-in the menu bar/system tray, or the same button under **software updates** in
-**Settings** to check immediately. Menu checks bring Porto to the foreground and
+in the menu bar/system tray, or the same button in the **Software updates**
+section at the top of **Settings** to check immediately. Settings shows progress,
+the result, and any error inline, with a retry if the update status cannot be
+loaded. Menu checks bring Porto to the foreground and
 show the result or a clear error. They respect the automatic-download preference
 and can reopen an update prompt previously dismissed with **Later**.
 Checking/downloading/installing disables repeated checks; source builds and

@@ -37,11 +37,12 @@ function baseline(path: string, environment = 'local'): unknown {
     '/api/docker/images': [],
     '/api/operations': [],
   }
-  return values[path] ?? []
+  return Object.hasOwn(values, path) ? values[path] : []
 }
 
 async function mockTargets(page: Page, offline = '') {
   const requests: Array<{ environment: string; path: string; method: string; body: unknown }> = []
+  let environments = profiles
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const url = new URL(request.url())
@@ -57,10 +58,108 @@ async function mockTargets(page: Page, offline = '') {
       await route.fulfill({ contentType: 'text/event-stream', body: `event: snapshot\ndata: ${JSON.stringify(baseline('/api/docker/containers/snapshot', environment))}\n\n` })
       return
     }
-    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(baseline(path, environment)) })
+    let value = path === '/api/environments' ? environments : baseline(path, environment)
+    if (path.endsWith('/metadata') && request.method() === 'PUT') {
+      const body: { name: string; labels: Record<string, string> } = request.postDataJSON()
+      environments = environments.map((profile) => path === `/api/environments/${profile.id}/metadata`
+        ? { ...profile, name: body.name, labels: body.labels, revision: profile.revision + 1 }
+        : profile)
+      value = {}
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
   })
   return requests
 }
+
+test('environment management keeps filters, metadata and explicit grants usable', async ({ page }) => {
+  const requests = await mockTargets(page)
+  await page.goto('/#/containers', { waitUntil: 'networkidle' })
+  const manage = page.getByRole('link', { name: 'Manage environments', exact: true })
+  await manage.focus()
+  await page.keyboard.press('Enter')
+  await expect(page.getByRole('heading', { name: 'Environments and fleets', level: 1 })).toBeVisible()
+  const filter = page.getByRole('textbox', { name: 'Filter names, groups or labels', exact: true })
+  await filter.fill('Synthetic alpha')
+  const table = page.getByRole('table', { name: 'Authorized environments', exact: true })
+  await expect(table.getByRole('row')).toHaveCount(2)
+  await page.getByRole('button', { name: 'Edit labels for Synthetic alpha', exact: true }).click()
+  const metadata = page.getByRole('region', { name: 'Environment metadata', exact: true })
+  await metadata.getByLabel('Display name', { exact: true }).fill('Synthetic alpha updated')
+  await metadata.getByRole('textbox', { name: 'Fleet labels and groups (JSON)', exact: true }).fill('{"group":"synthetic-updated"}')
+  await metadata.getByRole('button', { name: 'Save environment metadata', exact: true }).click()
+  await expect(metadata).toHaveCount(0)
+  await expect(table).toContainText('Synthetic alpha updated')
+  expect(requests.find((request) => request.method === 'PUT')?.body).toEqual({
+    name: 'Synthetic alpha updated', labels: { group: 'synthetic-updated' }, revision: 1,
+  })
+  await page.getByText('Register a remote host, compatible Docker endpoint or external Kubernetes context', { exact: true }).click()
+  await page.getByLabel('Environment name', { exact: true }).fill('Synthetic imported environment')
+  await page.getByRole('combobox', { name: 'Backend', exact: true }).selectOption('kubernetes')
+  await page.getByLabel('Imported context name', { exact: true }).fill('synthetic-import')
+  await page.getByRole('textbox', { name: 'Kubeconfig content', exact: true }).fill('apiVersion: v1\nclusters: []\n')
+  await page.getByLabel('Allow workload operations', { exact: false }).check()
+  await page.getByLabel('Allow sensitive resource inspection', { exact: false }).check()
+  await page.getByLabel('Allow explicit pod terminals', { exact: false }).check()
+  await page.getByRole('button', { name: 'Register environment', exact: true }).click()
+  await expect.poll(() => requests.filter((request) => request.path === '/api/environments' && request.method === 'POST').length).toBe(1)
+  expect(requests.find((request) => request.path === '/api/environments' && request.method === 'POST')?.body).toMatchObject({
+    backend: 'kubernetes', name: 'Synthetic imported environment', context: 'synthetic-import',
+    operate: true, capabilities: ['secrets.read', 'terminal.open'], kubeconfig: 'apiVersion: v1\nclusters: []\n',
+  })
+})
+
+test('environment controls and expanded management forms fit both themes and narrow screens', async ({ page }, testInfo) => {
+  await mockTargets(page)
+  await page.setViewportSize({ width: 1440, height: 1000 })
+  await page.goto('/#/environments', { waitUntil: 'networkidle' })
+  await page.screenshot({ path: testInfo.outputPath('environments.png'), animations: 'disabled' })
+  const toolbar = page.getByRole('region', { name: 'Selected environment', exact: true })
+  const selector = toolbar.getByRole('combobox', { name: 'Environment', exact: true })
+  const heading = page.getByRole('heading', { name: 'Environments and fleets', level: 1 })
+  await expect(heading).toBeVisible()
+  const toolbarBox = await toolbar.boundingBox()
+  const headingBox = await heading.boundingBox()
+  if (!toolbarBox || !headingBox) throw new Error('Expected visible environment toolbar and heading')
+  expect(headingBox.y - toolbarBox.y - toolbarBox.height).toBeGreaterThanOrEqual(16)
+  await page.getByText('Register a remote host, compatible Docker endpoint or external Kubernetes context', { exact: true }).click()
+  await page.getByRole('combobox', { name: 'Backend', exact: true }).selectOption('docker')
+  await page.getByText('Secure listener and outbound Edge enrollment', { exact: true }).click()
+  for (const theme of ['dark', 'light']) {
+    await page.evaluate((value) => { document.documentElement.dataset.theme = value }, theme)
+    const fieldStyle = await selector.evaluate((element) => {
+      const style = getComputedStyle(element)
+      const reference = document.querySelector('input[type="url"]')
+      if (!reference) throw new Error('Expected a visible environment endpoint field')
+      return {
+        background: style.backgroundColor,
+        radius: style.borderRadius,
+        font: style.fontFamily,
+        reference: getComputedStyle(reference).backgroundColor,
+      }
+    })
+    expect(fieldStyle.background).toBe(fieldStyle.reference)
+    expect(fieldStyle.radius).toBe('6px')
+    expect(fieldStyle.font).not.toContain('Times')
+    for (const width of [1440, 1024, 390]) {
+      await page.setViewportSize({ width, height: 1000 })
+      await expect(selector).toBeVisible()
+      await expect(toolbar.getByRole('link', { name: 'Manage environments', exact: true })).toBeVisible()
+      expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(width)
+      const overflowingControls = await page.locator('.environmentPanelBody').evaluateAll((panels) => panels.flatMap((panel) => {
+        const bounds = panel.getBoundingClientRect()
+        return Array.from(panel.querySelectorAll('input, select, textarea, button')).filter((control) => {
+          const box = control.getBoundingClientRect()
+          return box.width > 0 && (box.left < bounds.left - 1 || box.right > bounds.right + 1)
+        }).map((control) => control.outerHTML)
+      }))
+      expect(overflowingControls).toEqual([])
+      await toolbar.scrollIntoViewIfNeeded()
+      await page.screenshot({ path: testInfo.outputPath(`environments-${theme}-${width}.png`), animations: 'disabled' })
+      await page.getByText('Register a remote host, compatible Docker endpoint or external Kubernetes context', { exact: true }).scrollIntoViewIfNeeded()
+      await page.screenshot({ path: testInfo.outputPath(`registration-${theme}-${width}.png`), animations: 'disabled' })
+    }
+  }
+})
 
 test('same-named resources, actions, caches and terminal streams stay on their explicit environment', async ({ page }) => {
   const requests = await mockTargets(page)
