@@ -39,10 +39,12 @@ covers backup schedule bounds and resource keys, local-tool stream limits,
 environment isolation and cancellation, and the synthetic registry's OCI,
 HTTP/HTTPS/SOCKS and destination-confinement contracts. Stream-limit tests use
 both `io.Copy` and real subprocess output so optimized copy paths cannot bypass
-the bound. Native VM-helper tests require real piped subprocess stdin, verify
-byte-exact binary/checksum delivery, and retain cancellation causes with bounded
-diagnostics. These checks do not replace native-driver, installed-package or
-VM-backed acceptance.
+the bound. Native VM-helper tests require real piped subprocess stdin and a
+smaller compressed transfer with byte-exact uncompressed checksum delivery.
+Linux guest-script tests preserve the existing helper and clean staged files
+after gzip corruption, checksum mismatch or executable failure. Cancellation,
+transport and encoding causes retain bounded diagnostics. These checks do not
+replace native-driver, installed-package or VM-backed acceptance.
 
 The Unix Git-timeout fixture reexecutes its already-running test binary instead
 of cold-starting a generated shell script and a separate `sleep` process under

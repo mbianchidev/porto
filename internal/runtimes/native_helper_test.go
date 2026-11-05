@@ -2,6 +2,7 @@ package runtimes
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -89,9 +90,14 @@ func TestNativeHelperPipedInputProcess(t *testing.T) {
 		fmt.Fprintln(os.Stderr, "native helper stdin is not a pipe")
 		os.Exit(42)
 	}
-	data, err := io.ReadAll(os.Stdin)
+	compressed, err := gzip.NewReader(os.Stdin)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "native helper stdin read failed:", err)
+		fmt.Fprintln(os.Stderr, "native helper stdin is not a gzip stream:", err)
+		os.Exit(45)
+	}
+	data, readErr := io.ReadAll(compressed)
+	if err := errors.Join(readErr, compressed.Close()); err != nil {
+		fmt.Fprintln(os.Stderr, "native helper stdin decompression failed:", err)
 		os.Exit(43)
 	}
 	checksum := sha256.Sum256(data)
@@ -100,6 +106,40 @@ func TestNativeHelperPipedInputProcess(t *testing.T) {
 		os.Exit(44)
 	}
 	os.Exit(0)
+}
+
+func TestInstallNativeHelperCompressesTransferWithoutChangingDigest(t *testing.T) {
+	data := bytes.Repeat([]byte("synthetic binary payload\x00\xff"), 8192)
+	executable := nativeHelperBundle(t, data)
+	checksum := sha256.Sum256(data)
+	digest := hex.EncodeToString(checksum[:])
+	runner := nativeHelperStreamingRunner{run: func(_ context.Context, command Command, _ func(OutputChunk) error) ([]byte, error) {
+		payload, err := io.ReadAll(command.StdinReader)
+		if err != nil {
+			return nil, err
+		}
+		if len(payload) >= len(data)/2 {
+			return nil, fmt.Errorf("compressible helper transfer was not reduced: raw=%d transferred=%d", len(data), len(payload))
+		}
+		compressed, err := gzip.NewReader(bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		decoded, readErr := io.ReadAll(compressed)
+		if err := errors.Join(readErr, compressed.Close()); err != nil {
+			return nil, err
+		}
+		if !bytes.Equal(decoded, data) || command.Args[len(command.Args)-1] != digest {
+			return nil, errors.New("compression changed the helper binary or its uncompressed checksum")
+		}
+		return nil, nil
+	}}
+	actual, err := InstallNativeHelper(context.Background(), runner, Command{Name: "synthetic-transport"}, executable, func(string) (string, error) {
+		return "", errors.New("unexpected fallback lookup")
+	})
+	if err != nil || actual != digest {
+		t.Fatalf("helper transfer did not preserve the compressed payload contract: digest=%q error=%v", actual, err)
+	}
 }
 
 func TestInstallNativeHelperPreservesCancellationAndBoundedDiagnostics(t *testing.T) {
