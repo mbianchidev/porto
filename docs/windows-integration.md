@@ -41,6 +41,9 @@ client and repeated path-conversion subprocesses in metadata requests. Missing
 or non-native clients fail setup instead of falling back to emulation. The
 20-second metadata budget and all guest/acceptance deadlines are unchanged.
 This selection is confined to the disposable CI fixture.
+Installed-package fixtures likewise put the trusted native OpenSSH directory
+ahead of inherited toolchains, so the packaged daemon and Buildx bridge use
+the same OS client instead of depending on the runner's Git PATH ordering.
 
 The bundle also backports
 [Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)

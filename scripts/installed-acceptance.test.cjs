@@ -103,7 +103,7 @@ test('persisted fixture cannot redirect HOME, installation or cleanup outside it
   assert.throws(() => load(current.directory), /below the current checkout|Unsafe fixture/)
 })
 
-test('isolated environment drops credentials, external transports, source entries and native loaders', (t) => {
+test('isolated environment drops credentials, external transports, source entries and native loaders', async (t) => {
   const current = fixture(t)
   const env = environment(current, layout(current.installRoot), {
     PATH: '/synthetic-host-tools', HOME: '/real-user-home', USERPROFILE: '/real-profile',
@@ -128,6 +128,13 @@ test('isolated environment drops credentials, external transports, source entrie
   assert.ok(env.CONTAINERD_ADDRESS.startsWith(current.directory))
   assert.ok(env.BUILDKIT_HOST.startsWith(`unix://${current.directory}`))
   assert.equal(env.PATH.split(path.delimiter)[0], path.join(layout(current.installRoot).runtime, 'bin'))
+  if (process.platform === 'win32') {
+    const nativeSSH = await systemExecutable('ssh', env)
+    const paths = env.PATH.split(path.delimiter)
+    const index = paths.findIndex((entry) => entry.toLowerCase() === path.dirname(nativeSSH).toLowerCase())
+    assert.ok(index >= 0 && index < paths.indexOf('/synthetic-host-tools'),
+      'Installed fixtures must prefer the trusted native OpenSSH directory over inherited toolchains')
+  }
   for (const relative of ['Documents/WindowsPowerShell/Modules', 'AppData/Roaming',
     'AppData/Local/Microsoft/Windows/PowerShell']) {
     assert.ok(fs.statSync(path.join(current.home, relative)).isDirectory())

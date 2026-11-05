@@ -497,7 +497,8 @@ function environment(fixture, packageLayout = layout(fixture.installRoot), inher
   }
   const systemPath = inherited.PATH || inherited.Path || ''
   const nativePaths = process.platform === 'win32'
-    ? [windowsSystemDirectory(), path.join(windowsSystemDirectory(), 'WindowsPowerShell', 'v1.0')]
+    ? [windowsSystemDirectory(), path.join(windowsSystemDirectory(), 'OpenSSH'),
+      path.join(windowsSystemDirectory(), 'WindowsPowerShell', 'v1.0')]
     : []
   const locale = process.platform === 'darwin' ? 'en_US.UTF-8' : 'C.UTF-8'
   return {
