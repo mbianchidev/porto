@@ -783,7 +783,8 @@ if (level === 'leaf') {
     clearTimeout(deadline)
   }
   assert.ok(failure, 'A deadline or output limit must reject even with allowFailure')
-  assert.equal(failure.code, mode === 'stdout' || mode === 'stderr' ? 'PORTO_COMMAND_OUTPUT_LIMIT' : 'PORTO_COMMAND_TIMEOUT')
+  assert.equal(failure.code, mode === 'stdout' || mode === 'stderr' ? 'PORTO_COMMAND_OUTPUT_LIMIT' : 'PORTO_COMMAND_TIMEOUT',
+    failure.stack || String(failure))
   assert.match(failure.message, mode === 'stdout' || mode === 'stderr' ? /output limit exceeded/ : /timed out/)
   assert.ok(Date.now() - started < timeout + 5000, 'Command teardown exceeded its bounded cleanup budget')
   assert.ok(fs.existsSync(record), 'The complete synthetic child/grandchild tree must start before interruption')

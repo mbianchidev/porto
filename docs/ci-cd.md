@@ -679,9 +679,12 @@ the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
 Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
-on the previous completed UTC day, allowing a full day for snapshot publication
-and cache population rather than requiring the same-day endpoint. This trades
-one day of guest dependency freshness for a less time-sensitive fixture input.
+from three completed UTC days before the run, allowing more time for snapshot
+publication and cache population rather than requiring a recent endpoint.
+The user approved this CI-only trial after previous-day snapshots repeatedly
+returned HTTP 5xx responses during #188 qualification. It trades three days of
+guest dependency freshness for a less time-sensitive fixture input; production
+guest update policy is unchanged.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
