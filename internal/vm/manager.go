@@ -694,7 +694,7 @@ func (m *Manager) Exec(ctx context.Context, name string, command []string, stdin
 	defer cancel()
 	output, err := m.runner.Run(commandContext, m.limaCommand(args, stdin))
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-		return nil, fmt.Errorf("execute command in VM %s timed out", name)
+		return output, fmt.Errorf("execute command in VM %s timed out", name)
 	}
 	if err != nil {
 		return nil, runtimes.CommandError("execute command in VM "+name, output, err)

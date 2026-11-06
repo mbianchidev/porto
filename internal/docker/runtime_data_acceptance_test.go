@@ -557,13 +557,15 @@ func (fixture *runtimeDataFixture) prepareSource() {
 	})
 	requireRuntimeDataBootMounts(t, fixture.ctx, runner, instance.Name)
 	const provision = `set -eu
-sudo -n apt-get update -qq
-sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends docker.io
+printf 'Preparing isolated Docker source: updating package indexes\n'
+sudo -n apt-get update
+printf 'Preparing isolated Docker source: installing Docker Engine\n'
+sudo -n env DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends docker.io
 sudo -n systemctl start docker
 sudo -n docker version --format '{{.Server.Version}}'
 `
 	if output, err := fixture.vms.Exec(fixture.ctx, instance.Name, []string{"sh", "-c", provision}, nil); err != nil {
-		t.Fatalf("prepare isolated Docker source: %v: %.8192s", err, output)
+		t.Fatalf("prepare isolated Docker source: %v: %s", err, output[max(0, len(output)-8192):])
 	}
 	guestHelper := "/tmp/" + fixture.prefix + "-helper"
 	for _, command := range []runtimes.Command{

@@ -195,6 +195,24 @@ PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cj
 export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
+  SSH="$(node - <<'NODE'
+const path = require('node:path')
+const { nativeHeader, systemExecutable } = require('./scripts/installed-fixture.cjs')
+async function main() {
+  const executable = await systemExecutable('ssh', process.env)
+  for (const name of ['ssh.exe', 'scp.exe', 'ssh-keygen.exe']) {
+    nativeHeader(path.join(path.dirname(executable), name), 'windows/arm64')
+  }
+  process.stdout.write(JSON.stringify(executable.replaceAll('\\', '/')))
+}
+main().catch((error) => {
+  console.error(`Windows ARM64 CI requires native OS OpenSSH: ${error.message}`)
+  process.exitCode = 1
+})
+NODE
+)"
+  export SSH
+  echo "::notice::Windows ARM64 CI uses native OS OpenSSH for Lima; metadata and acceptance deadlines are unchanged."
   export QEMU_SYSTEM_AARCH64="'$(cygpath -m "$runtime/qemu/qemu-system-aarch64.exe")' -machine virt -accel tcg,thread=multi,tb-size=512 -cpu neoverse-n1"
   export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
   echo "::notice::Windows ARM64 hosted runners cannot provide nested WHPX; using QEMU TCG for the isolated Linux guests."

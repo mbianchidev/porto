@@ -1,6 +1,7 @@
 package runtimes
 
 import (
+	"compress/gzip"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -40,7 +41,9 @@ base="$HOME/.local/share/porto/native-helpers/$digest"
 mkdir -p "$base"
 temporary="$(mktemp "$base/.install.XXXXXX")"
 trap 'rm -f "$temporary"' EXIT HUP INT TERM
-cat > "$temporary"
+printf 'Receiving compressed Porto native helper\n' >&2
+gzip -dc > "$temporary"
+printf 'Verifying Porto native helper checksum\n' >&2
 actual="$(sha256sum "$temporary")"
 actual="${actual%% *}"
 if [ "$actual" != "$digest" ]; then
@@ -48,6 +51,7 @@ if [ "$actual" != "$digest" ]; then
   exit 1
 fi
 chmod 0755 "$temporary"
+printf 'Validating Porto native helper executable\n' >&2
 "$temporary" version
 mv -f "$temporary" "$base/porto-runtime-helper"
 `
@@ -63,13 +67,11 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	size, err := io.Copy(hash, file)
+	if err != nil {
 		return "", err
 	}
 	digest := hex.EncodeToString(hash.Sum(nil))
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		return "", err
-	}
 	streamer, ok := runner.(interface {
 		RunStreaming(context.Context, Command, func(OutputChunk) error) ([]byte, error)
 	})
@@ -77,7 +79,16 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 		return "", errors.New("native VM helper installation requires streaming input")
 	}
 	command.Args = append(command.Args, "sh", "-c", installNativeHelperScript, "porto-native-helper", digest)
-	command.StdinReader = file
+	input, compressed := io.Pipe()
+	defer input.Close()
+	encoded := make(chan error, 1)
+	go func() {
+		writer := gzip.NewWriter(compressed)
+		_, copyErr := io.Copy(writer, io.NewSectionReader(file, 0, size))
+		encodeErr := errors.Join(copyErr, writer.Close())
+		encoded <- errors.Join(encodeErr, compressed.CloseWithError(encodeErr))
+	}()
+	command.StdinReader = input
 	var diagnostics strings.Builder
 	_, err = streamer.RunStreaming(ctx, command, func(chunk OutputChunk) error {
 		if remaining := 4096 - diagnostics.Len(); remaining > 0 {
@@ -85,8 +96,11 @@ func InstallNativeHelper(ctx context.Context, runner Runner, command Command, ex
 		}
 		return nil
 	})
+	closeErr := input.CloseWithError(err)
+	encodeErr := <-encoded
+	err = errors.Join(err, closeErr, encodeErr)
 	if err != nil {
-		return "", fmt.Errorf("install checksum-verified native VM helper: %w: %s", err, diagnostics.String())
+		return "", fmt.Errorf("install checksum-verified native VM helper: %w: %s", errors.Join(ctx.Err(), err), diagnostics.String())
 	}
 	return digest, nil
 }

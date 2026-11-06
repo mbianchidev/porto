@@ -342,3 +342,24 @@ func TestMachineProbesUseGuestRootWithoutChangingExecWorkdir(t *testing.T) {
 		}
 	}
 }
+
+func TestExecRetainsOutputAfterDeadline(t *testing.T) {
+	const diagnostic = "Synthetic package-index transfer interrupted\n"
+	runner := vmRunnerFunc(func(ctx context.Context, _ runtimes.Command) ([]byte, error) {
+		if !errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			t.Fatalf("command did not inherit the expired caller deadline: %v", ctx.Err())
+		}
+		return []byte(diagnostic), ctx.Err()
+	})
+	manager := New(runner)
+	ctx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	output, err := manager.Exec(ctx, "synthetic-timeout", []string{"true"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Fatalf("deadline failure = %v", err)
+	}
+	if string(output) != diagnostic {
+		t.Fatalf("deadline discarded command diagnostics: %q", output)
+	}
+}

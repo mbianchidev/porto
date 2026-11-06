@@ -15,7 +15,9 @@ const diskContents = 'Synthetic VM data must survive process-state recovery.\n'
 
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-lima-pid-'))
-  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  t.after(() => fs.promises.rm(home, {
+    recursive: true, force: true, maxRetries: 5, retryDelay: 100,
+  }))
   const directory = path.join(home, instanceName)
   fs.mkdirSync(directory)
   const config = [

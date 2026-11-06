@@ -33,6 +33,19 @@ claim that the upstream module-only advisory has disappeared.
 
 The `go` job runs on `ubuntu-latest`, `macos-latest`, and `windows-latest` with the current stable toolchain, plus one extra `ubuntu-latest` job on `1.27.3` to guard the exact minimum version declared in `go.mod`. Linux runs `gofmt -l`, `go mod tidy -diff`, and `go test ./... -race`; the other platforms run the plain test suite.
 
+The ordinary Go suite exercises the native-mount and WSL helper CLI contracts
+in owned subprocesses without mounting filesystems or starting WSL. It also
+covers backup schedule bounds and resource keys, local-tool stream limits,
+environment isolation and cancellation, and the synthetic registry's OCI,
+HTTP/HTTPS/SOCKS and destination-confinement contracts. Stream-limit tests use
+both `io.Copy` and real subprocess output so optimized copy paths cannot bypass
+the bound. Native VM-helper tests require real piped subprocess stdin and a
+smaller compressed transfer with byte-exact uncompressed checksum delivery.
+Linux guest-script tests preserve the existing helper and clean staged files
+after gzip corruption, checksum mismatch or executable failure. Cancellation,
+transport and encoding causes retain bounded diagnostics. These checks do not
+replace native-driver, installed-package or VM-backed acceptance.
+
 The Unix Git-timeout fixture reexecutes its already-running test binary instead
 of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and
@@ -595,6 +608,10 @@ spaces, rather than only checking that its binaries exist. It also starts
 synthetic consoleless processes and verifies that a forced stop terminates the
 host agent and its descendants, releases the log files, and preserves VM data.
 A failed termination must return an error without removing the PID files.
+Fixture removal is asynchronous with bounded filesystem retries, so pending
+process-close callbacks can run before Windows releases copied executables and
+directories. Persistent removal failures still fail the check; process-exit,
+log-release and VM-preservation assertions are unchanged.
 The same job runs the Windows update helper against that installed package,
 covering silent in-place replacement and NSIS installation paths containing
 spaces without launching the updated desktop.
@@ -670,9 +687,12 @@ the bundled `runtime` directory, matching desktop helper discovery instead of
 asking Windows executable lookup to find a Linux ELF binary on `PATH`.
 Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
-on the previous completed UTC day, allowing a full day for snapshot publication
-and cache population rather than requiring the same-day endpoint. This trades
-one day of guest dependency freshness for a less time-sensitive fixture input.
+from three completed UTC days before the run, allowing more time for snapshot
+publication and cache population rather than requiring a recent endpoint.
+The user approved this CI-only trial after previous-day snapshots repeatedly
+returned HTTP 5xx responses during #188 qualification. It trades three days of
+guest dependency freshness for a less time-sensitive fixture input; production
+guest update policy is unchanged.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
@@ -680,12 +700,24 @@ and reused for the destination, source VM, and restarts. Ubuntu source URIs
 change, while suites, components, archive signing keys, signature verification,
 and package hashes remain intact. Direct immutable URIs avoid mixing indexes
 from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
-indexes. APT retries transient download failures, including HTTP 503 responses,
+indexes. CI requires APT's supported `Acquire::By-Hash "force"` mode for
+content-addressed index downloads. A temporary hash-URI failure must not
+silently switch to a named `Packages` URL that the snapshot service does not
+provide. Signed release hashes remain authoritative, and an unavailable
+content-addressed index still fails within the same budgets.
+APT retries transient download failures, including HTTP 503 responses,
 up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
 and package downloads. An unavailable snapshot or failed index fetch remains
 an error after the retry budget is exhausted, with no fallback to mutable
-mirrors or relaxed checks. Disposable CI guests disable automatic APT updates
+mirrors or relaxed checks. Multi-platform QEMU setup honors an explicitly
+configured APT retry policy instead of shortening CI's ten retries to three;
+guests without a configured policy retain the existing three-retry default.
+Reading that configuration must succeed before package setup continues.
+Source-VM preparation records package-index and Docker-install progress so an
+exhausted setup deadline retains the failing download or installation stage
+rather than an empty quiet-command result. The setup and acceptance deadlines
+are unchanged. Disposable CI guests disable automatic APT updates
 and mask their daily/upgrade timers and services before explicit dependency
 installation. This prevents background package work from competing with TCG
 acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;

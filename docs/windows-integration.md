@@ -34,6 +34,17 @@ zero and never applies its existing CPU-aware cipher preferences. The patch
 retains the upstream OpenSSH 8.1 minimum for cipher reordering and the actual
 Windows processor feature check; it does not force AES on unsupported CPUs.
 
+Windows ARM64 runtime-data CI explicitly selects the trusted native OS OpenSSH
+client through Lima's supported `SSH` setting, checking the ARM64 executable
+headers of `ssh`, `scp`, and `ssh-keygen` before boot. This avoids Git's Cygwin
+client and repeated path-conversion subprocesses in metadata requests. Missing
+or non-native clients fail setup instead of falling back to emulation. The
+20-second metadata budget and all guest/acceptance deadlines are unchanged.
+This selection is confined to the disposable CI fixture.
+Installed-package fixtures likewise put the trusted native OpenSSH directory
+ahead of inherited toolchains, so the packaged daemon and Buildx bridge use
+the same OS client instead of depending on the runner's Git PATH ordering.
+
 The bundle also backports
 [Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)
 for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
@@ -278,6 +289,10 @@ porto wsl apply-mounts --restart-engine
 Removal stops only the owned distribution bridge and removes only its tools and
 hooks. Windows vault credentials, persistent scoped CLI configuration and Linux
 engine data remain. Apply mount changes separately to release old shares.
+The bridge flushes its complete ownership-bound stop acknowledgement before
+closing connections. A successful stop also waits for its serving lease to
+be released within the existing one-second shutdown budget, so immediate
+repair does not race the previous bridge. Other owners remain refused.
 **Disable and release shares before externally deleting, renaming or reimporting
 a distribution.** Registration-identity mismatches are refused rather than
 automatically adopting a replacement distribution.

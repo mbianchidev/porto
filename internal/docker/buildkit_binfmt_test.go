@@ -25,12 +25,16 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 		omitted      string
 		missingRule  bool
 		failure      string
+		retries      string
 		wantPackage  string
 		wantReload   bool
 		wantError    string
 	}{
 		{name: "current Ubuntu", wantPackage: "qemu-user-binfmt", wantReload: true},
 		{name: "older Ubuntu", legacy: true, wantPackage: "qemu-user-static", wantReload: true},
+		{name: "configured download retries", retries: "10", wantPackage: "qemu-user-binfmt", wantReload: true},
+		{name: "explicitly disabled retries", retries: "0", wantPackage: "qemu-user-binfmt", wantReload: true},
+		{name: "APT configuration failure", failure: "config", wantError: "mock config failed"},
 		{name: "current offline startup", installed: "current", registration: "ready"},
 		{name: "older offline startup", installed: "legacy", registration: "ready"},
 		{name: "dynamic QEMU is insufficient", installed: "dynamic", legacy: true, registration: "ready", wantPackage: "qemu-user-static"},
@@ -95,7 +99,7 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 					write("binfmt/"+name, state+"\nflags: "+flags+"\n", 0o600)
 				}
 			}
-			for _, tool := range []string{"dpkg-query", "apt-cache", "apt-get", "systemctl"} {
+			for _, tool := range []string{"dpkg-query", "apt-config", "apt-cache", "apt-get", "systemctl"} {
 				write("bin/"+tool, binfmtMockTool, 0o700)
 			}
 			script := strings.NewReplacer(
@@ -114,6 +118,7 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 					"PORTO_BINFMT_TEST_ROOT=" + root,
 					fmt.Sprintf("PORTO_BINFMT_TEST_LEGACY=%t", test.legacy),
 					"PORTO_BINFMT_TEST_FAILURE=" + test.failure,
+					"PORTO_BINFMT_TEST_RETRIES=" + test.retries,
 				},
 			})
 			cancel()
@@ -139,6 +144,15 @@ func TestLimaBinfmtProvisioningScript(t *testing.T) {
 				t.Fatal(err)
 			}
 			commands := string(log)
+			if strings.Contains(commands, "apt-get ") {
+				update := "apt-get -o Acquire::Retries=3 update\n"
+				if test.retries != "" {
+					update = "apt-get update\n"
+				}
+				if !strings.Contains(commands, update) {
+					t.Fatalf("package update did not preserve the configured retry policy:\n%s", commands)
+				}
+			}
 			if test.wantPackage == "" {
 				if strings.Contains(commands, " install ") {
 					t.Fatalf("unexpected package installation:\n%s", commands)
@@ -180,6 +194,17 @@ case "$tool" in
         ;;
       *) exit 1 ;;
     esac
+    ;;
+  apt-config)
+    printf '%s\n' "$tool $*" >> "$root/commands"
+    [ "$*" = "shell configured Acquire::Retries" ] || exit 1
+    if [ "$PORTO_BINFMT_TEST_FAILURE" = config ]; then
+      echo "mock config failed" >&2
+      exit 7
+    fi
+    if [ -n "$PORTO_BINFMT_TEST_RETRIES" ]; then
+      printf "configured='%s'\n" "$PORTO_BINFMT_TEST_RETRIES"
+    fi
     ;;
   apt-cache)
     printf '%s\n' "$tool $*" >> "$root/commands"

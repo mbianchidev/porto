@@ -103,7 +103,7 @@ test('persisted fixture cannot redirect HOME, installation or cleanup outside it
   assert.throws(() => load(current.directory), /below the current checkout|Unsafe fixture/)
 })
 
-test('isolated environment drops credentials, external transports, source entries and native loaders', (t) => {
+test('isolated environment drops credentials, external transports, source entries and native loaders', async (t) => {
   const current = fixture(t)
   const env = environment(current, layout(current.installRoot), {
     PATH: '/synthetic-host-tools', HOME: '/real-user-home', USERPROFILE: '/real-profile',
@@ -128,6 +128,13 @@ test('isolated environment drops credentials, external transports, source entrie
   assert.ok(env.CONTAINERD_ADDRESS.startsWith(current.directory))
   assert.ok(env.BUILDKIT_HOST.startsWith(`unix://${current.directory}`))
   assert.equal(env.PATH.split(path.delimiter)[0], path.join(layout(current.installRoot).runtime, 'bin'))
+  if (process.platform === 'win32') {
+    const nativeSSH = await systemExecutable('ssh', env)
+    const paths = env.PATH.split(path.delimiter)
+    const index = paths.findIndex((entry) => entry.toLowerCase() === path.dirname(nativeSSH).toLowerCase())
+    assert.ok(index >= 0 && index < paths.indexOf('/synthetic-host-tools'),
+      'Installed fixtures must prefer the trusted native OpenSSH directory over inherited toolchains')
+  }
   for (const relative of ['Documents/WindowsPowerShell/Modules', 'AppData/Roaming',
     'AppData/Local/Microsoft/Windows/PowerShell']) {
     assert.ok(fs.statSync(path.join(current.home, relative)).isDirectory())
@@ -783,7 +790,8 @@ if (level === 'leaf') {
     clearTimeout(deadline)
   }
   assert.ok(failure, 'A deadline or output limit must reject even with allowFailure')
-  assert.equal(failure.code, mode === 'stdout' || mode === 'stderr' ? 'PORTO_COMMAND_OUTPUT_LIMIT' : 'PORTO_COMMAND_TIMEOUT')
+  assert.equal(failure.code, mode === 'stdout' || mode === 'stderr' ? 'PORTO_COMMAND_OUTPUT_LIMIT' : 'PORTO_COMMAND_TIMEOUT',
+    failure.stack || String(failure))
   assert.match(failure.message, mode === 'stdout' || mode === 'stderr' ? /output limit exceeded/ : /timed out/)
   assert.ok(Date.now() - started < timeout + 5000, 'Command teardown exceeded its bounded cleanup budget')
   assert.ok(fs.existsSync(record), 'The complete synthetic child/grandchild tree must start before interruption')
