@@ -22,8 +22,8 @@ part of CI and release validation; registry errors and high-severity findings
 still fail the security audit.
 
 The maintained official `golang.org/x/crypto` module is required for SSH.
-GO-2026-5932 covers its retired OpenPGP packages in every module version and has
-no upstream fixed version; Porto imports none of those packages. The crypto
+GO-2026-5932 covers its retired OpenPGP packages, which remain in the latest
+stable release, `v0.58.0`; Porto imports none of those packages. The crypto
 dependency policy checks production and test dependency graphs for all six
 release targets and rejects any future deprecated OpenPGP import. It does not
 suppress vulnerability findings, replace official cryptography with a fork, or
@@ -939,6 +939,11 @@ fix for the missing-authority server panic,
 [GO-2026-6443](https://pkg.go.dev/vuln/GO-2026-6443). Prefer a stable release
 containing the fix when updating this dependency; keep the vulnerability
 scan enabled.
+
+The `github.com/klauspost/compress` dependency uses `v1.20.3`, including the
+two-block-frame decompression panic fix in `v1.20.2`,
+[GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865). Uploaded Docker build
+contexts reach this dependency through containerd; keep `v1.20.2` or newer.
 
 The module graph keeps `golang.org/x/net` at `v0.62.0` or newer for the HTTP/2
 and HTML namespace/text-coalescing security fixes. Standard-library fixes, including compromised intermediate
