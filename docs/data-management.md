@@ -4,6 +4,9 @@ Porto's container inspector has Overview, Logs, Files, Stats, Inspect, Terminal,
 and Layers views. Compose project/service ownership stays visible when opening
 an inspector. Closing a view cancels its requests and log subscription.
 
+See [data compatibility contracts](data-compatibility.md) for the exact local
+API, archive format, persisted records and upgrade/downgrade recovery limits.
+
 ## Container files, logs and metrics
 
 Files are inspected by the bundled Linux runtime helper rather than by a shell
