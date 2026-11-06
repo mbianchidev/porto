@@ -27,7 +27,7 @@ source="$temporary/mutagen-0.18.1"
   cd "$source"
   bash "$scripts/apply-runtime-patch.sh" "$PWD" "$scripts/patches/mutagen-0.18.1-version.patch"
   GOWORK=off node "$scripts/go-dependencies.cjs" get \
-    github.com/klauspost/compress@v1.20.1 \
+    github.com/klauspost/compress@v1.20.3 \
     golang.org/x/net@v0.60.0 \
     golang.org/x/sys@v0.49.0 \
     golang.org/x/term@v0.47.0 \
