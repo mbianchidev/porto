@@ -13,7 +13,74 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
+
+func TestVersionOneManifestCompatibility(t *testing.T) {
+	const legacyEmpty = `{"version":1,"resource":{"kind":"volume","name":"synthetic-volume","id":"synthetic-generation","readOnly":false},"createdAt":"2026-01-01T00:00:00Z","consistency":"crash-consistent","bytes":0,"entries":[],"sha256":""}`
+	const legacy = `{"version":1,"resource":{"kind":"volume","name":"synthetic-volume","id":"synthetic-generation","readOnly":false},"createdAt":"2026-01-01T00:00:00Z","consistency":"crash-consistent","bytes":0,"entries":[{"path":"synthetic.txt","type":"file","size":0,"mode":416,"uid":0,"gid":0,"modifiedAt":"2026-01-01T00:00:00Z","sha256":"e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"}],"sha256":""}`
+	for _, test := range []struct {
+		name      string
+		document  string
+		ownership string
+		valid     bool
+		empty     bool
+	}{
+		{name: "legacy empty archive", document: legacyEmpty, valid: true, empty: true},
+		{name: "legacy ownership omitted", document: legacy, valid: true},
+		{
+			name: "filesystem ownership", ownership: "filesystem", valid: true,
+			document: strings.Replace(legacy, `"bytes":0`, `"ownership":"filesystem","bytes":0`, 1),
+		},
+		{
+			name: "namespace ownership", ownership: "namespace", valid: true,
+			document: strings.Replace(legacy, `"bytes":0`, `"ownership":"namespace","bytes":0`, 1),
+		},
+		{name: "future version", document: strings.Replace(legacy, `"version":1`, `"version":2`, 1)},
+		{name: "missing version", document: strings.Replace(legacy, `"version":1,`, "", 1)},
+		{name: "unknown field", document: strings.Replace(legacy, `"bytes":0`, `"future":true,"bytes":0`, 1)},
+		{name: "unknown ownership", document: strings.Replace(legacy, `"bytes":0`, `"ownership":"future","bytes":0`, 1)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			hash := sha256.Sum256([]byte(test.document))
+			document := strings.Replace(test.document, `"sha256":""`, `"sha256":"`+hex.EncodeToString(hash[:])+`"`, 1)
+			var raw bytes.Buffer
+			writer := tar.NewWriter(&raw)
+			if !test.empty {
+				if err := writer.WriteHeader(&tar.Header{
+					Name: "data/synthetic.txt", Mode: 0o640, Typeflag: tar.TypeReg,
+					ModTime: time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC),
+				}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := writer.WriteHeader(&tar.Header{
+				Name: "porto-manifest.json", Mode: 0o600, Typeflag: tar.TypeReg, Size: int64(len(document)),
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(writer, document); err != nil {
+				t.Fatal(err)
+			}
+			if err := writer.Close(); err != nil {
+				t.Fatal(err)
+			}
+			manifest, err := Validate(context.Background(), bytes.NewReader(raw.Bytes()))
+			if !test.valid {
+				if err == nil {
+					t.Fatal("an unsupported manifest contract was accepted")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("version 1 archive is no longer readable: %v", err)
+			}
+			if manifest.Version != 1 || manifest.Ownership != test.ownership || manifest.SHA256 != hex.EncodeToString(hash[:]) {
+				t.Fatalf("archive contract changed: %+v", manifest)
+			}
+		})
+	}
+}
 
 func TestArchiveRejectsUnsafeMembersBeforeRestore(t *testing.T) {
 	for _, header := range []*tar.Header{

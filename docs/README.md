@@ -18,6 +18,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 - [Kubernetes GitOps](kubernetes-gitops.md): Flux/Argo CD discovery, explicit bootstrap, scoped sources, reconciliation, ownership handoff and deletion
 - [Porto Docker Engine](docker-engine.md) — Docker context setup, native containerd architecture, API compatibility, persistence, and limitations
 - [Runtime data management](data-management.md) — deep inspection, protected storage cleanup, local backups, migration, and native filesystem capabilities
+- [Data compatibility contracts](data-compatibility.md): local data/backup APIs, archive format, persisted schemas and upgrade recovery
 - [Branch management](branch-management.md) — branch switching, concurrent instances, managed worktrees, and cleanup
 - [Local networking](networking.md) — project hostnames, HTTP and HTTPS routing, certificates, DNS, and custom forwarding
 

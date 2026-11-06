@@ -288,6 +288,11 @@ If Porto was copied into an administrator-owned directory, install the
 downloaded update manually or move Porto to a user-writable application
 directory.
 
+For local backup/data-operation formats and a consistent recovery copy before
+an incompatible change, see [data compatibility and upgrade recovery](data-compatibility.md#recovery-and-user-visible-upgrade-notes).
+Replacing an application package is not a volume restore or a guarantee of
+arbitrary in-place downgrade compatibility.
+
 Windows Porto 1.2.13 and earlier can exit before their detached update helper is
 ready, so those builds cannot reliably repair themselves in place. Stop active
 Porto VMs and Kubernetes clusters, then run the verified installer once:

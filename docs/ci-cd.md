@@ -46,6 +46,12 @@ after gzip corruption, checksum mismatch or executable failure. Cancellation,
 transport and encoding causes retain bounded diagnostics. These checks do not
 replace native-driver, installed-package or VM-backed acceptance.
 
+The [data compatibility suite](data-compatibility.md#regression-evidence-and-remaining-limits)
+pins fingerprint serialization, archive-1 readers, data-table transaction
+rollback, legacy operation JSON and the local operation-history HTTP shape.
+Its fixtures are synthetic and do not claim historical-binary downgrade or
+real runtime/driver acceptance.
+
 The Unix Git-timeout fixture reexecutes its already-running test binary instead
 of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and

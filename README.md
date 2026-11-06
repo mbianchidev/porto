@@ -35,6 +35,7 @@ Porto runs its own containerd backends rather than proxying another Docker engin
   Linux bridges require FUSE3 and SSHFS 3.7.6+ or an equivalent maintained build with symlink containment.
   CLI `--resume` retains exact migration identities and destinations.
   Required CI covers native Linux backends on both architectures, KVM-backed x64 Lima, and real desktop filesystem drivers on both architectures; software-emulated Lima integration is [explicit opt-in acceptance](docs/data-management.md#real-runtime-acceptance).
+  See [data compatibility contracts](docs/data-compatibility.md) for API/storage formats and upgrade recovery limits.
 
 ## Platforms and prerequisites
 
