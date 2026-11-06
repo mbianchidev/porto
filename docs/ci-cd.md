@@ -940,8 +940,9 @@ fix for the missing-authority server panic,
 containing the fix when updating this dependency; keep the vulnerability
 scan enabled.
 
-The `github.com/klauspost/compress` dependency uses `v1.20.3`, including the
-two-block-frame decompression panic fix in `v1.20.2`,
+The main module and bundled synchronization CLI/Linux agents use
+`github.com/klauspost/compress` at `v1.20.3`, including the two-block-frame
+decompression panic fix in `v1.20.2`,
 [GO-2026-6865](https://pkg.go.dev/vuln/GO-2026-6865). Uploaded Docker build
 contexts reach this dependency through containerd; keep `v1.20.2` or newer.
 
