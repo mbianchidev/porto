@@ -689,9 +689,13 @@ func (m *Manager) Logs(ctx context.Context, name, stream string, tail int) ([]st
 	if (stream != "stdout" && stream != "stderr") || tail < 1 || tail > 1000 {
 		return nil, fmt.Errorf("%w: logs require stream stdout|stderr and tail between 1 and 1000", ErrInvalid)
 	}
+	filename := "stdout.log"
+	if stream == "stderr" {
+		filename = "stderr.log"
+	}
 	lines := []string{}
 	for _, member := range instance.Members {
-		path := filepath.Join(m.memberPath(instance, member), stream+".log")
+		path := filepath.Join(m.memberPath(instance, member), filename)
 		file, err := os.Open(path)
 		if errors.Is(err, os.ErrNotExist) {
 			continue
