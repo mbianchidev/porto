@@ -10,6 +10,7 @@ import { EngineResourceSettings, ResourceSaverSettings } from '../components/Res
 import { SynchronizedSharesSettings } from '../components/SynchronizedSharesSettings'
 import { WSLSettings } from '../components/WSLSettings'
 import { WindowsContainersSettings } from '../components/WindowsContainersSettings'
+import { EtcqliteSettings } from '../components/EtcqliteSettings'
 import { DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
 import { DEFAULT_EXPERIENCE_PREFERENCES, normalizeExperiencePreferences } from '../experiencePreferences'
 import { usePolledResource } from '../hooks'
@@ -28,6 +29,7 @@ function editableSettings(settings: Settings | null): Settings | null {
   return settings ? {
     ...settings,
     dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false,
+    etcqliteEnabled: settings.etcqliteEnabled ?? false,
     logRetentionDays: settings.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS,
     kubeconfigDirectory: settings.kubeconfigDirectory ?? '',
     ...normalizeExperiencePreferences(settings),
@@ -466,6 +468,14 @@ export function SettingsPage({
       <WSLSettings />
       <WindowsContainersSettings />
       <RegistrySettings />
+      <EtcqliteSettings
+        enabled={draft?.etcqliteEnabled ?? false}
+        savedEnabled={settings?.etcqliteEnabled ?? false}
+        disabled={draftDisabled}
+        saveDisabled={saveDisabled}
+        onChange={(enabled) => updateDraft('etcqliteEnabled', enabled)}
+        onSave={save}
+      />
 
       <section className="integration" aria-labelledby="sqlite-integration-title">
         <div className="hygieneIntro">

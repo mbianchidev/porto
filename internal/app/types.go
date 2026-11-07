@@ -42,6 +42,7 @@ type Settings struct {
 	PruneRemoteTracking       bool     `json:"pruneRemoteTracking"`
 	ProtectedBranches         []string `json:"protectedBranches"`
 	SQLNotSoLiteEnabled       bool     `json:"sqlNotSoLiteEnabled"`
+	EtcqliteEnabled           bool     `json:"etcqliteEnabled"`
 	KillSwitchEnabled         bool     `json:"killSwitchEnabled"`
 	SendboxEnabled            bool     `json:"sendboxEnabled"`
 	DockerEnabled             bool     `json:"dockerEnabled"`

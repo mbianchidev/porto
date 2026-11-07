@@ -58,6 +58,11 @@ func (p *ClusterProvisioner) DeleteAutoscalingNode(ctx context.Context, clusterN
 		return err
 	}
 	defer release()
+	if request.Etcqlite != nil {
+		if _, err := p.backupEtcqliteDatastore(ctx, request); err != nil {
+			return fmt.Errorf("autoscaled k3s VM removal refused without a verified native recovery image: %w", err)
+		}
+	}
 	machineName := clusterMachineName(clusterRuntimeName(request), groupName, 1)
 	instances, err := p.vms.ListAll(ctx)
 	if err != nil {

@@ -38,6 +38,7 @@ import (
 	"github.com/mbianchidev/porto/internal/discovery"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
 	"github.com/mbianchidev/porto/internal/environments"
+	"github.com/mbianchidev/porto/internal/etcqlite"
 	"github.com/mbianchidev/porto/internal/extensions"
 	"github.com/mbianchidev/porto/internal/gitutil"
 	"github.com/mbianchidev/porto/internal/imageanalysis"
@@ -115,6 +116,8 @@ type Server struct {
 	healthClient       *http.Client
 	readinessDelay     time.Duration
 	sqnsl              *sqnsl.Manager
+	etcqlite           *etcqlite.Manager
+	etcqliteErr        error
 	killSwitch         *killswitch.Manager
 	tlsCertificates    *certificates.Manager
 	userHomeDir        func() (string, error)
@@ -269,6 +272,16 @@ func New(st *store.Store, ui fs.FS) *Server {
 	server.syncShares = syncshares.New(syncRoot, runner, dockerManager.SynchronizedShareProvider())
 	server.imageAnalysis = imageanalysis.New(filepath.Join(syncRoot, "image-analysis"), dockerManager, nil)
 	server.operations = operations.New(filepath.Join(syncRoot, "operations"))
+	server.etcqlite = etcqlite.New(filepath.Join(syncRoot, "etcqlite"), runner)
+	if st != nil {
+		if settings, err := st.Settings(context.Background()); err != nil {
+			server.etcqliteErr = fmt.Errorf("read Etcqlite opt-in setting: %w", err)
+		} else {
+			server.etcqlite.SetEnabled(settings.EtcqliteEnabled)
+		}
+	}
+	clusterProvisioner.SetEtcqliteProvider(server.etcqlite)
+	server.etcqlite.SetGuard(clusterProvisioner.ProtectEtcqliteLifecycle)
 	server.managementRoot = filepath.Join(syncRoot, "environments")
 	server.environments, server.environmentsErr = environments.Open(server.managementRoot, nil)
 	server.extensions, server.extensionsErr = extensions.Open(filepath.Join(syncRoot, "extensions"), nil, server.targetJSON)
@@ -439,6 +452,13 @@ func (s *Server) Run(ctx context.Context) error {
 		return fmt.Errorf("listen Porto daemon on %s: %w", config.DaemonAddr, err)
 	}
 	defer daemonListener.Close()
+	if settings.EtcqliteEnabled {
+		go func() {
+			if err := s.etcqlite.Reconcile(ctx); err != nil {
+				slog.Error("Reconcile explicitly enabled Etcqlite members", "error", err)
+			}
+		}()
+	}
 	var webhookServer *http.Server
 	if s.delivery != nil {
 		listener, err := net.Listen("tcp", "127.0.0.1:0")
@@ -818,6 +838,7 @@ func (s *Server) routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/integrations/kill-switch/sync", s.syncKillSwitchNow)
 	mux.HandleFunc("POST /api/integrations/kill-switch/cleanup", s.cleanupWithKillSwitch)
 	mux.HandleFunc("GET /api/integrations/sendbox", s.sendboxStatus)
+	s.etcqliteRoutes(mux)
 	mux.HandleFunc("GET /api/tls", s.tlsStatus)
 	mux.HandleFunc("POST /api/tls/renew", s.renewTLS)
 	s.platformRoutes(mux)
@@ -931,7 +952,19 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.store.SetSettings(r.Context(), settings); err != nil {
+	persist := func() error { return s.store.SetSettings(r.Context(), settings) }
+	if s.etcqlite != nil {
+		err = s.etcqlite.Configure(r.Context(), settings.EtcqliteEnabled, persist)
+	} else if settings.EtcqliteEnabled {
+		err = errors.New("Etcqlite integration is unavailable")
+	} else {
+		err = persist()
+	}
+	if err != nil {
+		if errors.Is(err, etcqlite.ErrConflict) || errors.Is(err, etcqlite.ErrUnsupported) || errors.Is(err, etcqlite.ErrUnavailable) {
+			writeEtcqliteError(w, err)
+			return
+		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}

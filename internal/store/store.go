@@ -117,6 +117,7 @@ CREATE TABLE IF NOT EXISTS settings (
  prune_remote_tracking INTEGER NOT NULL DEFAULT 1,
  protected_branches TEXT NOT NULL,
  sql_not_so_lite_enabled INTEGER NOT NULL DEFAULT 0,
+ etcqlite_enabled INTEGER NOT NULL DEFAULT 0,
  kill_switch_enabled INTEGER NOT NULL DEFAULT 0,
  sendbox_enabled INTEGER NOT NULL DEFAULT 0,
  docker_enabled INTEGER NOT NULL DEFAULT 1,
@@ -171,6 +172,9 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("sql_not_so_lite_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("etcqlite_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("kill_switch_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -520,17 +524,18 @@ func (s *Store) DeleteProject(ctx context.Context, id int64) error {
 
 func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var settings app.Settings
-	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled, killSwitchEnabled, sendboxEnabled int
+	var cleanupLocal, cleanupRemote, prune, sqlNotSoLiteEnabled, etcqliteEnabled, killSwitchEnabled, sendboxEnabled int
 	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,kubeconfig_directory,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,etcqlite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,kubeconfig_directory,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
 			&prune,
 			&protected,
 			&sqlNotSoLiteEnabled,
+			&etcqliteEnabled,
 			&killSwitchEnabled,
 			&sendboxEnabled,
 			&dockerEnabled,
@@ -557,6 +562,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	settings.CleanupRemoteMerged = cleanupRemote == 1
 	settings.PruneRemoteTracking = prune == 1
 	settings.SQLNotSoLiteEnabled = sqlNotSoLiteEnabled == 1
+	settings.EtcqliteEnabled = etcqliteEnabled == 1
 	settings.KillSwitchEnabled = killSwitchEnabled == 1
 	settings.SendboxEnabled = sendboxEnabled == 1
 	settings.DockerEnabled = dockerEnabled == 1
@@ -600,12 +606,13 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,kubeconfig_directory=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,etcqlite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,kubeconfig_directory=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
 		string(protected),
 		boolInt(settings.SQLNotSoLiteEnabled),
+		boolInt(settings.EtcqliteEnabled),
 		boolInt(settings.KillSwitchEnabled),
 		boolInt(settings.SendboxEnabled),
 		boolInt(settings.DockerEnabled),

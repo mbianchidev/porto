@@ -19,6 +19,7 @@ import (
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/datafiles"
 	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/mbianchidev/porto/internal/etcqlite"
 	"github.com/mbianchidev/porto/internal/kubernetes"
 	"github.com/mbianchidev/porto/internal/operations"
 	"github.com/mbianchidev/porto/internal/vm"
@@ -1466,11 +1467,15 @@ func writeRuntimeError(w http.ResponseWriter, err error) {
 	status := http.StatusInternalServerError
 	message := strings.ToLower(err.Error())
 	switch {
-	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict), errors.Is(err, operations.ErrBusy):
+	case errors.Is(err, portodocker.ErrConflict), errors.Is(err, datafiles.ErrConflict), errors.Is(err, operations.ErrBusy), errors.Is(err, etcqlite.ErrConflict):
 		status = http.StatusConflict
-	case errors.Is(err, datafiles.ErrInvalid), errors.Is(err, datafiles.ErrLimit):
+	case errors.Is(err, datafiles.ErrInvalid), errors.Is(err, datafiles.ErrLimit), errors.Is(err, etcqlite.ErrInvalid):
 		status = http.StatusBadRequest
 	case errors.Is(err, datafiles.ErrUnsupported):
+		status = http.StatusNotImplemented
+	case errors.Is(err, etcqlite.ErrDisabled), errors.Is(err, etcqlite.ErrUnavailable):
+		status = http.StatusServiceUnavailable
+	case errors.Is(err, etcqlite.ErrUnsupported):
 		status = http.StatusNotImplemented
 	case strings.Contains(message, "unavailable"),
 		strings.Contains(message, "not found"),

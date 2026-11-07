@@ -34,6 +34,7 @@ export type Settings = {
   pruneRemoteTracking: boolean
   protectedBranches: string[]
   sqlNotSoLiteEnabled: boolean
+  etcqliteEnabled?: boolean
   killSwitchEnabled: boolean
   sendboxEnabled: boolean
   dockerEnabled: boolean
@@ -724,6 +725,7 @@ export type KubernetesClusterRequest = {
   version: string
   controlPlane: KubernetesMachineSpec
   nodeGroups: KubernetesNodeGroupSpec[]
+  etcqlite?: { name: string; clusterID?: string; fingerprint?: string }
 }
 
 export type KubernetesScaleNodeGroupRequest = {
@@ -747,12 +749,51 @@ export type KubernetesCluster = {
   message?: string
   stateSince?: string
   version?: string
+  etcqlite?: { name: string; clusterID: string; fingerprint: string }
   upgrade?: {
     version: string
     startedAt: string
     backupPath?: string
     error?: string
   }
+}
+
+export type EtcqliteInstance = {
+  format: number
+  name: string
+  clusterID: string
+  state: string
+  message: string
+  desiredRunning: boolean
+  createdAt: string
+  members: {
+    name: string
+    id: string
+    clientURL: string
+    peerURL: string
+    listen: string
+    peerListen: string
+    initialized: boolean
+    state?: string
+    message?: string
+    process?: { pid: number }
+  }[]
+}
+
+export type EtcqliteStatus = {
+  supported: boolean
+  state: string
+  message: string
+  instances: EtcqliteInstance[]
+}
+
+export type EtcqliteBackup = {
+  id: string
+  path: string
+  name: string
+  clusterID: string
+  createdAt: string
+  snapshots: { member: string; path: string; status: { sha256: string; revision: number; bytes: number } }[]
 }
 
 export type KubernetesAutoscalingConfig = {

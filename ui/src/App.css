@@ -1676,6 +1676,13 @@ dd a {
   text-transform: uppercase;
 }
 
+.etcqliteIntegration code,
+.etcqliteIntegration .integrationStatus,
+.etcqliteIntegration .hintLine {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
 .integrationStatus.ready {
   box-shadow: inset 2px 0 0 var(--olive);
 }

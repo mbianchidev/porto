@@ -16,6 +16,8 @@ import type {
   KubernetesContext,
   KubernetesMachineSpec,
   RuntimeProviderStatus,
+  EtcqliteInstance,
+  EtcqliteStatus,
 } from '../types'
 
 const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskGiB: 20 }
@@ -32,6 +34,16 @@ type ClusterMutationControl = {
 
 function isRunning(cluster: KubernetesCluster) {
   return cluster.state.toLowerCase() === 'running'
+}
+
+function guestReachableDatastore(instance: EtcqliteInstance) {
+  return ['ready', 'degraded'].includes(instance.state) && instance.members.length > 0 && instance.members.every((member) => {
+    if (!URL.canParse(member.clientURL)) return false
+    const address = new URL(member.clientURL)
+    const host = address.hostname.toLowerCase()
+    return address.protocol === 'https:' && !host.startsWith('127.') && host !== '[::1]' && host !== 'localhost' &&
+      !host.endsWith('.localhost') && !member.listen.startsWith('127.') && !member.listen.startsWith('[::1]')
+  })
 }
 
 function isLifecycleLocked(cluster: KubernetesCluster) {
@@ -190,6 +202,7 @@ export function KubernetesOverview({
   const [clusterName, setClusterName] = useState('')
   const [clusterVersion, setClusterVersion] = useState('')
   const [clusterProvider, setClusterProvider] = useState<'kind' | 'k0s' | 'k3s'>('k3s')
+  const [clusterDatastore, setClusterDatastore] = useState('')
   const [controlPlane, setControlPlane] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
   const [initialWorkers, setInitialWorkers] = useState(1)
   const [installingProvider, setInstallingProvider] = useState<string | null>(null)
@@ -213,6 +226,10 @@ export function KubernetesOverview({
     [],
     'runtime:providers',
   )
+  const datastores = usePolledResource<EtcqliteStatus | null>(
+    (signal) => creatingCluster && clusterProvider === 'k3s' ? apiGet('/api/integrations/etcqlite', signal) : Promise.resolve(null),
+    10000, [creatingCluster, clusterProvider],
+  )
   const items = contexts
   const clusterItems = clusters.data ?? []
   const selectedCluster = clusterItems.find((cluster) => cluster.name === selectedClusterName) ?? null
@@ -233,6 +250,11 @@ export function KubernetesOverview({
     const requestedName = clusterName.trim()
     const requestedProvider = clusterProvider
     if (requestedName === '' || Object.hasOwn(pendingCreations, requestedName)) return
+    const datastore = datastores.data?.instances?.find((instance) => instance.name === clusterDatastore)
+    if (requestedProvider === 'k3s' && clusterDatastore !== '' && (!datastore || !guestReachableDatastore(datastore) || datastores.error)) {
+      notifyError('kubernetes', 'Selected Etcqlite datastore is not ready or guest-reachable. No cluster was created.')
+      return
+    }
     const progress = `Creating ${requestedProvider} cluster ${requestedName}. Provisioning nodes and add-ons can take several minutes.`
     const startedAt = Date.now()
     setClusterCreateError('')
@@ -250,10 +272,12 @@ export function KubernetesOverview({
       nodeGroups: initialWorkers > 0
         ? [{ name: 'workers', count: initialWorkers, machine: { ...DEFAULT_MACHINE }, labels: {}, taints: [] }]
         : [],
+      ...(requestedProvider === 'k3s' && datastore ? { etcqlite: { name: datastore.name, clusterID: datastore.clusterID } } : {}),
     }
     setClusterName('')
     setClusterVersion('')
     setClusterProvider('k3s')
+    setClusterDatastore('')
     setControlPlane(DEFAULT_MACHINE)
     setInitialWorkers(1)
     const creation = apiSend<KubernetesCluster>('/api/kubernetes/clusters', 'POST', request)
@@ -516,6 +540,7 @@ export function KubernetesOverview({
                     <dl className="runtimeGrid">
                       <div><dt>Context</dt><dd>{selectedCluster.context}</dd></div>
                       <div><dt>Provider</dt><dd>{selectedCluster.provider}</dd></div>
+                      <div><dt>Datastore</dt><dd>{selectedCluster.etcqlite ? `Etcqlite ${selectedCluster.etcqlite.name} (${selectedCluster.etcqlite.clusterID})` : 'Provider default'}</dd></div>
                       <div><dt>Version</dt><dd>{selectedCluster.version || 'Unpinned'}</dd></div>
                       <div><dt>State</dt><dd>{selectedCluster.state}</dd></div>
                       {clusterElapsed(selectedCluster, clock) && <div><dt>Elapsed</dt><dd>{clusterElapsed(selectedCluster, clock)}</dd></div>}
@@ -650,12 +675,28 @@ export function KubernetesOverview({
                   </label>
                   <label>
                     <span>Provider</span>
-                    <select value={clusterProvider} onChange={(event) => setClusterProvider(event.target.value as 'kind' | 'k0s' | 'k3s')}>
+                    <select value={clusterProvider} onChange={(event) => {
+                      const provider = event.target.value
+                      if (provider === 'kind' || provider === 'k3s' || provider === 'k0s') {
+                        setClusterProvider(provider)
+                        setClusterDatastore('')
+                      }
+                    }}>
                       <option value="kind">kind — Kubernetes in Porto containers</option>
                       <option value="k3s">k3s — lightweight Kubernetes on Lima VMs</option>
                       <option value="k0s">k0s — conformant Kubernetes on Lima VMs</option>
                     </select>
                   </label>
+                  {clusterProvider === 'k3s' && (
+                    <label>
+                      <span>k3s datastore</span>
+                      <select value={clusterDatastore} disabled={!datastores.data?.supported || datastores.data.state === 'disabled' || !!datastores.error} onChange={(event) => setClusterDatastore(event.target.value)}>
+                        <option value="">Provider default (unchanged)</option>
+                        {(datastores.data?.instances ?? []).filter(guestReachableDatastore).map((instance) => <option key={instance.clusterID} value={instance.name}>Etcqlite: {instance.name}</option>)}
+                      </select>
+                      <small>{datastores.error || 'Optional for new k3s only. Enable, initialize and start a guest-reachable datastore in Settings first. No migration or automatic startup.'}</small>
+                    </label>
+                  )}
                   <label>
                     <span>Version (optional)</span>
                     <input

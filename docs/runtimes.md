@@ -50,6 +50,7 @@ Additional runtime features require:
 | Kubernetes manifest/RBAC administration | An explicitly selected managed kubeconfig and its native Kubernetes permissions |
 | Helm lifecycle | Checksum-pinned Helm 4.3.1 (bundled on all six desktop targets), selected namespace and native release/resource permissions |
 | Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
+| Optional Etcqlite datastore | Separately installed matching native binaries on macOS/Linux, explicit gate/lifecycle, private node-local storage and guest-reachable mTLS endpoints for new k3s only; see [Etcqlite](integrations.md#etcqlite). |
 | Standalone virtual machines | Lima and a supported VZ or QEMU driver. QEMU is required for snapshots and foreign-architecture kernels; Windows desktop releases bundle it. |
 
 Missing optional tools do not prevent native projects or the Porto daemon from running.
@@ -654,6 +655,13 @@ porto kubernetes cluster create k0s-dev --provider k0s --workers 2
 
 kind node topology is fixed at creation time. Recreate a kind cluster to
 change its node count; k3s and k0s node groups can be scaled in place.
+
+Datastore defaults are unchanged. A **new k3s cluster** can explicitly select an
+already initialized, running [Etcqlite datastore](integrations.md#new-k3s-clusters)
+with `--etcqlite <name>` or the creation inspector's **k3s datastore** selector.
+This never installs/starts the integration, rewrites an existing cluster or
+claims kind/k0s compatibility. The guest verifies mTLS readiness before k3s setup;
+the binding pins cluster identity, endpoints and CA rather than a reusable name.
 
 ### Upgrade a cluster
 
