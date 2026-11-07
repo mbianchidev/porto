@@ -74,7 +74,9 @@ distinct member/PID assignments and separate private `members/<member>/data`
 directories. The runtime never shares a live SQLite/WAL directory between nodes.
 
 Use an absolute, node-local `PORTO_HOME`. State, certificates and stdout/stderr
-files live under `PORTO_HOME/etcqlite/instances/<name>`. macOS requires a local
+files live under `PORTO_HOME/etcqlite/instances/<opaque-name-token>`. Directory
+components use Porto's SHA-256-derived file tokens rather than user-provided path
+text; metadata preserves the display name and immutable IDs. macOS requires a local
 filesystem; Linux accepts ext, XFS, Btrfs, ZFS, overlay, tmpfs and ramfs and rejects
 other/shared/network/FUSE filesystems. tmpfs/ramfs are suitable only for disposable
 fixtures, not persistent datastores. Missing or symlinked node data is not
@@ -168,7 +170,8 @@ porto etcqlite disable
 ```
 
 Removal first verifies native images, then stops only ownership-verified members
-and moves the original directory to `PORTO_HOME/etcqlite/retained/<name>-<ID>`.
+and moves the original directory to
+`PORTO_HOME/etcqlite/retained/<opaque-name-and-ID-token>`.
 It never recursively purges data or backup history. It opens the **existing**
 private `data/node.lock` without creating/truncating/replacing it, holds the same
 nonblocking exclusive `flock` through retention/restoration and refuses a current

@@ -904,7 +904,7 @@ func (m *Manager) Delete(ctx context.Context, name, clusterID string, confirm bo
 	if err := privateDirectory(retained); err != nil {
 		return "", err
 	}
-	target := filepath.Join(retained, name+"-"+clusterID)
+	target := m.retainedPath(name, clusterID)
 	if _, err := os.Lstat(target); !errors.Is(err, os.ErrNotExist) {
 		return "", fmt.Errorf("%w: retained Etcqlite identity already exists or cannot be inspected", ErrConflict)
 	}
@@ -923,7 +923,7 @@ func (m *Manager) Restore(ctx context.Context, name, clusterID string) (Instance
 	if _, err := identityETag(clusterID, "1"); err != nil || !namePattern.MatchString(name) {
 		return Instance{}, fmt.Errorf("%w: restore requires the original name and clusterID", ErrInvalid)
 	}
-	source := filepath.Join(m.root, "retained", name+"-"+clusterID)
+	source := m.retainedPath(name, clusterID)
 	instance, err := loadInstanceDirectory(source, name)
 	if err != nil {
 		return Instance{}, err

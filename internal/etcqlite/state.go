@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/mbianchidev/porto/internal/config"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -194,7 +196,11 @@ func writeJSONAtomic(path string, value any) (err error) {
 }
 
 func (m *Manager) instancePath(name string) string {
-	return filepath.Join(m.root, "instances", name)
+	return filepath.Join(m.root, "instances", config.KubernetesClusterFileToken(name))
+}
+
+func (m *Manager) retainedPath(name, clusterID string) string {
+	return filepath.Join(m.root, "retained", config.KubernetesClusterFileToken(name+"\x00"+clusterID))
 }
 
 func (m *Manager) memberPath(instance Instance, member Member) string {
@@ -310,7 +316,21 @@ func (m *Manager) names() ([]string, error) {
 		if !entry.IsDir() || !namePattern.MatchString(entry.Name()) {
 			return nil, fmt.Errorf("unrecognized entry in Etcqlite-owned instances: %s", entry.Name())
 		}
-		names = append(names, entry.Name())
+		path := filepath.Join(m.root, "instances", entry.Name(), "metadata.json")
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read Etcqlite instance identity: %w", err)
+		}
+		var identity struct {
+			Name string `json:"name"`
+		}
+		if err := json.Unmarshal(data, &identity); err != nil {
+			return nil, fmt.Errorf("decode Etcqlite instance identity: %w", err)
+		}
+		if !namePattern.MatchString(identity.Name) || entry.Name() != config.KubernetesClusterFileToken(identity.Name) {
+			return nil, errors.New("Etcqlite instance directory does not match its persistent identity")
+		}
+		names = append(names, identity.Name)
 	}
 	return names, nil
 }
