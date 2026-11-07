@@ -98,8 +98,9 @@ empty groups remain hidden for the selected environment; there is no local
 fallback.
 
 On narrow screens, use **Open navigation**. Escape, the backdrop, or selecting a
-page closes the panel and returns focus to its trigger. Keyboard users can also
-use **Skip to content** to bypass the sidebar.
+page closes the panel and returns focus to its trigger. Dismissing the panel
+without changing pages preserves any open resource inspector. Keyboard users
+can also use **Skip to content** to bypass the sidebar.
 
 ## Find and target resources
 

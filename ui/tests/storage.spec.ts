@@ -364,6 +364,21 @@ test('volume inspector returns focus to search if its resource is filtered out',
   await expect(search).toBeFocused()
 })
 
+test('dismissing narrow navigation preserves the background volume inspector', async ({ page }) => {
+  await mockStorage(page)
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/docker-storage')
+  await page.getByRole('button', { name: 'Manage volume synthetic-data' }).click()
+  const inspector = page.getByRole('complementary', { name: 'synthetic-data inspector' })
+  await expect(inspector).toBeVisible()
+  await page.getByRole('button', { name: 'Open navigation', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await expect(page.getByRole('button', { name: 'Open navigation', exact: true })).toBeFocused()
+  await expect(inspector).toBeVisible()
+  await page.keyboard.press('Escape')
+  await expect(inspector).not.toBeVisible()
+})
+
 test('storage cleanup is category-scoped, identity-bound and cancellable', async ({ page }, testInfo) => {
   const fixture = await mockStorage(page)
   await page.goto('/#/volumes')

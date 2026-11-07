@@ -120,6 +120,7 @@ function AppShell() {
       if (event.defaultPrevented) return
       if (event.key === 'Escape') {
         event.preventDefault()
+        event.stopImmediatePropagation()
         setRailOpen(false)
         return
       }
@@ -141,9 +142,9 @@ function AppShell() {
         target?.focus()
       }
     }
-    window.addEventListener('keydown', onKeyDown)
+    window.addEventListener('keydown', onKeyDown, true)
     return () => {
-      window.removeEventListener('keydown', onKeyDown)
+      window.removeEventListener('keydown', onKeyDown, true)
       document.body.style.overflow = previousOverflow
       if (toggle.getClientRects().length > 0) toggle.focus({ preventScroll: true })
     }
