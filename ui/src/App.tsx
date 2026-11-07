@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import './App.css'
 import './management.css'
 import { apiGet } from './api'
@@ -80,6 +80,9 @@ function AppShell() {
   const backend = environmentID === 'local' ? 'local' : environment?.backend || 'unknown'
   const [route, setRoute] = useState<RouteID>(routeFromHash)
   const [railOpen, setRailOpen] = useState(false)
+  const railRef = useRef<HTMLElement>(null)
+  const railToggleRef = useRef<HTMLButtonElement>(null)
+  const mainRef = useRef<HTMLElement>(null)
   const [kubeContext, setKubeContext] = useState('')
   const [settingsOverride, setSettingsOverride] = useState<Settings | null>(null)
   const [podDebugContainers, setPodDebugContainers] = useState<Record<string, KubernetesDebugContainer>>({})
@@ -91,10 +94,60 @@ function AppShell() {
     if (window.location.hash === '' || window.location.hash === '#/') {
       window.location.hash = '#/localhost-ing'
     }
-    const onHashChange = () => setRoute(routeFromHash())
+    const onHashChange = () => {
+      setRoute(routeFromHash())
+      setRailOpen(false)
+    }
+    const viewport = window.matchMedia('(max-width: 860px)')
+    const onViewportChange = () => setRailOpen(false)
     window.addEventListener('hashchange', onHashChange)
-    return () => window.removeEventListener('hashchange', onHashChange)
+    viewport.addEventListener('change', onViewportChange)
+    return () => {
+      window.removeEventListener('hashchange', onHashChange)
+      viewport.removeEventListener('change', onViewportChange)
+    }
   }, [])
+
+  useEffect(() => {
+    const navigation = railRef.current
+    const toggle = railToggleRef.current
+    if (!narrow || !railOpen || !navigation || !toggle) return
+    const previousOverflow = document.body.style.overflow
+    document.body.style.overflow = 'hidden'
+    const currentLink = navigation.querySelector<HTMLElement>('[aria-current="page"]') ?? navigation.querySelector<HTMLElement>('a[href]')
+    currentLink?.focus({ preventScroll: true })
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.defaultPrevented) return
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        setRailOpen(false)
+        return
+      }
+      if (event.key !== 'Tab') return
+      const controls = [toggle, ...navigation.querySelectorAll<HTMLElement>('a[href], button:not(:disabled)')]
+        .filter((element) => element.getClientRects().length > 0)
+      const first = controls[0]
+      const last = controls[controls.length - 1]
+      const focused = document.activeElement
+      if (event.shiftKey && focused === first) {
+        event.preventDefault()
+        last?.focus()
+      } else if (!event.shiftKey && focused === last) {
+        event.preventDefault()
+        first?.focus()
+      } else if (focused !== toggle && !navigation.contains(focused)) {
+        event.preventDefault()
+        const target = event.shiftKey ? last : first
+        target?.focus()
+      }
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('keydown', onKeyDown)
+      document.body.style.overflow = previousOverflow
+      if (toggle.getClientRects().length > 0) toggle.focus({ preventScroll: true })
+    }
+  }, [narrow, railOpen])
 
   const settingsResource = usePolledResource<Settings>((signal) => apiGet('/api/settings', signal), 0, [])
   const interfaceSettings = usePolledResource<Settings | null>((signal) => environmentID === 'local' ? Promise.resolve(null) : apiGet('/api/environments/local/api/settings', signal), 0, [])
@@ -157,16 +210,22 @@ function AppShell() {
           FORM: Broadcast patchbay operations desk extended into a three-pane infrastructure
           control board, distinctly Porto.
         */}
+        <a className="skipLink" href="#main-content" onClick={(event) => {
+          event.preventDefault()
+          mainRef.current?.focus()
+        }}>Skip to content</a>
         <ActionButton
+          ref={railToggleRef}
           className="railToggle"
           label={railOpen ? 'Close navigation' : 'Open navigation'}
           icon={railOpen ? 'close' : 'menu'}
           aria-expanded={railOpen}
+          aria-controls="primary-navigation"
           onClick={() => setRailOpen((value) => !value)}
         />
-        <Rail route={route} open={railOpen} backend={backend} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
-        {narrow && railOpen && <button type="button" className="railScrim" aria-label="Close navigation" onClick={() => setRailOpen(false)} />}
-        <main className="appMain">
+        <Rail ref={railRef} route={route} open={railOpen} narrow={narrow} backend={backend} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
+        {narrow && railOpen && <button type="button" className="railScrim" tabIndex={-1} aria-label="Dismiss navigation" onClick={() => setRailOpen(false)} />}
+        <main ref={mainRef} id="main-content" className="appMain" tabIndex={-1} inert={narrow && railOpen}>
           <EnvironmentSelector profiles={environments.data ?? []} error={environments.error} />
           {!supportedRoute ? <section className="empty unavailableNotice" role="status"><h1>Unsupported target capability</h1><p>This workflow is not exposed by the selected {backend} environment. Choose a supported resource view or explicitly switch environments. No local fallback is used.</p></section> : <>
           {['containers', 'images', 'builds', 'volumes', 'networks', 'docker-storage', 'migration'].includes(route) && <ContainerModeSelector />}

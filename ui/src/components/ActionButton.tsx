@@ -1,7 +1,7 @@
-import type { ButtonHTMLAttributes } from 'react'
+import type { ComponentProps } from 'react'
 import { Icon, type IconName } from './Icon'
 
-type ActionButtonProps = ButtonHTMLAttributes<HTMLButtonElement> & {
+type ActionButtonProps = ComponentProps<'button'> & {
   label: string
   icon: IconName
 }

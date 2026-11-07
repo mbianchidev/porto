@@ -1,58 +1,104 @@
-import { useState } from 'react'
+import { useState, type Ref } from 'react'
 import { Icon, type IconName } from './Icon'
 import { StatusLamp } from './StatusLamp'
 import type { RouteID } from '../types'
 import { environmentSupportsRoute } from '../managementTypes'
 
-type NavItem = { id: RouteID; label: string; icon: IconName; badge?: string }
-type NavGroup = { id: string; title: string; items: NavItem[]; collapsible?: boolean }
+type NavItem = { id: RouteID; label: string; icon?: IconName; badge?: string }
+type NavSection = { id: string; title: string; items: NavItem[] }
+type NavGroup = { id: string; title: string; icon: IconName; items: NavItem[]; sections?: NavSection[] }
 
 const NAV_GROUPS: NavGroup[] = [
-  { id: 'local-development', title: 'Local development', items: [{ id: 'localhost-ing', label: 'localhost-ing', icon: 'localhost' }, { id: 'applications', label: 'Applications', icon: 'deployments' }] },
+  {
+    id: 'development',
+    title: 'Development',
+    icon: 'localhost',
+    items: [
+      { id: 'localhost-ing', label: 'localhost-ing', icon: 'localhost' },
+      { id: 'applications', label: 'Applications', icon: 'deployments' },
+      { id: 'databases', label: 'Databases', icon: 'databases', badge: 'Soon' },
+    ],
+  },
   {
     id: 'containers',
     title: 'Containers',
-    collapsible: true,
+    icon: 'containers',
     items: [
       { id: 'containers', label: 'Containers', icon: 'containers' },
-      { id: 'images', label: 'Images', icon: 'images' },
-      { id: 'builds', label: 'Builds', icon: 'builds' },
-      { id: 'volumes', label: 'Volumes', icon: 'volumes' },
       { id: 'networks', label: 'Networks', icon: 'networks' },
-      { id: 'docker-storage', label: 'Storage', icon: 'volumes' },
-      { id: 'migration', label: 'Migrate runtime data', icon: 'images' },
+    ],
+    sections: [
+      {
+        id: 'containers-images', title: 'Images & builds',
+        items: [
+          { id: 'images', label: 'Images' },
+          { id: 'builds', label: 'Builds' },
+        ],
+      },
+      {
+        id: 'containers-data', title: 'Storage & data',
+        items: [
+          { id: 'volumes', label: 'Volumes' },
+          { id: 'docker-storage', label: 'Storage tools' },
+          { id: 'migration', label: 'Migrate runtime data' },
+        ],
+      },
     ],
   },
   {
     id: 'kubernetes',
     title: 'Kubernetes',
-    collapsible: true,
-    items: [
-      { id: 'kubernetes', label: 'Overview', icon: 'kubernetes' },
-      { id: 'kubernetes-admin', label: 'Resources and RBAC', icon: 'configs' },
-      { id: 'helm', label: 'Helm releases', icon: 'deployments' },
-      { id: 'gitops', label: 'GitOps applications', icon: 'deployments' },
-      { id: 'deployments', label: 'Deployments', icon: 'deployments' },
-      { id: 'pods', label: 'Pods', icon: 'pods' },
-      { id: 'services', label: 'Services', icon: 'services' },
-      { id: 'jobs', label: 'Jobs', icon: 'jobs' },
-      { id: 'cronjobs', label: 'CronJobs', icon: 'cronjobs' },
-      { id: 'port-forwards', label: 'Port forwarding', icon: 'portForward' },
-      { id: 'storage', label: 'Storage', icon: 'volumes' },
-      { id: 'gateways', label: 'Gateway API', icon: 'networks' },
-      { id: 'configs', label: 'Configs', icon: 'configs' },
-      { id: 'secrets', label: 'Secrets', icon: 'secrets' },
-      { id: 'nodes', label: 'Nodes', icon: 'nodes' },
+    icon: 'kubernetes',
+    items: [{ id: 'kubernetes', label: 'Overview', icon: 'kubernetes' }],
+    sections: [
+      {
+        id: 'kubernetes-workloads', title: 'Workloads',
+        items: [
+          { id: 'deployments', label: 'Deployments' },
+          { id: 'pods', label: 'Pods' },
+          { id: 'jobs', label: 'Jobs' },
+          { id: 'cronjobs', label: 'Scheduled jobs' },
+        ],
+      },
+      {
+        id: 'kubernetes-networking', title: 'Networking',
+        items: [
+          { id: 'services', label: 'Services' },
+          { id: 'port-forwards', label: 'Port forwarding' },
+          { id: 'gateways', label: 'Gateway API' },
+        ],
+      },
+      {
+        id: 'kubernetes-storage', title: 'Storage & config',
+        items: [
+          { id: 'storage', label: 'Storage' },
+          { id: 'configs', label: 'ConfigMaps' },
+          { id: 'secrets', label: 'Secrets' },
+        ],
+      },
+      {
+        id: 'kubernetes-delivery', title: 'Delivery',
+        items: [
+          { id: 'helm', label: 'Helm releases' },
+          { id: 'gitops', label: 'GitOps applications' },
+        ],
+      },
+      {
+        id: 'kubernetes-cluster', title: 'Cluster tools',
+        items: [
+          { id: 'nodes', label: 'Nodes' },
+          { id: 'kubernetes-admin', label: 'Resources and RBAC' },
+        ],
+      },
     ],
   },
-  { id: 'databases', title: 'Databases', collapsible: true, items: [{ id: 'databases', label: 'Databases', icon: 'databases', badge: 'Soon' }] },
-  { id: 'virtual-machines', title: 'Virtual machines', collapsible: true, items: [{ id: 'machines', label: 'Machines', icon: 'machines' }] },
   {
     id: 'system',
     title: 'System',
-    collapsible: true,
+    icon: 'settings',
     items: [
       { id: 'environments', label: 'Environments and fleets', icon: 'networks' },
+      { id: 'machines', label: 'Virtual machines', icon: 'machines' },
       { id: 'extensions', label: 'Extensions', icon: 'configs' },
       { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
       { id: 'activity', label: 'Activity', icon: 'activity' },
@@ -64,21 +110,60 @@ const NAV_GROUPS: NavGroup[] = [
 export function Rail({
   route,
   open,
+  narrow,
   kubernetesRunningCount,
   onNavigate,
   backend = 'local',
+  ref,
 }: {
   route: RouteID
   open: boolean
+  narrow: boolean
   kubernetesRunningCount: number
   onNavigate: () => void
   backend?: string
+  ref?: Ref<HTMLElement>
 }) {
-  const [collapsedGroups, setCollapsedGroups] = useState<Record<string, boolean>>({})
+  const groups = NAV_GROUPS.map((group) => ({
+    ...group,
+    items: group.items.filter((item) => environmentSupportsRoute(backend, item.id)),
+    sections: (group.sections ?? []).map((section) => ({
+      ...section,
+      items: section.items.filter((item) => environmentSupportsRoute(backend, item.id)),
+    })).filter((section) => section.items.length > 0),
+  })).filter((group) => group.items.length > 0 || group.sections.length > 0)
+  const activeGroup = groups.find((group) => group.items.some((item) => item.id === route)
+    || group.sections.some((section) => section.items.some((item) => item.id === route)))
+  const activeGroupID = activeGroup?.id ?? groups[0]?.id ?? null
+  const activeSectionID = activeGroup?.sections.find((section) => section.items.some((item) => item.id === route))?.id ?? null
+  const initialExpansion = { route, backend, open, group: activeGroupID, section: activeSectionID }
+  const [expanded, setExpanded] = useState<{
+    route: RouteID; backend: string; open: boolean; group: string | null; section: string | null
+  }>(initialExpansion)
+
+  if (expanded.route !== route || expanded.backend !== backend || expanded.open !== open) {
+    setExpanded(initialExpansion)
+  }
+
+  function renderLink(item: NavItem) {
+    return (
+      <a
+        key={item.id}
+        href={`#/${item.id}`}
+        className={route === item.id ? 'active' : undefined}
+        aria-current={route === item.id ? 'page' : undefined}
+        onClick={onNavigate}
+      >
+        {item.icon && <Icon name={item.icon} />}
+        <span>{item.label}</span>
+        {item.badge && <small className="railItemBadge">{item.badge}</small>}
+      </a>
+    )
+  }
 
   return (
-    <nav className={`rail ${open ? 'open' : ''}`} aria-label="Primary navigation">
-      <a className="railBrand" href="#/localhost-ing" aria-label="Porto">
+    <nav ref={ref} id="primary-navigation" className={`rail ${open ? 'open' : ''}`} aria-label="Primary navigation" inert={narrow && !open}>
+      <a className="railBrand" href="#/localhost-ing" aria-label="Porto" onClick={onNavigate}>
         <span className="brandMark" aria-hidden="true"><span /><span /><span /></span>
         <span className="railBrandText">
           <strong>Porto</strong>
@@ -86,54 +171,60 @@ export function Rail({
         </span>
       </a>
       <div className="railGroups">
-        {NAV_GROUPS.map((group) => {
-          const items = group.items.filter((item) => environmentSupportsRoute(backend, item.id))
-          if (!items.length) return null
-          const collapsed = group.collapsible && collapsedGroups[group.id]
+        {groups.map((group) => {
+          const groupExpanded = expanded.group === group.id
           const groupContentID = `rail-group-${group.id}`
-          const titleContent = (
-            <>
-              <span>{group.title}</span>
-              <span className="railGroupMeta">
-                {group.id === 'kubernetes' && (
-                  <span className="railClusterSignal">
-                    <StatusLamp state={kubernetesRunningCount > 0 ? 'running' : 'stopped'} />
-                    {kubernetesRunningCount > 0 ? `${kubernetesRunningCount} running` : 'idle'}
-                  </span>
-                )}
-                {group.collapsible && <span className="railGroupChevron"><Icon name="chevronDown" /></span>}
-              </span>
-            </>
-          )
+          const groupTitleID = `rail-title-${group.id}`
           return (
             <div className="railGroup" key={group.id}>
-              {group.collapsible ? (
-                <button
-                  className="railGroupTitle railGroupToggle"
-                  type="button"
-                  aria-expanded={!collapsed}
-                  aria-controls={groupContentID}
-                  onClick={() => setCollapsedGroups((current) => ({ ...current, [group.id]: !current[group.id] }))}
-                >
-                  {titleContent}
-                </button>
-              ) : (
-                <span className="railGroupTitle">{titleContent}</span>
-              )}
-              <div className="railGroupItems" id={groupContentID} hidden={collapsed}>
-                {items.map((item) => (
-                  <a
-                    key={item.id}
-                    href={`#/${item.id}`}
-                    className={route === item.id ? 'active' : ''}
-                    aria-current={route === item.id ? 'page' : undefined}
-                    onClick={onNavigate}
-                  >
-                    <Icon name={item.icon} />
-                    <span>{item.label}</span>
-                    {item.badge && <small className="railItemBadge">{item.badge}</small>}
-                  </a>
-                ))}
+              <button
+                className={`railGroupTitle railGroupToggle ${activeGroup?.id === group.id ? 'containsActive' : ''}`}
+                type="button"
+                aria-expanded={groupExpanded}
+                aria-controls={groupContentID}
+                aria-labelledby={groupTitleID}
+                aria-describedby={group.id === 'kubernetes' ? 'rail-cluster-status' : undefined}
+                onClick={() => setExpanded((current) => ({
+                  ...current,
+                  group: groupExpanded ? null : group.id,
+                  section: group.id === activeGroup?.id ? activeSectionID : null,
+                }))}
+              >
+                <Icon name={group.icon} />
+                <span className="railGroupName" id={groupTitleID}>{group.title}</span>
+                <span className="railGroupMeta">
+                  {group.id === 'kubernetes' && (
+                    <span className="railClusterSignal" id="rail-cluster-status">
+                      <StatusLamp state={kubernetesRunningCount > 0 ? 'running' : 'stopped'} />
+                      {kubernetesRunningCount > 0 ? `${kubernetesRunningCount} running` : 'idle'}
+                    </span>
+                  )}
+                  <span className="railGroupChevron"><Icon name="chevronDown" /></span>
+                </span>
+              </button>
+              <div className="railGroupItems" id={groupContentID} hidden={!groupExpanded}>
+                {group.items.map(renderLink)}
+                {group.sections.map((section) => {
+                  const sectionExpanded = expanded.section === section.id
+                  const sectionContentID = `rail-section-${section.id}`
+                  return (
+                    <div className="railSection" key={section.id}>
+                      <button
+                        className={`railSectionToggle ${activeSectionID === section.id ? 'containsActive' : ''}`}
+                        type="button"
+                        aria-expanded={sectionExpanded}
+                        aria-controls={sectionContentID}
+                        onClick={() => setExpanded((current) => ({ ...current, group: group.id, section: sectionExpanded ? null : section.id }))}
+                      >
+                        <span>{section.title}</span>
+                        <span className="railGroupChevron"><Icon name="chevronDown" /></span>
+                      </button>
+                      <div className="railSectionItems" id={sectionContentID} hidden={!sectionExpanded}>
+                        {section.items.map(renderLink)}
+                      </div>
+                    </div>
+                  )
+                })}
               </div>
             </div>
           )

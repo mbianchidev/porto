@@ -197,7 +197,7 @@ test('same-named resources, actions, caches and terminal streams stay on their e
   await expect.poll(() => requests.filter((request) => request.method === 'POST' && request.path.endsWith('/stop')).map((request) => request.environment)).toEqual([alpha, beta])
   await selector.selectOption(imported)
   await page.goto('/#/kubernetes-admin')
-  await expect(page.getByRole('link', { name: 'Machines', exact: true })).toHaveCount(0)
+  await expect(page.getByRole('link', { name: 'Virtual machines', exact: true })).toHaveCount(0)
   await expect.poll(() => requests.some((request) => request.environment === imported && request.path === '/api/kubernetes/admin/discovery')).toBe(true)
   expect(requests.filter((request) => request.method !== 'GET' && request.environment === 'local')).toHaveLength(0)
 })

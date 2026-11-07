@@ -367,7 +367,7 @@ test('volume inspector returns focus to search if its resource is filtered out',
 test('storage cleanup is category-scoped, identity-bound and cancellable', async ({ page }, testInfo) => {
   const fixture = await mockStorage(page)
   await page.goto('/#/volumes')
-  const storageLink = page.locator('#rail-group-containers').getByRole('link', { name: 'Storage', exact: true })
+  const storageLink = page.locator('#rail-group-containers').getByRole('link', { name: 'Storage tools', exact: true })
   await expect(storageLink).toHaveAttribute('href', '#/docker-storage')
   await storageLink.click()
   const category = page.getByLabel('Cleanup category')
