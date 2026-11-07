@@ -583,13 +583,14 @@ func kubernetesClusterCmd(args []string) error {
 		workerCPUs := fs.Int("worker-cpus", 2, "CPUs per worker")
 		workerMemory := fs.Int("worker-memory", 2048, "memory MiB per worker")
 		workerDisk := fs.Int("worker-disk", 20, "disk GiB per worker")
+		datastore := fs.String("etcqlite", "", "explicit named ready Etcqlite datastore for a NEW k3s cluster")
 		if err := parseInterspersed(fs, args[1:], nil); err != nil {
 			return err
 		}
 		if fs.NArg() != 1 {
 			return errors.New("usage: porto kubernetes cluster create <name> [--version v...] [--workers 1]")
 		}
-		return runtimePOST("/api/kubernetes/clusters", kubernetes.ClusterRequest{
+		request := kubernetes.ClusterRequest{
 			Name:     fs.Arg(0),
 			Provider: *provider,
 			Version:  *version,
@@ -600,7 +601,18 @@ func kubernetesClusterCmd(args []string) error {
 				Name: "workers", Count: *workers,
 				Machine: kubernetes.MachineSpec{CPUs: *workerCPUs, MemoryMiB: *workerMemory, DiskGiB: *workerDisk},
 			}},
-		})
+		}
+		if *datastore != "" {
+			if *provider != "k3s" {
+				return errors.New("--etcqlite is supported only for new k3s clusters")
+			}
+			clusterID, err := etcqliteIdentity(*datastore)
+			if err != nil {
+				return err
+			}
+			request.Etcqlite = &kubernetes.EtcqliteDatastore{Name: *datastore, ClusterID: clusterID}
+		}
+		return runtimePOST("/api/kubernetes/clusters", request)
 	case "start", "stop":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: porto kubernetes cluster %s <name>", args[0])

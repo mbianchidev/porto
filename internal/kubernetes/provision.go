@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/mbianchidev/porto/internal/config"
+	"github.com/mbianchidev/porto/internal/etcqlite"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/vm"
 )
@@ -80,6 +81,7 @@ type ClusterProvisioner struct {
 	registrySync   map[string]registrySyncState
 	registryConfig func(context.Context) ([]byte, error)
 	kindRemovals   map[string]kindRemovalGrant
+	etcqlite       EtcqliteProvider
 }
 
 type ClusterProvisionerOption func(*ClusterProvisioner)
@@ -209,32 +211,34 @@ type NodeGroupSpec struct {
 }
 
 type ClusterRequest struct {
-	Name         string          `json:"name"`
-	RuntimeName  string          `json:"runtimeName,omitempty"`
-	Provider     string          `json:"provider"`
-	Version      string          `json:"version"`
-	Phase        string          `json:"phase,omitempty"`
-	Error        string          `json:"error,omitempty"`
-	CreatedAt    string          `json:"createdAt,omitempty"`
-	RunningAt    string          `json:"runningAt,omitempty"`
-	APIPort      int             `json:"apiPort,omitempty"`
-	ControlPlane MachineSpec     `json:"controlPlane"`
-	NodeGroups   []NodeGroupSpec `json:"nodeGroups"`
-	Upgrade      *UpgradeState   `json:"upgrade,omitempty"`
+	Name         string             `json:"name"`
+	RuntimeName  string             `json:"runtimeName,omitempty"`
+	Provider     string             `json:"provider"`
+	Version      string             `json:"version"`
+	Phase        string             `json:"phase,omitempty"`
+	Error        string             `json:"error,omitempty"`
+	CreatedAt    string             `json:"createdAt,omitempty"`
+	RunningAt    string             `json:"runningAt,omitempty"`
+	APIPort      int                `json:"apiPort,omitempty"`
+	ControlPlane MachineSpec        `json:"controlPlane"`
+	NodeGroups   []NodeGroupSpec    `json:"nodeGroups"`
+	Upgrade      *UpgradeState      `json:"upgrade,omitempty"`
+	Etcqlite     *EtcqliteDatastore `json:"etcqlite,omitempty"`
 }
 
 type Cluster struct {
-	Name           string        `json:"name"`
-	Provider       string        `json:"provider"`
-	State          string        `json:"state"`
-	Context        string        `json:"context"`
-	KubeconfigPath string        `json:"kubeconfigPath"`
-	Server         string        `json:"server"`
-	Nodes          []string      `json:"nodes"`
-	Message        string        `json:"message,omitempty"`
-	StateSince     string        `json:"stateSince,omitempty"`
-	Version        string        `json:"version,omitempty"`
-	Upgrade        *UpgradeState `json:"upgrade,omitempty"`
+	Name           string             `json:"name"`
+	Provider       string             `json:"provider"`
+	State          string             `json:"state"`
+	Context        string             `json:"context"`
+	KubeconfigPath string             `json:"kubeconfigPath"`
+	Server         string             `json:"server"`
+	Nodes          []string           `json:"nodes"`
+	Message        string             `json:"message,omitempty"`
+	StateSince     string             `json:"stateSince,omitempty"`
+	Version        string             `json:"version,omitempty"`
+	Upgrade        *UpgradeState      `json:"upgrade,omitempty"`
+	Etcqlite       *EtcqliteDatastore `json:"etcqlite,omitempty"`
 }
 
 func NewClusterProvisioner(
@@ -277,6 +281,10 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	request.RunningAt = ""
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, or k3s")
+	}
+	datastore, err := p.resolveEtcqlite(ctx, &request, true)
+	if err != nil {
+		return Cluster{}, err
 	}
 	if p.kubeconfigs != nil {
 		if err := p.kubeconfigs.CheckAvailable(
@@ -366,6 +374,16 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		if err == nil {
 			return
 		}
+		if request.Etcqlite != nil && len(created) > 0 {
+			backupContext, cancel := context.WithTimeout(context.Background(), etcqlite.OperationTimeout)
+			_, backupErr := p.backupEtcqliteDatastore(backupContext, request)
+			cancel()
+			if backupErr != nil {
+				err = errors.Join(err, fmt.Errorf("failed-cluster VMs retained because native recovery could not be verified: %w", backupErr))
+				err = errors.Join(err, p.writeClusterFailure(request, err))
+				return
+			}
+		}
 		var cleanupErrors []error
 		for index := len(created) - 1; index >= 0; index-- {
 			if deleteErr := p.vms.Delete(context.Background(), created[index], true); deleteErr != nil {
@@ -400,7 +418,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		return Cluster{}, fmt.Errorf("create Kubernetes control-plane VM: %w", err)
 	}
 	created = append(created, serverName)
-	if err = p.installVMKubernetes(ctx, request.Provider, serverName, request.Version, true, "", "", nil, nil); err != nil {
+	if err = p.installVMKubernetes(ctx, request.Provider, serverName, request.Version, true, "", "", nil, nil, datastore); err != nil {
 		return Cluster{}, err
 	}
 	serverIPOutput, err := p.vms.Exec(ctx, serverName, []string{"hostname", "-I"}, nil)
@@ -465,6 +483,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		KubeconfigPath: kubeconfigPath,
 		Server:         "https://127.0.0.1:" + strconv.Itoa(request.APIPort),
 		Nodes:          nodes,
+		Etcqlite:       request.Etcqlite,
 	}
 	if _, registrationErr := p.registerKubeconfig(ctx, request.Name); registrationErr != nil {
 		warning, fatalErr := kubeconfigRegistrationResult(request.Name, registrationErr)
@@ -890,6 +909,11 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 		return err
 	}
 	defer releaseName()
+	if request.Etcqlite != nil {
+		if _, err := p.backupEtcqliteDatastore(ctx, request); err != nil {
+			return fmt.Errorf("k3s deletion refused before changing any VM: %w", err)
+		}
+	}
 	var deleteErrors []error
 	if request.Provider == "kind" {
 		output, deleteErr := p.runKindDelete(ctx, request)
@@ -1242,6 +1266,7 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 			Message:        request.Error,
 			Version:        request.Version,
 			Upgrade:        request.Upgrade,
+			Etcqlite:       request.Etcqlite,
 		}
 		if request.Phase != "" {
 			cluster.State = request.Phase
@@ -1497,6 +1522,11 @@ func (p *ClusterProvisioner) ScaleNodeGroup(
 			}
 		}
 	} else {
+		if request.Etcqlite != nil {
+			if _, err := p.backupEtcqliteDatastore(ctx, request); err != nil {
+				return fmt.Errorf("k3s worker removal refused before cordon/drain: %w", err)
+			}
+		}
 		for index := currentGroup.Count; index > group.Count; index-- {
 			nodeName := clusterMachineName(runtimeName, group.Name, index)
 			if _, exists := instanceByName[nodeName]; !exists {
@@ -1928,6 +1958,11 @@ func (p *ClusterProvisioner) setRunning(
 	request ClusterRequest,
 	running bool,
 ) error {
+	if running {
+		if _, err := p.resolveEtcqlite(ctx, &request, false); err != nil {
+			return err
+		}
+	}
 	request.Provider = normalizeProvider(request.Provider)
 	names := clusterNodeNames(request)
 	if request.Provider == "kind" {
@@ -2192,12 +2227,13 @@ func (p *ClusterProvisioner) installVMKubernetes(
 	token string,
 	labels map[string]string,
 	taints []string,
+	datastore ...*etcqlite.Connection,
 ) error {
 	switch provider {
 	case "k0s":
 		return p.installK0s(ctx, machineName, version, server, token, labels, taints)
 	case "k3s":
-		return p.installK3s(ctx, machineName, version, server, serverIP, token, labels, taints)
+		return p.installK3s(ctx, machineName, version, server, serverIP, token, labels, taints, datastore...)
 	default:
 		return fmt.Errorf("provider %q does not use VM provisioning", provider)
 	}
@@ -2321,7 +2357,19 @@ func (p *ClusterProvisioner) installK3s(
 	token string,
 	labels map[string]string,
 	taints []string,
+	datastore ...*etcqlite.Connection,
 ) error {
+	var datastoreArgs []string
+	if len(datastore) > 0 && datastore[0] != nil {
+		if !server {
+			return errors.New("Etcqlite datastore credentials belong only on the k3s server")
+		}
+		var err error
+		datastoreArgs, err = p.configureK3sEtcqlite(ctx, machineName, datastore[0])
+		if err != nil {
+			return err
+		}
+	}
 	if _, err := p.vms.Exec(ctx, machineName, []string{
 		"sh", "-c", "curl -sfL https://get.k3s.io -o /tmp/porto-install-k3s.sh",
 	}, nil); err != nil {
@@ -2341,6 +2389,7 @@ func (p *ClusterProvisioner) installK3s(
 			"server", "--disable", "traefik", "--disable", "gateway-api-crd",
 			"--node-name", machineName, "--write-kubeconfig-mode", "600",
 		)
+		args = append(args, datastoreArgs...)
 	} else {
 		args = append(args, "agent", "--node-name", machineName)
 	}

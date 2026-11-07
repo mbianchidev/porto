@@ -22,6 +22,7 @@ release version.
 | Volume archives | Explicit manifest `version: 1` | Readers reject other versions, unknown manifest fields and unsupported ownership modes. Do not silently add manifest fields or change checksum serialization while claiming format-1 compatibility. |
 | Resource identity | SHA-256 of the compact, ordered `Resource` JSON representation | JSON field names, order, omission rules and values affect previews, schedule keys and recovery ownership. A resource name is not an identity. |
 | Operation recovery | Persisted outcomes plus fresh runtime ownership/integrity checks | An interrupted operation is not automatically replayed or rolled back. Recorded metadata is not proof that an unrecorded runtime mutation did not happen. |
+| Optional Etcqlite | Additive `etcqlite_enabled` setting (default false), separate format-1 native instance metadata and verified recovery manifests | Existing clusters retain their datastore defaults. New k3s bindings pin decimal-string cluster IDs and endpoint/CA fingerprints. Native images use their own SQLite/SHA-256-trailer contract, not volume archive 1. See [Etcqlite recovery](integrations.md#native-recovery-and-reversible-removal). |
 
 New changes must identify which of these boundaries they cross before assigning
 a release version. A compatible change needs reader/writer fixtures for both

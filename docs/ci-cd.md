@@ -52,6 +52,28 @@ rollback, legacy operation JSON and the local operation-history HTTP shape.
 Its fixtures are synthetic and do not claim historical-binary downgrade or
 real runtime/driver acceptance.
 
+Optional Etcqlite tests cover disabled no-op gates, full-width identity,
+private mTLS/SPIFFE material, restart ownership, occupied listeners, native
+snapshot preconditions/integrity, k3s credential/readiness ordering and reversible
+writer-lock-protected retention. The ordinary suites use synthetic fixtures and
+do not start a real Kubernetes cluster. For separately installed matching native
+binaries on macOS/Linux, run isolated native acceptance explicitly:
+
+```sh
+PORTO_ETCQLITE_TEST_BINARY=/absolute/install/bin/etcqlite \
+  go test ./internal/etcqlite -count=1
+npm --prefix ui test -- tests/etcqlite.spec.ts
+```
+
+Native acceptance creates only private temporary standalone/three-member data,
+uses ephemeral host ports and stops only its own identity-verified processes.
+Setting `PORTO_ETCQLITE_TEST_VM` additionally runs a bounded mTLS
+`host.lima.internal` readiness/identity probe in that explicitly authorized isolated
+Lima VM. It stages and removes only a unique private `/tmp/porto-etcqlite-probe-*`
+directory; it does not start, stop or reconfigure guest workloads or mount host data.
+Do not select an ordinary user VM or a guest running a measured qualification job.
+No CI workflow is added or enabled for this integration.
+
 The Unix Git-timeout fixture reexecutes its already-running test binary instead
 of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and

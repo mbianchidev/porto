@@ -128,6 +128,9 @@ func runCommandWithDiagnostics(args []string, diagnostics *logging.Session) erro
 	if args[0] == "image-analysis" {
 		return imageAnalysisCmd(args[1:])
 	}
+	if args[0] == "etcqlite" {
+		return etcqliteCmd(args[1:])
+	}
 	if dockerShortcut(args[0]) {
 		return runDockerCLI(args)
 	}
@@ -759,6 +762,7 @@ Commands:
   porto port <project> <port>
   porto kill-switch status|install|sync|cleanup
   porto sendbox start|stop <project>
+  porto etcqlite status|enable|disable|create|start|stop|backup|backups|delete|restore|logs
   porto docker <Docker command> [args...]
   porto ps|run|create|exec|rm|compose|buildx|image|images|network|volume [args...]
   porto docker cli <args...>

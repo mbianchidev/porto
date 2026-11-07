@@ -243,6 +243,10 @@ func (p *ClusterProvisioner) UpgradeCluster(ctx context.Context, name string, up
 	if spec.Version == upgrade.Version && spec.Phase == "" {
 		return result, fmt.Errorf("cluster already uses %s", upgrade.Version)
 	}
+	backupPath, err := p.backupEtcqliteDatastore(ctx, spec)
+	if err != nil {
+		return result, fmt.Errorf("Kubernetes upgrade refused before draining any workload: %w", err)
+	}
 	initiallyCordoned := make(map[string]bool, len(nodes))
 	for _, node := range nodes {
 		initiallyCordoned[node.Metadata.Name] = node.Spec.Unschedulable
@@ -252,7 +256,7 @@ func (p *ClusterProvisioner) UpgradeCluster(ctx context.Context, name string, up
 	}
 	spec.Phase = "upgrading"
 	spec.Error = ""
-	spec.Upgrade = &UpgradeState{Version: upgrade.Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), InitiallyCordoned: initiallyCordoned}
+	spec.Upgrade = &UpgradeState{Version: upgrade.Version, StartedAt: time.Now().UTC().Format(time.RFC3339Nano), InitiallyCordoned: initiallyCordoned, BackupPath: backupPath}
 	if err := p.writeClusterMetadata(spec); err != nil {
 		return result, err
 	}
@@ -285,7 +289,7 @@ func (p *ClusterProvisioner) UpgradeCluster(ctx context.Context, name string, up
 	if err = p.writeClusterMetadata(spec); err != nil {
 		return result, err
 	}
-	return UpgradeResult{Version: upgrade.Version, Message: "All nodes upgraded and Ready."}, nil
+	return UpgradeResult{Version: upgrade.Version, BackupPath: backupPath, Message: "All nodes upgraded and Ready."}, nil
 }
 
 func validateUpgradeNodes(spec ClusterRequest, nodes []upgradeNode, target string) error {
