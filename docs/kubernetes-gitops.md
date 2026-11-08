@@ -1,6 +1,6 @@
 # Kubernetes-native GitOps delivery
 
-Open **Kubernetes > GitOps applications**. Select the Kubernetes context,
+Open **Kubernetes > Delivery > GitOps applications**. Select the Kubernetes context,
 application namespace, controller and controller namespace before preparing an
 operation. Flux and Argo CD are alternative application owners. Discovery never
 installs either controller, and using one does not require the other.

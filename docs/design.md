@@ -204,9 +204,24 @@ section layout and three-signal status treatment as the other settings panels.
 Desktop startup and automatic-download preferences remain in **Desktop behavior**.
 
 ### Navigation rail
-Dark in every theme. Sections use native-button toggles with chevrons and
-`aria-expanded`. The active route gets a subtle light fill and a neutral inset
-marker.
+Dark in every theme. Four main sections, **Development**, **Containers**,
+**Kubernetes**, and **System**, replace the long flat inventory of links.
+Containers and Kubernetes use short, task-oriented subgroups; every destination
+still opens its own existing page, not a combined screen or extra tab strip.
+Nested links use indentation instead of repeating resource icons.
+
+Only one main section and one subgroup expand at a time. Opening a page,
+following a bookmark, or using browser history automatically reveals its branch.
+Native-button toggles use chevrons, `aria-controls`, and `aria-expanded`; the
+current page keeps `aria-current`, a subtle light fill, and a neutral inset
+marker. See the [complete navigation map](daily-use.md#navigate-the-dashboard).
+
+At 860px or below, the closed rail is inert and hidden. Opening it focuses the current
+page link, traps keyboard focus within navigation and its close button, and
+blocks interaction with the underlying content. Escape, the scrim, or choosing
+a page closes it and restores focus to the trigger. Navigation controls have
+44px touch targets. A **Skip to content** link bypasses the rail without changing
+the current route.
 
 ### Status lamp
 A 9px LED-style circle: olive running, amber starting, red crashed or error,

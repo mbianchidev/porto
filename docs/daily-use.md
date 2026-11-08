@@ -72,6 +72,36 @@ These preferences are stored in the desktop app's user-data directory. The web
 dashboard shows the controls as unavailable because a browser cannot manage
 login items or a system tray.
 
+## Navigate the dashboard
+
+The sidebar has four main sections. Expand a section, then a short subgroup
+when needed; each link still opens a separate, focused page.
+
+| Section | Group | Pages |
+| --- | --- | --- |
+| Development | Direct links | localhost-ing, Applications, Databases (Soon) |
+| Containers | Direct links | Containers, Networks |
+| Containers | Images & builds | Images, Builds |
+| Containers | Storage & data | Volumes, Storage tools, Migrate runtime data |
+| Kubernetes | Direct link | Overview |
+| Kubernetes | Workloads | Deployments, Pods, Jobs, Scheduled jobs |
+| Kubernetes | Networking | Services, Port forwarding, Gateway API |
+| Kubernetes | Storage & config | Storage, ConfigMaps, Secrets |
+| Kubernetes | Delivery | Helm releases, GitOps applications |
+| Kubernetes | Cluster tools | Nodes, Resources and RBAC |
+| System | Direct links | Environments and fleets, Virtual machines, Extensions, Diagnostics, Activity, Settings |
+
+Only one section and one subgroup expand at a time. Opening a page, including
+an existing bookmark or browser-history entry, reveals its section and subgroup
+automatically. Existing page URLs are unchanged. Unsupported destinations and
+empty groups remain hidden for the selected environment; there is no local
+fallback.
+
+On narrow screens, use **Open navigation**. Escape, the backdrop, or selecting a
+page closes the panel and returns focus to its trigger. Dismissing the panel
+without changing pages preserves any open resource inspector. Keyboard users
+can also use **Skip to content** to bypass the sidebar.
+
 ## Find and target resources
 
 Resource filters offer a searchable dropdown of currently discovered names,

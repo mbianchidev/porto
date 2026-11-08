@@ -230,7 +230,7 @@ Start with the [documentation index](docs/README.md), or go directly to a guide:
 
 | Guide | Topics |
 | --- | --- |
-| [Installation](docs/installation.md) and [daily use](docs/daily-use.md) | Releases, source builds, startup at login/boot, and updates |
+| [Installation](docs/installation.md) and [daily use](docs/daily-use.md) | Releases, source builds, dashboard navigation, startup at login/boot, and updates |
 | [Project management](docs/project-management.md) and [branches](docs/branch-management.md) | Discovery, setup, CLI commands, ports, readiness, logs, and worktrees |
 | [Local runtimes](docs/runtimes.md) and [Docker Engine](docs/docker-engine.md) | Containers, Compose, Kubernetes, VMs, and Docker API compatibility |
 | [Kubernetes upgrades](docs/kubernetes-upgrades.md) and [autoscaling](docs/kubernetes-autoscaling.md) | Upgrade/recovery boundaries, Karpenter workers, and KEDA |

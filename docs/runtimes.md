@@ -338,7 +338,7 @@ returning an error; daemon shutdown also cancels pending startup checks.
 
 ### Manifest, workload and permission administration
 
-Open **Kubernetes > Resources and RBAC** for native administration. Existing
+Open **Kubernetes > Cluster tools > Resources and RBAC** for native administration. Existing
 Deployment, Job, CronJob, ConfigMap and Secret inspectors link to the same
 resource using only explicit context/namespace/name metadata. There is no second
 cluster/context store or administrator fallback: an unavailable managed
@@ -436,7 +436,7 @@ Kubernetes does not treat them as protected Secret data.
 
 ### Helm repositories and releases
 
-Open **Kubernetes > Helm releases**. Desktop packages include Apache-2.0
+Open **Kubernetes > Delivery > Helm releases**. Desktop packages include Apache-2.0
 Helm **4.3.1**, with architecture-native macOS/Linux/Windows AMD64/ARM64 archives,
 reviewed SHA-256 pins, startup version/license checks and diagnostic tool status.
 Source installations need that exact reviewed version on `PATH`. Other tool

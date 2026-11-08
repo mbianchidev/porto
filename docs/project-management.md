@@ -126,7 +126,7 @@ For containers, the Docker-compatible endpoint, local Kubernetes clusters, pod i
 
 ## Application delivery
 
-Open **Local development > Applications** to create a Compose application or
+Open **Development > Applications** to create a Compose application or
 adopt an existing Compose project. This is delivery metadata for Porto's
 existing project, not another application runtime: project IDs, Compose project
 labels (`porto-ID`), process logs, stable loopback port overrides, start/stop
