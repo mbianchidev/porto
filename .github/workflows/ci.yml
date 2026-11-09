@@ -589,6 +589,7 @@ jobs:
           bash -n electron/apply-update.sh
           node --check ../scripts/desktop-runtime-symlinks.cjs
           node --check ../scripts/macos-development-app.cjs
+          node --check ../scripts/macos-signing.cjs
 
       - name: Audit desktop dependencies
         if: matrix.node == '26'
@@ -677,7 +678,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
-          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs
+          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs scripts/macos-signing.test.cjs
 
       - name: Validate Windows update helper
         if: runner.os == 'Windows'
@@ -707,13 +708,15 @@ jobs:
       - name: Verify DMGs
         if: runner.os == 'macOS'
         shell: bash
+        env:
+          VERSION: ${{ steps.installers.outputs.version }}
+          GOARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
           test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "1"
           test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "1"
-          for image in dist/*.dmg; do
-            hdiutil verify "$image"
-          done
+          node scripts/macos-signing.cjs --verify-dmg \
+            "dist/porto-desktop_${VERSION}_darwin_${GOARCH}.dmg" "$GOARCH" "$VERSION"
 
       - name: Install macOS QEMU for the explicitly software-emulated hosted fixture
         if: runner.os == 'macOS'

@@ -927,8 +927,46 @@ Both macOS DMGs and desktop tar archives are built on macOS from the same
 app, retaining Electron's original fuse-aware Node dispatch and stdio
 initialization. Packaging uses an invocation-private temporary directory so
 parallel builds cannot remove one another's staged icon catalog or application.
-Resource changes must precede any future code signing/notarization. macOS tar
-archives omit AppleDouble metadata and retain the existing release layout.
+After resource finalization, including icon compilation and symlink normalization,
+`scripts/package-desktop-installer.sh` seals the app with
+`scripts/macos-signing.cjs` before electron-builder creates the DMG. The
+`--prepackaged` builder path does not sign the app itself. The same sealed app
+enters the desktop tar archive, which omits AppleDouble metadata and retains
+the existing release layout.
+
+The default signature is explicitly ad-hoc on both Intel and Apple Silicon.
+Nested Electron code is signed inside-out with JIT, unsigned executable memory,
+and library-validation entitlements required by the hardened Electron runtime.
+Bundled daemon/runtime binaries stay byte-for-byte unchanged: their original
+signatures, executable permissions, portable symlinks, and checksum/version
+manifests are preserved and sealed as resources. Signing never patches the
+npm-installed Electron runtime.
+
+A valid existing certificate signature is verified and preserved rather than
+replaced with the ad-hoc fallback. To sign final prepackaged input with an
+already-imported Developer ID identity, set `CSC_NAME` and optionally
+`CSC_KEYCHAIN`. Explicit signing failures abort packaging; they never fall back
+to ad-hoc. `CSC_LINK` alone cannot import a certificate on the prepackaged path
+and is rejected instead of silently downgraded. Certificate provisioning and
+notarization remain separate, credentialed release setup.
+
+Both native installer CI architectures and both release DMGs run
+`macos-signing.cjs --verify-dmg <image.dmg> <amd64|arm64> <version>`.
+It verifies the image, mounts it read-only without opening Finder, and requires
+`codesign --verify --deep --strict` on the extracted `Porto.app`, matching
+application/daemon architectures, bundle identity, release version, executable
+permissions, runtime manifest, and portable symlinks. Its owned mount is detached
+on success and failure. `node --test scripts/macos-signing.test.cjs` additionally
+tests both architectures with synthetic native bundles, certificate-preservation
+policy, unchanged runtime bytes, metadata-free tar extraction, and rejected
+tampering/version/architecture mismatches without launching Porto or a daemon.
+
+Ad-hoc sealing detects corruption but is not Developer ID authentication or
+notarization and does not remove Gatekeeper warnings. Installers do not clear
+quarantine or weaken Gatekeeper. Release checksums and provenance are generated
+from final installer/archive bytes. Existing published releases remain immutable;
+consumers such as the verified Homebrew updater need a new release containing
+this packaging fix, not replacement assets under an existing tag.
 
 macOS packages include a native Icon Composer `.icon` asset made from Porto's
 existing artwork, with glass effects disabled, alongside the unchanged `.icns`

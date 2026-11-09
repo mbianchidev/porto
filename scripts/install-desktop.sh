@@ -347,7 +347,7 @@ if [ "$goos" = "darwin" ]; then
     "$install_root/Porto.app/Contents/Resources/runtime/bin/dive" \
     "Dive image inspector"
   echo "Installed Porto at $install_root/Porto.app"
-  echo "Until releases are signed, macOS may require: xattr -drs com.apple.quarantine \"$install_root/Porto.app\""
+  echo "macOS builds are not Developer ID signed or notarized by default. Gatekeeper may require approval in System Settings > Privacy & Security."
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
     open "$install_root/Porto.app"
   fi

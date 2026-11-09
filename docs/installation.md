@@ -307,8 +307,11 @@ bundled QEMU process still has the installation open, Porto keeps the desktop
 running and reports the blocking workload instead of disappearing before the
 installer starts.
 
-macOS DMGs still need Developer ID signing/notarization for warning-free
-launches, and Windows installers may show SmartScreen until releases are
+macOS DMGs and desktop archives contain the same ad-hoc sealed application.
+The seal verifies bundle integrity, including bundled runtime resources, but
+does not authenticate a Developer ID or provide notarization. Gatekeeper can
+still block launch; warning-free distribution requires Developer ID signing
+and notarization. Windows installers may show SmartScreen until releases are
 signed. Porto provides its own Docker-compatible API, containerd backend,
 BuildKit bridge, and Compose backend.
 
