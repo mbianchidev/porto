@@ -114,8 +114,11 @@ function AppShell() {
     if (!narrow || !railOpen || !navigation || !toggle) return
     const previousOverflow = document.body.style.overflow
     document.body.style.overflow = 'hidden'
-    const currentLink = navigation.querySelector<HTMLElement>('[aria-current="page"]') ?? navigation.querySelector<HTMLElement>('a[href]')
-    currentLink?.focus({ preventScroll: true })
+    const currentLink = navigation.querySelector<HTMLElement>('[aria-current="page"]')
+    const focusTarget = currentLink && currentLink.getClientRects().length > 0
+      ? currentLink
+      : navigation.querySelector<HTMLElement>('a[href]')
+    focusTarget?.focus({ preventScroll: true })
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.defaultPrevented) return
       if (event.key === 'Escape') {
