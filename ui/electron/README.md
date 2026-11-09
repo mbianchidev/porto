@@ -64,6 +64,11 @@ bash scripts/package-desktop-installer.sh darwin arm64 1.0.0 dist
 # Use: windows amd64 1.0.0 dist on Windows.
 ```
 
+macOS installer packaging ad-hoc seals the final app and its nested Electron
+code before creating the DMG and desktop archive. This is not Developer ID
+signing or notarization. See [release signing and verification](../../docs/ci-cd.md)
+for the credentialed signing path and read-only DMG checks.
+
 The assisted Windows installer leaves the desktop-shortcut option unchecked by
 default. Silent installs do not create a desktop shortcut.
 

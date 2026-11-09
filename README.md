@@ -6,7 +6,7 @@
 > [!WARNING]
 > **Porto is not production-ready.** Use it for local development and experimentation only, not production or critical workloads.
 >
-> **Releases are not code-signed**, and macOS builds are not notarized. Your operating system may display security warnings or block installation or launch.
+> **macOS apps are ad-hoc sealed, not Developer ID signed or notarized. Windows installers are not code-signed.** Your operating system may display security warnings or block installation or launch.
 
 Porto is an open-source local-first development control plane for native applications, Linux containers, capability-supported native Windows containers, Compose stacks, Kubernetes clusters, and Linux virtual machines. A Go daemon and CLI share state with an Electron desktop app or a browser dashboard, so you can discover repositories, start workloads, inspect their data, and manage local runtimes in one place.
 

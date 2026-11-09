@@ -117,6 +117,7 @@ jobs:
           bash -n ui/electron/apply-update.sh
           node --check scripts/desktop-runtime-symlinks.cjs
           node --check scripts/macos-development-app.cjs
+          node --check scripts/macos-signing.cjs
           bash -n scripts/download-file.sh
           bash -n scripts/bundle-desktop-runtime.sh
           bash -n scripts/package-desktop-installer.sh
@@ -247,7 +248,7 @@ jobs:
           npm --prefix ui ci
           npm --prefix ui run build
           npm --prefix ui/electron ci
-          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs
+          node --test ui/electron/desktop-logging.test.cjs scripts/macos-startup.test.cjs scripts/macos-signing.test.cjs
 
       - name: Package DMGs and desktop archives
         env:
@@ -257,6 +258,8 @@ jobs:
           mkdir -p dist
           for arch in amd64 arm64; do
             bash scripts/package-desktop-installer.sh darwin "$arch" "$VERSION" dist
+            node scripts/macos-signing.cjs --verify-dmg \
+              "dist/porto-desktop_${VERSION}_darwin_${arch}.dmg" "$arch" "$VERSION"
           done
           test "$(find dist -maxdepth 1 -name '*.dmg' | wc -l | tr -d ' ')" = "2"
           test "$(find dist -maxdepth 1 -name '*.tar.gz' | wc -l | tr -d ' ')" = "2"

@@ -120,6 +120,7 @@ if [ "$goos" = "darwin" ]; then
     echo "Packaged Porto.app is missing its executable daemon: $packaged_binary" >&2
     exit 1
   fi
+  node scripts/macos-signing.cjs --sign "$builder_input"
 else
   packaged_binary="$packaged_app/resources/$binary"
   if [ ! -f "$packaged_binary" ]; then
