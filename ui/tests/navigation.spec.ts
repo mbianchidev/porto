@@ -85,7 +85,7 @@ test('four main sections retain every existing destination in short groups', asy
   await page.goto('/#/localhost-ing', { waitUntil: 'networkidle' })
   const rail = page.getByRole('navigation', { name: 'Primary navigation' })
   await page.screenshot({ path: testInfo.outputPath('sidebar.png'), animations: 'disabled' })
-  await expect(rail.getByRole('button')).toHaveCount(4)
+  await expect(rail.getByRole('button')).toHaveCount(6)
   await expect(rail.getByRole('button', { name: 'Development', exact: true })).toHaveAttribute('aria-expanded', 'true')
   const destinations = navigation.flatMap((group) => [...group.pages, ...(group.sections ?? []).flatMap((section) => section.pages)])
   const hrefs = await rail.locator('a').evaluateAll((links) => links
@@ -93,8 +93,11 @@ test('four main sections retain every existing destination in short groups', asy
     .map((link) => link.getAttribute('href')).sort())
   expect(hrefs).toEqual(destinations.map(([id]) => `#/${id}`).sort())
 
+  let expandedCount = 0
   for (const group of navigation) {
     await expand(rail.getByRole('button', { name: group.name, exact: true }))
+    expandedCount += 1
+    await expect(rail.getByRole('button', { expanded: true })).toHaveCount(expandedCount)
     for (const [id, label] of group.pages) {
       const link = rail.getByRole('link', { name: label, exact: true })
       await expect(link).toBeVisible()
@@ -102,14 +105,88 @@ test('four main sections retain every existing destination in short groups', asy
     }
     for (const section of group.sections ?? []) {
       await expand(rail.getByRole('button', { name: section.name, exact: true }))
+      expandedCount += 1
       for (const [id, label] of section.pages) {
         const link = rail.getByRole('link', { name: label, exact: true })
         await expect(link).toBeVisible()
         await expect(link).toHaveAttribute('href', `#/${id}`)
       }
-      await expect(rail.getByRole('button', { expanded: true })).toHaveCount(2)
+      await expect(rail.getByRole('button', { expanded: true })).toHaveCount(expandedCount)
     }
   }
+})
+
+test('sections and subgroups expand independently and retain their nested choices', async ({ page }) => {
+  await page.goto('/#/gitops')
+  const rail = page.getByRole('navigation', { name: 'Primary navigation' })
+  const containers = rail.getByRole('button', { name: 'Containers', exact: true })
+  const kubernetes = rail.getByRole('button', { name: 'Kubernetes', exact: true })
+  const images = rail.getByRole('button', { name: 'Images & builds', exact: true })
+  const data = rail.getByRole('button', { name: 'Storage & data', exact: true })
+  const workloads = rail.getByRole('button', { name: 'Workloads', exact: true })
+  const delivery = rail.getByRole('button', { name: 'Delivery', exact: true })
+  await containers.click()
+  await expect(kubernetes).toHaveAttribute('aria-expanded', 'true')
+  await images.click()
+  await data.click()
+  await workloads.click()
+  for (const toggle of [containers, kubernetes, images, data, workloads, delivery]) {
+    await expect(toggle).toHaveAttribute('aria-expanded', 'true')
+  }
+  await expect(rail.getByRole('link', { name: 'Images', exact: true })).toBeVisible()
+  await expect(rail.getByRole('link', { name: 'Volumes', exact: true })).toBeVisible()
+  await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toBeVisible()
+  await expect(rail.getByRole('link', { name: 'GitOps applications', exact: true })).toBeVisible()
+
+  await containers.click()
+  await expect(rail.getByRole('link', { name: 'Images', exact: true })).toBeHidden()
+  await expect(kubernetes).toHaveAttribute('aria-expanded', 'true')
+  await containers.click()
+  await expect(images).toHaveAttribute('aria-expanded', 'true')
+  await expect(data).toHaveAttribute('aria-expanded', 'true')
+  await workloads.click()
+  await expect(delivery).toHaveAttribute('aria-expanded', 'true')
+  await expect(images).toHaveAttribute('aria-expanded', 'true')
+})
+
+test('expand all and collapse all control every section and subgroup with the keyboard', async ({ page }) => {
+  await page.goto('/#/gitops')
+  const rail = page.getByRole('navigation', { name: 'Primary navigation' })
+  const expandAll = rail.getByRole('button', { name: 'Expand all', exact: true })
+  const collapseAll = rail.getByRole('button', { name: 'Collapse all', exact: true })
+  const disclosureCount = navigation.reduce((count, group) => count + 1 + (group.sections?.length ?? 0), 0)
+  await expandAll.focus()
+  await page.keyboard.press('Enter')
+  await expect(expandAll).toBeFocused()
+  await expect(rail.getByRole('button', { expanded: true })).toHaveCount(disclosureCount)
+  for (const group of navigation) {
+    for (const [, label] of [...group.pages, ...(group.sections ?? []).flatMap((section) => section.pages)]) {
+      await expect(rail.getByRole('link', { name: label, exact: true })).toBeVisible()
+    }
+  }
+  for (const toggle of await rail.getByRole('button', { expanded: true }).all()) {
+    const contentID = await toggle.getAttribute('aria-controls')
+    expect(contentID).toBeTruthy()
+    await expect(page.locator(`[id="${contentID}"]`)).toBeVisible()
+  }
+
+  await page.keyboard.press('Tab')
+  await expect(collapseAll).toBeFocused()
+  await page.keyboard.press('Space')
+  await expect(collapseAll).toBeFocused()
+  await expect(rail.getByRole('button', { expanded: true, includeHidden: true })).toHaveCount(0)
+  await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(disclosureCount)
+  for (const group of navigation) {
+    await rail.getByRole('button', { name: group.name, exact: true }).click()
+    for (const section of group.sections ?? []) {
+      await expect(rail.getByRole('button', { name: section.name, exact: true })).toHaveAttribute('aria-expanded', 'false')
+      for (const [, label] of section.pages) {
+        await expect(rail.getByRole('link', { name: label, exact: true })).toBeHidden()
+      }
+    }
+  }
+  await expandAll.click()
+  await expect(rail.getByRole('button', { expanded: true })).toHaveCount(disclosureCount)
 })
 
 for (const [route, label, group, section] of [
@@ -133,22 +210,28 @@ for (const [route, label, group, section] of [
   })
 }
 
-test('navigation and browser history reopen the current branch without merging pages', async ({ page }) => {
+test('navigation and browser history reveal the current branch without closing other sections', async ({ page }) => {
   await page.goto('/#/gitops')
   const rail = page.getByRole('navigation', { name: 'Primary navigation' })
   await rail.getByRole('button', { name: 'Workloads', exact: true }).click()
-  await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await rail.getByRole('link', { name: 'Pods', exact: true }).click()
   await expect(page).toHaveURL(/#\/pods$/)
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toHaveAttribute('aria-current', 'page')
+  await rail.getByRole('button', { name: 'Delivery', exact: true }).click()
   await page.goBack()
   await expect(rail.getByRole('link', { name: 'GitOps applications', exact: true })).toHaveAttribute('aria-current', 'page')
+  await expect(rail.getByRole('button', { name: 'Workloads', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await rail.getByRole('button', { name: 'Workloads', exact: true }).click()
   await page.goForward()
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toHaveAttribute('aria-current', 'page')
+  await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await page.getByRole('link', { name: 'Manage environments', exact: true }).click()
   await expect(rail.getByRole('button', { name: 'System', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await expect(rail.getByRole('link', { name: 'Environments and fleets', exact: true })).toHaveAttribute('aria-current', 'page')
-  await expect(rail.getByRole('button', { name: 'Kubernetes', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await expect(rail.getByRole('button', { name: 'Kubernetes', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toBeVisible()
+  await expect(rail.getByRole('link', { name: 'GitOps applications', exact: true })).toBeVisible()
 })
 
 test('environment capabilities filter both groups and nested destinations without local fallback', async ({ page }) => {
@@ -167,6 +250,8 @@ test('environment capabilities filter both groups and nested destinations withou
   await expand(rail.getByRole('button', { name: 'Cluster tools', exact: true }))
   await expect(rail.getByRole('link', { name: 'Resources and RBAC', exact: true })).toBeVisible()
   await expect(rail.getByRole('link', { name: 'Nodes', exact: true })).toHaveCount(0)
+  await rail.getByRole('button', { name: 'Expand all', exact: true }).click()
+  await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(0)
 
   await selector.selectOption(dockerID)
   await expect(page.getByRole('heading', { name: 'Unsupported target capability' })).toBeVisible()
@@ -176,6 +261,10 @@ test('environment capabilities filter both groups and nested destinations withou
   await expect(rail.getByRole('link', { name: 'Containers', exact: true })).toBeVisible()
   await expect(rail.getByRole('button', { name: 'Images & builds', exact: true })).toHaveCount(0)
   await expect(rail.getByRole('button', { name: 'Storage & data', exact: true })).toHaveCount(0)
+  await rail.getByRole('button', { name: 'Collapse all', exact: true }).click()
+  await rail.getByRole('button', { name: 'Expand all', exact: true }).click()
+  await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(0)
+  await expect(rail.getByRole('button', { name: 'Kubernetes', exact: true })).toHaveCount(0)
 
   await selector.selectOption(remoteID)
   await expand(rail.getByRole('button', { name: 'Containers', exact: true }))
@@ -257,6 +346,7 @@ test('narrow navigation manages focus, dismissal, touch targets and viewport cha
 test('the grouped rail stays dark and fits desktop and narrow layouts in both themes', async ({ page }, testInfo) => {
   await page.goto('/#/gitops', { waitUntil: 'networkidle' })
   const rail = page.locator('nav[aria-label="Primary navigation"]')
+  await rail.getByRole('button', { name: 'Expand all', exact: true }).click()
   for (const theme of ['dark', 'light']) {
     await page.evaluate((value) => { document.documentElement.dataset.theme = value }, theme)
     for (const width of [1440, 1024, 390]) {
@@ -269,4 +359,33 @@ test('the grouped rail stays dark and fits desktop and narrow layouts in both th
       if (width <= 860) await page.keyboard.press('Escape')
     }
   }
+})
+
+test('narrow navigation preserves expansion and recursive collapse when dismissed', async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 })
+  await page.goto('/#/gitops')
+  const rail = page.locator('nav[aria-label="Primary navigation"]')
+  const open = page.getByRole('button', { name: 'Open navigation', exact: true })
+  await open.click()
+  await rail.getByRole('button', { name: 'Expand all', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await open.click()
+  await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(0)
+  await rail.getByRole('link', { name: 'Images', exact: true }).click()
+  await expect(page).toHaveURL(/#\/images$/)
+  await expect(rail).toBeHidden()
+  await open.click()
+  await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(0)
+  for (const control of await rail.getByRole('button').all()) {
+    expect((await control.boundingBox())?.height).toBeGreaterThanOrEqual(44)
+  }
+  await rail.getByRole('button', { name: 'Collapse all', exact: true }).click()
+  await page.keyboard.press('Escape')
+  await open.click()
+  await expect(rail.getByRole('button', { expanded: true, includeHidden: true })).toHaveCount(0)
+  await expect(rail.getByRole('link', { name: 'Porto', exact: true })).toBeFocused()
+  await rail.getByRole('button', { name: 'Kubernetes', exact: true }).click()
+  await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'false')
+  await page.keyboard.press('Escape')
+  await expect(open).toBeFocused()
 })

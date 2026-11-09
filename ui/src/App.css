@@ -1817,6 +1817,25 @@ button:disabled {
   text-decoration: none;
 }
 
+.railExpansionControls {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 6px;
+}
+
+.railExpansionButton {
+  flex: 1;
+  min-width: 0;
+  min-height: 32px;
+  border: 1px solid var(--instrument-line);
+  border-radius: var(--radius-md);
+  padding: 6px;
+  background: transparent;
+  box-shadow: none;
+  color: var(--rail-ink);
+  font: 500 12px/1.2 var(--sans);
+}
+
 .railGroups {
   display: flex;
   flex-direction: column;
@@ -1866,13 +1885,15 @@ button:disabled {
 }
 
 .railGroupToggle:hover,
-.railSectionToggle:hover {
+.railSectionToggle:hover,
+.railExpansionButton:hover {
   background: var(--rail-hover);
   color: var(--white);
 }
 
 .railGroupToggle:focus-visible,
-.railSectionToggle:focus-visible {
+.railSectionToggle:focus-visible,
+.railExpansionButton:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: -2px;
 }
@@ -3320,6 +3341,7 @@ button:disabled {
 
   .railGroupToggle,
   .railSectionToggle,
+  .railExpansionButton,
   .railBrand,
   .railGroup a {
     min-height: 44px;

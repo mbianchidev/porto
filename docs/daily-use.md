@@ -91,16 +91,18 @@ when needed; each link still opens a separate, focused page.
 | Kubernetes | Cluster tools | Nodes, Resources and RBAC |
 | System | Direct links | Environments and fleets, Virtual machines, Extensions, Diagnostics, Activity, Settings |
 
-Only one section and one subgroup expand at a time. Opening a page, including
-an existing bookmark or browser-history entry, reveals its section and subgroup
-automatically. Existing page URLs are unchanged. Unsupported destinations and
-empty groups remain hidden for the selected environment; there is no local
+Multiple sections and subgroups can stay expanded together. Collapsing a section
+preserves its subgroup choices; **Expand all** and **Collapse all** open or close
+every available section and subgroup. Opening a page, including an existing
+bookmark or browser-history entry, reveals its section and subgroup automatically
+without closing other sections. Existing page URLs are unchanged. Unsupported
+destinations and empty groups remain hidden for the selected environment; there is no local
 fallback.
 
 On narrow screens, use **Open navigation**. Escape, the backdrop, or selecting a
 page closes the panel and returns focus to its trigger. Dismissing the panel
-without changing pages preserves any open resource inspector. Keyboard users
-can also use **Skip to content** to bypass the sidebar.
+without changing pages preserves expansion choices and any open resource
+inspector. Keyboard users can also use **Skip to content** to bypass the sidebar.
 
 ## Find and target resources
 

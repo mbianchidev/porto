@@ -210,15 +210,18 @@ Containers and Kubernetes use short, task-oriented subgroups; every destination
 still opens its own existing page, not a combined screen or extra tab strip.
 Nested links use indentation instead of repeating resource icons.
 
-Only one main section and one subgroup expand at a time. Opening a page,
-following a bookmark, or using browser history automatically reveals its branch.
+Main sections and subgroups expand independently. Collapsing a main section
+preserves its subgroup choices. **Expand all** and **Collapse all** affect every
+available section and subgroup. Opening a page, following a bookmark, or using
+browser history automatically reveals its branch without closing other sections.
 Native-button toggles use chevrons, `aria-controls`, and `aria-expanded`; the
 current page keeps `aria-current`, a subtle light fill, and a neutral inset
 marker. See the [complete navigation map](daily-use.md#navigate-the-dashboard).
 
-At 860px or below, the closed rail is inert and hidden. Opening it focuses the current
-page link, traps keyboard focus within navigation and its close button, and
-blocks interaction with the underlying content. Escape, the scrim, or choosing
+At 860px or below, the closed rail is inert and hidden. Opening it preserves
+expansion choices and focuses the current page link, or the Porto brand link if
+that branch is collapsed. It traps keyboard focus within navigation and its close
+button, and blocks interaction with the underlying content. Escape, the scrim, or choosing
 a page closes it and restores focus to the trigger. Navigation controls have
 44px touch targets. A **Skip to content** link bypasses the rail without changing
 the current route.

@@ -136,13 +136,20 @@ export function Rail({
     || group.sections.some((section) => section.items.some((item) => item.id === route)))
   const activeGroupID = activeGroup?.id ?? groups[0]?.id ?? null
   const activeSectionID = activeGroup?.sections.find((section) => section.items.some((item) => item.id === route))?.id ?? null
-  const initialExpansion = { route, backend, open, group: activeGroupID, section: activeSectionID }
-  const [expanded, setExpanded] = useState<{
-    route: RouteID; backend: string; open: boolean; group: string | null; section: string | null
-  }>(initialExpansion)
+  const activeBranch = [activeGroupID, activeSectionID].filter((id): id is string => id !== null)
+  const [expanded, setExpanded] = useState(() => ({ route, backend, ids: new Set(activeBranch) }))
 
-  if (expanded.route !== route || expanded.backend !== backend || expanded.open !== open) {
-    setExpanded(initialExpansion)
+  if (expanded.route !== route || expanded.backend !== backend) {
+    setExpanded({ route, backend, ids: new Set([...expanded.ids, ...activeBranch]) })
+  }
+
+  function toggleExpansion(id: string) {
+    setExpanded((current) => {
+      const ids = new Set(current.ids)
+      if (ids.has(id)) ids.delete(id)
+      else ids.add(id)
+      return { ...current, ids }
+    })
   }
 
   function renderLink(item: NavItem) {
@@ -170,9 +177,26 @@ export function Rail({
           <small>Operate mode</small>
         </span>
       </a>
-      <div className="railGroups">
+      <div className="railExpansionControls">
+        <button
+          className="railExpansionButton"
+          type="button"
+          aria-controls="rail-groups"
+          onClick={() => setExpanded((current) => ({
+            ...current,
+            ids: new Set(groups.flatMap((group) => [group.id, ...group.sections.map((section) => section.id)])),
+          }))}
+        >Expand all</button>
+        <button
+          className="railExpansionButton"
+          type="button"
+          aria-controls="rail-groups"
+          onClick={() => setExpanded((current) => ({ ...current, ids: new Set<string>() }))}
+        >Collapse all</button>
+      </div>
+      <div className="railGroups" id="rail-groups">
         {groups.map((group) => {
-          const groupExpanded = expanded.group === group.id
+          const groupExpanded = expanded.ids.has(group.id)
           const groupContentID = `rail-group-${group.id}`
           const groupTitleID = `rail-title-${group.id}`
           return (
@@ -184,11 +208,7 @@ export function Rail({
                 aria-controls={groupContentID}
                 aria-labelledby={groupTitleID}
                 aria-describedby={group.id === 'kubernetes' ? 'rail-cluster-status' : undefined}
-                onClick={() => setExpanded((current) => ({
-                  ...current,
-                  group: groupExpanded ? null : group.id,
-                  section: group.id === activeGroup?.id ? activeSectionID : null,
-                }))}
+                onClick={() => toggleExpansion(group.id)}
               >
                 <Icon name={group.icon} />
                 <span className="railGroupName" id={groupTitleID}>{group.title}</span>
@@ -205,7 +225,7 @@ export function Rail({
               <div className="railGroupItems" id={groupContentID} hidden={!groupExpanded}>
                 {group.items.map(renderLink)}
                 {group.sections.map((section) => {
-                  const sectionExpanded = expanded.section === section.id
+                  const sectionExpanded = expanded.ids.has(section.id)
                   const sectionContentID = `rail-section-${section.id}`
                   return (
                     <div className="railSection" key={section.id}>
@@ -214,7 +234,7 @@ export function Rail({
                         type="button"
                         aria-expanded={sectionExpanded}
                         aria-controls={sectionContentID}
-                        onClick={() => setExpanded((current) => ({ ...current, group: group.id, section: sectionExpanded ? null : section.id }))}
+                        onClick={() => toggleExpansion(section.id)}
                       >
                         <span>{section.title}</span>
                         <span className="railGroupChevron"><Icon name="chevronDown" /></span>
