@@ -10,8 +10,8 @@ const { sealMacOSApplication, verifyMacOSDmg } = require('./macos-signing.cjs')
 
 const nativeTest = process.platform === 'darwin' ? nodeTest : nodeTest.skip
 
-function command(file, args, { env = process.env, input } = {}) {
-  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 120000, shell: false, env, input })
+function command(file, args, { input } = {}) {
+  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 120000, shell: false, input })
   assert.ifError(result.error)
   assert.equal(result.status, 0, `${file} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`)
   return result.stdout
@@ -92,9 +92,12 @@ function installFixture(root, image, architecture) {
   const home = path.join(root, 'installer-home')
   const scratch = path.join(root, 'installer-tmp')
   for (const directory of [tools, home, scratch]) fs.mkdirSync(directory)
-  for (const name of ['awk', 'cat', 'cp', 'ditto', 'hdiutil', 'head', 'ln', 'mkdir', 'mktemp', 'readlink', 'rm', 'sed', 'shasum']) {
-    const executable = command('/bin/sh', ['-c', `command -v ${name}`]).trim()
-    fs.symlinkSync(executable, path.join(tools, name))
+  for (const executable of [
+    '/usr/bin/awk', '/bin/cat', '/bin/cp', '/usr/bin/ditto', '/usr/bin/hdiutil', '/usr/bin/head',
+    '/bin/ln', '/bin/mkdir', '/usr/bin/mktemp', '/usr/bin/readlink', '/bin/rm', '/usr/bin/sed', '/usr/bin/shasum',
+  ]) {
+    fs.accessSync(executable, fs.constants.X_OK)
+    fs.symlinkSync(executable, path.join(tools, path.basename(executable)))
   }
   const stub = (name, body) => fs.writeFileSync(path.join(tools, name), `#!/bin/sh\nset -eu\n${body}\n`, { mode: 0o755 })
   const controlLog = path.join(root, 'installer-controls.log')
@@ -116,7 +119,8 @@ case "$url" in */SHA256SUMS) cp "$FIXTURE_SUMS" "$destination";; *) cp "$FIXTURE
   const sums = path.join(root, 'SHA256SUMS')
   fs.writeFileSync(sums, `${digest}  porto-desktop_7.8.9+fixture.1_darwin_${goarch}.dmg\n`)
   const installDirectory = path.join(home, 'Synthetic Applications')
-  command('/bin/sh', [path.join(__dirname, 'install-desktop.sh')], {
+  const result = spawnSync('/bin/sh', ['--', path.join(__dirname, 'install-desktop.sh')], {
+    encoding: 'utf8', timeout: 120000, shell: false,
     env: {
       PATH: tools, HOME: home, TMPDIR: scratch,
       PORTO_VERSION: 'v7.8.9+fixture.1',
@@ -126,6 +130,8 @@ case "$url" in */SHA256SUMS) cp "$FIXTURE_SUMS" "$destination";; *) cp "$FIXTURE
       FIXTURE_CONTROL_LOG: controlLog, FIXTURE_SUMS: sums, FIXTURE_IMAGE: image,
     },
   })
+  assert.ifError(result.error)
+  assert.equal(result.status, 0, `${result.stdout}\n${result.stderr}`)
   assert.equal(fs.readFileSync(controlLog, 'utf8'), 'osascript\nps\n')
   assert.equal(fs.readdirSync(scratch).length, 0)
   return path.join(installDirectory, 'Porto.app')
