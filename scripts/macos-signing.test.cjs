@@ -10,8 +10,8 @@ const { sealMacOSApplication, verifyMacOSDmg } = require('./macos-signing.cjs')
 
 const nativeTest = process.platform === 'darwin' ? nodeTest : nodeTest.skip
 
-function command(file, args, options = {}) {
-  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 120000, ...options })
+function command(file, args, { env = process.env, input } = {}) {
+  const result = spawnSync(file, args, { encoding: 'utf8', timeout: 120000, shell: false, env, input })
   assert.ifError(result.error)
   assert.equal(result.status, 0, `${file} ${args.join(' ')}\n${result.stdout}\n${result.stderr}`)
   return result.stdout
@@ -32,7 +32,7 @@ function snapshot(root) {
 }
 
 function fixture(t, architecture) {
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-signing-'))
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-signing spaces;$-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
   const app = path.join(root, 'payload', 'Porto.app')
   const contents = path.join(app, 'Contents')
