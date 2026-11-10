@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/netip"
 	"strconv"
 	"strings"
 )
@@ -62,7 +63,7 @@ func containerNetworkNames(container Container) []string {
 	return sortedStringKeys(names)
 }
 
-func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string) (map[string]string, error) {
+func containerNetworkIdentityNames(names []string) (map[string]string, error) {
 	selected := map[string]string{}
 	for _, name := range names {
 		if name == "host" || name == "none" || name == "" || strings.HasPrefix(name, "container:") || strings.HasPrefix(name, "ns:") {
@@ -73,6 +74,14 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 		}
 		selected[name] = ""
 	}
+	return selected, nil
+}
+
+func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string) (map[string]string, error) {
+	selected, err := containerNetworkIdentityNames(names)
+	if err != nil {
+		return nil, err
+	}
 	if len(selected) == 0 || m.IsNativeWindows() {
 		return selected, nil
 	}
@@ -81,7 +90,6 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 	defer cancel()
 	selectedNames := sortedStringKeys(selected)
 	var output []byte
-	var err error
 	if runtime, _, ok := m.inventoryLimaRuntime(); ok && runtime.networkIdentities.Load() {
 		command, commandErr := runtime.runtimeHelperCommand(append([]string{"cni-identities"}, selectedNames...)...)
 		if commandErr != nil {
@@ -117,6 +125,141 @@ func (m *Manager) containerNetworkIdentities(ctx context.Context, names []string
 	return selected, nil
 }
 
+type inspectedNetworkEndpoint struct {
+	NetworkID, IPAddress, GlobalIPv6Address, MacAddress string
+}
+
+type inspectedNetworkAttachment struct {
+	IPv4Address, IPv6Address, MacAddress string
+}
+
+func (endpoint inspectedNetworkEndpoint) matchesAttachment(attachment inspectedNetworkAttachment) bool {
+	matched := false
+	for _, pair := range [][2]string{
+		{endpoint.IPAddress, attachment.IPv4Address},
+		{endpoint.GlobalIPv6Address, attachment.IPv6Address},
+	} {
+		if pair[0] == "" {
+			continue
+		}
+		address, _, _ := strings.Cut(pair[1], "/")
+		observed, observedErr := netip.ParseAddr(pair[0])
+		attached, attachedErr := netip.ParseAddr(address)
+		if observedErr != nil || attachedErr != nil || observed.Unmap() != attached.Unmap() {
+			return false
+		}
+		matched = true
+	}
+	if endpoint.MacAddress != "" && attachment.MacAddress != "" {
+		if !strings.EqualFold(endpoint.MacAddress, attachment.MacAddress) {
+			return false
+		}
+		matched = true
+	}
+	return matched
+}
+
+func (m *Manager) reconcileInspectNetworkEndpoints(
+	ctx context.Context,
+	document json.RawMessage,
+	endpoints map[string]map[string]json.RawMessage,
+) (bool, error) {
+	hasPlaceholder := false
+	for name := range endpoints {
+		if strings.HasPrefix(name, "unknown-") {
+			hasPlaceholder = true
+			break
+		}
+	}
+	if !hasPlaceholder {
+		return false, nil
+	}
+	var inspected struct {
+		ID              string `json:"Id"`
+		Config          struct{ Labels map[string]string }
+		NetworkSettings struct {
+			Networks map[string]inspectedNetworkEndpoint
+		}
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		return false, fmt.Errorf("decode unresolved container network endpoints: %w", err)
+	}
+	unresolved := map[string]string{}
+	for name, endpoint := range inspected.NetworkSettings.Networks {
+		if endpoint.NetworkID == "" && strings.HasPrefix(name, "unknown-") {
+			unresolved[name] = ""
+		}
+	}
+	if len(unresolved) == 0 {
+		return false, nil
+	}
+	var recorded []string
+	if encoded := inspected.Config.Labels[nerdctlNetworksLabel]; encoded != "" {
+		if err := json.Unmarshal([]byte(encoded), &recorded); err != nil {
+			return false, fmt.Errorf("decode recorded container networks: %w", err)
+		}
+	}
+	selected, err := containerNetworkIdentityNames(recorded)
+	if err != nil {
+		return false, err
+	}
+	for name := range unresolved {
+		if _, recorded := selected[name]; recorded {
+			delete(unresolved, name)
+		}
+	}
+	if len(unresolved) == 0 {
+		return false, nil
+	}
+	if inspected.ID == "" || len(selected) == 0 {
+		return false, fmt.Errorf("%w: unresolved container network endpoints require a container identity and recorded CNI networks", ErrUnavailable)
+	}
+	timeout := max(m.timeout, objectInspectionTimeout)
+	output, err := m.runStdoutWithTimeout(ctx, timeout, "inspect Porto live container network attachments",
+		append([]string{"network", "inspect"}, sortedStringKeys(selected)...)...)
+	if err != nil {
+		return false, err
+	}
+	var networks []struct {
+		Name, ID   string
+		Containers map[string]inspectedNetworkAttachment
+	}
+	if err := json.Unmarshal(output, &networks); err != nil {
+		return false, fmt.Errorf("decode live container network attachments: %w", err)
+	}
+	for _, name := range sortedStringKeys(unresolved) {
+		networkName, networkID := "", ""
+		for _, network := range networks {
+			if _, recorded := selected[network.Name]; !recorded {
+				continue
+			}
+			attachment, attached := network.Containers[inspected.ID]
+			if !attached || !inspected.NetworkSettings.Networks[name].matchesAttachment(attachment) {
+				continue
+			}
+			if networkName != "" && (networkName != network.Name || networkID != network.ID) {
+				return false, fmt.Errorf("%w: unresolved endpoint %q matches conflicting live networks", ErrConflict, name)
+			}
+			networkName, networkID = network.Name, network.ID
+		}
+		if networkName == "" {
+			return false, fmt.Errorf("%w: unresolved endpoint %q could not be matched to a recorded live network", ErrUnavailable, name)
+		}
+		if _, exists := endpoints[networkName]; exists {
+			return false, fmt.Errorf("%w: unresolved endpoint %q conflicts with attached network %q", ErrConflict, name, networkName)
+		}
+		endpoints[networkName] = endpoints[name]
+		delete(endpoints, name)
+		if networkID != "" {
+			endpoints[networkName]["NetworkID"], err = json.Marshal(networkID)
+			if err != nil {
+				return false, err
+			}
+		}
+	}
+	return true, nil
+}
+
 func (m *Manager) completeInspectNetworkIdentities(ctx context.Context, document json.RawMessage) (json.RawMessage, error) {
 	var inspected map[string]json.RawMessage
 	if err := json.Unmarshal(document, &inspected); err != nil {
@@ -136,6 +279,10 @@ func (m *Manager) completeInspectNetworkIdentities(ctx context.Context, document
 	if err := json.Unmarshal(settings["Networks"], &endpoints); err != nil {
 		return nil, err
 	}
+	reconciled, err := m.reconcileInspectNetworkEndpoints(ctx, document, endpoints)
+	if err != nil {
+		return nil, err
+	}
 	names := []string{}
 	for name, endpoint := range endpoints {
 		var id string
@@ -148,7 +295,7 @@ func (m *Manager) completeInspectNetworkIdentities(ctx context.Context, document
 			names = append(names, name)
 		}
 	}
-	if len(names) == 0 {
+	if len(names) == 0 && !reconciled {
 		return document, nil
 	}
 	identities, err := m.containerNetworkIdentities(ctx, names)

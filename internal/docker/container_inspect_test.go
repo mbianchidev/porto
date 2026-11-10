@@ -376,10 +376,14 @@ func TestDockerContainerInspectionSharesBudgetWithNetworkIdentityLookup(t *testi
 		objectDelay, identityDelay, caller time.Duration
 		wantElapsed                        time.Duration
 		wantSuccess                        bool
+		unresolved                         bool
 	}{
-		{"complete object and network", 25 * time.Second, 25 * time.Second, 0, 50 * time.Second, true},
-		{"one shared allowance", 40 * time.Second, 40 * time.Second, 0, time.Minute, false},
-		{"shorter caller", 25 * time.Second, 25 * time.Second, 10 * time.Second, 10 * time.Second, false},
+		{"complete object and network", 25 * time.Second, 25 * time.Second, 0, 50 * time.Second, true, false},
+		{"one shared allowance", 40 * time.Second, 40 * time.Second, 0, time.Minute, false, false},
+		{"shorter caller", 25 * time.Second, 25 * time.Second, 10 * time.Second, 10 * time.Second, false, false},
+		{"unresolved live attachment", 25 * time.Second, 25 * time.Second, 0, 50 * time.Second, true, true},
+		{"unresolved shared allowance", 40 * time.Second, 40 * time.Second, 0, time.Minute, false, true},
+		{"unresolved shorter caller", 25 * time.Second, 25 * time.Second, 10 * time.Second, 10 * time.Second, false, true},
 	} {
 		t.Run(scenario.name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
@@ -391,9 +395,12 @@ func TestDockerContainerInspectionSharesBudgetWithNetworkIdentityLookup(t *testi
 					case "container inspect synthetic-object":
 						delay = scenario.objectDelay
 						document = `[{"Id":"synthetic-object","Config":{"Labels":{}},"State":{"Status":"running","Running":true,"Pid":42},"NetworkSettings":{"Networks":{"synthetic-stack":{"IPAddress":"10.88.0.2"}}}}]`
+						if scenario.unresolved {
+							document = `[{"Id":"synthetic-object","Config":{"Labels":{"nerdctl/networks":"[\"synthetic-stack\"]"}},"State":{"Status":"running","Running":true,"Pid":42},"NetworkSettings":{"Networks":{"unknown-eth0":{"IPAddress":"10.88.0.2"}}}}]`
+						}
 					case "network inspect synthetic-stack":
 						delay = scenario.identityDelay
-						document = `[{"Name":"synthetic-stack","ID":"` + id + `"}]`
+						document = `[{"Name":"synthetic-stack","ID":"` + id + `","Containers":{"synthetic-object":{"IPv4Address":"10.88.0.2/24"}}}]`
 					default:
 						return nil, fmt.Errorf("unexpected combined inspection: %+v", command)
 					}
@@ -593,6 +600,211 @@ func TestDockerContainerInspectPreservesStateAndCompletesActualNetworkIdentity(t
 	endpoint := inspected.NetworkSettings.Networks["synthetic-stack"]
 	if endpoint.NetworkID != networkID || endpoint.IPAddress != "10.88.0.2" || len(endpoint.Aliases) != 1 || endpoint.Aliases[0] != "app" || !inspected.State.Running || inspected.State.Pid != 42 {
 		t.Fatalf("actual network completion changed unrelated container state: %s", response.Body.String())
+	}
+}
+
+func TestDockerContainerInspectReconcilesUnresolvedComposeNetwork(t *testing.T) {
+	networkID := strings.Repeat("c", 64)
+	document := `[{
+		"Id":"synthetic-container",
+		"Config":{"Labels":{"nerdctl/networks":"[\"synthetic-compose-network\"]"}},
+		"State":{"Status":"running","Running":true,"Pid":42,"Health":{"Status":"healthy"}},
+		"Mounts":[{"Type":"volume","Name":"synthetic-data","Destination":"/data"}],
+		"NetworkSettings":{
+			"Ports":{"8080/tcp":[{"HostIp":"127.0.0.1","HostPort":"18080"}]},
+			"Networks":{"unknown-eth0":{
+				"NetworkID":"","IPAddress":"10.88.0.2","IPPrefixLen":24,
+				"MacAddress":"02:00:00:00:00:02","Aliases":["synthetic-app"]
+			}}
+		}
+	}]`
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		switch command.Name + " " + strings.Join(command.Args, " ") {
+		case "nerdctl container inspect synthetic-container":
+			return []byte(document), nil
+		case "nerdctl network inspect synthetic-compose-network":
+			return []byte(`[{
+				"Name":"synthetic-compose-network","Id":"` + networkID + `",
+				"Containers":{"synthetic-container":{
+					"IPv4Address":"10.88.0.2/24","MacAddress":"02:00:00:00:00:02"
+				}}
+			}]`), nil
+		default:
+			return nil, fmt.Errorf("inspection must not query placeholder networks or mutate runtime state: %+v", command)
+		}
+	}}
+	response := httptest.NewRecorder()
+	NewAPI(New(runner), "/synthetic/socket").ServeHTTP(response,
+		httptest.NewRequest(http.MethodGet, "/v1.47/containers/synthetic-container/json", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("Compose health inspection failed on an unresolved interface: %d: %s", response.Code, response.Body.String())
+	}
+	var inspected struct {
+		State struct {
+			Running bool
+			Pid     int
+			Health  struct{ Status string }
+		}
+		Mounts          []struct{ Type, Name, Destination string }
+		NetworkSettings struct {
+			Ports    map[string][]struct{ HostIP, HostPort string }
+			Networks map[string]struct {
+				NetworkID, IPAddress, MacAddress string
+				IPPrefixLen                      int
+				Aliases                          []string
+			}
+		}
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &inspected); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := inspected.NetworkSettings.Networks["synthetic-compose-network"]
+	if len(inspected.NetworkSettings.Networks) != 1 || endpoint.NetworkID != networkID ||
+		endpoint.IPAddress != "10.88.0.2" || endpoint.IPPrefixLen != 24 ||
+		endpoint.MacAddress != "02:00:00:00:00:02" || strings.Join(endpoint.Aliases, ",") != "synthetic-app" {
+		t.Fatalf("unresolved interface was not preserved under its actual Compose network: %s", response.Body.String())
+	}
+	ports := inspected.NetworkSettings.Ports["8080/tcp"]
+	if !inspected.State.Running || inspected.State.Pid != 42 || inspected.State.Health.Status != "healthy" ||
+		len(inspected.Mounts) != 1 || inspected.Mounts[0].Name != "synthetic-data" ||
+		len(ports) != 1 || ports[0].HostIP != "127.0.0.1" || ports[0].HostPort != "18080" {
+		t.Fatalf("network reconciliation changed health, process, volume or published-port state: %s", response.Body.String())
+	}
+}
+
+func TestResolvedContainerNetworkDoesNotRequireRecordedMetadata(t *testing.T) {
+	document := json.RawMessage(`{"Config":{"Labels":{"nerdctl/networks":"invalid"}},"NetworkSettings":{"Networks":{"unknown-eth0":{"NetworkID":"synthetic-resolved-id","IPAddress":"10.88.0.2"}}}}`)
+	manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		t.Fatalf("already-resolved network required another runtime query: %+v", command)
+		return nil, nil
+	}})
+	inspected, err := manager.completeInspectNetworkIdentities(context.Background(), document)
+	if err != nil || !bytes.Equal(inspected, document) {
+		t.Fatalf("resolved network was changed or rejected by unused recorded metadata: %s, %v", inspected, err)
+	}
+}
+
+func TestUnresolvedContainerNetworksMatchLiveAttachmentsRatherThanLabelOrder(t *testing.T) {
+	document := json.RawMessage(`{
+		"Id":"synthetic-container",
+		"Config":{"Labels":{"nerdctl/networks":"[\"synthetic-z\",\"synthetic-a\",\"synthetic-existing\",\"none\"]"}},
+		"NetworkSettings":{"Networks":{
+			"unknown-eth0":{"IPAddress":"10.90.0.2","IPPrefixLen":24},
+			"unknown-porto10":{"GlobalIPv6Address":"2001:0db8:20:0:0:0:0:2","GlobalIPv6PrefixLen":64},
+			"synthetic-existing":{"NetworkID":"synthetic-retained-id","IPAddress":"10.80.0.2"}
+		}}
+	}`)
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "nerdctl" || strings.Join(command.Args, " ") != "network inspect synthetic-a synthetic-existing synthetic-z" {
+			return nil, fmt.Errorf("live reconciliation queried an unrecorded network or network mode: %+v", command)
+		}
+		return []byte(`[
+			{"Name":"synthetic-z","Id":"synthetic-v4-id","Containers":{"synthetic-container":{"IPv4Address":"10.90.0.2/24"}}},
+			{"Name":"synthetic-existing","Id":"synthetic-retained-id"},
+			{"Name":"synthetic-a","Id":"synthetic-v6-id","Containers":{"synthetic-container":{"IPv6Address":"2001:db8:20::2/64"}}}
+		]`), nil
+	}}
+	result, err := New(runner).completeInspectNetworkIdentities(context.Background(), document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected struct {
+		NetworkSettings struct {
+			Networks map[string]struct {
+				NetworkID, IPAddress, GlobalIPv6Address string
+				IPPrefixLen, GlobalIPv6PrefixLen        int
+			}
+		}
+	}
+	if err := json.Unmarshal(result, &inspected); err != nil {
+		t.Fatal(err)
+	}
+	networks := inspected.NetworkSettings.Networks
+	if len(networks) != 3 || networks["synthetic-z"].NetworkID != "synthetic-v4-id" ||
+		networks["synthetic-z"].IPAddress != "10.90.0.2" || networks["synthetic-z"].IPPrefixLen != 24 ||
+		networks["synthetic-a"].NetworkID != "synthetic-v6-id" ||
+		networks["synthetic-a"].GlobalIPv6Address != "2001:0db8:20:0:0:0:0:2" ||
+		networks["synthetic-a"].GlobalIPv6PrefixLen != 64 ||
+		networks["synthetic-existing"].NetworkID != "synthetic-retained-id" ||
+		networks["synthetic-existing"].IPAddress != "10.80.0.2" {
+		t.Fatalf("network reconciliation guessed from interface/label order or changed an existing endpoint: %s", result)
+	}
+}
+
+func TestRecordedUnknownPrefixNetworkIsNotRewritten(t *testing.T) {
+	document := json.RawMessage(`{"Id":"synthetic-container","Config":{"Labels":{"nerdctl/networks":"[\"unknown-eth0\"]"}},"NetworkSettings":{"Networks":{"unknown-eth0":{"IPAddress":"10.88.0.2"}}}}`)
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		if command.Name != "nerdctl" || strings.Join(command.Args, " ") != "network inspect unknown-eth0" {
+			return nil, fmt.Errorf("recorded network name was treated as a placeholder: %+v", command)
+		}
+		return []byte(`[{"Name":"unknown-eth0","ID":"synthetic-real-network-id"}]`), nil
+	}}
+	result, err := New(runner).completeInspectNetworkIdentities(context.Background(), document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var inspected struct {
+		NetworkSettings struct {
+			Networks map[string]struct{ NetworkID, IPAddress string }
+		}
+	}
+	if err := json.Unmarshal(result, &inspected); err != nil {
+		t.Fatal(err)
+	}
+	endpoint := inspected.NetworkSettings.Networks["unknown-eth0"]
+	if len(inspected.NetworkSettings.Networks) != 1 || endpoint.NetworkID != "synthetic-real-network-id" || endpoint.IPAddress != "10.88.0.2" {
+		t.Fatalf("a real recorded unknown-prefix network was changed or rejected: %s, %v", result, err)
+	}
+}
+
+func TestUnresolvedContainerNetworkRejectsUnverifiableAttachments(t *testing.T) {
+	denied := errors.New("synthetic live attachment access denied")
+	for _, test := range []struct {
+		name, recorded, endpoints, output, command, message string
+		failure, wantErr                                    error
+		noQuery                                             bool
+	}{
+		{name: "missing recorded candidates", recorded: "[]", wantErr: ErrUnavailable, noQuery: true},
+		{name: "malformed recorded candidates", recorded: "{", message: "decode recorded container networks", noQuery: true},
+		{name: "another container", output: `[{"Name":"synthetic-stack","ID":"synthetic-id","Containers":{"synthetic-other":{"IPv4Address":"10.88.0.2/24","MacAddress":"02:00:00:00:00:02"}}}]`, wantErr: ErrUnavailable},
+		{name: "stale address", output: `[{"Name":"synthetic-stack","ID":"synthetic-id","Containers":{"synthetic-container":{"IPv4Address":"10.88.0.3/24","MacAddress":"02:00:00:00:00:02"}}}]`, wantErr: ErrUnavailable},
+		{name: "stale MAC", output: `[{"Name":"synthetic-stack","ID":"synthetic-id","Containers":{"synthetic-container":{"IPv4Address":"10.88.0.2/24","MacAddress":"02:00:00:00:00:03"}}}]`, wantErr: ErrUnavailable},
+		{name: "no live observations", endpoints: `{"unknown-eth0":{}}`, wantErr: ErrUnavailable},
+		{name: "ambiguous networks", recorded: `["synthetic-stack","synthetic-other"]`, command: "network inspect synthetic-other synthetic-stack",
+			output: `[{"Name":"synthetic-stack","ID":"synthetic-id","Containers":{"synthetic-container":{"IPv4Address":"10.88.0.2/24"}}},{"Name":"synthetic-other","ID":"synthetic-other-id","Containers":{"synthetic-container":{"IPv4Address":"10.88.0.2/24"}}}]`, wantErr: ErrConflict},
+		{name: "existing endpoint", endpoints: `{"unknown-eth0":{"IPAddress":"10.88.0.2"},"synthetic-stack":{"NetworkID":"synthetic-existing-id"}}`, wantErr: ErrConflict},
+		{name: "malformed live attachments", output: "{", message: "decode live container network attachments"},
+		{name: "backend failure", failure: denied, wantErr: denied},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			recorded := firstNonEmpty(test.recorded, `["synthetic-stack"]`)
+			endpoints := firstNonEmpty(test.endpoints, `{"unknown-eth0":{"IPAddress":"10.88.0.2","MacAddress":"02:00:00:00:00:02"}}`)
+			document, err := json.Marshal(map[string]any{
+				"Id": "synthetic-container", "Config": map[string]any{"Labels": map[string]string{nerdctlNetworksLabel: recorded}},
+				"NetworkSettings": map[string]any{"Networks": json.RawMessage(endpoints)},
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			queries := 0
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				queries++
+				want := firstNonEmpty(test.command, "network inspect synthetic-stack")
+				if test.noQuery || command.Name != "nerdctl" || strings.Join(command.Args, " ") != want {
+					return nil, fmt.Errorf("unverifiable endpoint queried a placeholder, unrecorded network or mutation: %+v", command)
+				}
+				return []byte(firstNonEmpty(test.output,
+					`[{"Name":"synthetic-stack","ID":"synthetic-id","Containers":{"synthetic-container":{"IPv4Address":"10.88.0.2/24","MacAddress":"02:00:00:00:00:02"}}}]`)), test.failure
+			}}
+			result, err := New(runner).completeInspectNetworkIdentities(context.Background(), document)
+			if result != nil || err == nil || (test.wantErr != nil && !errors.Is(err, test.wantErr)) ||
+				(test.message != "" && !strings.Contains(err.Error(), test.message)) {
+				t.Fatalf("unverifiable attachment returned partial/successful inspection or hid its failure: %s, %v", result, err)
+			}
+			if (test.noQuery && queries != 0) || (!test.noQuery && queries != 1) {
+				t.Fatalf("unverifiable attachment retried or queried despite invalid metadata: %d queries", queries)
+			}
+		})
 	}
 }
 
