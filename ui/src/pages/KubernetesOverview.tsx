@@ -25,7 +25,7 @@ const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskG
 const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
 const ClusterAutoscaling = lazy(() => import('./ClusterAutoscaling'))
 
-type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
+type ClusterMutation = 'start' | 'stop' | 'restart' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
 
 type ClusterMutationControl = {
   disabled: boolean
@@ -48,11 +48,15 @@ function guestReachableDatastore(instance: EtcqliteInstance) {
 }
 
 function isLifecycleLocked(cluster: KubernetesCluster) {
-  return ['creating', 'error', 'orphaned', 'upgrading', 'upgrade-failed'].includes(cluster.state)
+  return ['creating', 'error', 'orphaned', 'upgrading', 'upgrade-failed', 'starting', 'stopping', 'deleting'].includes(cluster.state)
+}
+
+function supportsLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop' | 'restart') {
+  return cluster.capabilities?.[action] ?? cluster.provider !== 'apple'
 }
 
 function clusterElapsed(cluster: KubernetesCluster, now: number) {
-  if (cluster.state !== 'creating' || !cluster.stateSince) return ''
+  if (!['creating', 'starting', 'stopping'].includes(cluster.state) || !cluster.stateSince) return ''
   const started = Date.parse(cluster.stateSince)
   if (Number.isNaN(started)) return ''
   return `${Math.max(0, Math.floor((now - started) / 1000))}s`
@@ -61,6 +65,7 @@ function clusterElapsed(cluster: KubernetesCluster, now: number) {
 function lifecycleLabel(cluster: KubernetesCluster, mutation?: ClusterMutation) {
   if (mutation === 'stop') return 'Stopping cluster'
   if (mutation === 'start') return 'Starting cluster'
+  if (mutation === 'restart') return 'Restarting cluster'
   if (mutation !== undefined) return 'Cluster operation in progress'
   return isRunning(cluster) ? 'Stop cluster' : cluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'
 }
@@ -152,7 +157,7 @@ function ImportImageTab({ cluster, mutation }: { cluster: KubernetesCluster; mut
   const { notifyError, notifyNotice } = useMessages()
   const [image, setImage] = useState('')
   const [submitting, setSubmitting] = useState(false)
-  const locked = mutation.disabled || (cluster.provider === 'apple' && !isRunning(cluster))
+  const locked = mutation.disabled || (cluster.provider === 'apple' && !(cluster.capabilities?.imageLoading ?? isRunning(cluster)))
 
   async function importImage(event: FormEvent) {
     event.preventDefault()
@@ -241,7 +246,7 @@ export function KubernetesOverview({
   const enabled = status.data?.enabled ?? false
   const runningClusters = clusterItems.filter((cluster) => cluster.state === 'running')
   const pendingCreationItems = Object.entries(pendingCreations)
-  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => cluster.state === 'creating')
+  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => ['creating', 'starting', 'stopping'].includes(cluster.state))
 
   useEffect(() => {
     if (!hasTimedClusters) return
@@ -323,7 +328,7 @@ export function KubernetesOverview({
     })
   }
 
-  async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop') {
+  async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop' | 'restart') {
     if (!beginClusterMutation(cluster.name, action)) return
     if (action === 'stop' && cluster.provider === 'kind') {
       notifyNotice('kubernetes', `Stopping ${cluster.name}. KinD workers stop before the control plane, so shutdown can take a while.`)
@@ -333,8 +338,8 @@ export function KubernetesOverview({
         `/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}/${action}`,
         'POST',
       )
-      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'started' : 'stopped'}.`)
-      if (action === 'start') {
+      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'started' : action === 'restart' ? 'restarted' : 'stopped'}.`)
+      if (action !== 'stop') {
         onContextChange(cluster.context)
       } else if (context === cluster.context) {
         const fallback = clusterItems.find((candidate) => candidate.name !== cluster.name && isRunning(candidate))?.context
@@ -346,6 +351,8 @@ export function KubernetesOverview({
       status.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to ${action} ${cluster.name}`))
+      clusters.reload()
+      status.reload()
     } finally {
       endClusterMutation(cluster.name)
     }
@@ -491,13 +498,13 @@ export function KubernetesOverview({
                   ? <ActionButton
                       label={lifecycleLabel(cluster, pendingMutation)}
                       icon="stop"
-                      disabled={cluster.provider === 'apple' || pendingMutation !== undefined}
+                      disabled={!supportsLifecycle(cluster, 'stop') || isLifecycleLocked(cluster) || pendingMutation !== undefined}
                       onClick={() => clusterLifecycle(cluster, 'stop')}
                     />
                   : <ActionButton
                       label={lifecycleLabel(cluster, pendingMutation)}
                       icon="play"
-                      disabled={cluster.provider === 'apple' || isLifecycleLocked(cluster) || pendingMutation !== undefined}
+                      disabled={!supportsLifecycle(cluster, 'start') || isLifecycleLocked(cluster) || pendingMutation !== undefined}
                       onClick={() => clusterLifecycle(cluster, 'start')}
                     />
               }}
@@ -534,7 +541,15 @@ export function KubernetesOverview({
                       <p className="errorLine" role="alert">{selectedCluster.message || 'Cluster creation failed. Delete this failed cluster record before retrying the same name.'}</p>
                     )}
                     {selectedCluster.provider === 'apple' && (
-                      <p className="hintLine">Apple Cluster is experimental. Start, stop, node scaling and in-place upgrades are unavailable. Deleting a cluster removes its data. Lima/VZ remains available.</p>
+                      <p className="hintLine">{selectedCluster.capabilities?.nativeNodes
+                        ? 'Porto owns these native node VMs directly. Stop gracefully shuts down workers before the control plane; Start verifies Kubernetes and workload recovery without rebuilding data. Node scaling and version upgrades remain unavailable.'
+                        : 'This existing cluster uses Apple’s protected cluster wrapper. Porto will not silently migrate or rebuild its nodes; wrapper-managed start/stop remains unavailable.'}</p>
+                    )}
+                    {selectedCluster.lifecycle && !selectedCluster.lifecycle.completedAt && (
+                      <div className="debugToolboxDetails" role="status" aria-live="polite">
+                        <p>{selectedCluster.lifecycle.goal}: {selectedCluster.lifecycle.stage}</p>
+                        {Object.entries(selectedCluster.lifecycle.nodes).map(([name, progress]) => <p key={name}><strong>{name}</strong>: {progress}</p>)}
+                      </div>
                     )}
                     {selectedCluster.provider === 'apple' && selectedCluster.state !== 'error' && selectedCluster.message && (
                       <p className="errorLine" role="alert">{selectedCluster.message}</p>
@@ -579,19 +594,42 @@ export function KubernetesOverview({
                     <div className="maintenanceBar">
                       <span>Maintenance controls</span>
                       <div className="actions">
-                        {isRunning(selectedCluster) || pendingMutations[selectedCluster.name] === 'stop'
+                        {selectedCluster.capabilities?.nativeNodes ? (
+                          <>
+                            <ActionButton
+                              label="Start cluster"
+                              icon="play"
+                              disabled={!supportsLifecycle(selectedCluster, 'start') || isLifecycleLocked(selectedCluster) || isRunning(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
+                              onClick={() => clusterLifecycle(selectedCluster, 'start')}
+                            />
+                            <ActionButton
+                              label="Stop cluster"
+                              icon="stop"
+                              disabled={!supportsLifecycle(selectedCluster, 'stop') || isLifecycleLocked(selectedCluster) || selectedCluster.state === 'stopped' || pendingMutations[selectedCluster.name] !== undefined}
+                              onClick={() => clusterLifecycle(selectedCluster, 'stop')}
+                            />
+                          </>
+                        ) : isRunning(selectedCluster) || pendingMutations[selectedCluster.name] === 'stop'
                           ? <ActionButton
                               label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
                               icon="stop"
-                              disabled={selectedCluster.provider === 'apple' || pendingMutations[selectedCluster.name] !== undefined}
+                              disabled={!supportsLifecycle(selectedCluster, 'stop') || pendingMutations[selectedCluster.name] !== undefined}
                               onClick={() => clusterLifecycle(selectedCluster, 'stop')}
                             />
                           : <ActionButton
                               label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
                               icon="play"
-                              disabled={selectedCluster.provider === 'apple' || isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
+                              disabled={!supportsLifecycle(selectedCluster, 'start') || isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
                               onClick={() => clusterLifecycle(selectedCluster, 'start')}
                             />}
+                        {supportsLifecycle(selectedCluster, 'restart') && (
+                          <ActionButton
+                            label="Restart cluster"
+                            icon="restart"
+                            disabled={isLifecycleLocked(selectedCluster) || selectedCluster.state === 'stopped' || pendingMutations[selectedCluster.name] !== undefined}
+                            onClick={() => clusterLifecycle(selectedCluster, 'restart')}
+                          />
+                        )}
                         <ActionButton
                           className="removeButton"
                           label={pendingMutations[selectedCluster.name] === 'delete' ? 'Deleting cluster' : 'Delete cluster'}
@@ -737,7 +775,7 @@ export function KubernetesOverview({
                   </label>
                   <p className="hintLine">
                     {clusterProvider === 'apple'
-                      ? 'Requires macOS 26+ on Apple silicon and stable container 1.7.1+. Each node runs in an Apple Virtualization.framework VM, without Lima or QEMU. Start/stop, disk sizing, node scaling and in-place upgrades are not supported.'
+                      ? 'Requires macOS 26+ on Apple silicon and stable container 1.7.1+. Each directly owned node is a native VM. Graceful stop/start preserves node data and verifies recovery. Disk sizing, node scaling and in-place version upgrades are unavailable.'
                       : clusterProvider === 'kind'
                       ? 'Creates Kubernetes nodes as privileged containers through the Porto Docker endpoint.'
                       : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}

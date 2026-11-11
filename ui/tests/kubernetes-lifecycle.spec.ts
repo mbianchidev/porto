@@ -7,7 +7,7 @@ const fixture: KubernetesCluster = {
   server: 'https://127.0.0.1:54321', nodes: ['porto-fixture-cluster-control-plane'],
 }
 
-async function mockClusters(page: Page, initial: KubernetesCluster = fixture, providers: RuntimeProviderStatus[] = []) {
+async function mockClusters(page: Page, initial: KubernetesCluster = fixture, providers: RuntimeProviderStatus[] = [], initialTab: 'upgrade' | 'overview' = 'upgrade') {
   let cluster = { ...initial }
   let scaling = {
     nodes: { enabled: false, maxNodes: 3, machine: { cpus: 2, memoryMiB: 2048, diskGiB: 20 } },
@@ -25,6 +25,10 @@ async function mockClusters(page: Page, initial: KubernetesCluster = fixture, pr
       if (path === '/api/kubernetes/clusters') {
         const spec: KubernetesClusterRequest = request.postDataJSON()
         cluster = { ...cluster, name: spec.name, provider: spec.provider, context: `porto-${spec.name}` }
+      } else if (path.endsWith('/start') || path.endsWith('/restart')) {
+        cluster = { ...cluster, state: 'running' }
+      } else if (path.endsWith('/stop')) {
+        cluster = { ...cluster, state: 'stopped' }
       } else if (path.endsWith('/upgrade')) {
         cluster = { ...cluster, version: 'v1.36.1' }
       } else if (path.endsWith('/upgrade-recover')) {
@@ -50,7 +54,7 @@ async function mockClusters(page: Page, initial: KubernetesCluster = fixture, pr
   })
   await page.goto('/#/kubernetes')
   await page.getByText('fixture-cluster', { exact: true }).first().click()
-  await page.getByRole('tab', { name: 'Upgrade', exact: true }).click()
+  if (initialTab === 'upgrade') await page.getByRole('tab', { name: 'Upgrade', exact: true }).click()
   return mutations
 }
 
@@ -168,7 +172,7 @@ for (const appleSilicon of [false, true]) {
 }
 
 for (const state of ['running', 'stopped']) {
-  test(`Apple ${state} clusters expose supported operations without destructive lifecycle shortcuts`, async ({ page }) => {
+  test(`Legacy Apple ${state} clusters are not silently migrated into another lifecycle`, async ({ page }) => {
     const mutations = await mockClusters(page, { ...fixture, provider: 'apple', state })
     await expect(page.getByRole('button', { name: 'Upgrade cluster', exact: true })).toHaveCount(0)
     await expect(page.getByText('Apple Cluster does not support in-place upgrades.', { exact: false })).toBeVisible()
@@ -186,3 +190,40 @@ for (const state of ['running', 'stopped']) {
     expect(mutations).toHaveLength(0)
   })
 }
+
+const nativeCapabilities: NonNullable<KubernetesCluster['capabilities']> = {
+  nativeNodes: true, start: true, stop: true, restart: true, imageLoading: true,
+  nodeScaling: false, upgrade: false,
+}
+
+test('directly owned Apple nodes expose start stop and restart without deletion', async ({ page }) => {
+  const mutations = await mockClusters(page, { ...fixture, provider: 'apple', capabilities: nativeCapabilities }, [], 'overview')
+  const inspector = page.getByRole('complementary', { name: 'fixture-cluster inspector' })
+  await expect(inspector.getByRole('button', { name: 'Stop cluster', exact: true })).toBeEnabled()
+  await inspector.getByRole('button', { name: 'Stop cluster', exact: true }).click()
+  await expect.poll(() => mutations.length).toBe(1)
+  expect(mutations[0].path).toBe('/api/kubernetes/clusters/fixture-cluster/stop')
+  await expect(inspector.getByRole('button', { name: 'Start cluster', exact: true })).toBeEnabled()
+  await inspector.getByRole('button', { name: 'Start cluster', exact: true }).click()
+  await expect.poll(() => mutations.length).toBe(2)
+  expect(mutations[1].path).toBe('/api/kubernetes/clusters/fixture-cluster/start')
+  await expect(inspector.getByRole('button', { name: 'Restart cluster', exact: true })).toBeEnabled()
+  await inspector.getByRole('button', { name: 'Restart cluster', exact: true }).click()
+  await expect.poll(() => mutations.length).toBe(3)
+  expect(mutations[2].path).toBe('/api/kubernetes/clusters/fixture-cluster/restart')
+  expect(mutations.every((mutation) => !mutation.path.endsWith('/delete'))).toBe(true)
+})
+
+test('native transitional and interrupted states retain visible retry progress', async ({ page }) => {
+  await mockClusters(page, {
+    ...fixture, provider: 'apple', state: 'stopping', capabilities: nativeCapabilities,
+    lifecycle: { id: 'synthetic-operation', goal: 'stopped', stage: 'graceful-node-shutdown',
+      startedAt: '2026-11-11T12:00:00Z', nodes: { 'synthetic-worker': 'stopped', 'synthetic-control': 'checking' } },
+  }, [], 'overview')
+  const inspector = page.getByRole('complementary', { name: 'fixture-cluster inspector' })
+  await expect(inspector.getByText('stopped: graceful-node-shutdown', { exact: true })).toBeVisible()
+  await expect(inspector.getByText('synthetic-worker', { exact: true })).toBeVisible()
+  await expect(inspector.getByRole('button', { name: 'Start cluster', exact: true })).toBeDisabled()
+  await expect(inspector.getByRole('button', { name: 'Stop cluster', exact: true })).toBeDisabled()
+  await expect(inspector.getByRole('button', { name: 'Restart cluster', exact: true })).toBeDisabled()
+})

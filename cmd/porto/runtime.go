@@ -563,7 +563,7 @@ func kubernetesFilesCmd(args []string) error {
 
 func kubernetesClusterCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto kubernetes cluster create|start|stop|scale|upgrade|upgrade-recover|autoscaling|delete")
+		return errors.New("usage: porto kubernetes cluster create|start|stop|restart|scale|upgrade|upgrade-recover|autoscaling|delete")
 	}
 	switch args[0] {
 	case "autoscaling":
@@ -625,7 +625,7 @@ func kubernetesClusterCmd(args []string) error {
 			request.Etcqlite = &kubernetes.EtcqliteDatastore{Name: *datastore, ClusterID: clusterID}
 		}
 		return runtimePOST("/api/kubernetes/clusters", request)
-	case "start", "stop":
+	case "start", "stop", "restart":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: porto kubernetes cluster %s <name>", args[0])
 		}

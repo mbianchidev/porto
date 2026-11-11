@@ -1225,16 +1225,23 @@ PORTO_APPLE_CLUSTER_INTEGRATION=1 \
   go test -v ./internal/kubernetes -run '^TestAppleClusterIntegration$' -count=1 -timeout 90m
 ```
 
-It creates an invocation-private control plane and worker (4 vCPUs and 5 GiB
-RAM total), verifies exact native resource budgets, imports a Linux/arm64
-image without sharing the host image store, and serves a synthetic workload
-from a PVC with `imagePullPolicy: Never`. It checks scoped inspection,
-Service/Gateway networking, unsupported-action safety, rename/data preservation
-and deletion.
-Only the fixture cluster is removed; downloaded base images remain cached.
+It keeps an independent native control cluster and an unrelated Apple container
+running while single-node and multi-node target clusters repeatedly stop/start.
+Peak requested fixture resources are approximately 7 vCPUs and 8 GiB plus 256 MiB
+RAM. It verifies exact native budgets, native image import with
+`imagePullPolicy: Never`, a PVC-backed StatefulSet and actual Service/Gateway
+traffic. Workload preStop markers prove kubelet-controlled graceful shutdown.
+Address changes, CA/node/PVC identity, desired replicas, completed Jobs, paused
+workloads, partial worker-start failure and recovery through a new provisioner
+instance are checked. The other cluster/container must retain their start
+timestamps and data throughout. Scaling/version upgrades remain rejected.
+Only explicitly owned fixture resources are removed; failed cleanup retains
+ownership records for inspection. Downloaded base images remain cached.
 Ordinary Go/provider tests and dashboard lifecycle tests cover host/version
-gating, private kubeconfigs, changed ownership, streamed image-import failure,
-Apple-only controls and unchanged Lima choices without starting native VMs.
+gating, private kubeconfigs, changed ownership, ordered/idempotent stop,
+persisted partial failure/cancellation, TLS-preserving address repair,
+completed/paused workload handling, streamed image-import failure, capability-
+driven Apple controls and unchanged Lima choices without starting native VMs.
 
 An opt-in multi-platform integration test uses an already running, Porto-owned
 Lima engine on macOS or Linux. It applies engine emulation provisioning, then

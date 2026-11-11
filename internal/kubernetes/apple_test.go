@@ -43,13 +43,13 @@ func TestAppleProviderUsesResolvedExecutableOutsideDaemonPATH(t *testing.T) {
 	}
 }
 
-func TestAppleClusterUsesNativeRuntimeAndPrivateKubeconfig(t *testing.T) {
+func TestLegacyAppleClusterKeepsOwnershipAndPrivateKubeconfigWithoutMigration(t *testing.T) {
 	externalConfig := filepath.Join(t.TempDir(), "external-config")
 	if err := os.WriteFile(externalConfig, []byte("unrelated kubeconfig"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("KUBECONFIG", externalConfig)
-	created := false
+	created := true
 	runner := newFakeRunner()
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		args := strings.Join(command.Args, " ")
@@ -63,18 +63,6 @@ func TestAppleClusterUsesNativeRuntimeAndPrivateKubeconfig(t *testing.T) {
 					return []byte("[]"), nil
 				}
 				return []byte(appleClusterFixture), nil
-			case strings.HasPrefix(args, "cluster create "):
-				privateConfig := ""
-				for _, value := range command.Env {
-					if path, ok := strings.CutPrefix(value, "KUBECONFIG="); ok {
-						privateConfig = path
-					}
-				}
-				if privateConfig == "" || privateConfig == externalConfig {
-					return nil, errors.New("Apple creation did not isolate KUBECONFIG")
-				}
-				created = true
-				return []byte("porto-apple-demo"), nil
 			case args == "cluster delete --name porto-apple-demo":
 				created = false
 				return nil, nil
@@ -97,16 +85,25 @@ func TestAppleClusterUsesNativeRuntimeAndPrivateKubeconfig(t *testing.T) {
 	}
 	provisioner := newAppleProvisioner(t, runner)
 	ctx := context.Background()
-	cluster, err := provisioner.Create(ctx, ClusterRequest{
-		Name: "demo", Provider: "apple",
+	spec := ClusterRequest{
+		Name: "demo", Provider: "apple", Version: "v1.35.5", AppleCreatedAt: "2026-11-11T12:00:00Z",
 		ControlPlane: MachineSpec{CPUs: 2, MemoryMiB: 2048},
 		NodeGroups: []NodeGroupSpec{{
 			Name: "workers", Count: 1, Machine: MachineSpec{CPUs: 4, MemoryMiB: 3072},
 		}},
-	})
-	if err != nil {
+	}
+	if err := provisioner.writeClusterMetadata(spec); err != nil {
 		t.Fatal(err)
 	}
+	kubeconfig := []byte(`{"apiVersion":"v1","kind":"Config","current-context":"porto-demo","clusters":[{"name":"porto-demo","cluster":{"server":"https://127.0.0.1:64430"}}],"contexts":[{"name":"porto-demo","context":{"cluster":"porto-demo","user":"porto-demo"}}],"users":[{"name":"porto-demo","user":{"token":"synthetic-token"}}]}`)
+	if err := writeFileAtomic(provisioner.clusterKubeconfigPath("demo"), kubeconfig); err != nil {
+		t.Fatal(err)
+	}
+	items, err := provisioner.List(ctx)
+	if err != nil || len(items) != 1 {
+		t.Fatalf("legacy inventory = %+v, error = %v", items, err)
+	}
+	cluster := items[0]
 	if cluster.Provider != "apple" || cluster.Context != "porto-demo" ||
 		cluster.State != "running" || cluster.Version != "v1.35.5" ||
 		!slices.Equal(cluster.Nodes, []string{"porto-apple-demo", "porto-apple-demo-worker-1"}) {
@@ -134,20 +131,13 @@ func TestAppleClusterUsesNativeRuntimeAndPrivateKubeconfig(t *testing.T) {
 	if err != nil || string(data) != "unrelated kubeconfig" {
 		t.Fatalf("external kubeconfig changed: %q, error = %v", data, err)
 	}
-	var createCommand runtimes.Command
 	for _, command := range runner.commands {
 		if command.Name != "container" && command.Name != "kubectl" {
 			t.Fatalf("Apple provider used another runtime: %+v", command)
 		}
 		if command.Name == "container" && len(command.Args) > 1 && command.Args[1] == "create" {
-			createCommand = command
+			t.Fatalf("legacy cluster was silently recreated: %+v", command)
 		}
-	}
-	createArgs := strings.Join(createCommand.Args, " ")
-	if !strings.Contains(createArgs, "--cpus 2 --memory 2048m") ||
-		!strings.Contains(createArgs, "--workers count=1,cpus=4,memory=3072m") ||
-		strings.Contains(createArgs, "--shared-image-store") || strings.Contains(createArgs, "--rm") {
-		t.Fatalf("incorrect Apple resource or isolation options: %s", createArgs)
 	}
 }
 

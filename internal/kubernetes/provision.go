@@ -23,6 +23,7 @@ import (
 	"github.com/mbianchidev/porto/internal/etcqlite"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/mbianchidev/porto/internal/vm"
+	kubeclient "k8s.io/client-go/kubernetes"
 )
 
 var clusterNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
@@ -67,25 +68,27 @@ spec:
 var metricsServerManifest []byte
 
 type ClusterProvisioner struct {
-	vms            *vm.Manager
-	runner         runtimes.Runner
-	kubeconfigRoot string
-	kubeconfigs    *KubeconfigRegistry
-	metricsMu      sync.Mutex
-	metricsRuns    map[string]*metricsServerRun
-	ownershipMu    sync.Mutex
-	reservations   map[string]string
-	clusterNames   map[string]string
-	apiPortMu      sync.Mutex
-	apiPorts       map[int]struct{}
-	registrySyncMu sync.Mutex
-	registrySync   map[string]registrySyncState
-	registryConfig func(context.Context) ([]byte, error)
-	kindRemovals   map[string]kindRemovalGrant
-	etcqlite       EtcqliteProvider
-	goos           string
-	goarch         string
-	appleLookPath  func(string) (string, error)
+	vms               *vm.Manager
+	runner            runtimes.Runner
+	kubeconfigRoot    string
+	kubeconfigs       *KubeconfigRegistry
+	metricsMu         sync.Mutex
+	metricsRuns       map[string]*metricsServerRun
+	ownershipMu       sync.Mutex
+	reservations      map[string]string
+	clusterNames      map[string]string
+	apiPortMu         sync.Mutex
+	apiPorts          map[int]struct{}
+	registrySyncMu    sync.Mutex
+	registrySync      map[string]registrySyncState
+	registryConfig    func(context.Context) ([]byte, error)
+	kindRemovals      map[string]kindRemovalGrant
+	etcqlite          EtcqliteProvider
+	goos              string
+	goarch            string
+	appleLookPath     func(string) (string, error)
+	appleFileIdentity func(string) (string, error)
+	appleClient       func(ClusterRequest) (kubeclient.Interface, error)
 }
 
 type ClusterProvisionerOption func(*ClusterProvisioner)
@@ -185,6 +188,11 @@ func (p *ClusterProvisioner) EnsureAddons(ctx context.Context, clusterName strin
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	releaseNative, err := p.lockAppleOperation(ctx, &request, "addons")
+	if err != nil {
+		return err
+	}
+	defer releaseNative()
 	return p.ensureClusterAddons(ctx, p.clusterKubeconfigPath(clusterName), clusterContextName(request), request.Provider)
 }
 
@@ -229,21 +237,24 @@ type ClusterRequest struct {
 	Upgrade        *UpgradeState      `json:"upgrade,omitempty"`
 	Etcqlite       *EtcqliteDatastore `json:"etcqlite,omitempty"`
 	AppleCreatedAt string             `json:"appleCreatedAt,omitempty"`
+	Apple          *AppleClusterState `json:"apple,omitempty"`
 }
 
 type Cluster struct {
-	Name           string             `json:"name"`
-	Provider       string             `json:"provider"`
-	State          string             `json:"state"`
-	Context        string             `json:"context"`
-	KubeconfigPath string             `json:"kubeconfigPath"`
-	Server         string             `json:"server"`
-	Nodes          []string           `json:"nodes"`
-	Message        string             `json:"message,omitempty"`
-	StateSince     string             `json:"stateSince,omitempty"`
-	Version        string             `json:"version,omitempty"`
-	Upgrade        *UpgradeState      `json:"upgrade,omitempty"`
-	Etcqlite       *EtcqliteDatastore `json:"etcqlite,omitempty"`
+	Name           string               `json:"name"`
+	Provider       string               `json:"provider"`
+	State          string               `json:"state"`
+	Context        string               `json:"context"`
+	KubeconfigPath string               `json:"kubeconfigPath"`
+	Server         string               `json:"server"`
+	Nodes          []string             `json:"nodes"`
+	Message        string               `json:"message,omitempty"`
+	StateSince     string               `json:"stateSince,omitempty"`
+	Version        string               `json:"version,omitempty"`
+	Upgrade        *UpgradeState        `json:"upgrade,omitempty"`
+	Etcqlite       *EtcqliteDatastore   `json:"etcqlite,omitempty"`
+	Capabilities   *ClusterCapabilities `json:"capabilities,omitempty"`
+	Lifecycle      *AppleLifecycle      `json:"lifecycle,omitempty"`
 }
 
 func NewClusterProvisioner(
@@ -259,17 +270,18 @@ func NewClusterProvisioner(
 		runner = runtimes.ExecRunner{}
 	}
 	provisioner := &ClusterProvisioner{
-		vms:            vms,
-		runner:         runner,
-		kubeconfigRoot: kubeconfigRoot,
-		metricsRuns:    make(map[string]*metricsServerRun),
-		reservations:   make(map[string]string),
-		clusterNames:   make(map[string]string),
-		apiPorts:       make(map[int]struct{}),
-		registrySync:   make(map[string]registrySyncState),
-		goos:           runtime.GOOS,
-		goarch:         runtime.GOARCH,
-		appleLookPath:  runtimes.LookPath,
+		vms:               vms,
+		runner:            runner,
+		kubeconfigRoot:    kubeconfigRoot,
+		metricsRuns:       make(map[string]*metricsServerRun),
+		reservations:      make(map[string]string),
+		clusterNames:      make(map[string]string),
+		apiPorts:          make(map[int]struct{}),
+		registrySync:      make(map[string]registrySyncState),
+		goos:              runtime.GOOS,
+		goarch:            runtime.GOARCH,
+		appleLookPath:     runtimes.LookPath,
+		appleFileIdentity: appleBackingFileIdentity,
 	}
 	for _, option := range options {
 		option(provisioner)
@@ -288,6 +300,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 	request.CreatedAt = ""
 	request.RunningAt = ""
 	request.AppleCreatedAt = ""
+	request.Apple = nil
 	if request.Provider == "" {
 		return Cluster{}, errors.New("Kubernetes provider must be kind, k0s, k3s, or apple")
 	}
@@ -383,7 +396,7 @@ func (p *ClusterProvisioner) Create(ctx context.Context, request ClusterRequest)
 		return Cluster{}, err
 	}
 	if request.Provider == "apple" {
-		cluster, err = p.createApple(ctx, &request)
+		cluster, err = p.createAppleManaged(ctx, &request)
 		if err != nil {
 			err = errors.Join(err, p.writeClusterFailure(request, err))
 		}
@@ -932,6 +945,11 @@ func (p *ClusterProvisioner) Delete(ctx context.Context, clusterName string) err
 		}
 	}
 	request.Provider = normalizeProvider(request.Provider)
+	releaseNative, err := p.lockAppleOperation(ctx, &request, "delete")
+	if err != nil {
+		return err
+	}
+	defer releaseNative()
 	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(request), request.Name)
 	if err != nil {
 		return err
@@ -1322,11 +1340,16 @@ func (p *ClusterProvisioner) List(ctx context.Context) ([]Cluster, error) {
 		}
 		managedKubeconfigs[cluster.KubeconfigPath] = struct{}{}
 		if cluster.Provider == "apple" {
-			if !appleLoaded {
-				appleResources, appleErr = p.appleClusters(ctx)
-				appleLoaded = true
+			cluster.Capabilities = appleCapabilities(request)
+			if request.Apple != nil {
+				p.observeAppleNative(ctx, request, &cluster)
+			} else {
+				if !appleLoaded {
+					appleResources, appleErr = p.appleClusters(ctx)
+					appleLoaded = true
+				}
+				p.observeAppleCluster(ctx, request, &cluster, appleResources, appleErr)
 			}
-			p.observeAppleCluster(ctx, request, &cluster, appleResources, appleErr)
 		} else if cluster.Provider == "kind" {
 			expectedNodes := kindNodeNames(request)
 			output, kindErr := p.runner.Run(ctx, runtimes.Command{
@@ -1643,6 +1666,11 @@ func (p *ClusterProvisioner) Rename(ctx context.Context, clusterName, newName st
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	releaseNative, err := p.lockAppleOperation(ctx, &request, "rename")
+	if err != nil {
+		return err
+	}
+	defer releaseNative()
 	oldRequest := request
 	request.RuntimeName = clusterRuntimeName(request)
 	request.Name = newName
@@ -1874,6 +1902,11 @@ func (p *ClusterProvisioner) ImportImage(ctx context.Context, clusterName, image
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
+	releaseNative, err := p.lockAppleOperation(ctx, &request, "image-import")
+	if err != nil {
+		return err
+	}
+	defer releaseNative()
 	releaseRuntime, err := p.reserveRuntimeName(clusterRuntimeName(request), request.Name)
 	if err != nil {
 		return err
@@ -1927,7 +1960,7 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 	if !clusterNamePattern.MatchString(clusterName) {
 		return false, fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
-	request, err := p.readMutableClusterMetadata(clusterName)
+	request, err := p.readAppleLifecycleMetadata(clusterName)
 	if err != nil {
 		return false, fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
@@ -1936,8 +1969,16 @@ func (p *ClusterProvisioner) Start(ctx context.Context, clusterName string) (boo
 		return false, err
 	}
 	defer releaseRuntime()
+	releaseNative, err := p.lockAppleOperation(ctx, &request, "start")
+	if err != nil {
+		return false, err
+	}
+	defer releaseNative()
 	request.Provider = normalizeProvider(request.Provider)
 	if request.Provider == "apple" {
+		if request.Apple != nil {
+			return false, p.startAppleNative(ctx, &request)
+		}
 		return false, unsupportedAppleOperation("cluster start")
 	}
 	if request.Provider != "kind" {
@@ -2013,7 +2054,7 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 	if !clusterNamePattern.MatchString(clusterName) {
 		return fmt.Errorf("cluster name must match %s", clusterNamePattern)
 	}
-	request, err := p.readMutableClusterMetadata(clusterName)
+	request, err := p.readAppleLifecycleMetadata(clusterName)
 	if err != nil {
 		return fmt.Errorf("read Kubernetes cluster ownership: %w", err)
 	}
@@ -2022,6 +2063,15 @@ func (p *ClusterProvisioner) SetRunning(ctx context.Context, clusterName string,
 		return err
 	}
 	defer releaseRuntime()
+	action := "stop"
+	if running {
+		action = "start"
+	}
+	releaseNative, err := p.lockAppleOperation(ctx, &request, action)
+	if err != nil {
+		return err
+	}
+	defer releaseNative()
 	return p.setRunning(ctx, clusterName, request, running)
 }
 
@@ -2032,6 +2082,12 @@ func (p *ClusterProvisioner) setRunning(
 	running bool,
 ) error {
 	if normalizeProvider(request.Provider) == "apple" {
+		if request.Apple != nil {
+			if running {
+				return p.startAppleNative(ctx, &request)
+			}
+			return p.stopAppleNative(ctx, &request)
+		}
 		action := "cluster stop"
 		if running {
 			action = "cluster start"

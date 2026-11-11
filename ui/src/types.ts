@@ -758,6 +758,25 @@ export type KubernetesCluster = {
     backupPath?: string
     error?: string
   }
+  capabilities?: {
+    nativeNodes?: boolean
+    start: boolean
+    stop: boolean
+    restart: boolean
+    imageLoading: boolean
+    nodeScaling: boolean
+    upgrade: boolean
+    lifecycleNote?: string
+  }
+  lifecycle?: {
+    id: string
+    goal: string
+    stage: string
+    startedAt: string
+    completedAt?: string
+    nodes: Record<string, string>
+    error?: string
+  }
 }
 
 export type EtcqliteInstance = {

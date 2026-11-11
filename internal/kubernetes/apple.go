@@ -36,7 +36,7 @@ func unsupportedAppleOperation(action string) error {
 
 func (p *ClusterProvisioner) CheckProviderOperation(name, action string) error {
 	switch action {
-	case "start", "stop", "scale", "upgrade", "upgrade-recover":
+	case "start", "stop", "restart", "scale", "upgrade", "upgrade-recover":
 	default:
 		return nil
 	}
@@ -51,6 +51,9 @@ func (p *ClusterProvisioner) CheckProviderOperation(name, action string) error {
 		return fmt.Errorf("read Kubernetes cluster capabilities: %w", err)
 	}
 	if normalizeProvider(request.Provider) == "apple" {
+		if request.Apple != nil && (action == "start" || action == "stop" || action == "restart") {
+			return nil
+		}
 		return unsupportedAppleOperation(action)
 	}
 	return nil
@@ -191,114 +194,6 @@ func ownedAppleCluster(request ClusterRequest, resources []appleClusterResource)
 	return nil, nil
 }
 
-func (p *ClusterProvisioner) createApple(ctx context.Context, request *ClusterRequest) (Cluster, error) {
-	kubeconfigPath := p.clusterKubeconfigPath(request.Name)
-	if err := os.MkdirAll(p.kubeconfigRoot, 0o700); err != nil {
-		return Cluster{}, fmt.Errorf("create Apple cluster kubeconfig directory: %w", err)
-	}
-	args := []string{
-		"cluster", "create", "--name", appleClusterName(*request),
-		"--cpus", strconv.Itoa(request.ControlPlane.CPUs),
-		"--memory", strconv.Itoa(request.ControlPlane.MemoryMiB) + "m",
-	}
-	if request.Version != "" {
-		args = append(args, "--node-image", "docker.io/kindest/node:"+request.Version)
-	}
-	for _, group := range request.NodeGroups {
-		if group.Count > 0 {
-			args = append(args, "--workers", fmt.Sprintf("count=%d,cpus=%d,memory=%dm",
-				group.Count, group.Machine.CPUs, group.Machine.MemoryMiB))
-		}
-	}
-	createContext, cancel := provisioningContext(ctx, "create Apple cluster", kindCreationTimeout)
-	defer cancel()
-	output, err := p.runApple(createContext, runtimes.Command{
-		Args: args, Env: []string{"KUBECONFIG=" + kubeconfigPath}, Network: true,
-	})
-	if err != nil || createContext.Err() != nil {
-		return Cluster{}, provisioningCommandError(createContext, "create Apple cluster", output, err)
-	}
-	resources, err := p.appleClusters(ctx)
-	if err != nil {
-		return Cluster{}, fmt.Errorf("Apple cluster creation succeeded but ownership could not be recorded: %w", err)
-	}
-	for _, resource := range resources {
-		if resource.ID == appleClusterName(*request) {
-			request.AppleCreatedAt = resource.Configuration.CreationDate
-			request.Version = resource.Configuration.KubernetesVersion
-			break
-		}
-	}
-	resource, err := ownedAppleCluster(*request, resources)
-	if err != nil {
-		return Cluster{}, err
-	}
-	if resource == nil {
-		return Cluster{}, errors.New("Apple cluster creation completed but the cluster is missing from native inventory")
-	}
-	if err := p.writeClusterMetadata(*request); err != nil {
-		return Cluster{}, err
-	}
-	contextName := clusterContextName(*request)
-	if err := p.normalizeKubeconfig(ctx, kubeconfigPath, contextName); err != nil {
-		return Cluster{}, err
-	}
-	run := p.addonCommandRunner(ctx, kubeconfigPath, contextName)
-	worker := 1
-	for _, group := range request.NodeGroups {
-		for range group.Count {
-			node := appleClusterName(*request) + "-worker-" + strconv.Itoa(worker)
-			worker++
-			keys := make([]string, 0, len(group.Labels))
-			for key := range group.Labels {
-				keys = append(keys, key)
-			}
-			slices.Sort(keys)
-			if len(keys) > 0 {
-				args := []string{"label", "node", node, "--overwrite=true"}
-				for _, key := range keys {
-					args = append(args, key+"="+group.Labels[key])
-				}
-				if _, err := run("label Apple cluster node", nil, args...); err != nil {
-					return Cluster{}, err
-				}
-			}
-			if len(group.Taints) > 0 {
-				args := append([]string{"taint", "node", node, "--overwrite=true"}, group.Taints...)
-				if _, err := run("taint Apple cluster node", nil, args...); err != nil {
-					return Cluster{}, err
-				}
-			}
-		}
-	}
-	if err := p.ensureKindMetricsServer(ctx, kubeconfigPath, contextName); err != nil {
-		return Cluster{}, err
-	}
-	if err := p.ensureClusterAddons(ctx, kubeconfigPath, contextName, request.Provider); err != nil {
-		return Cluster{}, err
-	}
-	cluster := Cluster{
-		Name: request.Name, Provider: "apple", State: "running", Context: contextName,
-		KubeconfigPath: kubeconfigPath, Version: request.Version, Nodes: appleNodeNames(*request),
-	}
-	if err := p.appleClusterServer(ctx, &cluster); err != nil {
-		return Cluster{}, err
-	}
-	request.Phase, request.Error = "", ""
-	request.RunningAt = time.Now().UTC().Format(time.RFC3339Nano)
-	if err := p.writeClusterMetadata(*request); err != nil {
-		return Cluster{}, err
-	}
-	if _, err := p.registerKubeconfig(ctx, request.Name); err != nil {
-		warning, fatalErr := kubeconfigRegistrationResult(request.Name, err)
-		if fatalErr != nil {
-			return Cluster{}, fatalErr
-		}
-		cluster.Message = warning
-	}
-	return cluster, nil
-}
-
 func (p *ClusterProvisioner) appleClusterServer(ctx context.Context, cluster *Cluster) error {
 	probeContext, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
@@ -349,9 +244,15 @@ func (p *ClusterProvisioner) observeAppleCluster(
 		}
 		cluster.Message += err.Error()
 	}
+	if cluster.Capabilities != nil {
+		cluster.Capabilities.ImageLoading = cluster.State == "running"
+	}
 }
 
 func (p *ClusterProvisioner) deleteApple(ctx context.Context, request ClusterRequest) error {
+	if request.Apple != nil {
+		return p.deleteAppleManaged(ctx, request)
+	}
 	resources, err := p.appleClusters(ctx)
 	if err != nil {
 		return err
@@ -373,16 +274,28 @@ func (p *ClusterProvisioner) deleteApple(ctx context.Context, request ClusterReq
 }
 
 func (p *ClusterProvisioner) importAppleImage(ctx context.Context, request ClusterRequest, image string) (err error) {
-	resources, err := p.appleClusters(ctx)
-	if err != nil {
-		return err
-	}
-	resource, err := ownedAppleCluster(request, resources)
-	if err != nil {
-		return err
-	}
-	if resource == nil || resource.Status.State != "running" {
-		return errors.New("image import requires a running, owned Apple cluster; stopped Apple clusters require explicit recreation")
+	if request.Apple != nil {
+		containers, err := p.ownedAppleNodes(ctx, request)
+		if err != nil {
+			return err
+		}
+		for _, container := range containers {
+			if container.Status.State != "running" {
+				return errors.New("image import requires every owned native node VM to be running")
+			}
+		}
+	} else {
+		resources, err := p.appleClusters(ctx)
+		if err != nil {
+			return err
+		}
+		resource, err := ownedAppleCluster(request, resources)
+		if err != nil {
+			return err
+		}
+		if resource == nil || resource.Status.State != "running" {
+			return errors.New("image import requires a running, owned Apple cluster")
+		}
 	}
 	archive, err := os.CreateTemp(p.kubeconfigRoot, ".apple-image-*.tar")
 	if err != nil {
@@ -406,7 +319,7 @@ func (p *ClusterProvisioner) importAppleImage(ctx context.Context, request Clust
 		return provisioningCommandError(importContext, "export image from the Apple container image store", output, err)
 	}
 	var importErrors []error
-	for _, node := range appleNodeNames(request) {
+	for _, node := range appleNativeNodeIDs(request) {
 		input, err := os.Open(archivePath)
 		if err != nil {
 			return errors.Join(errors.Join(importErrors...), fmt.Errorf("open private Apple image archive: %w", err))
