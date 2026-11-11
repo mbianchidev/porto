@@ -111,6 +111,15 @@ therefore reports `created` to Compose instead of an empty state that can
 prevent startup convergence. Explicit nonempty states, process identity,
 exit history, health and other inspection fields are retained.
 
+If nerdctl exposes a live interface as `unknown-eth0` or another `unknown-*`
+endpoint, Porto reconciles it with the container's recorded `nerdctl/networks`
+names and the same container's live network attachment addresses and MAC before
+returning a canonical network ID. It does not infer network identity from
+interface numbers or label order. Existing endpoint fields, health, ports and
+mounts are retained. Missing, stale or ambiguous attachment evidence is reported
+explicitly; inspection never creates a placeholder network or changes runtime
+resources.
+
 When the Docker endpoint uses the event-backed inventory, successful creation
 waits until that healthy inventory contains the new container ID. Compose can
 therefore list and start every member immediately after creation instead of

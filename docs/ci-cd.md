@@ -147,6 +147,14 @@ longer RPC deadline. A deterministic virtual-clock regression verifies a
 still expires on time. This does not retry builds or extend their request,
 container-start, provisioning or readiness budgets.
 
+Solve admission also performs a live guest architecture/binfmt check before
+BuildKit's 15-second gateway Ping deadline. The probe parses proc entries with
+shell builtins instead of forking `grep` and `sed` for each handler, which took
+18 seconds under Windows ARM QEMU TCG. Enabled state, the fix-binary `F` flag
+and an executable interpreter remain required. An isolated shell fixture checks
+valid, disabled and unsafe handlers without external parsers. This adds no
+capability cache or build retries and does not extend any deadline.
+
 Container identity checks on an available, matching owned Lima inventory use
 live containerd metadata over its established connection instead of forking
 `nerdctl inspect` for each guard. They do not trust cached snapshot names and do

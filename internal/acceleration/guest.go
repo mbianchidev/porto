@@ -6,10 +6,17 @@ import (
 	"strings"
 )
 
+// Parser subprocesses can exhaust BuildKit's gateway deadline under guest emulation.
 const GuestProbeScript = `set -eu
 printf 'architecture=%s\n' "$(uname -m)"
 root=/proc/sys/fs/binfmt_misc
-if [ ! -r "$root/status" ] || ! grep -qx enabled "$root/status"; then
+enabled=false
+if [ -r "$root/status" ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    if [ "$line" = enabled ]; then enabled=true; fi
+  done < "$root/status"
+fi
+if [ "$enabled" != true ]; then
   printf 'binfmt=disabled\n'
   exit 0
 fi
@@ -17,10 +24,22 @@ printf 'binfmt=enabled\n'
 for name in rosetta qemu-x86_64 qemu-aarch64 qemu-arm qemu-i386 qemu-riscv64 qemu-ppc64le qemu-s390x; do
   file="$root/$name"
   [ -r "$file" ] || continue
-  grep -qx enabled "$file" || continue
-  grep -q '^flags: .*F' "$file" || continue
-  interpreter="$(sed -n 's/^interpreter //p' "$file")"
-  [ -n "$interpreter" ] && [ -x "$interpreter" ] || continue
+  enabled=false
+  fixed=false
+  interpreter=
+  interpreters=0
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in
+      enabled) enabled=true ;;
+      'flags: '*F*) fixed=true ;;
+      'interpreter '*)
+        interpreter="${line#interpreter }"
+        interpreters=$((interpreters + 1))
+        ;;
+    esac
+  done < "$file"
+  [ "$enabled" = true ] && [ "$fixed" = true ] || continue
+  [ "$interpreters" -eq 1 ] && [ -n "$interpreter" ] && [ -x "$interpreter" ] || continue
   printf 'handler=%s\n' "$name"
 done
 `
