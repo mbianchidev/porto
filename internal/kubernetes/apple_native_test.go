@@ -25,16 +25,17 @@ import (
 )
 
 type nativeLifecycleFixture struct {
-	p             *ClusterProvisioner
-	request       ClusterRequest
-	runner        *fakeRunner
-	states        map[string]string
-	shutdowns     []string
-	failure       string
-	onStop        func(string)
-	snapshots     int
-	deleteFailure string
-	deleted       []string
+	p                  *ClusterProvisioner
+	request            ClusterRequest
+	runner             *fakeRunner
+	states             map[string]string
+	shutdowns          []string
+	failure            string
+	onStop             func(string)
+	snapshots          int
+	deleteFailure      string
+	keepDeletedStorage string
+	deleted            []string
 }
 
 func newNativeLifecycleFixture(t *testing.T) *nativeLifecycleFixture {
@@ -140,7 +141,19 @@ func newNativeLifecycleFixture(t *testing.T) *nativeLifecycleFixture {
 			}
 			f.deleted = append(f.deleted, id)
 			delete(f.states, id)
+			if id != f.keepDeletedStorage {
+				if err := os.RemoveAll(filepath.Join(f.request.Apple.AppRoot, "containers", id)); err != nil {
+					return nil, err
+				}
+			}
 			return nil, nil
+		}
+		if command.Args[0] == "list" {
+			result := make([]map[string]any, 0, len(f.states))
+			for id := range f.states {
+				result = append(result, map[string]any{"id": id})
+			}
+			return json.Marshal(result)
 		}
 		if command.Args[0] != "exec" || len(command.Args) < 3 {
 			return nil, fmt.Errorf("forbidden native lifecycle primitive: %v", command.Args)
@@ -152,6 +165,9 @@ func newNativeLifecycleFixture(t *testing.T) *nativeLifecycleFixture {
 		args := strings.Join(command.Args[2:], " ")
 		if strings.Contains(args, "/var/lib/kubelet/config.yaml") {
 			return []byte("shutdownGracePeriod: 300s\nshutdownGracePeriodCriticalPods: 60s\n"), nil
+		}
+		if strings.Contains(args, "--property=SystemState") {
+			return []byte("running\n"), nil
 		}
 		if strings.Contains(args, "systemd-inhibit") && !strings.Contains(args, "systemctl poweroff") {
 			return nil, nil
@@ -239,6 +255,60 @@ func TestNativeAppleCancellationDoesNotForceOrDeleteAnyVM(t *testing.T) {
 	}
 }
 
+func TestNativeAppleStartAndStopResumeAnAlreadyAcknowledgedShutdown(t *testing.T) {
+	for _, start := range []bool{false, true} {
+		t.Run(fmt.Sprintf("start-%t", start), func(t *testing.T) {
+			f := newNativeLifecycleFixture(t)
+			f.request.Phase = "stop-failed"
+			f.request.Apple.Operation = &AppleLifecycle{
+				ID: "interrupted-shutdown", Goal: "stopped",
+				Nodes: map[string]string{"owned-control": "shutdown-requested", "owned-worker-1": "stopped", "owned-worker-2": "stopped"},
+			}
+			f.states["owned-worker-1"], f.states["owned-worker-2"] = "stopped", "stopped"
+			if err := f.p.writeClusterMetadata(f.request); err != nil {
+				t.Fatal(err)
+			}
+			run := f.runner.handler
+			shutdownObserved, booted := false, false
+			f.runner.handler = func(command runtimes.Command) ([]byte, error) {
+				if shutdownObserved && len(command.Args) > 0 && command.Args[0] == "inspect" {
+					f.states["owned-control"] = "stopped"
+				}
+				if slices.Equal(command.Args, []string{"system", "status", "--format", "json"}) {
+					return json.Marshal(map[string]any{
+						"status": "running", "client": map[string]string{"version": "1.7.1"},
+						"server": map[string]string{"version": "1.7.1"}, "paths": map[string]string{"appRoot": f.request.Apple.AppRoot},
+					})
+				}
+				if slices.Equal(command.Args, []string{"start", "owned-control"}) {
+					booted = true
+					return nil, errors.New("synthetic stop after resumed native boot")
+				}
+				if len(command.Args) > 2 && command.Args[0] == "exec" && command.Args[1] == "owned-control" {
+					if slices.Contains(command.Args, "--property=SystemState") {
+						shutdownObserved = true
+					}
+					return nil, errors.New("guest is already shutting down")
+				}
+				return run(command)
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+			defer cancel()
+			err := f.p.SetRunning(ctx, f.request.Name, start)
+			if start {
+				if !booted || err == nil || !strings.Contains(err.Error(), "resumed native boot") {
+					t.Fatalf("Start did not wait for the pending shutdown before booting the same VM: %v, booted = %t", err, booted)
+				}
+			} else if err != nil {
+				t.Fatalf("Stop could not resume a shutdown after guest services exited: %v", err)
+			}
+			if len(f.shutdowns) != 0 || f.states["owned-control"] != "stopped" {
+				t.Fatalf("recovery repeated a shutdown or lost its outcome: %v, states = %v", f.shutdowns, f.states)
+			}
+		})
+	}
+}
+
 func TestNativeAppleOperationsSerializeAcrossApplicationInstances(t *testing.T) {
 	f := newNativeLifecycleFixture(t)
 	request := f.request
@@ -255,6 +325,33 @@ func TestNativeAppleOperationsSerializeAcrossApplicationInstances(t *testing.T) 
 	err = reopened.SetRunning(ctx, f.request.Name, false)
 	if !errors.Is(err, context.DeadlineExceeded) || len(f.shutdowns) != 0 {
 		t.Fatalf("conflicting process changed native resources: %v, shutdowns = %v", err, f.shutdowns)
+	}
+}
+
+func TestNativeAppleInventoryDistinguishesActiveAndInterruptedOperationsAcrossInstances(t *testing.T) {
+	f := newNativeLifecycleFixture(t)
+	f.request.Phase = "stopping"
+	f.request.Apple.Operation = &AppleLifecycle{ID: "pending-stop", Goal: "stopped", Nodes: make(map[string]string)}
+	if err := f.p.writeClusterMetadata(f.request); err != nil {
+		t.Fatal(err)
+	}
+	release, err := f.p.lockAppleOperation(context.Background(), &f.request, "stop")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	reopened := NewClusterProvisioner(nil, f.runner, f.p.kubeconfigRoot)
+	reopened.goos, reopened.goarch = "darwin", "arm64"
+	reopened.appleLookPath, reopened.appleFileIdentity = f.p.appleLookPath, f.p.appleFileIdentity
+	cluster := Cluster{State: f.request.Phase}
+	reopened.observeAppleNative(context.Background(), f.request, &cluster)
+	if cluster.State != "stopping" {
+		t.Fatalf("another active application's shutdown was reported as interrupted: %+v", cluster)
+	}
+	release()
+	reopened.observeAppleNative(context.Background(), f.request, &cluster)
+	if cluster.State != "degraded" || !strings.Contains(cluster.Message, "interrupted") {
+		t.Fatalf("released operation ownership did not expose recoverable interruption: %+v", cluster)
 	}
 }
 
@@ -278,6 +375,72 @@ func TestNativeAppleDeleteRetriesOnlyUndeletedOwnedResources(t *testing.T) {
 	}
 	if _, err := f.p.readClusterMetadata(f.request.Name); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("completed deletion left an inconsistent ownership record: %v", err)
+	}
+}
+
+func TestNativeAppleDeleteAfterLifecycleFailureStillRequiresGracefulShutdown(t *testing.T) {
+	for _, phase := range []string{"start-failed", "stop-failed"} {
+		t.Run(phase, func(t *testing.T) {
+			f := newNativeLifecycleFixture(t)
+			f.request.Phase = phase
+			if err := f.p.writeClusterMetadata(f.request); err != nil {
+				t.Fatal(err)
+			}
+			run := f.runner.handler
+			f.runner.handler = func(command runtimes.Command) ([]byte, error) {
+				if len(command.Args) > 2 && command.Args[0] == "exec" && command.Args[1] == "owned-worker-1" &&
+					slices.Contains(command.Args, "/var/lib/kubelet/config.yaml") {
+					return nil, errors.New("synthetic unavailable shutdown budget")
+				}
+				return run(command)
+			}
+			err := f.p.Delete(context.Background(), f.request.Name)
+			if err == nil || !strings.Contains(err.Error(), "shutdown budget") || len(f.deleted) != 0 ||
+				f.states["owned-control"] != "running" || f.states["owned-worker-1"] != "running" {
+				t.Fatalf("deletion bypassed workload-safe shutdown after %s: %v, deleted = %v, states = %v",
+					phase, err, f.deleted, f.states)
+			}
+		})
+	}
+}
+
+func TestNativeAppleDeleteRecoversLostAcknowledgementWithoutDiscardingResidualStorage(t *testing.T) {
+	for _, residual := range []bool{false, true} {
+		t.Run(fmt.Sprintf("residual-storage-%t", residual), func(t *testing.T) {
+			f := newNativeLifecycleFixture(t)
+			node := f.request.Apple.Nodes[2]
+			if residual {
+				f.keepDeletedStorage = node.ID
+			}
+			run := f.runner.handler
+			f.runner.handler = func(command runtimes.Command) ([]byte, error) {
+				output, err := run(command)
+				if err == nil && slices.Equal(command.Args, []string{"delete", node.ID}) {
+					return nil, errors.New("synthetic lost native deletion acknowledgement")
+				}
+				return output, err
+			}
+			if err := f.p.Delete(context.Background(), f.request.Name); err == nil {
+				t.Fatal("uncertain native deletion was reported as complete")
+			}
+			f.runner.handler = run
+			err := f.p.Delete(context.Background(), f.request.Name)
+			if residual {
+				data, readErr := os.ReadFile(node.Storage.Rootfs)
+				if err == nil || !strings.Contains(err.Error(), "backing") || readErr != nil ||
+					string(data) != "synthetic persistent node data" || !slices.Equal(f.deleted, []string{node.ID}) {
+					t.Fatalf("ambiguous deletion discarded backing data: %v, data = %q, read = %v, deleted = %v",
+						err, data, readErr, f.deleted)
+				}
+				return
+			}
+			if err != nil || !slices.Equal(f.deleted, []string{node.ID, "owned-worker-1", "owned-control"}) {
+				t.Fatalf("retry could not reconcile the exact completed deletion: %v, deleted = %v", err, f.deleted)
+			}
+			if _, err := f.p.readClusterMetadata(f.request.Name); !errors.Is(err, os.ErrNotExist) {
+				t.Fatalf("recovered deletion left its cluster record: %v", err)
+			}
+		})
 	}
 }
 

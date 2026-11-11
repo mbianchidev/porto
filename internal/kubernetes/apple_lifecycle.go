@@ -111,8 +111,10 @@ func (p *ClusterProvisioner) stopAppleNative(ctx context.Context, request *Clust
 		}
 	}
 	for _, node := range order {
-		if err := p.appleProgress(request, "graceful-node-shutdown", node.ID, "checking"); err != nil {
-			return err
+		if request.Apple.Operation.Nodes[node.ID] != "shutdown-requested" {
+			if err := p.appleProgress(request, "graceful-node-shutdown", node.ID, "checking"); err != nil {
+				return err
+			}
 		}
 		if err := p.stopAppleNode(ctx, *request, node); err != nil {
 			return err
@@ -136,6 +138,15 @@ func (p *ClusterProvisioner) stopAppleNode(ctx context.Context, request ClusterR
 	if container.Status.State != "running" {
 		return fmt.Errorf("native node %s is %s; retry after its current transition settles", node.ID, container.Status.State)
 	}
+	operation := request.Apple.Operation
+	if operation != nil && operation.Goal == "stopped" && operation.CompletedAt == "" &&
+		operation.Nodes[node.ID] == "shutdown-requested" {
+		state, err := p.appleGuest(ctx, node.ID, 10*time.Second, nil,
+			"/bin/systemctl", "show", "--property=SystemState", "--value")
+		if err != nil || strings.TrimSpace(string(state)) == "stopping" {
+			return p.waitAppleNodeStopped(ctx, request, node)
+		}
+	}
 	if err := p.checkAppleShutdownBudget(ctx, request, node); err != nil {
 		return err
 	}
@@ -146,12 +157,23 @@ systemctl is-active --quiet kubelet.service
 systemd-inhibit --list --no-pager --no-legend | grep -q Kubelet
 sync
 systemctl poweroff --no-block`
+	if operation != nil && operation.Goal == "stopped" && operation.CompletedAt == "" {
+		if err := p.appleProgress(&request, "graceful-node-shutdown", node.ID, "shutdown-requested"); err != nil {
+			return err
+		}
+	}
 	shutdownContext, cancel := context.WithTimeout(ctx, appleShutdown)
 	defer cancel()
 	_, requestErr := p.appleGuest(shutdownContext, node.ID, 30*time.Second, nil, "/bin/sh", "-c", shutdown)
 	if requestErr != nil {
 		return fmt.Errorf("graceful shutdown request for %s was not acknowledged; no forced shutdown was attempted: %w", node.ID, requestErr)
 	}
+	return p.waitAppleNodeStopped(shutdownContext, request, node)
+}
+
+func (p *ClusterProvisioner) waitAppleNodeStopped(ctx context.Context, request ClusterRequest, node AppleNode) error {
+	shutdownContext, cancel := context.WithTimeout(ctx, appleShutdown)
+	defer cancel()
 	return waitApple(shutdownContext, "verify native VM "+node.ID+" stopped", func(probe context.Context) error {
 		current, err := p.inspectAppleNodes(probe, []string{node.ID})
 		if err != nil {

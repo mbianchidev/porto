@@ -59,6 +59,7 @@ type AppleNode struct {
 	PodCIDR                 string           `json:"podCIDR,omitempty"`
 	ShutdownGraceSeconds    int64            `json:"shutdownGraceSeconds,omitempty"`
 	CriticalShutdownSeconds int64            `json:"criticalShutdownSeconds,omitempty"`
+	Deleting                bool             `json:"deleting,omitempty"`
 	Deleted                 bool             `json:"deleted,omitempty"`
 }
 
@@ -469,13 +470,30 @@ func appleLifecycleMessage(state *AppleClusterState) string {
 	return strings.Join(state.Warnings, " ")
 }
 
+func (p *ClusterProvisioner) appleOperationLockPath(identity string) string {
+	return filepath.Join(p.kubeconfigRoot, ".apple-operation-"+config.KubernetesClusterFileToken(identity)+".lock")
+}
+
+func (p *ClusterProvisioner) appleOperationActive(identity string) (bool, error) {
+	lease, err := filelock.TryAcquireExisting(p.appleOperationLockPath(identity))
+	if filelock.IsBusy(err) {
+		return true, nil
+	}
+	if errors.Is(err, os.ErrNotExist) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("inspect native operation ownership: %w", err)
+	}
+	return false, lease.Close()
+}
+
 func (p *ClusterProvisioner) lockAppleOperation(ctx context.Context, request *ClusterRequest, action string) (func(), error) {
 	if request.Provider != "apple" || request.Apple == nil {
 		return func() {}, nil
 	}
 	identity := request.Apple.ID
-	lockPath := filepath.Join(p.kubeconfigRoot, ".apple-operation-"+config.KubernetesClusterFileToken(identity)+".lock")
-	lease, err := filelock.Acquire(ctx, lockPath)
+	lease, err := filelock.Acquire(ctx, p.appleOperationLockPath(identity))
 	if err != nil {
 		return nil, fmt.Errorf("serialize native cluster %s operation %s: %w", request.Name, action, err)
 	}

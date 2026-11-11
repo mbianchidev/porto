@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+func IsBusy(err error) bool { return busy(err) }
+
 func Acquire(ctx context.Context, path string) (*Lock, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err

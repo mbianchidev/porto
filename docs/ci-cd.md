@@ -1231,7 +1231,8 @@ Peak requested fixture resources are approximately 7 vCPUs and 8 GiB plus 256 Mi
 RAM. It verifies exact native budgets, native image import with
 `imagePullPolicy: Never`, a PVC-backed StatefulSet and actual Service/Gateway
 traffic. Workload preStop markers prove kubelet-controlled graceful shutdown.
-Address changes, CA/node/PVC identity, desired replicas, completed Jobs, paused
+Address changes, datastore cluster/member identity, CA/node/PVC identity,
+desired replicas, completed Jobs, paused
 workloads, partial worker-start failure and recovery through a new provisioner
 instance are checked. The other cluster/container must retain their start
 timestamps and data throughout. Scaling/version upgrades remain rejected.
@@ -1239,7 +1240,9 @@ Only explicitly owned fixture resources are removed; failed cleanup retains
 ownership records for inspection. Downloaded base images remain cached.
 Ordinary Go/provider tests and dashboard lifecycle tests cover host/version
 gating, private kubeconfigs, changed ownership, ordered/idempotent stop,
-persisted partial failure/cancellation, TLS-preserving address repair,
+persisted partial failure/cancellation, pending guest shutdown, uncertain
+deletion acknowledgements/residual backing data, cross-application operation
+states, TLS-preserving address repair,
 completed/paused workload handling, streamed image-import failure, capability-
 driven Apple controls and unchanged Lima choices without starting native VMs.
 

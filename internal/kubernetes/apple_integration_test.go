@@ -258,6 +258,35 @@ spec:
 	if err != nil {
 		t.Fatal(err)
 	}
+	datastoreMembership := func() [2]string {
+		t.Helper()
+		output := run("inspect retained native datastore membership", runtimes.Command{
+			Name: "container", StdoutOnly: true, Args: []string{
+				"exec", cluster.Nodes[0], "/usr/bin/curl", "--fail", "--silent", "--show-error", "--max-time", "10",
+				"--cacert", "/etc/kubernetes/pki/etcd/ca.crt",
+				"--cert", "/etc/kubernetes/pki/etcd/healthcheck-client.crt",
+				"--key", "/etc/kubernetes/pki/etcd/healthcheck-client.key",
+				"--request", "POST", "--header", "Content-Type: application/json", "--data", "{}",
+				"https://127.0.0.1:2379/v3/cluster/member/list",
+			},
+		})
+		var membership struct {
+			Header struct {
+				ClusterID string `json:"cluster_id"`
+			} `json:"header"`
+			Members []struct {
+				ID string `json:"ID"`
+			} `json:"members"`
+		}
+		if err := json.Unmarshal(output, &membership); err != nil {
+			t.Fatal(err)
+		}
+		if membership.Header.ClusterID == "" || len(membership.Members) != 1 || membership.Members[0].ID == "" {
+			t.Fatal("native datastore membership is incomplete")
+		}
+		return [2]string{membership.Header.ClusterID, membership.Members[0].ID}
+	}
+	membership := datastoreMembership()
 	pvcUID := string(kubectl("record persistent claim identity", nil, "get", "pvc", "apple-fixture-data", "-o", "jsonpath={.metadata.uid}"))
 	control.assertUnaffected(t, ctx)
 	output, err = manager.Exec(ctx, cluster.Context, "default", "apple-fixture-0", "app",
@@ -332,6 +361,9 @@ spec:
 		after, err := provisioner.Configuration(name)
 		if err != nil || after.Apple.CAHash != before.Apple.CAHash {
 			t.Fatalf("recovery changed the cluster TLS authority: %v", err)
+		}
+		if datastoreMembership() != membership {
+			t.Fatal("recovery replaced datastore identity or membership")
 		}
 		changedAddress := false
 		for index, node := range after.Apple.Nodes {

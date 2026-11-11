@@ -203,6 +203,15 @@ func (p *ClusterProvisioner) startAppleNative(ctx context.Context, request *Clus
 	if err != nil {
 		return err
 	}
+	if operation := request.Apple.Operation; operation != nil && operation.Goal == "stopped" && operation.CompletedAt == "" {
+		for _, node := range request.Apple.Nodes {
+			if operation.Nodes[node.ID] == "shutdown-requested" {
+				if err := p.stopAppleNode(ctx, *request, node); err != nil {
+					return fmt.Errorf("finish the previously requested graceful shutdown before starting recovery: %w", err)
+				}
+			}
+		}
+	}
 	unexpectedStop := request.Apple.Operation == nil ||
 		request.Apple.Operation.CompletedAt != "" && request.Apple.Operation.Goal != "stopped"
 	anyStopped := false
@@ -368,10 +377,18 @@ func (p *ClusterProvisioner) observeAppleNative(ctx context.Context, request Clu
 		}
 	}
 	if request.Phase != "" {
+		cluster.State = request.Phase
 		if (request.Phase == "starting" || request.Phase == "stopping") &&
 			!p.runtimeNameReserved(clusterRuntimeName(request), request.Name) {
-			cluster.State = "degraded"
-			cluster.Message = "Native lifecycle was interrupted. Retry Start or Stop; existing node filesystems and progress are retained."
+			active, err := p.appleOperationActive(request.Apple.ID)
+			if err != nil {
+				cluster.State, cluster.Message = "unavailable", err.Error()
+				return
+			}
+			if !active {
+				cluster.State = "degraded"
+				cluster.Message = "Native lifecycle was interrupted. Retry Start or Stop; existing node filesystems and progress are retained."
+			}
 		}
 		return
 	}

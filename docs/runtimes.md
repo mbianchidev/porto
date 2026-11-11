@@ -733,6 +733,8 @@ repositories; later recovery uses the retained guest filesystem.
 porto kubernetes cluster stop apple-dev
 porto kubernetes cluster start apple-dev
 porto kubernetes cluster restart apple-dev
+porto kubernetes clusters
+porto kubernetes kubeconfig apple-dev
 ```
 
 **Stop is nondestructive.** Porto snapshots previously healthy workloads and a
@@ -763,7 +765,14 @@ health information.
 Conflicting operations are serialized per cluster. Transitional state, node
 progress, health baselines and errors are persisted, so Start/Stop can be retried
 after partial failure, cancellation or an application restart. Already-running
-or stopped nodes are handled idempotently. Deadlines report incomplete recovery
+or stopped nodes are handled idempotently. A retry observes an already-requested
+guest shutdown before starting that same VM, even after guest services have
+exited. Inventory distinguishes another application's active operation from an
+interrupted one. Deletion retains graceful workload checks after failed
+Start/Stop, records intent before removing a node, and reconciles uncertain
+completion only when that exact node and its backing directory are both absent.
+Residual backing data is retained for explicit inspection.
+Deadlines report incomplete recovery
 or shutdown; they never trigger an implicit force stop. Do not remove backing
 files or certificates to repair a failed start. TLS or storage identity errors
 require explicit inspection, not relaxed verification.
@@ -804,6 +813,8 @@ Kubernetes-version upgrades/recovery remain unavailable until a safe native
 implementation is verified. Porto rejects those operations before pausing
 unrelated work and never disguises deletion/recreation as an in-place upgrade.
 KEDA workload scaling and the existing Kubernetes workload APIs remain available.
+Expired or externally replaced certificates require explicit repair; Porto does
+not regenerate the cluster CA or bypass TLS verification to conceal them.
 Application-aware backups are still necessary; retained VM disks are not an
 independent backup.
 
