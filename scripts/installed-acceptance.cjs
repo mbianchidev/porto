@@ -138,8 +138,10 @@ async function configureLima(fixture, env) {
   const prefix = '.containerd.archives = '
   assert.ok(archive.stdout.trim().startsWith(prefix), 'Expected the existing checksum-verified Lima archive fixture')
   const archives = JSON.parse(archive.stdout.trim().slice(prefix.length))
-  const dependencies = JSON.parse(dependencyProvisionOverride().slice('.provision += '.length))
   const intel = fixture.target === 'darwin/amd64'
+  const dependencies = JSON.parse(dependencyProvisionOverride(undefined, {
+    networkDiagnostics: intel,
+  }).slice('.provision += '.length))
   if (intel) {
     console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
   }
