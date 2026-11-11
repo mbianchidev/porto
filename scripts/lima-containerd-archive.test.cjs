@@ -53,6 +53,29 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
   assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
 })
 
+test('Intel TCG network diagnostics are opt-in, bounded, and do not expose proxy values', () => {
+  const date = new Date('2026-10-22T14:35:00Z')
+  const defaultScript = JSON.parse(dependencyProvisionOverride(date).slice('.provision += '.length))[0].script
+  const diagnosticScript = JSON.parse(dependencyProvisionOverride(date, {
+    networkDiagnostics: true,
+  }).slice('.provision += '.length))[0].script
+
+  assert.doesNotMatch(defaultScript, /CI guest network diagnostics/)
+  assert.match(diagnosticScript, /timeout -k 2s 20s python3/)
+  assert.match(diagnosticScript, /snapshot\.ubuntu\.com\/ubuntu\/20261019T000000Z\/dists\/resolute\/InRelease/)
+  assert.match(diagnosticScript, /probe\.proxy\.env=/)
+  assert.match(diagnosticScript, /probe\.apt\.proxy=/)
+  assert.match(diagnosticScript, /probe\.apt\.force_ipv4=/)
+  assert.match(diagnosticScript, /probe\.apt\.force_ipv6=/)
+  assert.match(diagnosticScript, /probe\.dns\." \+ label/)
+  assert.match(diagnosticScript, /probe\.tcp443\." \+ label/)
+  assert.match(diagnosticScript, /probe\.https=HTTP_/)
+  assert.match(diagnosticScript, /CI guest network diagnostics incomplete/)
+  assert.match(diagnosticScript, /Acquire::Retries "10";/)
+  assert.doesNotMatch(diagnosticScript, /print\(proxies\./i)
+  assert.doesNotMatch(diagnosticScript, /print\([^)]*str\(error\)/i)
+})
+
 test('Intel TCG uses matching pinned guest, kernel and initrd with only the upstream timer-check workaround', () => {
   const images = intelTCGImages()
   assert.equal(images.length, 1)
