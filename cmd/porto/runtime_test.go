@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"io"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -316,24 +318,73 @@ func TestClusterKubeconfigPathsFollowRelocatedStorage(t *testing.T) {
 func TestClusterKubeconfigOwnerReadsManagedMetadata(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("PORTO_HOME", home)
-	request := kubernetes.ClusterRequest{Name: "dev", Provider: "k3s"}
-	data, err := json.Marshal(request)
-	if err != nil {
-		t.Fatal(err)
-	}
 	path := filepath.Join(home, "kubernetes", config.KubernetesClusterFileToken("dev")+".json")
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(path, data, 0o600); err != nil {
-		t.Fatal(err)
+	for _, provider := range []string{"k3s", "apple"} {
+		t.Run(provider, func(t *testing.T) {
+			data, err := json.Marshal(kubernetes.ClusterRequest{Name: "dev", Provider: provider})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(path, data, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			owner, err := clusterKubeconfigOwner("dev")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if owner != (kubernetes.KubeconfigOwner{Cluster: "dev", Provider: provider}) {
+				t.Fatalf("owner = %+v", owner)
+			}
+		})
 	}
+}
 
-	owner, err := clusterKubeconfigOwner("dev")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if owner != (kubernetes.KubeconfigOwner{Cluster: "dev", Provider: "k3s"}) {
-		t.Fatalf("owner = %+v", owner)
+func TestAppleClusterCLIUsesSupportedResourcesWithoutChangingLimaDefaults(t *testing.T) {
+	for _, test := range []struct {
+		name     string
+		args     []string
+		disk     int
+		rejected bool
+	}{
+		{"Apple defaults", []string{"--provider", "apple"}, 0, false},
+		{"Lima defaults", []string{"--provider", "k3s"}, 20, false},
+		{"Apple explicit disk", []string{"--provider", "apple", "--disk", "40"}, 0, true},
+		{"Apple explicit worker disk", []string{"--provider", "apple", "--worker-disk", "40"}, 0, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			previous := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = previous })
+			var sent *kubernetes.ClusterRequest
+			http.DefaultTransport = scalingRoundTripper(func(request *http.Request) (*http.Response, error) {
+				var response any = map[string]any{"status": "ok", "apiVersion": config.APIVersion}
+				if request.URL.Path == "/api/kubernetes/clusters" {
+					sent = new(kubernetes.ClusterRequest)
+					if err := json.NewDecoder(request.Body).Decode(sent); err != nil {
+						t.Fatal(err)
+					}
+					response = sent
+				}
+				data, err := json.Marshal(response)
+				if err != nil {
+					t.Fatal(err)
+				}
+				return &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: io.NopCloser(strings.NewReader(string(data)))}, nil
+			})
+			args := append([]string{"create", "fixture"}, test.args...)
+			err := kubernetesClusterCmd(args)
+			if test.rejected {
+				if err == nil || !strings.Contains(err.Error(), "disk") || sent != nil {
+					t.Fatalf("unsupported resource was sent: %+v, error = %v", sent, err)
+				}
+				return
+			}
+			if err != nil || sent == nil || sent.ControlPlane.DiskGiB != test.disk ||
+				len(sent.NodeGroups) != 1 || sent.NodeGroups[0].Machine.DiskGiB != test.disk {
+				t.Fatalf("incorrect provider resources: %+v, error = %v", sent, err)
+			}
+		})
 	}
 }

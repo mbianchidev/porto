@@ -1216,6 +1216,26 @@ npm --prefix ui run lint
 npm --prefix ui run build
 ```
 
+Apple-native Kubernetes acceptance is opt-in on an Apple silicon Mac with
+macOS 26+, stable `container` 1.7.1+ (Homebrew 1.7.1 needs revision `_1`), a
+running Apple container system, and `kubectl`:
+
+```sh
+PORTO_APPLE_CLUSTER_INTEGRATION=1 \
+  go test -v ./internal/kubernetes -run '^TestAppleClusterIntegration$' -count=1 -timeout 90m
+```
+
+It creates an invocation-private control plane and worker (4 vCPUs and 5 GiB
+RAM total), verifies exact native resource budgets, imports a Linux/arm64
+image without sharing the host image store, and serves a synthetic workload
+from a PVC with `imagePullPolicy: Never`. It checks scoped inspection,
+Service/Gateway networking, unsupported-action safety, rename/data preservation
+and deletion.
+Only the fixture cluster is removed; downloaded base images remain cached.
+Ordinary Go/provider tests and dashboard lifecycle tests cover host/version
+gating, private kubeconfigs, changed ownership, streamed image-import failure,
+Apple-only controls and unchanged Lima choices without starting native VMs.
+
 An opt-in multi-platform integration test uses an already running, Porto-owned
 Lima engine on macOS or Linux. It applies engine emulation provisioning, then
 runs uncached Dockerfile commands for eight Linux targets through a temporary

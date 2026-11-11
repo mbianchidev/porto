@@ -574,7 +574,7 @@ func kubernetesClusterCmd(args []string) error {
 		return kubernetesWorkloadUnscaleCmd(args[1:])
 	case "create":
 		fs := flag.NewFlagSet("kubernetes cluster create", flag.ContinueOnError)
-		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, or k3s")
+		provider := fs.String("provider", "k3s", "cluster provider: kind, k0s, k3s, or apple (Apple silicon only)")
 		version := fs.String("version", "", "provider Kubernetes version")
 		cpus := fs.Int("cpus", 2, "control-plane CPUs")
 		memory := fs.Int("memory", 2048, "control-plane memory MiB")
@@ -589,6 +589,18 @@ func kubernetesClusterCmd(args []string) error {
 		}
 		if fs.NArg() != 1 {
 			return errors.New("usage: porto kubernetes cluster create <name> [--version v...] [--workers 1]")
+		}
+		if strings.EqualFold(strings.TrimSpace(*provider), "apple") {
+			explicitDisk := false
+			fs.Visit(func(option *flag.Flag) {
+				if option.Name == "disk" || option.Name == "worker-disk" {
+					explicitDisk = true
+				}
+			})
+			if explicitDisk {
+				return errors.New("Apple Cluster does not support --disk or --worker-disk; omit disk sizing or select k3s/k0s on Lima")
+			}
+			*disk, *workerDisk = 0, 0
 		}
 		request := kubernetes.ClusterRequest{
 			Name:     fs.Arg(0),
@@ -903,7 +915,7 @@ func clusterKubeconfigOwner(cluster string) (kubernetes.KubeconfigOwner, error) 
 	if provider == "" {
 		provider = "k3s"
 	}
-	if provider != "kind" && provider != "k0s" && provider != "k3s" {
+	if provider != "kind" && provider != "k0s" && provider != "k3s" && provider != "apple" {
 		return kubernetes.KubeconfigOwner{}, fmt.Errorf("unsupported Kubernetes provider %q", request.Provider)
 	}
 	return kubernetes.KubeconfigOwner{

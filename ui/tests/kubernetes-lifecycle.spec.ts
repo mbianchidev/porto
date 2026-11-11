@@ -1,5 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
-import type { KubernetesAutoscalingConfig, KubernetesCluster } from '../src/types'
+import type { KubernetesAutoscalingConfig, KubernetesCluster, KubernetesClusterRequest, RuntimeProviderStatus } from '../src/types'
 
 const fixture: KubernetesCluster = {
   name: 'fixture-cluster', provider: 'kind', state: 'running', version: 'v1.35.2',
@@ -7,11 +7,11 @@ const fixture: KubernetesCluster = {
   server: 'https://127.0.0.1:54321', nodes: ['porto-fixture-cluster-control-plane'],
 }
 
-async function mockClusters(page: Page, initial: KubernetesCluster = fixture) {
+async function mockClusters(page: Page, initial: KubernetesCluster = fixture, providers: RuntimeProviderStatus[] = []) {
   let cluster = { ...initial }
   let scaling = {
     nodes: { enabled: false, maxNodes: 3, machine: { cpus: 2, memoryMiB: 2048, diskGiB: 20 } },
-    keda: false, cluster: initial.name, nodeSupported: initial.provider !== 'kind',
+    keda: false, cluster: initial.name, nodeSupported: initial.provider === 'k3s' || initial.provider === 'k0s',
     running: false, paused: false, managedNodes: 0, kedaReady: false,
     karpenterVersion: '1.14.2', kedaVersion: '2.21.0',
   }
@@ -19,10 +19,13 @@ async function mockClusters(page: Page, initial: KubernetesCluster = fixture) {
   await page.route('**/api/**', async (route) => {
     const request = route.request()
     const path = new URL(request.url()).pathname
-    if (request.method() !== 'GET' && path.startsWith('/api/kubernetes/clusters/')) {
+    if (request.method() !== 'GET' && (path === '/api/kubernetes/clusters' || path.startsWith('/api/kubernetes/clusters/'))) {
       const body: unknown = request.postData() ? request.postDataJSON() : undefined
       mutations.push({ path, body })
-      if (path.endsWith('/upgrade')) {
+      if (path === '/api/kubernetes/clusters') {
+        const spec: KubernetesClusterRequest = request.postDataJSON()
+        cluster = { ...cluster, name: spec.name, provider: spec.provider, context: `porto-${spec.name}` }
+      } else if (path.endsWith('/upgrade')) {
         cluster = { ...cluster, version: 'v1.36.1' }
       } else if (path.endsWith('/upgrade-recover')) {
         cluster = { ...fixture }
@@ -30,7 +33,7 @@ async function mockClusters(page: Page, initial: KubernetesCluster = fixture) {
         const next: KubernetesAutoscalingConfig = request.postDataJSON()
         scaling = { ...scaling, ...next, running: next.nodes.enabled, kedaReady: next.keda }
       }
-      await route.fulfill({ contentType: 'application/json', body: JSON.stringify({ message: 'Synthetic cluster operation completed.' }) })
+      await route.fulfill({ contentType: 'application/json', body: JSON.stringify(path === '/api/kubernetes/clusters' ? cluster : { message: 'Synthetic cluster operation completed.' }) })
       return
     }
     const values: Record<string, unknown> = {
@@ -38,7 +41,7 @@ async function mockClusters(page: Page, initial: KubernetesCluster = fixture) {
       '/api/kubernetes/status': { available: true, enabled: true, context: fixture.context, serverVersion: 'v1.35.2' },
       '/api/kubernetes/contexts': [{ name: fixture.context, cluster: fixture.context, namespace: 'default' }],
       '/api/kubernetes/clusters': [cluster],
-      '/api/runtime/providers': [],
+      '/api/runtime/providers': providers,
       '/api/kubernetes/clusters/fixture-cluster/autoscaling': scaling,
       '/api/docker/status': { available: false, enabled: false },
       '/api/docker/cleanup': { enabled: false, dockerEnabled: false, runs: [] },
@@ -139,3 +142,47 @@ test('k3s exposes explicit automatic-worker resource ceilings', async ({ page })
   await expect.poll(() => mutations.length).toBe(1)
   expect(mutations[0].body).toMatchObject({ nodes: { enabled: true, maxNodes: 2, machine: { cpus: 1, memoryMiB: 1024, diskGiB: 10 } } })
 })
+
+for (const appleSilicon of [false, true]) {
+  test(`Apple provider is ${appleSilicon ? 'available' : 'hidden'} without replacing Lima choices`, async ({ page }) => {
+    const providers: RuntimeProviderStatus[] = [{ name: 'lima', command: 'limactl', installed: true, version: '2.2.0' }]
+    if (appleSilicon) providers.push({ name: 'apple', command: 'container', installed: true, version: '1.7.1' })
+    const mutations = await mockClusters(page, fixture, providers)
+    await page.getByRole('button', { name: 'New cluster', exact: true }).click()
+    const provider = page.getByRole('combobox', { name: 'Provider', exact: true })
+    await expect(provider).toHaveValue('k3s')
+    await expect(provider.locator('option[value="k3s"]')).toHaveCount(1)
+    await expect(provider.locator('option[value="k0s"]')).toHaveCount(1)
+    await expect(provider.locator('option[value="apple"]')).toHaveCount(appleSilicon ? 1 : 0)
+    if (!appleSilicon) return
+    await provider.selectOption('apple')
+    await page.getByLabel('Name', { exact: true }).fill('native-fixture')
+    await expect(page.getByLabel('Control-plane disk (GiB)', { exact: true })).toHaveCount(0)
+    await page.getByRole('button', { name: 'Create cluster', exact: true }).click()
+    await expect.poll(() => mutations.length).toBe(1)
+    expect(mutations[0]).toMatchObject({
+      path: '/api/kubernetes/clusters',
+      body: { name: 'native-fixture', provider: 'apple', controlPlane: { diskGiB: 0 }, nodeGroups: [{ machine: { diskGiB: 0 } }] },
+    })
+  })
+}
+
+for (const state of ['running', 'stopped']) {
+  test(`Apple ${state} clusters expose supported operations without destructive lifecycle shortcuts`, async ({ page }) => {
+    const mutations = await mockClusters(page, { ...fixture, provider: 'apple', state })
+    await expect(page.getByRole('button', { name: 'Upgrade cluster', exact: true })).toHaveCount(0)
+    await expect(page.getByText('Apple Cluster does not support in-place upgrades.', { exact: false })).toBeVisible()
+    await page.getByRole('tab', { name: 'Overview', exact: true }).click()
+    const lifecycle = page.getByRole('button', { name: state === 'running' ? 'Stop cluster' : 'Start cluster', exact: true })
+    await expect(lifecycle.first()).toBeDisabled()
+    await expect(lifecycle.last()).toBeDisabled()
+    await expect(page.getByRole('tab', { name: 'k9s terminal', exact: true })).toBeVisible()
+    await page.getByRole('tab', { name: 'Node group', exact: true }).click()
+    await expect(page.getByRole('button', { name: 'Scale node group', exact: true })).toHaveCount(0)
+    await page.getByRole('tab', { name: 'Import image', exact: true }).click()
+    await expect(page.getByText('Apple container image store', { exact: false })).toBeVisible()
+    await page.getByRole('tab', { name: 'Autoscaling', exact: true }).click()
+    await expect(page.getByLabel('Autoscale worker nodes with Karpenter')).toBeDisabled()
+    expect(mutations).toHaveLength(0)
+  })
+}

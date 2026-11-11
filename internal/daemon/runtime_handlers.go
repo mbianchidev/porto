@@ -1114,6 +1114,11 @@ func (s *Server) beginKubernetesClusterOperation(
 			shared()
 		}
 	}()
+	if s.clusters != nil {
+		if err := s.clusters.CheckProviderOperation(clusterName, action); err != nil {
+			return nil, err
+		}
+	}
 	if s.autoscaling != nil {
 		switch action {
 		case "start", "stop", "upgrade", "upgrade-recover", "rename", "delete":

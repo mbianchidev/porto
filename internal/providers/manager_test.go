@@ -13,13 +13,67 @@ import (
 type providerRunner struct {
 	mu       sync.Mutex
 	commands []runtimes.Command
+	handler  func(runtimes.Command) ([]byte, error)
 }
 
 func (r *providerRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.commands = append(r.commands, command)
+	if r.handler != nil {
+		return r.handler(command)
+	}
 	return []byte("QEMU emulator version 11.1.1"), nil
+}
+
+func TestAppleProviderIsOptionalAndRequiresSupportedHostAndStableCLI(t *testing.T) {
+	for _, test := range []struct {
+		name, goos, goarch, version string
+		visible, installed          bool
+	}{
+		{"native stable", "darwin", "arm64", "1.7.1", true, true},
+		{"newer stable", "darwin", "arm64", "1.8.0", true, true},
+		{"old CLI", "darwin", "arm64", "0.10.0", true, false},
+		{"preceding stable", "darwin", "arm64", "1.7.0", true, false},
+		{"prerelease", "darwin", "arm64", "1.8.0-beta.1", true, false},
+		{"Intel Mac", "darwin", "amd64", "1.7.1", false, false},
+		{"Linux ARM", "linux", "arm64", "1.7.1", false, false},
+		{"Windows ARM", "windows", "arm64", "1.7.1", false, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &providerRunner{handler: func(runtimes.Command) ([]byte, error) {
+				return []byte("container CLI version " + test.version + " (build: release)"), nil
+			}}
+			manager := New(runner)
+			manager.goos, manager.goarch = test.goos, test.goarch
+			manager.lookPath = func(name string) (string, error) {
+				if name == "container" {
+					return "/synthetic/bin/container", nil
+				}
+				return "", errors.New("not found")
+			}
+			var found *Status
+			for _, status := range manager.Status(context.Background()) {
+				if status.Name == "apple" {
+					found = &status
+				}
+			}
+			if (found != nil) != test.visible || (found != nil && found.Installed != test.installed) {
+				t.Fatalf("Apple provider = %+v, expected visible=%v installed=%v", found, test.visible, test.installed)
+			}
+			if found != nil && !found.Installed && !strings.Contains(found.Message, "stable container") {
+				t.Fatalf("missing upgrade guidance: %+v", found)
+			}
+			if !test.visible {
+				if _, err := manager.Install(context.Background(), "apple"); err == nil || !strings.Contains(err.Error(), "Apple silicon") {
+					t.Fatalf("unsupported installation returned %v", err)
+				}
+				if len(runner.commands) != 0 {
+					t.Fatalf("unsupported host executed tooling: %+v", runner.commands)
+				}
+			}
+		})
+	}
 }
 
 func TestInstallRejectsUnknownProvider(t *testing.T) {

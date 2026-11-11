@@ -112,7 +112,7 @@ export type RuntimeFeatures = {
 export type RuntimeFeatureName = keyof RuntimeFeatures
 
 export type RuntimeProviderStatus = {
-  name: 'lima' | 'qemu' | 'kind' | 'k9s' | 'k0s'
+  name: 'lima' | 'qemu' | 'kind' | 'k9s' | 'k0s' | 'apple'
   command: string
   installed: boolean
   version?: string
@@ -719,9 +719,11 @@ export type KubernetesNodeGroupSpec = {
   taints: string[]
 }
 
+export type KubernetesClusterProvider = 'kind' | 'k0s' | 'k3s' | 'apple'
+
 export type KubernetesClusterRequest = {
   name: string
-  provider: 'kind' | 'k0s' | 'k3s'
+  provider: KubernetesClusterProvider
   version: string
   controlPlane: KubernetesMachineSpec
   nodeGroups: KubernetesNodeGroupSpec[]
@@ -736,11 +738,11 @@ export type KubernetesScaleNodeGroupRequest = {
   taints: string[]
 }
 
-// A Porto-provisioned Kubernetes cluster. Nodes are container names for KinD
+// A Porto-provisioned Kubernetes cluster. Nodes are container names for kind/Apple
 // and Lima VM names for k0s/k3s.
 export type KubernetesCluster = {
   name: string
-  provider: 'kind' | 'k0s' | 'k3s' | 'unknown'
+  provider: KubernetesClusterProvider | 'unknown'
   state: string
   context: string
   kubeconfigPath: string

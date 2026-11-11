@@ -355,7 +355,7 @@ func (m *Manager) Status(ctx context.Context, contextName string) Status {
 			return Status{Message: err.Error()}
 		}
 		if len(contexts) == 0 {
-			return Status{Message: "No Porto-managed Kubernetes cluster exists. Create one with kind, k0s, or k3s."}
+			return Status{Message: "No Porto-managed Kubernetes cluster exists. Create one with an available provider from Kubernetes > New cluster."}
 		}
 		var unavailable Status
 		for _, candidate := range contexts {
@@ -1418,10 +1418,11 @@ func (m *Manager) run(
 	if contextName == "" && (len(args) == 0 || args[0] != "config") {
 		return nil, errors.New("no Porto-managed Kubernetes context is selected")
 	}
+	stdoutOnly := kubectlStructuredOutput(args)
 	args = m.CommandArgs(contextName, args...)
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin})
+	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin, StdoutOnly: stdoutOnly})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("kubectl %s timed out after %s", strings.Join(args, " "), timeout)
 	}
@@ -1448,10 +1449,11 @@ func (m *Manager) runWithKubeconfig(
 	stdin []byte,
 	args ...string,
 ) ([]byte, error) {
+	stdoutOnly := kubectlStructuredOutput(args)
 	args = append([]string{"--kubeconfig", kubeconfigPath}, args...)
 	commandContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin})
+	output, err := m.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: args, Stdin: stdin, StdoutOnly: stdoutOnly})
 	if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
 		return nil, fmt.Errorf("kubectl %s timed out after %s", strings.Join(args, " "), timeout)
 	}
@@ -1459,6 +1461,21 @@ func (m *Manager) runWithKubeconfig(
 		return nil, runtimes.CommandError("kubectl "+strings.Join(args, " "), output, err)
 	}
 	return output, nil
+}
+
+func kubectlStructuredOutput(args []string) bool {
+	for index, arg := range args {
+		if arg == "--" {
+			return false
+		}
+		if arg == "-o" || arg == "--output" {
+			return index+1 < len(args)
+		}
+		if strings.HasPrefix(arg, "--output=") || (strings.HasPrefix(arg, "-o") && len(arg) > 2) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) kubeconfigForContext(contextName string) string {
