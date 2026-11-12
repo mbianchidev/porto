@@ -139,7 +139,9 @@ async function configureLima(fixture, env) {
   const prefix = '.containerd.archives = '
   assert.ok(archive.stdout.trim().startsWith(prefix), 'Expected the existing checksum-verified Lima archive fixture')
   const archives = JSON.parse(archive.stdout.trim().slice(prefix.length))
-  const repository = await prepareSnapshot(arch)
+  const repository = await prepareSnapshot(arch, {
+    releases: [fixture.target.startsWith('windows/') ? 'noble' : 'resolute'],
+  })
   try {
     const dependencies = JSON.parse(dependencyProvisionOverride(new Date(repository.preparedAt), repository).slice('.provision += '.length))
     const intel = fixture.target === 'darwin/amd64'

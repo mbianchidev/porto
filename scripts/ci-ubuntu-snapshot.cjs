@@ -75,13 +75,16 @@ function dependencyNames(value = '') {
 }
 
 async function prepareSnapshot(arch, {
-  date = new Date(), suites = ['noble', 'resolute'].flatMap((release) =>
+  date = new Date(), releases = ['noble', 'resolute'], suites = releases.flatMap((release) =>
     [release, `${release}-updates`, `${release}-backports`, `${release}-security`]),
   components = ['main', 'universe', 'restricted', 'multiverse'],
   cacheDirectory = process.env.PORTO_CI_APT_CACHE || path.join(os.tmpdir(), 'porto-ci-apt-cache'),
   download, signal = new AbortController().signal,
 } = {}) {
   if (!['amd64', 'arm64'].includes(arch)) throw new Error(`Unsupported CI APT architecture: ${arch}`)
+  if (releases.some((release) => !['noble', 'resolute'].includes(release))) {
+    throw new Error('Unsupported CI Ubuntu release')
+  }
   const snapshot = snapshotID(date)
   const origin = `https://snapshot.ubuntu.com/ubuntu/${snapshot}/`
   fs.mkdirSync(cacheDirectory, { recursive: true })
@@ -238,10 +241,10 @@ if (require.main === module) {
   process.once('SIGINT', stop)
   process.once('SIGTERM', stop)
   ;(async () => {
-    if (process.env.GITHUB_ACTIONS !== 'true' || process.argv.length !== 4) {
-      throw new Error('Usage on disposable CI hosts only: ci-ubuntu-snapshot.cjs <amd64|arm64> <new-ready-file>')
+    if (process.env.GITHUB_ACTIONS !== 'true' || process.argv.length !== 5) {
+      throw new Error('Usage on disposable CI hosts only: ci-ubuntu-snapshot.cjs <amd64|arm64> <new-ready-file> <noble|resolute>')
     }
-    repository = await prepareSnapshot(process.argv[2], { signal: controller.signal })
+    repository = await prepareSnapshot(process.argv[2], { releases: [process.argv[4]], signal: controller.signal })
     const ready = process.argv[3]
     if (fs.existsSync(ready)) throw new Error('Refusing to overwrite an existing CI repository ownership record')
     fs.writeFileSync(`${ready}.tmp`, JSON.stringify(repository), { flag: 'wx', mode: 0o600 })

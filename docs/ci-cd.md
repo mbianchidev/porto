@@ -743,7 +743,10 @@ provide. Signed release hashes remain authoritative.
 **before** starting any guest or installed desktop. It downloads the original
 signed InRelease files, verifies compressed package indexes against their
 SHA-256 entries, and prefetches the package/dependency superset needed by Lima,
-QEMU binfmt and disposable migration sources. A read-only loopback repository
+QEMU binfmt and disposable migration sources. Preparation is limited to the
+fixture's actual Ubuntu release: Resolute for development/data and Unix
+installed guests, Noble for installed Windows guests. Guest-free local client
+jobs do not prepare a repository. A read-only loopback repository
 serves only those prepared bytes through `host.lima.internal`; it is not an
 on-demand proxy and cannot switch to a live mirror. Guest APT still performs
 archive-signature verification, dependency/version selection and package-hash
