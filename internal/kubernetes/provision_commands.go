@@ -36,7 +36,9 @@ func (p *ClusterProvisioner) addonCommandRunner(ctx context.Context, kubeconfigP
 			return nil, fmt.Errorf("%s: %w", action, cause)
 		}
 		commandArgs := append(append([]string(nil), baseArgs...), args...)
-		output, err := p.runner.Run(commandContext, runtimes.Command{Name: "kubectl", Args: commandArgs, Stdin: stdin})
+		output, err := p.runner.Run(commandContext, runtimes.Command{
+			Name: "kubectl", Args: commandArgs, Stdin: stdin, StdoutOnly: kubectlStructuredOutput(args),
+		})
 		if err != nil || commandContext.Err() != nil {
 			return output, provisioningCommandError(commandContext, action, output, err)
 		}

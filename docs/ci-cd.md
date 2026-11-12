@@ -725,10 +725,8 @@ Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
 from three completed UTC days before the run, allowing more time for snapshot
 publication and cache population rather than requiring a recent endpoint.
-The user approved this CI-only trial after previous-day snapshots repeatedly
-returned HTTP 5xx responses during #188 qualification. It trades three days of
-guest dependency freshness for a less time-sensitive fixture input; production
-guest update policy is unchanged.
+It trades three days of guest dependency freshness for a less time-sensitive
+fixture input; production guest update policy is unchanged.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
@@ -739,8 +737,40 @@ from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
 indexes. CI requires APT's supported `Acquire::By-Hash "force"` mode for
 content-addressed index downloads. A temporary hash-URI failure must not
 silently switch to a named `Packages` URL that the snapshot service does not
-provide. Signed release hashes remain authoritative, and an unavailable
-content-addressed index still fails within the same budgets.
+provide. Signed release hashes remain authoritative.
+
+`scripts/ci-ubuntu-snapshot.cjs` now prepares those immutable inputs on the host
+**before** starting any guest or installed desktop. It downloads the original
+signed InRelease files, verifies compressed package indexes against their
+SHA-256 entries, and prefetches the package/dependency superset needed by Lima,
+QEMU binfmt and disposable migration sources. Preparation is limited to the
+fixture's actual Ubuntu release: Resolute for development/data and Unix
+installed guests, Noble for installed Windows guests. Guest-free local client
+jobs do not prepare a repository. A read-only loopback repository
+serves only those prepared bytes through `host.lima.internal`; it is not an
+on-demand proxy and cannot switch to a live mirror. Guest APT still performs
+archive-signature verification, dependency/version selection and package-hash
+verification with the image's existing Ubuntu keyring. It prefers gzip indexes
+to avoid unnecessary XZ decompression under TCG. No package is installed or
+declared present by the host.
+
+This removes external snapshot availability from the 20-minute VM boot and
+five-minute engine-configuration paths. Repeated snapshot HTTP 5xx failures had
+consumed both deadlines, including after successful client workflows. An
+unavailable input now fails preparation before launching an expensive guest,
+with its exact failed artifact reported. Job caches contain only immutable
+snapshot inputs, keyed by snapshot day, host/guest architecture and fixture
+target, not incidental bootstrap-source edits. A same-snapshot restore prefix
+also accepts older compatible keys. Index and package content is reverified on
+reuse, and newly required content is fetched by its authoritative hash.
+Corrupt cached inputs fail rather
+than being silently accepted or repaired. The owned repository closes during
+fixture cleanup, including failed installed-desktop startup.
+The shell-owned server uses a private stop marker and verifies its exit, so
+Git Bash on Windows does not need `SIGTERM` delivery that Node cannot receive
+through Windows `TerminateProcess`. An unexpected server exit still fails
+cleanup rather than being ignored.
+
 APT retries transient download failures, including HTTP 503 responses,
 up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
@@ -759,8 +789,10 @@ installation. This prevents background package work from competing with TCG
 acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;
 snapshot-pinned installs remain explicit. Production guest update policy,
 Porto's shutdown budgets and acceptance assertions are unchanged.
-The 20-minute boot deadline is unchanged, and
-installed Porto environments are not reconfigured.
+The 20-minute boot deadline, five-minute multi-platform setup deadline and all
+installed-runtime/rendering assertions are unchanged. Only disposable CI
+fixtures use the prepared repository; installed user environments are not
+reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same
@@ -930,6 +962,9 @@ startup phase. Successful probes verify rendering, the locked runtime version,
 and the normal quit event instead of accepting a deliberate crash.
 The native tests are skipped on Windows and Linux; no macOS library is built
 or added to their packages.
+Startup checks resolve Xcode's `otool` once, then inspect each executable
+directly within the existing ten-second inspection budget. Repeated `xcrun`
+SDK discovery must not consume that executable-inspection deadline.
 
 Both macOS DMGs and desktop tar archives are built on macOS from the same
 app, retaining Electron's original fuse-aware Node dispatch and stdio
@@ -968,6 +1003,13 @@ on success and failure. `node --test scripts/macos-signing.test.cjs` additionall
 tests both architectures with synthetic native bundles, certificate-preservation
 policy, unchanged runtime bytes, metadata-free tar extraction, and rejected
 tampering/version/architecture mismatches without launching Porto or a daemon.
+DiskImages can briefly return `Resource temporarily unavailable` when verifying
+a newly created image. The verifier retries only that explicit resource-busy
+result, at most four times with bounded backoff inside the original two-minute
+command deadline. Each retry is reported. Corrupt-image and code-signature
+failures are not retried or accepted, and persistent resource unavailability
+still fails. The native tamper test continues to require the actual sealed-app
+signature rejection, not an unrelated image-tool failure.
 
 Ad-hoc sealing detects corruption but is not Developer ID authentication or
 notarization and does not remove Gatekeeper warnings. Installers do not clear
@@ -1218,6 +1260,36 @@ npm --prefix ui ci
 npm --prefix ui run lint
 npm --prefix ui run build
 ```
+
+Apple-native Kubernetes acceptance is opt-in on an Apple silicon Mac with
+macOS 26+, stable `container` 1.7.1+ (Homebrew 1.7.1 needs revision `_1`), a
+running Apple container system, and `kubectl`:
+
+```sh
+PORTO_APPLE_CLUSTER_INTEGRATION=1 \
+  go test -v ./internal/kubernetes -run '^TestAppleClusterIntegration$' -count=1 -timeout 90m
+```
+
+It keeps an independent native control cluster and an unrelated Apple container
+running while single-node and multi-node target clusters repeatedly stop/start.
+Peak requested fixture resources are approximately 7 vCPUs and 8 GiB plus 256 MiB
+RAM. It verifies exact native budgets, native image import with
+`imagePullPolicy: Never`, a PVC-backed StatefulSet and actual Service/Gateway
+traffic. Workload preStop markers prove kubelet-controlled graceful shutdown.
+Address changes, datastore cluster/member identity, CA/node/PVC identity,
+desired replicas, completed Jobs, paused
+workloads, partial worker-start failure and recovery through a new provisioner
+instance are checked. The other cluster/container must retain their start
+timestamps and data throughout. Scaling/version upgrades remain rejected.
+Only explicitly owned fixture resources are removed; failed cleanup retains
+ownership records for inspection. Downloaded base images remain cached.
+Ordinary Go/provider tests and dashboard lifecycle tests cover host/version
+gating, private kubeconfigs, changed ownership, ordered/idempotent stop,
+persisted partial failure/cancellation, pending guest shutdown, uncertain
+deletion acknowledgements/residual backing data, cross-application operation
+states, TLS-preserving address repair,
+completed/paused workload handling, streamed image-import failure, capability-
+driven Apple controls and unchanged Lima choices without starting native VMs.
 
 An opt-in multi-platform integration test uses an already running, Porto-owned
 Lima engine on macOS or Linux. It applies engine emulation provisioning, then

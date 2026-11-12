@@ -79,6 +79,7 @@ runs:
             "RUNNER_ARCH=$RUNNER_ARCH" "GOTOOLCHAIN=${GOTOOLCHAIN:-auto}" \
             "PORTO_RUNTIME_DATA_PHASE=$PORTO_RUNTIME_DATA_PHASE" \
             "PORTO_DOWNLOAD_CACHE=${PORTO_DOWNLOAD_CACHE:-}" \
+            "PORTO_CI_APT_CACHE=${PORTO_CI_APT_CACHE:-}" \
             bash scripts/test-docker-clients.sh local data
         elif [ "$RUNNER_OS" = Linux ] && [ -c /dev/kvm ]; then
           sg kvm -c 'bash scripts/test-docker-clients.sh lima data'

@@ -5,11 +5,12 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 
 const {
-  DAEMON_URL, EXPECTED, darwinProcessIdentity, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, linuxProcessIdentity, load,
+  DAEMON_URL, EXPECTED, WINDOWS_PROCESS_TIMEOUT, darwinProcessIdentity, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, linuxProcessIdentity, load,
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
 const { dependencyProvisionOverride, intelTCGImages, tcgGuestCPUs } = require('./lima-containerd-archive.cjs')
+const { prepareSnapshot } = require('./ci-ubuntu-snapshot.cjs')
 
 function reportCommandFailure(error, logImpl = console.error) {
   if (error?.code !== 'PORTO_COMMAND_FAILED') return
@@ -57,7 +58,7 @@ foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
     $target.Dispose()
   }
 }
-`], { env, timeout: 10000 })
+`], { env, timeout: WINDOWS_PROCESS_TIMEOUT })
   assert.equal(result.status, 0, 'Windows process enumeration failed')
   assert.ok(!result.signal && !result.stderr.trim(), 'Windows process enumeration was incomplete')
   const lines = result.stdout.trim().split(/\r?\n/)
@@ -138,26 +139,35 @@ async function configureLima(fixture, env) {
   const prefix = '.containerd.archives = '
   assert.ok(archive.stdout.trim().startsWith(prefix), 'Expected the existing checksum-verified Lima archive fixture')
   const archives = JSON.parse(archive.stdout.trim().slice(prefix.length))
-  const intel = fixture.target === 'darwin/amd64'
-  const dependencies = JSON.parse(dependencyProvisionOverride(undefined, {
-    networkDiagnostics: intel,
-  }).slice('.provision += '.length))
-  if (intel) {
-    console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
+  const repository = await prepareSnapshot(arch, {
+    releases: [fixture.target.startsWith('windows/') ? 'noble' : 'resolute'],
+  })
+  try {
+    const intel = fixture.target === 'darwin/amd64'
+    const dependencies = JSON.parse(dependencyProvisionOverride(new Date(repository.preparedAt), repository, {
+      networkDiagnostics: intel,
+    }).slice('.provision += '.length))
+    if (intel) {
+      console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
+    }
+    const availableCPUs = os.availableParallelism()
+    const cpus = tcgGuestCPUs(arch, availableCPUs)
+    console.log(`Installed acceptance: selected ${cpus} TCG guest CPUs from ${availableCPUs} available host CPUs`)
+    write(path.join(fixture.limaHome, '_config', 'override.yaml'), JSON.stringify({
+      vmType: 'qemu', arch: arch === 'amd64' ? 'x86_64' : 'aarch64',
+      cpus, memory: '3GiB', disk: '20GiB',
+      ssh: { loadDotSSHPubKeys: false, forwardAgent: false, forwardX11: false },
+      propagateProxyEnv: false,
+      containerd: { archives },
+      provision: dependencies,
+      ...(intel ? { images: intelTCGImages() } : {}),
+      ...(arch === 'arm64' ? { vmOpts: { qemu: { cpuType: { aarch64: 'neoverse-n1' } } } } : {}),
+    }))
+    return repository
+  } catch (error) {
+    await repository.close()
+    throw error
   }
-  const availableCPUs = os.availableParallelism()
-  const cpus = tcgGuestCPUs(arch, availableCPUs)
-  console.log(`Installed acceptance: selected ${cpus} TCG guest CPUs from ${availableCPUs} available host CPUs`)
-  write(path.join(fixture.limaHome, '_config', 'override.yaml'), JSON.stringify({
-    vmType: 'qemu', arch: arch === 'amd64' ? 'x86_64' : 'aarch64',
-    cpus, memory: '3GiB', disk: '20GiB',
-    ssh: { loadDotSSHPubKeys: false, forwardAgent: false, forwardX11: false },
-    propagateProxyEnv: false,
-    containerd: { archives },
-    provision: dependencies,
-    ...(intel ? { images: intelTCGImages() } : {}),
-    ...(arch === 'arm64' ? { vmOpts: { qemu: { cpuType: { aarch64: 'neoverse-n1' } } } } : {}),
-  }))
 }
 
 async function cdp(url) {
@@ -266,7 +276,7 @@ try {
 } finally {
   $target.Dispose()
 }`]]
-    const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: 10000 })
+    const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: WINDOWS_PROCESS_TIMEOUT })
     const stdout = result.stdout.trim()
     const stderr = result.stderr.trim()
     assert.equal(result.status, 0, `Process inspection failed (${result.signal || result.status}): ${stderr || stdout}`)
@@ -621,7 +631,15 @@ async function acceptance(fixture, reopen = false) {
   console.log('Installed acceptance: checking isolated endpoints and process ownership')
   await preflight(fixture, env)
   console.log('Installed acceptance: configuring the supported guest backend')
-  await configureLima(fixture, env)
+  const repository = await configureLima(fixture, env)
+  try {
+    await exerciseInstalledRuntime(fixture, reopen, installed, env)
+  } finally {
+    await repository?.close()
+  }
+}
+
+async function exerciseInstalledRuntime(fixture, reopen, installed, env) {
   console.log('Installed acceptance: starting the actual installed desktop')
   const session = await startDesktop(fixture, installed, env)
   const cliEnv = { ...env, PATH: path.join(installed.runtime, 'bin'), BUILDKIT_HOST: '' }
@@ -697,7 +715,7 @@ async function acceptance(fixture, reopen = false) {
       'FROM busybox:1.37.0\nCOPY fixture.txt /porto-installed.txt\nCMD ["sh", "-c", "sleep 3600"]\n')
     console.log('Installed acceptance: building and inspecting the loaded image')
     if (!reopen) {
-      await cli('buildx', 'build', '--builder', 'default', '--load', '--tag', image,
+      await cli('--debug', 'buildx', 'build', '--progress=plain', '--builder', 'default', '--load', '--tag', image,
         '--label', `porto.test.suite=${project}`, workspace)
     }
     const built = JSON.parse(await cli('image', 'inspect', image))

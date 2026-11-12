@@ -751,6 +751,9 @@ func (p *ClusterProvisioner) RecoverUpgrade(ctx context.Context, name string, co
 	if err != nil {
 		return err
 	}
+	if normalizeProvider(spec.Provider) == "apple" {
+		return unsupportedAppleOperation("upgrade recovery")
+	}
 	if (spec.Phase != "upgrade-failed" && spec.Phase != "upgrading") || spec.Upgrade == nil || spec.Upgrade.BackupPath == "" {
 		return errors.New("cluster has no failed kind upgrade to recover; retry the target version for VM upgrades")
 	}

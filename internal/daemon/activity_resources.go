@@ -214,7 +214,7 @@ func (s *Server) kubernetesResourceGroup(
 			usageErrors = append(usageErrors, fmt.Errorf("%s: %w", cluster.Name, err))
 			if cluster.Provider == "kind" && !completeKindUsage && len(clusterKindUsage) > 0 {
 				addKindRuntimeUsage(cluster, clusterKindUsage, &group)
-			} else if cluster.Provider != "kind" && !completeKindUsage {
+			} else if (cluster.Provider == "k3s" || cluster.Provider == "k0s") && !completeKindUsage {
 				s.addClusterVMFallback(ctx, cluster, &group, &usageErrors)
 			}
 			continue

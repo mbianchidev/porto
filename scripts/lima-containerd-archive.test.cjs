@@ -36,6 +36,21 @@ test('CI snapshot selection uses UTC boundaries and rejects an invalid date', ()
   assert.throws(() => dependencyProvisionOverride(new Date('invalid')), RangeError)
 })
 
+test('a prepared CI repository is limited to the exact snapshot and Lima loopback host', () => {
+  const date = new Date('2026-10-22T14:35:00Z')
+  const repository = { snapshot: '20261019T000000Z', source: 'http://host.lima.internal:12345/ubuntu/20261019T000000Z/' }
+  const [{ script }] = JSON.parse(dependencyProvisionOverride(date, repository).slice('.provision += '.length))
+  assert.ok(script.includes(`URIs: ${repository.source}`))
+  assert.match(script, /Acquire::By-Hash "force";/)
+  assert.doesNotMatch(script, /AllowUnauthenticated|AllowInsecureRepositories|Verify-Peer|Check-Valid-Until/)
+  for (const invalid of [
+    { ...repository, snapshot: '20261018T000000Z' },
+    { ...repository, source: repository.source.replace('host.lima.internal', 'unrelated.invalid') },
+    { ...repository, source: repository.source + '?untrusted=1' },
+    { ...repository, source: repository.source.replace('20261019', '20261018') },
+  ]) assert.throws(() => dependencyProvisionOverride(date, invalid), /prepared immutable snapshot/)
+})
+
 test('CI APT downloads retry transient failures with bounded backoff and transport timeouts', () => {
   const override = dependencyProvisionOverride(new Date('2026-10-22T14:35:00Z'))
   const [{ script }] = JSON.parse(override.slice('.provision += '.length))
@@ -56,11 +71,17 @@ test('CI APT downloads retry transient failures with bounded backoff and transpo
 test('Intel TCG network diagnostics are opt-in, bounded, and do not expose proxy values', () => {
   const date = new Date('2026-10-22T14:35:00Z')
   const defaultScript = JSON.parse(dependencyProvisionOverride(date).slice('.provision += '.length))[0].script
-  const diagnosticScript = JSON.parse(dependencyProvisionOverride(date, {
+  const diagnosticScript = JSON.parse(dependencyProvisionOverride(date, undefined, {
+    networkDiagnostics: true,
+  }).slice('.provision += '.length))[0].script
+  const repository = { snapshot: '20261019T000000Z', source: 'http://host.lima.internal:12345/ubuntu/20261019T000000Z/' }
+  const preparedScript = JSON.parse(dependencyProvisionOverride(date, repository, {
     networkDiagnostics: true,
   }).slice('.provision += '.length))[0].script
 
   assert.doesNotMatch(defaultScript, /CI guest network diagnostics/)
+  assert.ok(preparedScript.includes(`URIs: ${repository.source}`))
+  assert.match(preparedScript, /timeout -k 2s 20s python3/)
   assert.match(diagnosticScript, /timeout -k 2s 20s python3/)
   assert.match(diagnosticScript, /snapshot\.ubuntu\.com\/ubuntu\/20261019T000000Z\/dists\/resolute\/InRelease/)
   assert.match(diagnosticScript, /probe\.proxy\.env=/)

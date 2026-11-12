@@ -33,6 +33,7 @@ runtime="$temporary/runtime"
 containerd_pid=""
 buildkit_pid=""
 resource_monitor_pid=""
+apt_repository_pid=""
 created_lima=false
 porto="$temporary/porto"
 client_tests="$temporary/porto-client-tests"
@@ -130,6 +131,22 @@ cleanup() {
       fi
     fi
   done
+  if [ -n "$apt_repository_pid" ]; then
+    if [ -f "$apt_ready" ]; then
+      printf '%s\n' stop > "$apt_ready.stop"
+      for attempt in {1..100}; do
+        if ! kill -0 "$apt_repository_pid" 2>/dev/null; then break; fi
+        sleep 0.1
+      done
+    fi
+    if kill -0 "$apt_repository_pid" 2>/dev/null; then
+      kill "$apt_repository_pid"
+    fi
+    if ! wait "$apt_repository_pid"; then
+      echo "The owned CI APT repository failed." >&2
+      result=1
+    fi
+  fi
   rm -rf "$temporary"
   exit "$result"
 }
@@ -191,8 +208,23 @@ export PORTO_HOME="$temporary/porto-home"
 export PORTO_DOCKER_CLIENT_INTEGRATION=1
 export PORTO_DOCKER_CLIENT_BACKEND="$backend"
 export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=0
-PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cjs --dependencies)"
-export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
+if [ "$backend" = lima ] || [ "$suite" = data ]; then
+  apt_ready="$temporary/apt-ready.json"
+  node scripts/ci-ubuntu-snapshot.cjs "$goarch" "$apt_ready" resolute > "$temporary/apt-bootstrap.log" 2>&1 &
+  apt_repository_pid=$!
+  for attempt in {1..900}; do
+    if [ -f "$apt_ready" ]; then break; fi
+    if ! kill -0 "$apt_repository_pid" 2>/dev/null || [ "$attempt" = 900 ]; then
+      cat "$temporary/apt-bootstrap.log" >&2
+      echo "Unable to prepare signed CI dependencies before starting the guest." >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  tail -n 1 "$temporary/apt-bootstrap.log" >&2
+  PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES="$(node scripts/lima-containerd-archive.cjs --dependencies "$apt_ready")"
+  export PORTO_DOCKER_CLIENT_LIMA_DEPENDENCIES
+fi
 
 if [ "$goos/$goarch" = windows/arm64 ]; then
   SSH="$(node - <<'NODE'

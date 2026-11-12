@@ -9,14 +9,30 @@ import (
 	"strings"
 	"time"
 
+	"github.com/blang/semver/v4"
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
+
+const AppleContainerMinimumVersion = "1.7.1"
+
+func ValidateAppleContainerVersion(output string) error {
+	versionText, recognized := strings.CutPrefix(strings.TrimSpace(output), "container CLI version ")
+	fields := strings.Fields(versionText)
+	if recognized && len(fields) > 0 {
+		version, err := semver.Parse(fields[0])
+		if err == nil && len(version.Pre) == 0 && version.GTE(semver.Version{Major: 1, Minor: 7, Patch: 1}) {
+			return nil
+		}
+	}
+	return fmt.Errorf("Apple Cluster requires stable container %s or newer; install or update it with 'brew install container', then restart Porto", AppleContainerMinimumVersion)
+}
 
 type Manager struct {
 	runner   runtimes.Runner
 	lookPath func(string) (string, error)
 	getenv   func(string) string
 	goos     string
+	goarch   string
 }
 
 type Status struct {
@@ -40,6 +56,7 @@ var tools = []tool{
 	{name: "kind", command: "kind", args: []string{"version"}, formula: "kind"},
 	{name: "k9s", command: "k9s", args: []string{"version", "--short"}, formula: "k9s"},
 	{name: "k0s", command: "limactl", args: []string{"--version"}, formula: "lima"},
+	{name: "apple", command: "container", args: []string{"--version"}, formula: "container"},
 }
 
 func qemuCommand() string {
@@ -53,12 +70,15 @@ func New(runner runtimes.Runner) *Manager {
 	if runner == nil {
 		runner = runtimes.ExecRunner{}
 	}
-	return &Manager{runner: runner, lookPath: runtimes.LookPath, getenv: os.Getenv, goos: runtime.GOOS}
+	return &Manager{runner: runner, lookPath: runtimes.LookPath, getenv: os.Getenv, goos: runtime.GOOS, goarch: runtime.GOARCH}
 }
 
 func (m *Manager) Status(ctx context.Context) []Status {
 	statuses := make([]Status, 0, len(tools))
 	for _, candidate := range tools {
+		if candidate.name == "apple" && (m.goos != "darwin" || m.goarch != "arm64") {
+			continue
+		}
 		statuses = append(statuses, m.toolStatus(ctx, candidate))
 	}
 	return statuses
@@ -68,6 +88,9 @@ func (m *Manager) Install(ctx context.Context, name string) (Status, error) {
 	candidate, ok := findTool(name)
 	if !ok {
 		return Status{}, fmt.Errorf("unknown runtime provider %q", name)
+	}
+	if candidate.name == "apple" && (m.goos != "darwin" || m.goarch != "arm64") {
+		return Status{}, errors.New("Apple Cluster is available only on Apple silicon Macs with macOS 26 or newer")
 	}
 	current := m.toolStatus(ctx, candidate)
 	if current.Installed {
@@ -115,6 +138,12 @@ func (m *Manager) toolStatus(ctx context.Context, candidate tool) Status {
 	}
 	status.Installed = true
 	status.Version = strings.TrimSpace(string(output))
+	if candidate.name == "apple" {
+		if err := ValidateAppleContainerVersion(status.Version); err != nil {
+			status.Installed = false
+			status.Message = err.Error()
+		}
+	}
 	return status
 }
 

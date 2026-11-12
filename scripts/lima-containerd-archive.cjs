@@ -8,6 +8,7 @@ const { pipeline } = require('node:stream/promises')
 const { createGunzip } = require('node:zlib')
 
 const { verify } = require('./verify-runtime-checksum.cjs')
+const { snapshotID } = require('./ci-ubuntu-snapshot.cjs')
 
 function selectArchive(info, goarch) {
   if (!['amd64', 'arm64'].includes(goarch)) throw new Error(`Unsupported CI guest architecture: ${goarch}`)
@@ -136,16 +137,24 @@ function snapshotNetworkDiagnostics(snapshot) {
   ].join('\n')
 }
 
-function dependencyProvisionOverride(date = new Date(), { networkDiagnostics = false } = {}) {
-  const completedDay = new Date(date.getTime() - 3 * 24 * 60 * 60 * 1000)
-  const snapshot = `${completedDay.toISOString().slice(0, 10).replaceAll('-', '')}T000000Z`
+function dependencyProvisionOverride(date = new Date(), repository, { networkDiagnostics = false } = {}) {
+  const snapshot = snapshotID(date)
+  let source = `https://snapshot.ubuntu.com/ubuntu/${snapshot}/`
+  if (repository) {
+    const url = new URL(repository.source)
+    if (repository.snapshot !== snapshot || url.protocol !== 'http:' || url.hostname !== 'host.lima.internal' ||
+        !url.port || url.username || url.password || url.search || url.hash || url.pathname !== `/ubuntu/${snapshot}/`) {
+      throw new Error('CI APT repository does not match the prepared immutable snapshot')
+    }
+    source = url.href
+  }
   const script = [
     '#!/bin/sh',
     'set -eu',
     `printf '%s\\n' 'CI Ubuntu snapshot: ${snapshot}' >&2`,
     'sources=/etc/apt/sources.list.d/ubuntu.sources',
     'if ! grep -q "^URIs: " "$sources"; then echo "CI Ubuntu archive sources are unavailable" >&2; exit 1; fi',
-    `sed -i '/^Snapshot:/d; s|^URIs:.*|URIs: https://snapshot.ubuntu.com/ubuntu/${snapshot}/|' "$sources"`,
+    `sed -i '/^Snapshot:/d; s|^URIs:.*|URIs: ${source}|' "$sources"`,
     ...(networkDiagnostics ? [snapshotNetworkDiagnostics(snapshot)] : []),
     "cat > /etc/apt/apt.conf.d/99porto-ci <<'PORTO_APT_CONFIG'",
     'Acquire::Languages "none";',
@@ -157,6 +166,7 @@ function dependencyProvisionOverride(date = new Date(), { networkDiagnostics = f
     'Acquire::http::Timeout "30";',
     'Acquire::https::Timeout "30";',
     'Acquire::By-Hash "force";',
+    'Acquire::CompressionTypes::Order { "gz"; };',
     'Debug::Acquire::Retries "true";',
     'APT::Update::Error-Mode "any";',
     'APT::Periodic::Enable "0";',
@@ -232,12 +242,13 @@ async function prepareContainerdArchive(goarch, directory, {
 
 if (require.main === module) {
   const args = process.argv.slice(2)
-  if (args.length === 1 && args[0] === '--dependencies') {
-    process.stdout.write(`${dependencyProvisionOverride()}\n`)
+  if ((args.length === 1 || args.length === 2) && args[0] === '--dependencies') {
+    const repository = args[1] ? JSON.parse(fs.readFileSync(args[1], 'utf8')) : undefined
+    process.stdout.write(`${dependencyProvisionOverride(repository ? new Date(repository.preparedAt) : new Date(), repository)}\n`)
   } else if (args.length === 1 && args[0] === '--intel-tcg-images') {
     process.stdout.write(`.images = ${JSON.stringify(intelTCGImages())}\n`)
   } else if (args.length !== 2) {
-    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies | --intel-tcg-images')
+    console.error('usage: lima-containerd-archive.cjs <amd64|arm64> <new-directory> | --dependencies [prepared-repository.json] | --intel-tcg-images')
     process.exitCode = 2
   } else {
     prepareContainerdArchive(...args).then((expression) => {

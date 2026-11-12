@@ -101,6 +101,28 @@ func TestClusterLifecyclePausesAutoscalingBeforeGate(t *testing.T) {
 	}
 }
 
+func TestAppleUnsupportedLifecycleDoesNotPauseWorkloadAutoscaling(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, config.KubernetesClusterFileToken("fixture")+".json")
+	if err := os.WriteFile(path, []byte(`{"name":"fixture","provider":"apple"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	service := &fakeAutoscalingService{}
+	server := &Server{autoscaling: service, clusters: kubernetes.NewClusterProvisioner(nil, nil, root)}
+	for _, action := range []string{"start", "stop", "scale", "upgrade", "upgrade-recover"} {
+		release, err := server.beginKubernetesClusterOperation(context.Background(), "fixture", action)
+		if release != nil {
+			release()
+		}
+		if err == nil || !strings.Contains(err.Error(), "Apple Cluster does not support") {
+			t.Fatalf("%s admission returned %v", action, err)
+		}
+	}
+	if len(service.paused) != 0 {
+		t.Fatalf("unsupported operation stopped workload autoscaling: %v", service.paused)
+	}
+}
+
 func TestWorkloadScalingAPIRequiresConfirmationForRemoval(t *testing.T) {
 	service := &fakeAutoscalingService{}
 	server := &Server{autoscaling: service}

@@ -88,6 +88,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/kubernetes/clusters", s.requireRuntime("kubernetes", s.createKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/start", s.requireRuntime("kubernetes", s.startKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/stop", s.requireRuntime("kubernetes", s.stopKubernetesCluster))
+	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/restart", s.requireRuntime("kubernetes", s.restartKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/rename", s.requireRuntime("kubernetes", s.renameKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade", s.requireRuntime("kubernetes", s.upgradeKubernetesCluster))
 	mux.HandleFunc("POST /api/kubernetes/clusters/{name}/upgrade-recover", s.requireRuntime("kubernetes", s.recoverKubernetesUpgrade))
@@ -916,6 +917,12 @@ func (s *Server) startKubernetesCluster(w http.ResponseWriter, r *http.Request) 
 		s.rememberKubernetesClusterAddons(contextName)
 	}
 	response := map[string]string{"status": "started"}
+	if _, message, summaryErr := s.clusters.LifecycleSummary(name); summaryErr != nil {
+		writeRuntimeError(w, summaryErr)
+		return
+	} else if message != "" {
+		response["message"] = message
+	}
 	if recreated {
 		response["status"] = "recreated"
 		response["message"] = "The control-plane container was missing, so Porto recreated the KinD cluster before starting it."
@@ -946,7 +953,18 @@ func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	defer release()
 	contextName, _ := s.clusters.ContextName(name)
 	forwardErr := s.stopKubernetesClusterForwards(name)
-	operationContext, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), 10*time.Minute)
+	native, _, err := s.clusters.LifecycleSummary(name)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	base := context.WithoutCancel(r.Context())
+	timeout := 10 * time.Minute
+	if native {
+		base = r.Context()
+		timeout = 15 * time.Minute
+	}
+	operationContext, cancel := context.WithTimeout(base, timeout)
 	defer cancel()
 	if err := errors.Join(forwardErr, s.clusters.SetRunning(operationContext, name, false)); err != nil {
 		writeRuntimeError(w, err)
@@ -954,6 +972,37 @@ func (s *Server) stopKubernetesCluster(w http.ResponseWriter, r *http.Request) {
 	}
 	s.forgetKubernetesClusterAddons("porto-"+name, contextName)
 	writeJSON(w, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) restartKubernetesCluster(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	release, err := s.beginKubernetesClusterOperation(r.Context(), name, "restart")
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	defer release()
+	if err := s.stopKubernetesClusterForwards(name); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	operationContext, cancel := context.WithTimeout(r.Context(), 30*time.Minute)
+	defer cancel()
+	if err := s.clusters.Restart(operationContext, name); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	_, message, err := s.clusters.LifecycleSummary(name)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	if contextName, err := s.clusters.ContextName(name); err == nil {
+		s.rememberKubernetesClusterAddons(contextName)
+	}
+	release()
+	message = appendRuntimeMessage(message, s.resumeKubernetesAutoscaling(operationContext, name))
+	writeJSON(w, map[string]string{"status": "restarted", "message": message})
 }
 
 func (s *Server) renameKubernetesCluster(w http.ResponseWriter, r *http.Request) {
@@ -1114,9 +1163,14 @@ func (s *Server) beginKubernetesClusterOperation(
 			shared()
 		}
 	}()
+	if s.clusters != nil {
+		if err := s.clusters.CheckProviderOperation(clusterName, action); err != nil {
+			return nil, err
+		}
+	}
 	if s.autoscaling != nil {
 		switch action {
-		case "start", "stop", "upgrade", "upgrade-recover", "rename", "delete":
+		case "start", "stop", "restart", "upgrade", "upgrade-recover", "rename", "delete":
 			if err := s.autoscaling.Pause(ctx, clusterName); err != nil {
 				return nil, fmt.Errorf("pause cluster autoscaling before %s: %w", action, err)
 			}

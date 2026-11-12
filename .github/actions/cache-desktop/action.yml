@@ -8,9 +8,12 @@ runs:
   using: composite
   steps:
     - name: Locate job-scoped desktop download caches
+      id: locations
       shell: bash
       run: |
         echo "PORTO_DOWNLOAD_CACHE=$RUNNER_TEMP/porto-download-cache" >> "$GITHUB_ENV"
+        echo "PORTO_CI_APT_CACHE=$RUNNER_TEMP/porto-ci-apt-cache" >> "$GITHUB_ENV"
+        node -e "console.log('snapshot=' + require('./scripts/ci-ubuntu-snapshot.cjs').snapshotID())" >> "$GITHUB_OUTPUT"
         node <<'NODE' >> "$GITHUB_ENV"
         const os = require('node:os')
         const path = require('node:path')
@@ -33,3 +36,12 @@ runs:
           ${{ env.PORTO_ELECTRON_CACHE }}
           ${{ env.PORTO_ELECTRON_BUILDER_CACHE }}
         key: porto-desktop-downloads-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ hashFiles('ui/electron/package-lock.json', 'scripts/bundle-desktop-runtime.sh', 'scripts/bundle-synchronization-runtime.sh', 'scripts/bundle-windows-containers.sh', 'scripts/windows-container-toolchain.cjs', 'scripts/download-file.sh', 'scripts/test-docker-clients.sh') }}
+
+    - name: Cache immutable signed Ubuntu snapshot inputs
+      if: startsWith(inputs.target, 'development-') || startsWith(inputs.target, 'runtime-data-') || startsWith(inputs.target, 'linux-') || startsWith(inputs.target, 'darwin-') || startsWith(inputs.target, 'windows-')
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+      with:
+        path: ${{ env.PORTO_CI_APT_CACHE }}
+        key: porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ steps.locations.outputs.snapshot }}
+        restore-keys: |
+          porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ steps.locations.outputs.snapshot }}-
