@@ -27,6 +27,8 @@ const (
 	maxContainerEvents                = 20
 )
 
+var errInventorySnapshotSuperseded = errors.New("container inventory snapshot superseded by a committed change")
+
 type containerRuntime interface {
 	Namespace() string
 	Backend() string
@@ -59,16 +61,17 @@ type containerInventory struct {
 	connector containerRuntimeConnector
 	options   inventoryOptions
 
-	mu            sync.RWMutex
-	snapshot      ContainerSnapshot
-	capabilities  ContainerCapabilities
-	sequence      uint64
-	subscribers   map[uint64]chan ContainerSnapshot
-	nextID        uint64
-	refresh       chan struct{}
-	instanceID    string
-	actorMetadata map[string]map[string]string
-	runtimeClient containerRuntime
+	mu             sync.RWMutex
+	snapshot       ContainerSnapshot
+	capabilities   ContainerCapabilities
+	sequence       uint64
+	subscribers    map[uint64]chan ContainerSnapshot
+	nextID         uint64
+	refresh        chan struct{}
+	instanceID     string
+	actorMetadata  map[string]map[string]string
+	runtimeClient  containerRuntime
+	snapshotCancel context.CancelCauseFunc
 }
 
 func newContainerInventory(connector containerRuntimeConnector, options inventoryOptions) *containerInventory {
@@ -284,13 +287,34 @@ func (i *containerInventory) runConnected(ctx context.Context, runtimeClient con
 }
 
 func (i *containerInventory) readSnapshot(ctx context.Context, runtimeClient containerRuntime) ([]Container, error) {
-	snapshotContext, cancel := context.WithTimeout(ctx, i.options.operationTimeout)
-	defer cancel()
-	containers, err := runtimeClient.Snapshot(snapshotContext)
-	if err != nil {
-		return nil, fmt.Errorf("reconcile container inventory: %w", err)
+	for {
+		snapshotContext, cancel := context.WithTimeout(ctx, i.options.operationTimeout)
+		snapshotContext, supersede := context.WithCancelCause(snapshotContext)
+		i.mu.Lock()
+		i.snapshotCancel = supersede
+		i.mu.Unlock()
+		containers, err := runtimeClient.Snapshot(snapshotContext)
+		i.mu.Lock()
+		i.snapshotCancel = nil
+		i.mu.Unlock()
+		cause := context.Cause(snapshotContext)
+		supersede(nil)
+		cancel()
+		if errors.Is(cause, errInventorySnapshotSuperseded) && ctx.Err() == nil {
+			select {
+			case <-i.refresh:
+			default:
+			}
+			continue
+		}
+		if err != nil {
+			return nil, fmt.Errorf("reconcile container inventory: %w", err)
+		}
+		if cause != nil {
+			return nil, fmt.Errorf("reconcile container inventory: %w", cause)
+		}
+		return containers, nil
 	}
-	return containers, nil
 }
 
 func (i *containerInventory) waitForRetry(ctx context.Context, delay time.Duration) bool {
@@ -310,6 +334,16 @@ func (i *containerInventory) triggerRefresh() {
 	select {
 	case i.refresh <- struct{}{}:
 	default:
+	}
+}
+
+func (i *containerInventory) triggerCommittedRefresh() {
+	i.mu.RLock()
+	cancel := i.snapshotCancel
+	i.mu.RUnlock()
+	i.triggerRefresh()
+	if cancel != nil {
+		cancel(errInventorySnapshotSuperseded)
 	}
 }
 

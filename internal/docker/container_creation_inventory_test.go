@@ -42,6 +42,94 @@ func (inventoryCreationClient) Create(context.Context, CreateContainerRequest) (
 
 func (inventoryCreationClient) Close() error { return nil }
 
+type staleCreationSnapshotRuntime struct {
+	*fakeContainerRuntime
+	calls       atomic.Int32
+	reading     chan struct{}
+	returnStale bool
+}
+
+func (r *staleCreationSnapshotRuntime) Snapshot(ctx context.Context) ([]Container, error) {
+	containers, err := r.fakeContainerRuntime.Snapshot(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if r.calls.Add(1) == 2 {
+		close(r.reading)
+		<-ctx.Done()
+		if r.returnStale {
+			return containers, nil
+		}
+		return nil, context.Cause(ctx)
+	}
+	return containers, nil
+}
+
+func TestContainerCreationSupersedesAnEarlierInventoryRead(t *testing.T) {
+	for _, returnStale := range []bool{false, true} {
+		name := "canceled read"
+		if returnStale {
+			name = "late stale result"
+		}
+		t.Run(name, func(t *testing.T) {
+			testContainerCreationSupersedesAnEarlierRead(t, returnStale)
+		})
+	}
+}
+
+func testContainerCreationSupersedesAnEarlierRead(t *testing.T, returnStale bool) {
+	t.Helper()
+	dependency := Container{ID: "synthetic-dependency", State: "running"}
+	front := Container{ID: "synthetic-front", State: "created"}
+	client := &staleCreationSnapshotRuntime{
+		fakeContainerRuntime: newFakeContainerRuntime(
+			[]Container{dependency},
+			[]Container{dependency},
+			[]Container{dependency, front},
+		),
+		reading:     make(chan struct{}),
+		returnStale: returnStale,
+	}
+	manager := NewWithStateDir(&fakeRunner{}, t.TempDir())
+	manager.creationConnector = func(context.Context) (containerCreation, error) {
+		return inventoryCreationClient{}, nil
+	}
+	manager.runtimeConnector = func(context.Context) (containerRuntime, error) { return client, nil }
+	inventoryContext, stopInventory := context.WithCancel(context.Background())
+	defer stopInventory()
+	if err := manager.StartContainerInventory(inventoryContext); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		stopInventory()
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := manager.StopContainerInventory(ctx); err != nil {
+			t.Error(err)
+		}
+	})
+	waitForInventorySnapshot(t, manager.inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	manager.inventory.triggerRefresh()
+	select {
+	case <-client.reading:
+	case <-time.After(time.Second):
+		t.Fatal("the pre-create inventory read did not start")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	id, err := manager.CreateContainer(ctx, CreateContainerRequest{Image: "synthetic-image"})
+	if err != nil || id != front.ID {
+		t.Fatalf("committed creation waited behind an obsolete inventory read: %q, %v", id, err)
+	}
+	containers, err := manager.DockerContainers(ctx, true)
+	if err != nil || len(containers) != 2 || containers[1].ID != front.ID {
+		t.Fatalf("immediate Compose inventory omitted the committed container: %+v, %v", containers, err)
+	}
+}
+
 func TestContainerCreationWaitsForItsOwnInventoryVisibility(t *testing.T) {
 	for _, direct := range []bool{false, true} {
 		name := "compatibility"

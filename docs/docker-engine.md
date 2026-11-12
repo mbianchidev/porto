@@ -126,6 +126,10 @@ therefore list and start every member immediately after creation instead of
 losing a newly created service to a delayed snapshot. Cancellation or failed
 inventory confirmation reports the already-created ID for recovery, rather
 than claiming the whole operation completed or deleting the container.
+A committed mutation supersedes an inventory read that was already in progress,
+so creation, removal, and rename confirmation do not wait behind a snapshot
+started before the change. The fresh read stays on the existing connection;
+the 20-second read and confirmation limits and caller cancellation remain intact.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a helper channel open for the gRPC connection. All host
