@@ -759,8 +759,11 @@ five-minute engine-configuration paths. Repeated snapshot HTTP 5xx failures had
 consumed both deadlines, including after successful client workflows. An
 unavailable input now fails preparation before launching an expensive guest,
 with its exact failed artifact reported. Job caches contain only immutable
-snapshot inputs, keyed by snapshot day, architecture and bootstrap code; index
-and package content is reverified on reuse. Corrupt cached inputs fail rather
+snapshot inputs, keyed by snapshot day, host/guest architecture and fixture
+target, not incidental bootstrap-source edits. A same-snapshot restore prefix
+also accepts older compatible keys. Index and package content is reverified on
+reuse, and newly required content is fetched by its authoritative hash.
+Corrupt cached inputs fail rather
 than being silently accepted or repaired. The owned repository closes during
 fixture cleanup, including failed installed-desktop startup.
 The shell-owned server uses a private stop marker and verifies its exit, so
