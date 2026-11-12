@@ -11,8 +11,21 @@ const { parseSemver, RELEASE_VERSION_FILE } = require('../ui/electron/desktop-up
 const desktopRequire = createRequire(path.join(__dirname, '..', 'ui', 'electron', 'package.json'))
 const entitlements = path.join(__dirname, '..', 'ui', 'electron', 'assets', 'entitlements.mac.plist')
 
-function command(file, args, run = spawnSync, { allowUnsigned = false } = {}) {
-  const result = run(file, args, { encoding: 'utf8', timeout: 120000, maxBuffer: 4 * 1024 * 1024 })
+function command(file, args, run = spawnSync, {
+  allowUnsigned = false,
+  wait = (milliseconds) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, milliseconds),
+} = {}) {
+  const deadline = Date.now() + 120000
+  let result
+  for (let attempt = 0; ; attempt++) {
+    result = run(file, args, { encoding: 'utf8', timeout: Math.max(1, deadline - Date.now()), maxBuffer: 4 * 1024 * 1024 })
+    const delay = 250 * 2 ** attempt
+    const busy = file === 'hdiutil' && args[0] === 'verify' && !result.error && result.status === 1 &&
+      /\bResource temporarily unavailable\b/.test(result.stderr || '')
+    if (!busy || attempt === 4 || Date.now() + delay >= deadline) break
+    console.warn(`DiskImages verification is temporarily busy; retrying the same image in ${delay}ms (${attempt + 1}/4).`)
+    wait(delay)
+  }
   const unsigned = allowUnsigned && result.status === 1 && /code object is not signed at all/.test(result.stderr || '')
   if (result.error || (result.status !== 0 && !unsigned)) {
     throw new Error(`${file} ${args.join(' ')} failed: ${result.error?.message || result.stderr?.trim() || result.stdout?.trim() || `exit ${result.signal ?? result.status}`}`)
@@ -68,12 +81,12 @@ async function sealMacOSApplication(application, { identity = '-', keychain, sig
   return identity === '-' ? 'ad-hoc' : 'certificate'
 }
 
-function verifyMacOSDmg(image, architecture, version, { run = spawnSync } = {}) {
+function verifyMacOSDmg(image, architecture, version, { run = spawnSync, wait } = {}) {
   const expectedArchitecture = { amd64: 'x86_64', arm64: 'arm64' }[architecture]
   if (!expectedArchitecture) throw new Error(`Unsupported macOS package architecture: ${architecture}`)
   const releaseVersion = parseSemver(version).version
   const desktopVersion = releaseVersion.split(/[-+]/, 1)[0]
-  command('hdiutil', ['verify', path.resolve(image)], run)
+  command('hdiutil', ['verify', path.resolve(image)], run, { wait })
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-dmg-verification-'))
   const mount = path.join(temporary, 'mount')
   fs.mkdirSync(mount)

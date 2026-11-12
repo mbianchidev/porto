@@ -990,6 +990,13 @@ on success and failure. `node --test scripts/macos-signing.test.cjs` additionall
 tests both architectures with synthetic native bundles, certificate-preservation
 policy, unchanged runtime bytes, metadata-free tar extraction, and rejected
 tampering/version/architecture mismatches without launching Porto or a daemon.
+DiskImages can briefly return `Resource temporarily unavailable` when verifying
+a newly created image. The verifier retries only that explicit resource-busy
+result, at most four times with bounded backoff inside the original two-minute
+command deadline. Each retry is reported. Corrupt-image and code-signature
+failures are not retried or accepted, and persistent resource unavailability
+still fails. The native tamper test continues to require the actual sealed-app
+signature rejection, not an unrelated image-tool failure.
 
 Ad-hoc sealing detects corruption but is not Developer ID authentication or
 notarization and does not remove Gatekeeper warnings. Installers do not clear
