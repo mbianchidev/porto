@@ -763,6 +763,10 @@ snapshot inputs, keyed by snapshot day, architecture and bootstrap code; index
 and package content is reverified on reuse. Corrupt cached inputs fail rather
 than being silently accepted or repaired. The owned repository closes during
 fixture cleanup, including failed installed-desktop startup.
+The shell-owned server uses a private stop marker and verifies its exit, so
+Git Bash on Windows does not need `SIGTERM` delivery that Node cannot receive
+through Windows `TerminateProcess`. An unexpected server exit still fails
+cleanup rather than being ignored.
 
 APT retries transient download failures, including HTTP 503 responses,
 up to ten times per file, with exponential backoff capped at 30 seconds and

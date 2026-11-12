@@ -234,7 +234,9 @@ async function prepareSnapshot(arch, {
 if (require.main === module) {
   const controller = new AbortController()
   let repository
+  let stopPoll
   const stop = async () => {
+    clearInterval(stopPoll)
     controller.abort(new Error('CI snapshot preparation was cancelled'))
     if (repository) await repository.close()
   }
@@ -249,6 +251,16 @@ if (require.main === module) {
     if (fs.existsSync(ready)) throw new Error('Refusing to overwrite an existing CI repository ownership record')
     fs.writeFileSync(`${ready}.tmp`, JSON.stringify(repository), { flag: 'wx', mode: 0o600 })
     fs.renameSync(`${ready}.tmp`, ready)
+    // Windows TerminateProcess cannot deliver Node's SIGTERM handler.
+    stopPoll = setInterval(() => {
+      if (fs.existsSync(`${ready}.stop`)) {
+        stop().catch((error) => {
+          console.error(`Unable to close the owned CI repository: ${error.message}`)
+          process.exitCode = 1
+        })
+      }
+    }, 100)
+    stopPoll.unref()
   })().catch(async (error) => {
     console.error(`Unable to prepare the immutable CI Ubuntu snapshot: ${error.message}`)
     if (repository) await repository.close()

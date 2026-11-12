@@ -132,6 +132,13 @@ cleanup() {
     fi
   done
   if [ -n "$apt_repository_pid" ]; then
+    if [ -f "$apt_ready" ]; then
+      printf '%s\n' stop > "$apt_ready.stop"
+      for attempt in {1..100}; do
+        if ! kill -0 "$apt_repository_pid" 2>/dev/null; then break; fi
+        sleep 0.1
+      done
+    fi
     if kill -0 "$apt_repository_pid" 2>/dev/null; then
       kill "$apt_repository_pid"
     fi
