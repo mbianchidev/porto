@@ -146,6 +146,13 @@ dependency health probes on small hosted runners. Intel keeps two vCPUs;
 production defaults, guest memory/disk,
 the one-minute container-start budget and actual health/network assertions are
 unchanged. The chosen CPU allocation is logged.
+Windows native process inspection has a bounded 30-second watchdog, including
+PowerShell/.NET cold startup under the synthetic HOME. Hosted Windows 2025
+first-launch commands exceeded the old ten-second process watchdog before
+later identical payloads completed in under a second. This does not retry the
+command, substitute WMI/CIM, accept incomplete identity data, or treat a timeout
+as process exit. The native startup and identity tests use that same execution
+budget and retain their protocol, executable-path and creation-time assertions.
 The host-only Windows archive download uses verified Git for Windows Bash
 without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.
 No WSL distribution is needed to prepare the installed Lima guest archive.

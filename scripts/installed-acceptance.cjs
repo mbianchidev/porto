@@ -5,7 +5,7 @@ const path = require('node:path')
 const { spawn } = require('node:child_process')
 
 const {
-  DAEMON_URL, EXPECTED, darwinProcessIdentity, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, linuxProcessIdentity, load,
+  DAEMON_URL, EXPECTED, WINDOWS_PROCESS_TIMEOUT, darwinProcessIdentity, digest, environment, failureDiagnostic, fileDigest, inspectPackage, layout, linuxProcessIdentity, load,
   noListeners, pluginPaths, prepare, preserved, reportedVersion, run, save, systemExecutable, target, waitFor, within, workspacePath, write,
 } = require('./installed-fixture.cjs')
 const { daemonProcesses, runtimeFailureDiagnostic } = require('../ui/electron/daemon-readiness.cjs')
@@ -58,7 +58,7 @@ foreach ($target in [System.Diagnostics.Process]::GetProcesses()) {
     $target.Dispose()
   }
 }
-`], { env, timeout: 10000 })
+`], { env, timeout: WINDOWS_PROCESS_TIMEOUT })
   assert.equal(result.status, 0, 'Windows process enumeration failed')
   assert.ok(!result.signal && !result.stderr.trim(), 'Windows process enumeration was incomplete')
   const lines = result.stdout.trim().split(/\r?\n/)
@@ -272,7 +272,7 @@ try {
 } finally {
   $target.Dispose()
 }`]]
-    const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: 10000 })
+    const result = await runImpl(command[0], command[1], { env, allowFailure: true, timeout: WINDOWS_PROCESS_TIMEOUT })
     const stdout = result.stdout.trim()
     const stderr = result.stderr.trim()
     assert.equal(result.status, 0, `Process inspection failed (${result.signal || result.status}): ${stderr || stdout}`)

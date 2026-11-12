@@ -12,6 +12,7 @@ const SOURCE_ROOT = fs.realpathSync(path.join(__dirname, '..'))
 const DAEMON_URL = 'http://127.0.0.1:37623'
 const PORTS = [37623, 37680, 37681]
 const EXPECTED = { docker: '29.7.2', 'docker-compose': '5.5.1', 'docker-buildx': '0.37.1', syft: '1.55.0', helm: '4.3.1' }
+const WINDOWS_PROCESS_TIMEOUT = 30000
 
 function within(root, candidate) {
   const relative = path.relative(root, candidate)
@@ -105,7 +106,7 @@ $PSModuleAutoLoadingPreference = 'None'
 [Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)
 foreach ($folder in @([System.Environment+SpecialFolder]::ProgramFiles, [System.Environment+SpecialFolder]::ProgramFilesX86)) {
   [Console]::WriteLine([System.Environment]::GetFolderPath($folder))
-}`], { env, timeout: 10000 })
+}`], { env, timeout: WINDOWS_PROCESS_TIMEOUT })
       windowsGitRoots = result.stdout.trim().split(/\r?\n/).filter(Boolean).map((folder) => path.join(folder, 'Git'))
     }
     for (const root of windowsGitRoots) {
@@ -845,4 +846,5 @@ module.exports = {
   noListeners, pluginPaths, prepare, prepareDarwinInspector, preserved, run, save,
   reportedVersion, runShellFile, systemExecutable, target, trustedExecutable, waitFor,
   windowsSupportEnvironment, windowsSystemDirectoryFromModules, within, workspacePath, write,
+  WINDOWS_PROCESS_TIMEOUT,
 }
