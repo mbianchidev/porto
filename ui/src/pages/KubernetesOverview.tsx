@@ -13,6 +13,7 @@ import { RuntimeGate } from '../components/SectionChrome'
 import { ClusterUpgrade } from './ClusterUpgrade'
 import type {
   KubernetesCluster,
+  KubernetesClusterProvider,
   KubernetesContext,
   KubernetesMachineSpec,
   RuntimeProviderStatus,
@@ -24,7 +25,7 @@ const DEFAULT_MACHINE: KubernetesMachineSpec = { cpus: 2, memoryMiB: 2048, diskG
 const ClusterTerminal = lazy(() => import('../components/ClusterTerminal'))
 const ClusterAutoscaling = lazy(() => import('./ClusterAutoscaling'))
 
-type ClusterMutation = 'start' | 'stop' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
+type ClusterMutation = 'start' | 'stop' | 'restart' | 'rename' | 'delete' | 'scale' | 'import' | 'upgrade' | 'autoscaling'
 
 type ClusterMutationControl = {
   disabled: boolean
@@ -47,11 +48,15 @@ function guestReachableDatastore(instance: EtcqliteInstance) {
 }
 
 function isLifecycleLocked(cluster: KubernetesCluster) {
-  return ['creating', 'error', 'orphaned', 'upgrading', 'upgrade-failed'].includes(cluster.state)
+  return ['creating', 'error', 'orphaned', 'upgrading', 'upgrade-failed', 'starting', 'stopping', 'deleting'].includes(cluster.state)
+}
+
+function supportsLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop' | 'restart') {
+  return cluster.capabilities?.[action] ?? cluster.provider !== 'apple'
 }
 
 function clusterElapsed(cluster: KubernetesCluster, now: number) {
-  if (cluster.state !== 'creating' || !cluster.stateSince) return ''
+  if (!['creating', 'starting', 'stopping'].includes(cluster.state) || !cluster.stateSince) return ''
   const started = Date.parse(cluster.stateSince)
   if (Number.isNaN(started)) return ''
   return `${Math.max(0, Math.floor((now - started) / 1000))}s`
@@ -60,6 +65,7 @@ function clusterElapsed(cluster: KubernetesCluster, now: number) {
 function lifecycleLabel(cluster: KubernetesCluster, mutation?: ClusterMutation) {
   if (mutation === 'stop') return 'Stopping cluster'
   if (mutation === 'start') return 'Starting cluster'
+  if (mutation === 'restart') return 'Restarting cluster'
   if (mutation !== undefined) return 'Cluster operation in progress'
   return isRunning(cluster) ? 'Stop cluster' : cluster.state === 'creating' ? 'Cluster is being created' : 'Start cluster'
 }
@@ -80,11 +86,11 @@ function NodeGroupTab({
   const [version, setVersion] = useState('')
   const [submitting, setSubmitting] = useState(false)
 
-  if (cluster.provider === 'kind') {
+  if (cluster.provider === 'kind' || cluster.provider === 'apple') {
     return (
       <section className="drawerPanel">
-        <h3>kind node groups</h3>
-        <p>kind fixes its node topology at creation time. Recreate this cluster to change its node count.</p>
+        <h3>{cluster.provider === 'apple' ? 'Apple Cluster' : 'kind'} node groups</h3>
+        <p>This provider fixes node topology at creation time. Changing the node count requires explicit deletion and recreation, which removes cluster data.</p>
       </section>
     )
   }
@@ -151,6 +157,7 @@ function ImportImageTab({ cluster, mutation }: { cluster: KubernetesCluster; mut
   const { notifyError, notifyNotice } = useMessages()
   const [image, setImage] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const locked = mutation.disabled || (cluster.provider === 'apple' && !(cluster.capabilities?.imageLoading ?? isRunning(cluster)))
 
   async function importImage(event: FormEvent) {
     event.preventDefault()
@@ -172,13 +179,15 @@ function ImportImageTab({ cluster, mutation }: { cluster: KubernetesCluster; mut
   return (
     <section className="drawerPanel">
       <h3>Import a container image</h3>
-      <p className="hintLine">Loads a local or pulled image directly into the cluster's containerd, skipping a registry round trip.</p>
+      <p className="hintLine">{cluster.provider === 'apple'
+        ? 'Loads an arm64 image from the Apple container image store into every running cluster node. Build or pull it with container first; Porto does not share the entire host image store.'
+        : "Loads a local or pulled image directly into the cluster's containerd, skipping a registry round trip."}</p>
       <form className="inspectorForm" onSubmit={importImage}>
         <label>
           <span>Image reference</span>
-          <input type="text" value={image} placeholder="registry/repository:tag" disabled={mutation.disabled} onChange={(event) => setImage(event.target.value)} required />
+          <input type="text" value={image} placeholder="registry/repository:tag" disabled={locked} onChange={(event) => setImage(event.target.value)} required />
         </label>
-        <button type="submit" disabled={submitting || mutation.disabled || image.trim() === ''}>{submitting ? 'Importing…' : 'Import image'}</button>
+        <button type="submit" disabled={submitting || locked || image.trim() === ''}>{submitting ? 'Importing…' : 'Import image'}</button>
       </form>
     </section>
   )
@@ -201,7 +210,7 @@ export function KubernetesOverview({
   const [creatingCluster, setCreatingCluster] = useState(false)
   const [clusterName, setClusterName] = useState('')
   const [clusterVersion, setClusterVersion] = useState('')
-  const [clusterProvider, setClusterProvider] = useState<'kind' | 'k0s' | 'k3s'>('k3s')
+  const [clusterProvider, setClusterProvider] = useState<KubernetesClusterProvider>('k3s')
   const [clusterDatastore, setClusterDatastore] = useState('')
   const [controlPlane, setControlPlane] = useState<KubernetesMachineSpec>(DEFAULT_MACHINE)
   const [initialWorkers, setInitialWorkers] = useState(1)
@@ -237,7 +246,7 @@ export function KubernetesOverview({
   const enabled = status.data?.enabled ?? false
   const runningClusters = clusterItems.filter((cluster) => cluster.state === 'running')
   const pendingCreationItems = Object.entries(pendingCreations)
-  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => cluster.state === 'creating')
+  const hasTimedClusters = pendingCreationItems.length > 0 || clusterItems.some((cluster) => ['creating', 'starting', 'stopping'].includes(cluster.state))
 
   useEffect(() => {
     if (!hasTimedClusters) return
@@ -268,9 +277,9 @@ export function KubernetesOverview({
       name: requestedName,
       provider: requestedProvider,
       version: clusterVersion,
-      controlPlane: { ...controlPlane },
+      controlPlane: { ...controlPlane, ...(requestedProvider === 'apple' ? { diskGiB: 0 } : {}) },
       nodeGroups: initialWorkers > 0
-        ? [{ name: 'workers', count: initialWorkers, machine: { ...DEFAULT_MACHINE }, labels: {}, taints: [] }]
+        ? [{ name: 'workers', count: initialWorkers, machine: { ...DEFAULT_MACHINE, ...(requestedProvider === 'apple' ? { diskGiB: 0 } : {}) }, labels: {}, taints: [] }]
         : [],
       ...(requestedProvider === 'k3s' && datastore ? { etcqlite: { name: datastore.name, clusterID: datastore.clusterID } } : {}),
     }
@@ -319,7 +328,7 @@ export function KubernetesOverview({
     })
   }
 
-  async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop') {
+  async function clusterLifecycle(cluster: KubernetesCluster, action: 'start' | 'stop' | 'restart') {
     if (!beginClusterMutation(cluster.name, action)) return
     if (action === 'stop' && cluster.provider === 'kind') {
       notifyNotice('kubernetes', `Stopping ${cluster.name}. KinD workers stop before the control plane, so shutdown can take a while.`)
@@ -329,8 +338,8 @@ export function KubernetesOverview({
         `/api/kubernetes/clusters/${encodeURIComponent(cluster.name)}/${action}`,
         'POST',
       )
-      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'started' : 'stopped'}.`)
-      if (action === 'start') {
+      notifyNotice('kubernetes', result.message || `${cluster.name} ${action === 'start' ? 'started' : action === 'restart' ? 'restarted' : 'stopped'}.`)
+      if (action !== 'stop') {
         onContextChange(cluster.context)
       } else if (context === cluster.context) {
         const fallback = clusterItems.find((candidate) => candidate.name !== cluster.name && isRunning(candidate))?.context
@@ -342,6 +351,8 @@ export function KubernetesOverview({
       status.reload()
     } catch (err) {
       notifyError('kubernetes', errorMessage(err, `Unable to ${action} ${cluster.name}`))
+      clusters.reload()
+      status.reload()
     } finally {
       endClusterMutation(cluster.name)
     }
@@ -487,13 +498,13 @@ export function KubernetesOverview({
                   ? <ActionButton
                       label={lifecycleLabel(cluster, pendingMutation)}
                       icon="stop"
-                      disabled={pendingMutation !== undefined}
+                      disabled={!supportsLifecycle(cluster, 'stop') || isLifecycleLocked(cluster) || pendingMutation !== undefined}
                       onClick={() => clusterLifecycle(cluster, 'stop')}
                     />
                   : <ActionButton
                       label={lifecycleLabel(cluster, pendingMutation)}
                       icon="play"
-                      disabled={isLifecycleLocked(cluster) || pendingMutation !== undefined}
+                      disabled={!supportsLifecycle(cluster, 'start') || isLifecycleLocked(cluster) || pendingMutation !== undefined}
                       onClick={() => clusterLifecycle(cluster, 'start')}
                     />
               }}
@@ -528,6 +539,20 @@ export function KubernetesOverview({
                     )}
                     {selectedCluster.state === 'error' && (
                       <p className="errorLine" role="alert">{selectedCluster.message || 'Cluster creation failed. Delete this failed cluster record before retrying the same name.'}</p>
+                    )}
+                    {selectedCluster.provider === 'apple' && (
+                      <p className="hintLine">{selectedCluster.capabilities?.nativeNodes
+                        ? 'Porto owns these native node VMs directly. Stop gracefully shuts down workers before the control plane; Start verifies Kubernetes and workload recovery without rebuilding data. Node scaling and version upgrades remain unavailable.'
+                        : 'This existing cluster uses Apple’s protected cluster wrapper. Porto will not silently migrate or rebuild its nodes; wrapper-managed start/stop remains unavailable.'}</p>
+                    )}
+                    {selectedCluster.lifecycle && !selectedCluster.lifecycle.completedAt && (
+                      <div className="debugToolboxDetails" role="status" aria-live="polite">
+                        <p>{selectedCluster.lifecycle.goal}: {selectedCluster.lifecycle.stage}</p>
+                        {Object.entries(selectedCluster.lifecycle.nodes).map(([name, progress]) => <p key={name}><strong>{name}</strong>: {progress}</p>)}
+                      </div>
+                    )}
+                    {selectedCluster.provider === 'apple' && selectedCluster.state !== 'error' && selectedCluster.message && (
+                      <p className="errorLine" role="alert">{selectedCluster.message}</p>
                     )}
                     {selectedCluster.state === 'broken' && (
                       <p className="errorLine">The control-plane node is missing. Starting a KinD cluster will recreate it from the saved cluster configuration.</p>
@@ -569,19 +594,42 @@ export function KubernetesOverview({
                     <div className="maintenanceBar">
                       <span>Maintenance controls</span>
                       <div className="actions">
-                        {isRunning(selectedCluster) || pendingMutations[selectedCluster.name] === 'stop'
+                        {selectedCluster.capabilities?.nativeNodes ? (
+                          <>
+                            <ActionButton
+                              label="Start cluster"
+                              icon="play"
+                              disabled={!supportsLifecycle(selectedCluster, 'start') || isLifecycleLocked(selectedCluster) || isRunning(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
+                              onClick={() => clusterLifecycle(selectedCluster, 'start')}
+                            />
+                            <ActionButton
+                              label="Stop cluster"
+                              icon="stop"
+                              disabled={!supportsLifecycle(selectedCluster, 'stop') || isLifecycleLocked(selectedCluster) || selectedCluster.state === 'stopped' || pendingMutations[selectedCluster.name] !== undefined}
+                              onClick={() => clusterLifecycle(selectedCluster, 'stop')}
+                            />
+                          </>
+                        ) : isRunning(selectedCluster) || pendingMutations[selectedCluster.name] === 'stop'
                           ? <ActionButton
                               label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
                               icon="stop"
-                              disabled={pendingMutations[selectedCluster.name] !== undefined}
+                              disabled={!supportsLifecycle(selectedCluster, 'stop') || pendingMutations[selectedCluster.name] !== undefined}
                               onClick={() => clusterLifecycle(selectedCluster, 'stop')}
                             />
                           : <ActionButton
                               label={lifecycleLabel(selectedCluster, pendingMutations[selectedCluster.name])}
                               icon="play"
-                              disabled={isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
+                              disabled={!supportsLifecycle(selectedCluster, 'start') || isLifecycleLocked(selectedCluster) || pendingMutations[selectedCluster.name] !== undefined}
                               onClick={() => clusterLifecycle(selectedCluster, 'start')}
                             />}
+                        {supportsLifecycle(selectedCluster, 'restart') && (
+                          <ActionButton
+                            label="Restart cluster"
+                            icon="restart"
+                            disabled={isLifecycleLocked(selectedCluster) || selectedCluster.state === 'stopped' || pendingMutations[selectedCluster.name] !== undefined}
+                            onClick={() => clusterLifecycle(selectedCluster, 'restart')}
+                          />
+                        )}
                         <ActionButton
                           className="removeButton"
                           label={pendingMutations[selectedCluster.name] === 'delete' ? 'Deleting cluster' : 'Delete cluster'}
@@ -677,14 +725,17 @@ export function KubernetesOverview({
                     <span>Provider</span>
                     <select value={clusterProvider} onChange={(event) => {
                       const provider = event.target.value
-                      if (provider === 'kind' || provider === 'k3s' || provider === 'k0s') {
+                      if (provider === 'kind' || provider === 'k3s' || provider === 'k0s' || provider === 'apple') {
                         setClusterProvider(provider)
                         setClusterDatastore('')
                       }
                     }}>
-                      <option value="kind">kind — Kubernetes in Porto containers</option>
-                      <option value="k3s">k3s — lightweight Kubernetes on Lima VMs</option>
-                      <option value="k0s">k0s — conformant Kubernetes on Lima VMs</option>
+                      <option value="kind">kind - Kubernetes in Porto containers</option>
+                      <option value="k3s">k3s - lightweight Kubernetes on Lima VMs</option>
+                      <option value="k0s">k0s - conformant Kubernetes on Lima VMs</option>
+                      {providerTools.data?.some((provider) => provider.name === 'apple') && (
+                        <option value="apple">Apple Cluster - native Apple silicon VMs (experimental)</option>
+                      )}
                     </select>
                   </label>
                   {clusterProvider === 'k3s' && (
@@ -702,7 +753,7 @@ export function KubernetesOverview({
                     <input
                       type="text"
                       value={clusterVersion}
-                      placeholder={clusterProvider === 'kind' ? 'v1.37.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
+                      placeholder={clusterProvider === 'apple' ? 'v1.35.5' : clusterProvider === 'kind' ? 'v1.37.0' : clusterProvider === 'k3s' ? 'v1.36.0+k3s1' : 'v1.36.0+k0s.0'}
                       onChange={(event) => setClusterVersion(event.target.value)}
                     />
                   </label>
@@ -714,20 +765,22 @@ export function KubernetesOverview({
                     <span>Control-plane memory (MiB)</span>
                     <input type="number" min={512} step={512} value={controlPlane.memoryMiB} onChange={(event) => setControlPlane({ ...controlPlane, memoryMiB: Number(event.target.value) })} />
                   </label>
-                  <label>
+                  {clusterProvider !== 'apple' && <label>
                     <span>Control-plane disk (GiB)</span>
                     <input type="number" min={5} value={controlPlane.diskGiB} onChange={(event) => setControlPlane({ ...controlPlane, diskGiB: Number(event.target.value) })} />
-                  </label>
+                  </label>}
                   <label>
                     <span>Initial worker nodes</span>
                     <input type="number" min={0} max={16} value={initialWorkers} onChange={(event) => setInitialWorkers(Number(event.target.value))} />
                   </label>
                   <p className="hintLine">
-                    {clusterProvider === 'kind'
+                    {clusterProvider === 'apple'
+                      ? 'Requires macOS 26+ on Apple silicon and stable container 1.7.1+. Each directly owned node is a native VM. Graceful stop/start preserves node data and verifies recovery. Disk sizing, node scaling and in-place version upgrades are unavailable.'
+                      : clusterProvider === 'kind'
                       ? 'Creates Kubernetes nodes as privileged containers through the Porto Docker endpoint.'
                       : `Creates a ${clusterProvider} control plane on a Porto-managed Lima VM. Add worker node groups afterward.`}
                   </p>
-                  <button type="submit" disabled={clusterName.trim() === '' || Object.hasOwn(pendingCreations, clusterName.trim())}>Create cluster</button>
+                  <button type="submit" disabled={clusterName.trim() === '' || Object.hasOwn(pendingCreations, clusterName.trim()) || (clusterProvider === 'apple' && !providerTools.data?.some((provider) => provider.name === 'apple' && provider.installed))}>Create cluster</button>
                 </form>
               </Inspector>
             )}

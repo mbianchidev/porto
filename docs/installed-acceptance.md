@@ -41,6 +41,10 @@ The fixture:
    real Porto-owned Lima engine, and render its packaged dashboard.
 4. Uses **`porto docker cli buildx build --builder default --load`** to build a
    synthetic BusyBox-based image, then inspects its loaded ID and label.
+   The build uses plain progress and Docker debug diagnostics. The daemon's
+   debug log records BuildKit RPC method, duration and status code, without
+   request bodies or metadata, so connection, discovery and solve deadlines can
+   be distinguished rather than reduced to an anonymous client timeout.
    The installed Compose plugin starts two services on the same named network.
    The worker depends on the app's native HTTP health check, reaches its
    `app` service DNS name over HTTP, and reads its shared named-volume token
@@ -124,8 +128,15 @@ per-user `override.yaml` configuration and QEMU executable selection. The
 installed Porto binary still creates the guest and its ownership record; the
 harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
-and dependency-provision fixture, including its previous-completed-UTC-day
-Ubuntu snapshot and bounded APT retries. Linux/macOS install their documented QEMU
+and dependency-provision fixture, including its Ubuntu snapshot from three
+completed UTC days earlier and bounded APT retries. The host prepares original
+signed metadata, hash-verified indexes and the required package superset before
+launching the installed desktop. A fixture-owned read-only loopback repository
+then serves these immutable inputs without upstream network access during
+boot/configuration; the guest still authenticates archives with its Ubuntu
+keyring and resolves/installs packages through real APT. See
+[CI documentation](ci-cd.md) for the bootstrap details.
+Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
 Intel macOS TCG additionally uses Lima's upstream `no_timer_check` CI workaround
 with the same pinned guest image and matching SHA-256-pinned kernel/initrd.
@@ -139,6 +150,13 @@ dependency health probes on small hosted runners. Intel keeps two vCPUs;
 production defaults, guest memory/disk,
 the one-minute container-start budget and actual health/network assertions are
 unchanged. The chosen CPU allocation is logged.
+Windows native process inspection has a bounded 30-second watchdog, including
+PowerShell/.NET cold startup under the synthetic HOME. Hosted Windows 2025
+first-launch commands exceeded the old ten-second process watchdog before
+later identical payloads completed in under a second. This does not retry the
+command, substitute WMI/CIM, accept incomplete identity data, or treat a timeout
+as process exit. The native startup and identity tests use that same execution
+budget and retain their protocol, executable-path and creation-time assertions.
 The host-only Windows archive download uses verified Git for Windows Bash
 without loading profiles, not the unrelated `System32\bash.exe` WSL launcher.
 No WSL distribution is needed to prepare the installed Lima guest archive.

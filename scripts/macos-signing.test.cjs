@@ -202,6 +202,55 @@ nodeTest('does not silently ignore certificate-import credentials on the prepack
   assert.match(result.stderr, /refus.*ad-hoc/i)
 })
 
+nodeTest('waits out temporary DiskImages contention but still rejects the actual damaged app signature', () => {
+  let verifications = 0
+  let signatureChecks = 0
+  let waits = 0
+  assert.throws(() => verifyMacOSDmg('/synthetic/valid-image.dmg', 'amd64', '7.8.9', {
+    wait: () => { waits++ },
+    run: (file, args) => {
+      if (file === 'hdiutil' && args[0] === 'verify') {
+        return ++verifications === 1
+          ? { status: 1, stderr: 'hdiutil: verify failed - Resource temporarily unavailable' }
+          : { status: 0, stdout: '' }
+      }
+      if (file === 'hdiutil' && args[0] === 'attach') {
+        fs.mkdirSync(path.join(args[args.indexOf('-mountpoint') + 1], 'Porto.app'))
+        return { status: 0 }
+      }
+      assert.equal(file, '/usr/bin/codesign')
+      signatureChecks++
+      return { status: 1, stderr: 'a sealed resource is missing or invalid' }
+    },
+  }), /sealed resource|invalid|modified/)
+  assert.equal(verifications, 2)
+  assert.equal(signatureChecks, 1)
+  assert.equal(waits, 1)
+})
+
+nodeTest('does not retry corrupt images or hide persistent DiskImages unavailability', () => {
+  for (const diagnostic of ['image is corrupt', 'hdiutil: verify failed - Resource temporarily unavailable']) {
+    let attempts = 0
+    let waits = 0
+    assert.throws(() => verifyMacOSDmg('/synthetic/image.dmg', 'arm64', '7.8.9', {
+      wait: () => { waits++ },
+      run: (file, args) => {
+        assert.equal(file, 'hdiutil')
+        assert.equal(args[0], 'verify')
+        attempts++
+        return { status: 1, stderr: diagnostic }
+      },
+    }), (error) => error.message.includes(diagnostic))
+    if (diagnostic === 'image is corrupt') {
+      assert.equal(attempts, 1)
+      assert.equal(waits, 0)
+    } else {
+      assert.ok(attempts > 1 && attempts <= 5, 'Native resource retries must remain bounded')
+      assert.equal(waits, attempts - 1)
+    }
+  }
+})
+
 for (const architecture of ['x86_64', 'arm64']) {
   nativeTest(`seals ${architecture} nested code without changing runtime bytes, links or modes`, async (t) => {
     const { app, resources } = fixture(t, architecture)

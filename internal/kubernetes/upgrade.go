@@ -199,6 +199,9 @@ func (p *ClusterProvisioner) UpgradeCluster(ctx context.Context, name string, up
 		return result, err
 	}
 	spec.Provider = normalizeProvider(spec.Provider)
+	if spec.Provider == "apple" {
+		return result, unsupportedAppleOperation("in-place cluster upgrades")
+	}
 	if _, err := parseUpgradeVersion(spec.Provider, upgrade.Version); err != nil {
 		return result, err
 	}

@@ -62,7 +62,7 @@ function AutoscalingSettings({ cluster, status, mutation, onChanged }: {
           <input type="checkbox" checked={config.nodes.enabled} disabled={locked || !status.nodeSupported} onChange={(event) => setConfig({ ...config, nodes: { ...config.nodes, enabled: event.target.checked } })} />
           <span>Autoscale worker nodes with Karpenter</span>
         </label>
-        {!status.nodeSupported && <p className="hintLine">kind fixes node topology at creation. Use k3s or k0s for real local node autoscaling; KEDA is supported on kind.</p>}
+        {!status.nodeSupported && <p className="hintLine">This provider fixes node topology at creation. Use k3s or k0s for local node autoscaling; KEDA workload scaling remains supported.</p>}
         {config.nodes.enabled && (
           <>
             <label><span>Maximum autoscaled workers</span><input type="number" min={1} max={32} required disabled={locked} value={config.nodes.maxNodes} onChange={(event) => setConfig({ ...config, nodes: { ...config.nodes, maxNodes: Number(event.target.value) } })} /></label>

@@ -9,7 +9,7 @@ const { EventEmitter, once } = require('node:events')
 const { PassThrough } = require('node:stream')
 
 const {
-  EXPECTED, available, digest, environment, failureDiagnostic, inspectPackage, layout, linuxProcessIdentity, load, nativeHeader,
+  EXPECTED, WINDOWS_PROCESS_TIMEOUT, available, digest, environment, failureDiagnostic, inspectPackage, layout, linuxProcessIdentity, load, nativeHeader,
   pluginPaths, prepare, preserved, reportedVersion, run, runShellFile, save, systemExecutable, target,
   trustedExecutable, waitFor, windowsSupportEnvironment, windowsSystemDirectoryFromModules, workspacePath, write,
 } = require('./installed-fixture.cjs')
@@ -179,7 +179,7 @@ if (process.platform === 'win32') {
     const result = await run('powershell.exe', [
       '-NoProfile', '-NonInteractive', '-Command',
       '$PSModuleAutoLoadingPreference = "None"; [Console]::Out.Write("installed-native-startup-ready")',
-    ], { env: environment(current), timeout: 10000 })
+    ], { env: environment(current), timeout: WINDOWS_PROCESS_TIMEOUT })
     assert.equal(result.stdout, 'installed-native-startup-ready')
     assert.equal(result.stderr, '')
   })
@@ -220,7 +220,7 @@ $executable = $target.MainModule.FileName
     ]) {
       await t.test(name, async () => {
         const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-          env, timeout: 10000,
+          env, timeout: WINDOWS_PROCESS_TIMEOUT,
         })
         assert.equal(result.stderr, '')
         check(result.stdout)
@@ -237,7 +237,7 @@ $executable = '${fields.ExecutablePath}'
 [Console]::Out.WriteLine([System.Convert]::ToBase64String([System.Text.Encoding]::Unicode.GetBytes($executable)))
 `
       const result = await run('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', script], {
-        env, timeout: 10000,
+        env, timeout: WINDOWS_PROCESS_TIMEOUT,
       })
       assert.equal(result.stderr, '')
       assert.equal(await identity(123, env, { platform: 'win32', runImpl: async () => result }), JSON.stringify(fields))
@@ -1096,7 +1096,7 @@ test('Windows native enumeration requires explicit PID/executable records withou
   const packet = (records) => 'PORTO_PROCESS_LIST_V1\r\n' + records.map((item) =>
     `${item.ProcessId}\t${Buffer.from(item.ExecutablePath, 'utf16le').toString('base64')}\r\n`).join('')
   const runImpl = async (_file, args, options) => {
-    assert.equal(options.timeout, 10000)
+    assert.equal(options.timeout, WINDOWS_PROCESS_TIMEOUT)
     assert.match(args.at(-1), /\[System\.Diagnostics\.Process\]::GetProcesses\(\)/)
     assert.match(args.at(-1), /\$PSModuleAutoLoadingPreference = 'None'/)
     return { stdout: packet([record]), stderr: '', status: 0, signal: null }

@@ -21,6 +21,15 @@ export function ClusterUpgrade({
   const locked = disabled || working || !['running', 'upgrade-failed'].includes(cluster.state)
   const example = kind ? 'v1.37.0' : cluster.provider === 'k0s' ? 'v1.36.4+k0s.1' : 'v1.37.1+k3s1'
 
+  if (cluster.provider === 'apple') {
+    return (
+      <section className="drawerPanel clusterMaintenance">
+        <h3>Apple Cluster upgrades</h3>
+        <p>Apple Cluster does not support in-place upgrades. Choose a Kubernetes version when creating a new cluster. Deletion and recreation remove existing cluster data; Porto never does this implicitly.</p>
+      </section>
+    )
+  }
+
   async function perform(recover: boolean) {
     const description = recover
       ? `Stop the failed replacement and restart the original ${cluster.name} cluster? Changes made in the replacement will not be merged.`

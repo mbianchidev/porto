@@ -30,7 +30,7 @@ Porto separates the control plane from runtime providers:
 - Docker clients connect to Porto through the named `porto` context.
 - Porto translates supported Docker API operations to nerdctl and a Porto-owned containerd backend, either local or in a persistent Lima VM.
 - Kubernetes inspection uses the selected managed kubeconfig; native administration uses Kubernetes clients and scoped Helm tooling without changing a global context.
-- Porto-created Kubernetes clusters use Lima VMs running k3s.
+- Porto-created Kubernetes clusters use k3s/k0s on Lima VMs, kind on Porto's container engine, or the optional Apple Cluster provider on Apple silicon.
 - Standalone Linux VMs use Lima and remain separate from Kubernetes node groups.
 
 This design keeps supported Docker clients compatible without forwarding requests to another Docker daemon.
@@ -49,7 +49,7 @@ Additional runtime features require:
 | Kubernetes inspection | `kubectl` and an authorized kubeconfig context |
 | Kubernetes manifest/RBAC administration | An explicitly selected managed kubeconfig and its native Kubernetes permissions |
 | Helm lifecycle | Checksum-pinned Helm 4.3.1 (bundled on all six desktop targets), selected namespace and native release/resource permissions |
-| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS |
+| Porto-created Kubernetes clusters | `kubectl`; Porto can install `kind` and `limactl` on macOS. Optional Apple Cluster needs Apple silicon, macOS 26+, and stable Apple `container` 1.7.1+; it does not need Lima, QEMU or Docker. |
 | Optional Etcqlite datastore | Separately installed matching native binaries on macOS/Linux, explicit gate/lifecycle, private node-local storage and guest-reachable mTLS endpoints for new k3s only; see [Etcqlite](integrations.md#etcqlite). |
 | Standalone virtual machines | Lima and a supported VZ or QEMU driver. QEMU is required for snapshots and foreign-architecture kernels; Windows desktop releases bundle it. |
 
@@ -499,11 +499,12 @@ failed Helm hooks. Native pinned Helm rendering/flag acceptance can be run with
 
 ### Create a local cluster
 
-Porto supports three native-engine providers:
+Porto supports these providers without changing the existing default:
 
 - **k3s** (default): lightweight Kubernetes on Porto-managed Lima VMs
 - **k0s**: conformant Kubernetes on Porto-managed Lima VMs
 - **kind**: Kubernetes nodes in privileged containers through the Porto Docker endpoint
+- **apple** (Apple silicon only, experimental): Porto-owned native node containers, each backed by its own Apple Virtualization.framework VM
 
 k3s and k0s nodes use Ubuntu 24.04 cloud disk images and Lima's `user-v2`
 network for communication between nodes. On Windows, Lima 2.2 uses QEMU
@@ -554,15 +555,17 @@ from the user's configured helper or stored auth. Temporary Docker configs use
 contexts and helper settings are never copied.
 
 Porto-managed clusters include a default local-path storage class and Envoy
-Gateway. kind clusters also include metrics-server v0.9.0 for pod, container,
-and node CPU/memory stats. Porto installs or repairs these add-ons during
+Gateway. kind and Apple clusters also include metrics-server v0.9.0 for pod,
+container, and node CPU/memory stats. Porto installs or repairs these add-ons during
 cluster creation and startup. Cluster ownership is recorded before the add-on
-phase so a new kind, k0s, or k3s cluster appears in the dashboard while final
+phase so a new cluster appears in the dashboard while final
 configuration is still running. An orphaned kubeconfig is also surfaced with a
 repair warning instead of disappearing from the managed cluster list.
 
-Cold kind creation has a 20-minute limit covering image preparation, node
-configuration, and its five-minute readiness wait. API readiness and each
+Cold kind runtime creation has a 20-minute limit, including its five-minute
+readiness wait. Native Apple bootstrap has a one-hour total limit, with bounded
+individual guest commands and shorter caller deadlines retained.
+API readiness and each
 add-on command have independent six-minute limits, so a slow storage rollout
 cannot consume the time reserved for Envoy Gateway or metrics-server. The
 daemon allows up to one hour for the complete creation sequence, including
@@ -587,7 +590,7 @@ the actionable backend message until the user deletes the failed cluster record.
 Porto names k3s contexts `porto-k3s-<cluster>` and migrates older
 `porto-<cluster>` kubeconfigs automatically. New k3s clusters disable the
 packaged `traefik` and `gateway-api-crd` components before starting the server;
-all three providers use Envoy Gateway as their Gateway API data plane instead.
+all managed providers use Envoy Gateway as their Gateway API data plane instead.
 Porto's Envoy Gateway bundle installs the Gateway API CRDs and admission
 policies, avoiding server-side apply ownership conflicts with k3s's separate
 Gateway API Helm chart. Disabling Traefik alone does not disable that chart.
@@ -662,6 +665,158 @@ with `--etcqlite <name>` or the creation inspector's **k3s datastore** selector.
 This never installs/starts the integration, rewrites an existing cluster or
 claims kind/k0s compatibility. The guest verifies mTLS readiness before k3s setup;
 the binding pins cluster identity, endpoints and CA rather than a reusable name.
+
+#### Native Apple Cluster (Apple silicon only)
+
+Apple Cluster is an additional choice, not a replacement for Lima/VZ. The
+dashboard offers it only when the Porto daemon runs natively on an Apple silicon
+Mac. Intel Macs, Linux and Windows retain their existing providers, and a
+direct `--provider apple` request on those hosts fails before changing state.
+
+Install the latest stable Apple container CLI with Homebrew. Porto requires
+**macOS 26+** and **stable container 1.7.1+**, including its native runtime and
+bundled kindnet manifest. Older and prerelease CLIs are rejected with setup
+guidance; Porto never silently falls back to Lima.
+For Homebrew 1.7.1 installations, use formula revision **1.7.1_1** or newer:
+the original bottle omitted required cluster helper services. Refresh with
+`brew update && brew upgrade container` if it reports an unavailable cluster
+service after startup.
+
+```sh
+porto runtime install apple
+container system start
+porto kubernetes cluster create apple-dev --provider apple --workers 2 \
+  --cpus 2 --memory 3072 --worker-cpus 2 --worker-memory 2048
+```
+
+`porto runtime providers` also reports Apple's installed version on supported
+hosts. Installing/updating Apple's toolchain can restart its shared services,
+so back up active clusters and arrange any necessary downtime first. Existing
+Lima engines and VMs are not updated, stopped or replaced.
+
+New clusters use directly managed native Linux/arm64 node containers, not a
+shared VM and not Apple's protected cluster wrapper. Each node container is
+already its own lightweight VM; starting/stopping that node starts/stops its
+VM. Porto uses the reviewed `kindest/node` v1.35.5 image by default, or an
+explicit stable `--version`. One control plane and multiple workers are
+supported; HA control-plane membership changes are not implemented.
+
+CPU and memory values are per node; worker groups retain requested labels and
+taints. Omit `--disk` and `--worker-disk`: the native runtime owns disk sizing.
+Porto reserves and records an API port bound only to host loopback.
+Keep source-installed `kubectl` within one minor version of the selected
+Kubernetes server. Porto separates command warnings from structured responses
+without dropping container-exec diagnostics.
+
+Ownership is persisted before native creation: a unique cluster identity,
+separate node identities, exact IDs/roles/topology and resource configuration.
+After creation Porto records each node's timestamp, full immutable native
+configuration, writable filesystem descriptor, backing paths and native file
+identities. Every lifecycle operation revalidates these records; a loose name
+prefix is never ownership. Replaced nodes, changed configuration or missing
+storage produce actionable errors rather than adoption, recreation or data
+deletion.
+
+Kubeconfigs stay private under `PORTO_HOME`; the recorded CA fingerprint and
+stable node TLS server name preserve certificate verification when addresses
+change. Porto registers its usual `porto-<cluster>` context through the existing
+ownership-aware registry, preserving unrelated entries and the user's current
+context. Renaming changes the display name/context, not native node IDs, disks
+or Kubernetes membership.
+
+Initial guest preparation installs signed Debian D-Bus packages when missing,
+so kubelet can use systemd-logind's graceful node-shutdown inhibitors. This is
+inside each owned VM, not the Mac. Creation needs access to its signed package
+repositories; later recovery uses the retained guest filesystem.
+
+```sh
+porto kubernetes cluster stop apple-dev
+porto kubernetes cluster start apple-dev
+porto kubernetes cluster restart apple-dev
+porto kubernetes clusters
+porto kubernetes kubeconfig apple-dev
+```
+
+**Stop is nondestructive.** Porto snapshots previously healthy workloads and a
+representative Service, checks Pod termination-grace requirements, and increases
+only owned kubelet/logind shutdown budgets when needed. Workers shut down
+gracefully before the final control-plane VM. Each stopped VM and its original
+backing filesystem are verified. No workload is scaled to zero, no blanket
+drain is performed and no global container-stop command is used. Node files,
+credentials, desired replicas, manifests, membership and durable data remain.
+
+**Start is recovery, not recreation.** Required native services are started
+without stopping other containers. The control plane starts first; kubelet
+waits on an owned boot gate while address-dependent files are reconciled.
+The single-member datastore keeps stable loopback endpoints and its existing
+data. Porto waits for verified datastore/API readiness, refreshes the private
+kubeconfig, updates worker/discovery/proxy endpoints, then starts workers.
+Kubernetes controllers roll out a changed kube-proxy configuration; Porto never
+restarts application workload containers from the host.
+
+Success requires expected node identities, current boot IDs/addresses, preserved
+pod-network membership, CNI/DNS readiness, previously healthy workload recovery
+and an actual representative Service endpoint. Completed Jobs, zero replicas
+and intentionally paused workloads are not required to become running.
+Pre-existing failures remain visible. After an unobserved host/runtime stop,
+Porto checks current declarations and explicitly identifies incomplete historical
+health information.
+
+Conflicting operations are serialized per cluster. Transitional state, node
+progress, health baselines and errors are persisted, so Start/Stop can be retried
+after partial failure, cancellation or an application restart. Already-running
+or stopped nodes are handled idempotently. A retry observes an already-requested
+guest shutdown before starting that same VM, even after guest services have
+exited. Inventory distinguishes another application's active operation from an
+interrupted one. Deletion retains graceful workload checks after failed
+Start/Stop, records intent before removing a node, and reconciles uncertain
+completion only when that exact node and its backing directory are both absent.
+Residual backing data is retained for explicit inspection.
+Deadlines report incomplete recovery
+or shutdown; they never trigger an implicit force stop. Do not remove backing
+files or certificates to repair a failed start. TLS or storage identity errors
+require explicit inspection, not relaxed verification.
+
+**Existing wrapper-managed clusters stay unchanged.** Records created by the
+earlier `container cluster create` integration retain their original inventory,
+workload, image-import, kubeconfig, rename and deletion behavior. Container 1.7.1
+explicitly blocks the ordinary node-start command for those wrapper-owned nodes.
+Porto does not offer a one-way Stop and does not silently migrate or rebuild
+them. The dashboard identifies this backend-specific limitation separately from
+the new directly managed native lifecycle.
+
+Kubernetes inspection, workloads, manifests/RBAC, Helm, GitOps, k9s, local
+Service routing/port forwarding and KEDA use the same selected private identity
+as the other providers. Apple clusters include Porto's local-path storage,
+metrics-server and Envoy Gateway add-ons.
+Porto installs a default local-path StorageClass only when no default exists;
+existing defaults stay unchanged. Apple does not supply a LoadBalancer
+implementation, so a Gateway can report `AddressNotAssigned` even when its
+listener is serving traffic. Porto's local URLs use scoped API port forwards
+to the Envoy Service rather than requiring an external LoadBalancer address.
+
+Import specific images from the **Apple container image store**, not Porto's
+separate Docker engine:
+
+```sh
+container image pull --platform linux/arm64 docker.io/library/busybox:1.37.0
+porto kubernetes cluster image-import apple-dev docker.io/library/busybox:1.37.0
+```
+
+Porto streams a private native-platform OCI archive into every running node's
+Kubernetes containerd, reports partial failures and removes the temporary
+archive. It does not enable `--shared-image-store`, expose private host images
+to every node, or implicitly pull missing images.
+
+**Remaining limits:** node scaling, Karpenter node autoscaling and
+Kubernetes-version upgrades/recovery remain unavailable until a safe native
+implementation is verified. Porto rejects those operations before pausing
+unrelated work and never disguises deletion/recreation as an in-place upgrade.
+KEDA workload scaling and the existing Kubernetes workload APIs remain available.
+Expired or externally replaced certificates require explicit repair; Porto does
+not regenerate the cluster CA or bypass TLS verification to conceal them.
+Application-aware backups are still necessary; retained VM disks are not an
+independent backup.
 
 ### Upgrade a cluster
 

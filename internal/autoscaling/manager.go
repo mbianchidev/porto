@@ -387,7 +387,7 @@ func (m *Manager) status(ctx context.Context, name string, live bool) (Status, e
 	s.Running, s.Paused, s.Message = m.runs[name] != nil, m.paused[name], m.failures[name]
 	m.mu.Unlock()
 	if !s.NodeSupported && s.Message == "" {
-		s.Message = "kind topology is immutable; KEDA workload scaling is supported, node scaling requires k3s or k0s"
+		s.Message = fmt.Sprintf("%s topology is immutable; KEDA workload scaling is supported, node scaling requires k3s or k0s", request.Provider)
 	}
 	if cfg.Nodes.Enabled && live && s.Message == "" {
 		if connection, err := m.connect(name); err != nil {

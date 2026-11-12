@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net"
 	"net/http"
 	"strings"
@@ -17,6 +18,7 @@ import (
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 func (a *API) buildKitControl(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +120,20 @@ func (a *API) hijackBuildKitControl(
 		grpc.MaxRecvMsgSize(defaults.DefaultMaxRecvMsgSize),
 		grpc.MaxSendMsgSize(defaults.DefaultMaxSendMsgSize),
 		grpc.UnknownServiceHandler(transparentBuildKitHandler(connection, a.buildKitAdmissions)),
+		grpc.UnaryInterceptor(func(ctx context.Context, request any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+			started := time.Now()
+			response, err := handler(ctx, request)
+			slog.Debug("Docker BuildKit request finished", "method", info.FullMethod,
+				"duration", time.Since(started), "code", status.Code(err).String())
+			return response, err
+		}),
+		grpc.StreamInterceptor(func(service any, stream grpc.ServerStream, info *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
+			started := time.Now()
+			err := handler(service, stream)
+			slog.Debug("Docker BuildKit stream finished", "method", info.FullMethod,
+				"duration", time.Since(started), "code", status.Code(err).String())
+			return err
+		}),
 	)
 	controlapi.RegisterControlServer(server, &buildKitControlProxy{
 		client:               controlapi.NewControlClient(connection),
