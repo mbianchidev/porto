@@ -952,6 +952,9 @@ startup phase. Successful probes verify rendering, the locked runtime version,
 and the normal quit event instead of accepting a deliberate crash.
 The native tests are skipped on Windows and Linux; no macOS library is built
 or added to their packages.
+Startup checks resolve Xcode's `otool` once, then inspect each executable
+directly within the existing ten-second inspection budget. Repeated `xcrun`
+SDK discovery must not consume that executable-inspection deadline.
 
 Both macOS DMGs and desktop tar archives are built on macOS from the same
 app, retaining Electron's original fuse-aware Node dispatch and stdio

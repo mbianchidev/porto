@@ -52,6 +52,14 @@ test('macOS startup handles unavailable power notifications without a workaround
   ], { encoding: 'utf8', env: environment, timeout: 60000 })
   assert.ifError(compiled.error)
   assert.equal(compiled.status, 0, compiled.stderr)
+  const resolvedTool = spawnSync('xcrun', ['--find', 'otool'], {
+    encoding: 'utf8', env: environment, timeout: 30000,
+  })
+  assert.ifError(resolvedTool.error)
+  assert.equal(resolvedTool.status, 0, resolvedTool.stderr)
+  const otool = resolvedTool.stdout.trim()
+  assert.equal(path.isAbsolute(otool), true)
+  fs.accessSync(otool, fs.constants.X_OK)
 
   const repository = path.join(__dirname, '..')
   const requireElectron = createRequire(path.join(repository, 'ui', 'electron', 'package.json'))
@@ -114,8 +122,8 @@ test('macOS startup handles unavailable power notifications without a workaround
 
   function assertNoWorkaround(bundle, executableName) {
     assert.equal(fs.existsSync(path.join(bundle, 'Contents', 'Frameworks', 'libporto-power-notification.dylib')), false)
-    const links = spawnSync('xcrun', ['otool', '-L', path.join(bundle, 'Contents', 'MacOS', executableName)], {
-      encoding: 'utf8', timeout: 10000,
+    const links = spawnSync(otool, ['-L', path.join(bundle, 'Contents', 'MacOS', executableName)], {
+      encoding: 'utf8', env: environment, timeout: 10000,
     })
     assert.ifError(links.error)
     assert.equal(links.status, 0, links.stderr)
