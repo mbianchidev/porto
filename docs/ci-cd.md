@@ -725,10 +725,8 @@ Before package installation, each disposable Ubuntu guest uses the
 [official Ubuntu snapshot service](https://snapshot.ubuntu.com/) at midnight UTC
 from three completed UTC days before the run, allowing more time for snapshot
 publication and cache population rather than requiring a recent endpoint.
-The user approved this CI-only trial after previous-day snapshots repeatedly
-returned HTTP 5xx responses during #188 qualification. It trades three days of
-guest dependency freshness for a less time-sensitive fixture input; production
-guest update policy is unchanged.
+It trades three days of guest dependency freshness for a less time-sensitive
+fixture input; production guest update policy is unchanged.
 PR #173 exhausted APT's retry
 budget on same-day snapshot HTTP 503 responses, then reported missing
 `newuidmap` during rootless containerd setup. The snapshot ID is logged
@@ -739,8 +737,30 @@ from out-of-sync live mirrors; APT snapshot selectors alone still fetch live
 indexes. CI requires APT's supported `Acquire::By-Hash "force"` mode for
 content-addressed index downloads. A temporary hash-URI failure must not
 silently switch to a named `Packages` URL that the snapshot service does not
-provide. Signed release hashes remain authoritative, and an unavailable
-content-addressed index still fails within the same budgets.
+provide. Signed release hashes remain authoritative.
+
+`scripts/ci-ubuntu-snapshot.cjs` now prepares those immutable inputs on the host
+**before** starting any guest or installed desktop. It downloads the original
+signed InRelease files, verifies compressed package indexes against their
+SHA-256 entries, and prefetches the package/dependency superset needed by Lima,
+QEMU binfmt and disposable migration sources. A read-only loopback repository
+serves only those prepared bytes through `host.lima.internal`; it is not an
+on-demand proxy and cannot switch to a live mirror. Guest APT still performs
+archive-signature verification, dependency/version selection and package-hash
+verification with the image's existing Ubuntu keyring. It prefers gzip indexes
+to avoid unnecessary XZ decompression under TCG. No package is installed or
+declared present by the host.
+
+This removes external snapshot availability from the 20-minute VM boot and
+five-minute engine-configuration paths. Repeated snapshot HTTP 5xx failures had
+consumed both deadlines, including after successful client workflows. An
+unavailable input now fails preparation before launching an expensive guest,
+with its exact failed artifact reported. Job caches contain only immutable
+snapshot inputs, keyed by snapshot day, architecture and bootstrap code; index
+and package content is reverified on reuse. Corrupt cached inputs fail rather
+than being silently accepted or repaired. The owned repository closes during
+fixture cleanup, including failed installed-desktop startup.
+
 APT retries transient download failures, including HTTP 503 responses,
 up to ten times per file, with exponential backoff capped at 30 seconds and
 30-second HTTP/HTTPS transport timeouts. Retry delays are logged for both index
@@ -759,8 +779,10 @@ installation. This prevents background package work from competing with TCG
 acceptance or hanging `unattended-upgrades.service` during owned-engine shutdown;
 snapshot-pinned installs remain explicit. Production guest update policy,
 Porto's shutdown budgets and acceptance assertions are unchanged.
-The 20-minute boot deadline is unchanged, and
-installed Porto environments are not reconfigured.
+The 20-minute boot deadline, five-minute multi-platform setup deadline and all
+installed-runtime/rendering assertions are unchanged. Only disposable CI
+fixtures use the prepared repository; installed user environments are not
+reconfigured.
 On software-emulated hosts, the host prepares Lima's pinned default containerd
 archive before boot: it verifies the downloaded gzip, decompresses it natively,
 and pins the resulting tar with its own SHA-256. The guest retains the same

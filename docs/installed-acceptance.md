@@ -124,8 +124,15 @@ per-user `override.yaml` configuration and QEMU executable selection. The
 installed Porto binary still creates the guest and its ownership record; the
 harness never fabricates that record or precreates an engine to claim. It
 reuses the existing checksum-verified `lima-containerd-archive.cjs` bootstrap
-and dependency-provision fixture, including its previous-completed-UTC-day
-Ubuntu snapshot and bounded APT retries. Linux/macOS install their documented QEMU
+and dependency-provision fixture, including its Ubuntu snapshot from three
+completed UTC days earlier and bounded APT retries. The host prepares original
+signed metadata, hash-verified indexes and the required package superset before
+launching the installed desktop. A fixture-owned read-only loopback repository
+then serves these immutable inputs without upstream network access during
+boot/configuration; the guest still authenticates archives with its Ubuntu
+keyring and resolves/installs packages through real APT. See
+[CI documentation](ci-cd.md) for the bootstrap details.
+Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
 Intel macOS TCG additionally uses Lima's upstream `no_timer_check` CI workaround
 with the same pinned guest image and matching SHA-256-pinned kernel/initrd.
