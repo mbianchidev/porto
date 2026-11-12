@@ -41,6 +41,10 @@ The fixture:
    real Porto-owned Lima engine, and render its packaged dashboard.
 4. Uses **`porto docker cli buildx build --builder default --load`** to build a
    synthetic BusyBox-based image, then inspects its loaded ID and label.
+   The build uses plain progress and Docker debug diagnostics. The daemon's
+   debug log records BuildKit RPC method, duration and status code, without
+   request bodies or metadata, so connection, discovery and solve deadlines can
+   be distinguished rather than reduced to an anonymous client timeout.
    The installed Compose plugin starts two services on the same named network.
    The worker depends on the app's native HTTP health check, reaches its
    `app` service DNS name over HTTP, and reads its shared named-volume token

@@ -713,7 +713,7 @@ async function exerciseInstalledRuntime(fixture, reopen, installed, env) {
       'FROM busybox:1.37.0\nCOPY fixture.txt /porto-installed.txt\nCMD ["sh", "-c", "sleep 3600"]\n')
     console.log('Installed acceptance: building and inspecting the loaded image')
     if (!reopen) {
-      await cli('buildx', 'build', '--builder', 'default', '--load', '--tag', image,
+      await cli('--debug', 'buildx', 'build', '--progress=plain', '--builder', 'default', '--load', '--tag', image,
         '--label', `porto.test.suite=${project}`, workspace)
     }
     const built = JSON.parse(await cli('image', 'inspect', image))
