@@ -1041,7 +1041,10 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer ./release.sh 0.2.0 --mo
 ```
 
 `node scripts/macos-toolchain.cjs` checks Xcode and `actool` and prints the selected
-developer directory. On macOS, a normal `release.sh` run switches to `main` and
+developer directory. The asset-compiler probe allows up to two minutes for cold
+Xcode service startup; developer-directory and Xcode-version probes retain their
+30-second limits. Failed or timed-out probes still reject the toolchain.
+On macOS, a normal `release.sh` run switches to `main` and
 fast-forward pulls `origin/main` and tags before this preflight, then checks the
 toolchain before changing release versions or running validation. `--mock` runs
 the preflight without switching or pulling. The native installer script also

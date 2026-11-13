@@ -167,7 +167,7 @@ func (m *Manager) confirmContainerInventory(ctx context.Context, matches func([]
 	}
 	updates, unsubscribe := inventory.subscribe()
 	defer unsubscribe()
-	inventory.triggerRefresh()
+	inventory.triggerCommittedRefresh()
 	timer := time.NewTimer(defaultInventoryOperationTimeout)
 	defer timer.Stop()
 	var err error

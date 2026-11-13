@@ -79,6 +79,18 @@ resume no longer opens another cold Lima/containerd connection just to record
 its selected architecture. Architecture validation, namespace/label ownership,
 caller cancellation and operation deadlines remain unchanged.
 
+For nerdctl-owned containers, Porto preserves native signal/grace handling and
+lets the runtime's OCI exit hook tear down its CNI endpoints and port reservers.
+It never replays `nerdctl stop` after task exit: that would delete the same
+published-port rules twice. The backend-local helper then closes stopped-task
+I/O and stops only loaded, active legacy health units before Stop is acknowledged
+or another native start proceeds. Missing units require no forced cleanup delay.
+A task reaped between I/O loading and status lookup is already exited; its loaded
+I/O is still closed. Live tasks and other status errors remain explicit failures.
+The existing caller context and cleanup command timeout remain authoritative.
+Restart stays delegated before native mutation. Porto-managed endpoints retain
+their native CNI cleanup, and no container, task record or snapshot is deleted.
+
 ## Live container inventory
 
 The daemon maintains one authoritative, revisioned container snapshot for both
@@ -126,6 +138,10 @@ therefore list and start every member immediately after creation instead of
 losing a newly created service to a delayed snapshot. Cancellation or failed
 inventory confirmation reports the already-created ID for recovery, rather
 than claiming the whole operation completed or deleting the container.
+A committed mutation supersedes an inventory read that was already in progress,
+so creation, removal, and rename confirmation do not wait behind a snapshot
+started before the change. The fresh read stays on the existing connection;
+the 20-second read and confirmation limits and caller cancellation remain intact.
 
 For the Porto Lima engine, the daemon discovers the rootless containerd socket
 inside the VM and keeps a helper channel open for the gRPC connection. All host

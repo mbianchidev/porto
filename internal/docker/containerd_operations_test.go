@@ -663,6 +663,225 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestManagerPreservesNerdctlStopCleanup(t *testing.T) {
+	for _, action := range []string{"stop", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			const id = "synthetic-container"
+			labels := map[string]string{
+				nerdctlNameLabel:   "synthetic-app",
+				restartPolicyLabel: "unless-stopped",
+				restartStatusLabel: "running",
+			}
+			tasks := &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: id, Status: tasktypes.Status_RUNNING,
+			}}
+			containers := &fakeContainersClient{container: &containersapi.Container{
+				ID: id, Labels: cloneStringMap(labels),
+				Spec: &anypb.Any{Value: []byte(`{}`)},
+			}}
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "default", tasks: tasks, containers: containers,
+			}
+			cleanupCalled := false
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				if command.Name != "nerdctl" ||
+					!reflect.DeepEqual(command.Args, []string{action, "--time", "2", id}) {
+					return nil, fmt.Errorf("unexpected compatibility lifecycle command: %+v", command)
+				}
+				if len(tasks.killSignals) != 0 || len(containers.updateRequests) != 0 {
+					return nil, errors.New("native lifecycle mutated the container before nerdctl's stop cleanup")
+				}
+				cleanupCalled = true
+				return nil, nil
+			}}
+			manager := New(runner)
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return borrowedContainerOperations{runtimeClient}, nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := manager.ContainerActionWithTimeout(ctx, id, action, 2); err != nil {
+				t.Fatal(err)
+			}
+			if !cleanupCalled {
+				t.Fatal("nerdctl-owned stop cleanup was skipped")
+			}
+		})
+	}
+}
+
+type cleanupStopTasks struct{ *fakeTasksClient }
+
+func (tasks *cleanupStopTasks) Wait(ctx context.Context, request *tasksapi.WaitRequest, options ...grpc.CallOption) (*tasksapi.WaitResponse, error) {
+	response, err := tasks.fakeTasksClient.Wait(ctx, request, options...)
+	if err == nil {
+		tasks.process.Status = tasktypes.Status_STOPPED
+	}
+	return response, err
+}
+
+func TestCompatibilityStopAwaitsCleanupAfterTaskExit(t *testing.T) {
+	cleanupFailure := errors.New("synthetic compatibility cleanup failed")
+	for _, scenario := range []struct {
+		name   string
+		err    error
+		cancel bool
+	}{
+		{name: "cleanup completed"},
+		{name: "cleanup failed", err: cleanupFailure},
+		{name: "caller canceled", cancel: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			id := strings.Repeat("a", 64)
+			tasks := &cleanupStopTasks{fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: id, Status: tasktypes.Status_RUNNING,
+			}}}
+			containers := &fakeContainersClient{container: &containersapi.Container{
+				ID: id, SnapshotKey: "synthetic-retained-rootfs",
+				Labels: map[string]string{nerdctlNameLabel: "synthetic-app"},
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deadline, _ := ctx.Deadline()
+			cleanupStarted := make(chan struct{})
+			releaseCleanup := make(chan error, 1)
+			manager := New(lifecycleDeadlineRunner(func(cleanupContext context.Context, command runtimes.Command) ([]byte, error) {
+				if tasks.process.GetStatus() != tasktypes.Status_STOPPED {
+					return nil, errors.New("compatibility cleanup started before native task shutdown")
+				}
+				if command.Name != "/synthetic/porto-runtime-helper" ||
+					!reflect.DeepEqual(command.Args, []string{"task-stop-cleanup", "--address", "/synthetic/containerd.sock", "--namespace", "default", "--id", id}) {
+					return nil, fmt.Errorf("unexpected stopped-task cleanup: %s %v", command.Name, command.Args)
+				}
+				if got, ok := cleanupContext.Deadline(); !ok || !got.Equal(deadline) {
+					return nil, errors.New("cleanup reset the original caller deadline")
+				}
+				close(cleanupStarted)
+				select {
+				case err := <-releaseCleanup:
+					return nil, err
+				case <-cleanupContext.Done():
+					return nil, context.Cause(cleanupContext)
+				}
+			}))
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "default", tasks: tasks, containers: containers,
+				address: "/synthetic/containerd.sock", helperPath: "/synthetic/porto-runtime-helper",
+			}
+			runtimeClient.stopCleanup = manager.containerStopCleanup(runtimeClient)
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return borrowedContainerOperations{runtimeClient}, nil
+			}
+			completed := make(chan error, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				completed <- manager.ContainerAction(ctx, id, "stop")
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("stop did not settle after caller cancellation")
+				}
+			})
+			select {
+			case <-cleanupStarted:
+			case err := <-completed:
+				t.Fatalf("stop did not reach stopped-task cleanup: %v", err)
+			case <-ctx.Done():
+				t.Fatal("stopped-task cleanup never started")
+			}
+			select {
+			case err := <-completed:
+				t.Fatalf("stop acknowledged before compatibility cleanup finished: %v", err)
+			default:
+			}
+			if scenario.cancel {
+				cancel()
+			} else {
+				releaseCleanup <- scenario.err
+			}
+			select {
+			case err := <-completed:
+				want := scenario.err
+				if scenario.cancel {
+					want = context.Canceled
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("cleanup result = %v, want %v", err, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("stop did not return after cleanup settled")
+			}
+			if !reflect.DeepEqual(tasks.killSignals, []uint32{15}) ||
+				containers.container.GetSnapshotKey() != "synthetic-retained-rootfs" {
+				t.Fatalf("cleanup changed native stop signals or retained storage: signals=%v metadata=%+v", tasks.killSignals, containers.container)
+			}
+		})
+	}
+}
+
+func TestCompatibilityStopDoesNotReplayOCINetworkTeardown(t *testing.T) {
+	id := strings.Repeat("a", 64)
+	tasks := &cleanupStopTasks{fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{
+		ContainerID: id, Status: tasktypes.Status_RUNNING,
+	}}}
+	cleaned := false
+	runner := lifecycleDeadlineRunner(func(_ context.Context, command runtimes.Command) ([]byte, error) {
+		if tasks.process.GetStatus() != tasktypes.Status_STOPPED {
+			return nil, errors.New("cleanup started before task exit")
+		}
+		if command.Name == "nerdctl" {
+			return nil, errors.New("CNI portmap chain was already removed by the OCI poststop hook")
+		}
+		if command.Name != "/synthetic/porto-runtime-helper" || len(command.Args) == 0 ||
+			command.Args[0] != "task-stop-cleanup" {
+			return nil, fmt.Errorf("unexpected cleanup command: %s %v", command.Name, command.Args)
+		}
+		cleaned = true
+		return nil, nil
+	})
+	manager := New(runner)
+	runtimeClient := &grpcContainerRuntime{
+		namespace: "default", address: "/synthetic/containerd.sock",
+		helperPath: "/synthetic/porto-runtime-helper", tasks: tasks,
+		containers: &fakeContainersClient{container: &containersapi.Container{
+			ID: id, Labels: map[string]string{nerdctlNameLabel: "synthetic-published-app"},
+		}},
+	}
+	runtimeClient.stopCleanup = manager.containerStopCleanup(runtimeClient)
+	manager.operationsConnector = func(context.Context) (containerOperations, error) {
+		return borrowedContainerOperations{runtimeClient}, nil
+	}
+	if err := manager.ContainerAction(context.Background(), id, "stop"); err != nil {
+		t.Fatal(err)
+	}
+	if !cleaned || !reflect.DeepEqual(tasks.killSignals, []uint32{15}) {
+		t.Fatalf("stop skipped auxiliary cleanup or changed native signals: cleaned=%t signals=%v", cleaned, tasks.killSignals)
+	}
+}
+
+func TestContainerLifecycleDoesNotSignalWithoutOwnershipMetadata(t *testing.T) {
+	for _, action := range []string{"stop", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			tasks := &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: "synthetic-container", Status: tasktypes.Status_RUNNING,
+			}}
+			runtimeClient := &grpcContainerRuntime{namespace: "default", tasks: tasks}
+			var err error
+			if action == "stop" {
+				err = runtimeClient.Stop(context.Background(), "synthetic-container", 1)
+			} else {
+				err = runtimeClient.Restart(context.Background(), "synthetic-container", 1)
+			}
+			if !errors.Is(err, ErrUnavailable) || len(tasks.killSignals) != 0 {
+				t.Fatalf("unverified lifecycle ownership allowed native signals: error=%v signals=%v", err, tasks.killSignals)
+			}
+		})
+	}
+}
+
 type lifecycleDeadlineRunner func(context.Context, runtimes.Command) ([]byte, error)
 
 func (run lifecycleDeadlineRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
@@ -1283,9 +1502,15 @@ func TestGRPCContainerOperationsStopUsesContainerSettings(t *testing.T) {
 		process: &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING},
 	}
 	runtimeClient := &grpcContainerRuntime{
-		namespace:  "default",
-		tasks:      tasks,
-		containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}},
+		namespace: "default",
+		tasks:     tasks,
+		containers: &fakeContainersClient{container: &containersapi.Container{
+			ID: "demo",
+			Labels: map[string]string{
+				portoManagedLabel: portoRuntimeVersion,
+				nerdctlNameLabel:  "synthetic-app",
+			},
+		}},
 	}
 	if err := runtimeClient.Stop(context.Background(), "demo", 2); err != nil {
 		t.Fatalf("stop container: %v", err)
@@ -1599,8 +1824,9 @@ func TestGRPCContainerOperationsRestartLeavesStoppedTaskForFallback(t *testing.T
 		Status:      tasktypes.Status_STOPPED,
 	}}
 	runtimeClient := &grpcContainerRuntime{
-		namespace: "default",
-		tasks:     tasks,
+		namespace:  "default",
+		tasks:      tasks,
+		containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}},
 	}
 	err := runtimeClient.Restart(context.Background(), "demo", 5)
 	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrTaskRecreationRequired) {

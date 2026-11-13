@@ -696,10 +696,81 @@ jobs:
           GOARCH: ${{ matrix.arch }}
         run: |
           set -euo pipefail
+          snapshot_pid=""
+          snapshot_control=""
+          cleanup_snapshot() {
+            result=$?
+            cleanup_failed=0
+            trap - EXIT HUP INT TERM
+            if [ -n "$snapshot_pid" ]; then
+              if kill -0 "$snapshot_pid" 2>/dev/null; then
+                if ! printf '%s\n' stop > "$snapshot_control"; then
+                  echo "::error::Unable to cancel snapshot preparation through its owned control file."
+                  cleanup_failed=1
+                fi
+                for _ in {1..100}; do
+                  if ! kill -0 "$snapshot_pid" 2>/dev/null; then break; fi
+                  sleep 0.1
+                done
+              fi
+              if kill -0 "$snapshot_pid" 2>/dev/null; then
+                echo "::error::Snapshot preparation did not stop after cancellation."
+                if ! kill "$snapshot_pid"; then
+                  echo "::error::Unable to terminate the owned snapshot preparation worker."
+                fi
+                cleanup_failed=1
+              fi
+              if ! wait "$snapshot_pid"; then
+                echo "::error::Snapshot preparation did not complete successfully."
+                cleanup_failed=1
+              fi
+            fi
+            if [ -n "$snapshot_control" ] && ! rm -- "$snapshot_control"; then
+              echo "::error::Unable to remove the owned snapshot preparation control file."
+              cleanup_failed=1
+            fi
+            if [ "$result" -eq 0 ] && [ "$cleanup_failed" -ne 0 ]; then result=1; fi
+            exit "$result"
+          }
+          trap cleanup_snapshot EXIT
+          trap 'exit 130' INT
+          trap 'exit 143' HUP TERM
+          if [ "$GOOS/$GOARCH" = windows/arm64 ]; then
+            snapshot_control="$(mktemp "$RUNNER_TEMP/porto-native-snapshot.XXXXXX")"
+            node - "$snapshot_control" <<'NODE' &
+          const fs = require('node:fs')
+          const { prepareSnapshot } = require('./scripts/ci-ubuntu-snapshot.cjs')
+          const controller = new AbortController()
+          const stop = () => controller.abort(new Error('CI snapshot preparation was cancelled'))
+          process.once('SIGINT', stop)
+          process.once('SIGTERM', stop)
+          const poll = setInterval(() => {
+            if (fs.readFileSync(process.argv[2], 'utf8').trim() === 'stop') stop()
+          }, 100)
+          poll.unref()
+          prepareSnapshot(process.env.GOARCH, { releases: ['noble'], signal: controller.signal })
+            .then((repository) => repository.close())
+            .catch((error) => {
+              console.error(`Unable to stage the immutable CI Ubuntu snapshot: ${error.message}`)
+              process.exitCode = 1
+            })
+            .finally(() => clearInterval(poll))
+          NODE
+            snapshot_pid=$!
+          fi
           version="$(node -p "require('./ui/package.json').version.split('+')[0]")+ci.${GITHUB_RUN_NUMBER}"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           mkdir -p dist
           bash scripts/package-desktop-installer.sh "$GOOS" "$GOARCH" "$version" dist
+          if [ -n "$snapshot_pid" ]; then
+            snapshot_status=0
+            wait "$snapshot_pid" || snapshot_status=$?
+            snapshot_pid=""
+            if [ "$snapshot_status" -ne 0 ]; then
+              echo "::error::Immutable snapshot preparation failed; refusing installed acceptance."
+              exit "$snapshot_status"
+            fi
+          fi
           if [ "$GOOS" = windows ]; then
             test "$(find dist -maxdepth 1 -name '*.exe' | wc -l | tr -d ' ')" = "1"
             test -f "dist/porto-desktop_${version}_windows_${GOARCH}.exe"

@@ -10,7 +10,7 @@ function commandFailure(result) {
 function macOSDeveloperDirectory(environment = process.env, run = spawnSync) {
   const failures = []
   const execute = (command, args, env) => run(command, args, {
-    encoding: 'utf8', env, timeout: 30000,
+    encoding: 'utf8', env, timeout: command === 'actool' ? 120000 : 30000,
   })
   const candidates = []
   const selected = execute('xcode-select', ['--print-path'], environment)
