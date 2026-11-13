@@ -85,6 +85,8 @@ It never replays `nerdctl stop` after task exit: that would delete the same
 published-port rules twice. The backend-local helper then closes stopped-task
 I/O and stops only loaded, active legacy health units before Stop is acknowledged
 or another native start proceeds. Missing units require no forced cleanup delay.
+A task reaped between I/O loading and status lookup is already exited; its loaded
+I/O is still closed. Live tasks and other status errors remain explicit failures.
 The existing caller context and cleanup command timeout remain authoritative.
 Restart stays delegated before native mutation. Porto-managed endpoints retain
 their native CNI cleanup, and no container, task record or snapshot is deleted.

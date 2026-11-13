@@ -52,12 +52,13 @@ func (stream *stoppedCleanupIO) Close() error {
 
 type stoppedCleanupTask struct {
 	containerd.Task
-	state  containerd.ProcessStatus
-	stream *stoppedCleanupIO
+	state     containerd.ProcessStatus
+	statusErr error
+	stream    *stoppedCleanupIO
 }
 
 func (task *stoppedCleanupTask) Status(context.Context) (containerd.Status, error) {
-	return containerd.Status{Status: task.state}, nil
+	return containerd.Status{Status: task.state}, task.statusErr
 }
 
 func (task *stoppedCleanupTask) IO() cio.IO { return task.stream }
@@ -88,6 +89,7 @@ func TestStoppedTaskCleanupPreservesExitHookOwnership(t *testing.T) {
 		name       string
 		state      containerd.ProcessStatus
 		taskErr    error
+		statusErr  error
 		health     string
 		healthErr  error
 		ioErr      error
@@ -99,6 +101,8 @@ func TestStoppedTaskCleanupPreservesExitHookOwnership(t *testing.T) {
 		{name: "disabled health", state: containerd.Stopped, health: `{"test":["NONE"]}`, wantClosed: true},
 		{name: "running task refused", state: containerd.Running, wantErr: errdefs.ErrFailedPrecondition},
 		{name: "reaped task", taskErr: errdefs.ErrNotFound, health: `{"test":["CMD","/fixture"]}`, wantHealth: true},
+		{name: "reaped after IO load", statusErr: errdefs.ErrNotFound, health: `{"test":["CMD","/fixture"]}`, wantHealth: true, wantClosed: true},
+		{name: "status unavailable remains explicit", state: containerd.Stopped, statusErr: errdefs.ErrUnavailable, wantErr: errdefs.ErrUnavailable},
 		{name: "health failure still closes IO", state: containerd.Stopped, health: `{"test":["CMD","/fixture"]}`, healthErr: healthFailure, wantErr: healthFailure, wantHealth: true, wantClosed: true},
 		{name: "IO failure explicit", state: containerd.Stopped, ioErr: ioFailure, wantErr: ioFailure, wantClosed: true},
 		{name: "caller cancellation retained", state: containerd.Stopped, health: `{"test":["CMD","/fixture"]}`, healthErr: context.Canceled, wantErr: context.Canceled, wantHealth: true, wantClosed: true},
@@ -106,7 +110,7 @@ func TestStoppedTaskCleanupPreservesExitHookOwnership(t *testing.T) {
 		t.Run(scenario.name, func(t *testing.T) {
 			stream := &stoppedCleanupIO{err: scenario.ioErr}
 			container := &stoppedCleanupContainer{
-				task:    &stoppedCleanupTask{state: scenario.state, stream: stream},
+				task:    &stoppedCleanupTask{state: scenario.state, statusErr: scenario.statusErr, stream: stream},
 				taskErr: scenario.taskErr,
 				labels:  map[string]string{"nerdctl/healthcheck": scenario.health},
 			}

@@ -75,10 +75,10 @@ func cleanupStoppedContainer(ctx context.Context, container containerd.Container
 			return errors.New("containerd returned no task for auxiliary cleanup")
 		}
 		state, stateErr := task.Status(ctx)
-		if stateErr != nil {
+		if stateErr != nil && !errdefs.IsNotFound(stateErr) {
 			return fmt.Errorf("verify stopped task before auxiliary cleanup: %w", stateErr)
 		}
-		if state.Status != containerd.Stopped {
+		if stateErr == nil && state.Status != containerd.Stopped {
 			return fmt.Errorf("%w: auxiliary cleanup requires a stopped task", errdefs.ErrFailedPrecondition)
 		}
 		if stream := task.IO(); stream != nil {
