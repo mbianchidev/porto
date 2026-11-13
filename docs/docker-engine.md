@@ -79,6 +79,12 @@ resume no longer opens another cold Lima/containerd connection just to record
 its selected architecture. Architecture validation, namespace/label ownership,
 caller cancellation and operation deadlines remain unchanged.
 
+For nerdctl-owned containers, Porto preserves the complete stop/restart lifecycle,
+including network, healthcheck timer, log/FIFO and port-reserver cleanup before
+the next start. Porto delegates those actions before signaling tasks or rewriting
+their restart policy. Porto-managed containers retain direct containerd operations,
+with the same stop grace, cancellation and operation limits.
+
 ## Live container inventory
 
 The daemon maintains one authoritative, revisioned container snapshot for both

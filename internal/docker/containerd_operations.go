@@ -884,6 +884,9 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		return err
 	}
 	id = resolvedID
+	if err := r.checkStopOwnership(ctx, id); err != nil {
+		return err
+	}
 	unlock := r.networkLocks.lock(id)
 	defer unlock()
 	process, err := r.getTask(ctx, id)
@@ -968,6 +971,28 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	return r.cleanupNetworksResolved(ctx, id)
 }
 
+func (r *grpcContainerRuntime) checkStopOwnership(ctx context.Context, id string) error {
+	if r.containers == nil {
+		return fmt.Errorf("%w: live container metadata is required to verify stop ownership", ErrUnavailable)
+	}
+	response, err := r.containers.Get(
+		withContainerdNamespace(ctx, r.namespace),
+		&containersapi.GetContainerRequest{ID: id},
+	)
+	if err != nil {
+		return containerdOperationError("inspect stop ownership for", id, err)
+	}
+	record := response.GetContainer()
+	if record.GetID() != id {
+		return fmt.Errorf("%w: container identity changed while checking stop ownership for %q", ErrConflict, id)
+	}
+	labels := record.GetLabels()
+	if labels[nerdctlNameLabel] != "" && labels[portoManagedLabel] != portoRuntimeVersion {
+		return fmt.Errorf("%w: nerdctl owns stop cleanup for container %q", ErrUnsupported, id)
+	}
+	return nil
+}
+
 func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id string, stopErr error) error {
 	if err := context.Cause(ctx); err != nil {
 		return err
@@ -1032,6 +1057,9 @@ func (r *grpcContainerRuntime) Restart(ctx context.Context, id string, timeoutSe
 		return err
 	}
 	id = resolvedID
+	if err := r.checkStopOwnership(ctx, id); err != nil {
+		return err
+	}
 	process, err := r.getTask(ctx, id)
 	if err != nil {
 		if status.Code(err) == codes.NotFound {

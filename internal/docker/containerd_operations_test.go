@@ -663,6 +663,73 @@ func TestManagerFallsBackWhenDirectOperationIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestManagerPreservesNerdctlStopCleanup(t *testing.T) {
+	for _, action := range []string{"stop", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			const id = "synthetic-container"
+			labels := map[string]string{
+				nerdctlNameLabel:   "synthetic-app",
+				restartPolicyLabel: "unless-stopped",
+				restartStatusLabel: "running",
+			}
+			tasks := &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: id, Status: tasktypes.Status_RUNNING,
+			}}
+			containers := &fakeContainersClient{container: &containersapi.Container{
+				ID: id, Labels: cloneStringMap(labels),
+				Spec: &anypb.Any{Value: []byte(`{}`)},
+			}}
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "default", tasks: tasks, containers: containers,
+			}
+			cleanupCalled := false
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				if command.Name != "nerdctl" ||
+					!reflect.DeepEqual(command.Args, []string{action, "--time", "2", id}) {
+					return nil, fmt.Errorf("unexpected compatibility lifecycle command: %+v", command)
+				}
+				if len(tasks.killSignals) != 0 || len(containers.updateRequests) != 0 {
+					return nil, errors.New("native lifecycle mutated the container before nerdctl's stop cleanup")
+				}
+				cleanupCalled = true
+				return nil, nil
+			}}
+			manager := New(runner)
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return borrowedContainerOperations{runtimeClient}, nil
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			if err := manager.ContainerActionWithTimeout(ctx, id, action, 2); err != nil {
+				t.Fatal(err)
+			}
+			if !cleanupCalled {
+				t.Fatal("nerdctl-owned stop cleanup was skipped")
+			}
+		})
+	}
+}
+
+func TestContainerLifecycleDoesNotSignalWithoutOwnershipMetadata(t *testing.T) {
+	for _, action := range []string{"stop", "restart"} {
+		t.Run(action, func(t *testing.T) {
+			tasks := &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: "synthetic-container", Status: tasktypes.Status_RUNNING,
+			}}
+			runtimeClient := &grpcContainerRuntime{namespace: "default", tasks: tasks}
+			var err error
+			if action == "stop" {
+				err = runtimeClient.Stop(context.Background(), "synthetic-container", 1)
+			} else {
+				err = runtimeClient.Restart(context.Background(), "synthetic-container", 1)
+			}
+			if !errors.Is(err, ErrUnavailable) || len(tasks.killSignals) != 0 {
+				t.Fatalf("unverified lifecycle ownership allowed native signals: error=%v signals=%v", err, tasks.killSignals)
+			}
+		})
+	}
+}
+
 type lifecycleDeadlineRunner func(context.Context, runtimes.Command) ([]byte, error)
 
 func (run lifecycleDeadlineRunner) Run(ctx context.Context, command runtimes.Command) ([]byte, error) {
@@ -1283,9 +1350,15 @@ func TestGRPCContainerOperationsStopUsesContainerSettings(t *testing.T) {
 		process: &tasktypes.Process{ContainerID: "demo", Status: tasktypes.Status_RUNNING},
 	}
 	runtimeClient := &grpcContainerRuntime{
-		namespace:  "default",
-		tasks:      tasks,
-		containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}},
+		namespace: "default",
+		tasks:     tasks,
+		containers: &fakeContainersClient{container: &containersapi.Container{
+			ID: "demo",
+			Labels: map[string]string{
+				portoManagedLabel: portoRuntimeVersion,
+				nerdctlNameLabel:  "synthetic-app",
+			},
+		}},
 	}
 	if err := runtimeClient.Stop(context.Background(), "demo", 2); err != nil {
 		t.Fatalf("stop container: %v", err)
@@ -1599,8 +1672,9 @@ func TestGRPCContainerOperationsRestartLeavesStoppedTaskForFallback(t *testing.T
 		Status:      tasktypes.Status_STOPPED,
 	}}
 	runtimeClient := &grpcContainerRuntime{
-		namespace: "default",
-		tasks:     tasks,
+		namespace:  "default",
+		tasks:      tasks,
+		containers: &fakeContainersClient{container: &containersapi.Container{ID: "demo"}},
 	}
 	err := runtimeClient.Restart(context.Background(), "demo", 5)
 	if !errors.Is(err, ErrUnsupported) || !errors.Is(err, ErrTaskRecreationRequired) {
