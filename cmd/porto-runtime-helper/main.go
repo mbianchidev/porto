@@ -16,7 +16,7 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimefiles"
 )
 
-const helperVersion = "7"
+const helperVersion = "8"
 
 var errCNICheckUnsupported = errors.New("CNI CHECK is unsupported")
 
@@ -81,6 +81,12 @@ func main() {
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		if err := writeTaskMetrics(ctx, os.Args[2:], os.Stdout); err != nil {
+			fail(err)
+		}
+	case "task-stop-cleanup":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+		defer stop()
+		if err := runTaskStopCleanup(ctx, os.Args[2:]); err != nil {
 			fail(err)
 		}
 	case "dial-stdio":

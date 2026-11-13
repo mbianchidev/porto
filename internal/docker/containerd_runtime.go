@@ -214,7 +214,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		if err == nil {
 			client.address = socket
 			client.commandSource = backend
-			client.stopCleanup = m.containerStopCleanup(backend, namespace)
+			client.stopCleanup = m.containerStopCleanup(client)
 		}
 		return client, err
 	}
@@ -239,7 +239,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		)
 		if err == nil {
 			runtimeClient.address = normalizeContainerdAddress(address)
-			runtimeClient.stopCleanup = m.containerStopCleanup(backend, namespace)
+			runtimeClient.stopCleanup = m.containerStopCleanup(runtimeClient)
 			return runtimeClient, nil
 		}
 		dialErrors = append(dialErrors, fmt.Errorf("%s: %w", address, err))
@@ -431,11 +431,17 @@ func (m *Manager) containerInventoryEnricher(backend commandBackend) func(contex
 	}
 }
 
-func (m *Manager) containerStopCleanup(backend commandBackend, namespace string) func(context.Context, string) error {
-	backend = backend.withOwnershipCheck()
+func (m *Manager) containerStopCleanup(runtimeClient *grpcContainerRuntime) func(context.Context, string) error {
+	if runtimeClient.address == "" || (runtimeClient.lima == "" && runtimeClient.helperPath == "") {
+		return nil
+	}
 	return func(ctx context.Context, id string) error {
-		_, err := m.runBackend(ctx, backend, m.timeout, "clean up stopped Porto container", nil,
-			"--namespace", namespace, "stop", id)
+		command, err := runtimeClient.runtimeHelperCommand("task-stop-cleanup",
+			"--address", runtimeClient.address, "--namespace", runtimeClient.namespace, "--id", id)
+		if err != nil {
+			return err
+		}
+		_, err = m.runBufferedCommand(ctx, m.timeout, "clean up stopped Porto container", command)
 		return err
 	}
 }

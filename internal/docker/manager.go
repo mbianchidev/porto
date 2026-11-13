@@ -2495,16 +2495,6 @@ type commandBackend struct {
 	ownerID      string
 }
 
-func (backend commandBackend) withOwnershipCheck() commandBackend {
-	if backend.limaInstance != "" {
-		backend.prefix = []string{
-			"shell", backend.limaInstance, "--", "sh", "-c",
-			limaOwnedRuntimeCommand, "porto-runtime-command", backend.ownerID, "nerdctl",
-		}
-	}
-	return backend
-}
-
 func (m *Manager) backend(ctx context.Context) (commandBackend, error) {
 	if m.windows != nil {
 		if err := m.windows.installation.Host.Validate(); err != nil {
@@ -2612,7 +2602,11 @@ func (m *Manager) inventoryLimaRuntime() (*grpcContainerRuntime, commandBackend,
 				if err == nil && state.Mode == "lima" && origin.name == "limactl" &&
 					origin.ownerID != "" && origin.ownerID == state.OwnerID &&
 					origin.limaInstance == state.Instance {
-					return runtime, origin.withOwnershipCheck(), true
+					origin.prefix = []string{
+						"shell", state.Instance, "--", "sh", "-c",
+						limaOwnedRuntimeCommand, "porto-runtime-command", state.OwnerID, "nerdctl",
+					}
+					return runtime, origin, true
 				}
 			}
 		}
