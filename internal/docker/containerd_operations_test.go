@@ -710,6 +710,116 @@ func TestManagerPreservesNerdctlStopCleanup(t *testing.T) {
 	}
 }
 
+type cleanupStopTasks struct{ *fakeTasksClient }
+
+func (tasks *cleanupStopTasks) Wait(ctx context.Context, request *tasksapi.WaitRequest, options ...grpc.CallOption) (*tasksapi.WaitResponse, error) {
+	response, err := tasks.fakeTasksClient.Wait(ctx, request, options...)
+	if err == nil {
+		tasks.process.Status = tasktypes.Status_STOPPED
+	}
+	return response, err
+}
+
+func TestCompatibilityStopAwaitsCleanupAfterTaskExit(t *testing.T) {
+	cleanupFailure := errors.New("synthetic compatibility cleanup failed")
+	for _, scenario := range []struct {
+		name   string
+		err    error
+		cancel bool
+	}{
+		{name: "cleanup completed"},
+		{name: "cleanup failed", err: cleanupFailure},
+		{name: "caller canceled", cancel: true},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			const id = "synthetic-container"
+			tasks := &cleanupStopTasks{fakeTasksClient: &fakeTasksClient{process: &tasktypes.Process{
+				ContainerID: id, Status: tasktypes.Status_RUNNING,
+			}}}
+			containers := &fakeContainersClient{container: &containersapi.Container{
+				ID: id, SnapshotKey: "synthetic-retained-rootfs",
+				Labels: map[string]string{nerdctlNameLabel: "synthetic-app"},
+			}}
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			deadline, _ := ctx.Deadline()
+			cleanupStarted := make(chan struct{})
+			releaseCleanup := make(chan error, 1)
+			manager := New(lifecycleDeadlineRunner(func(cleanupContext context.Context, command runtimes.Command) ([]byte, error) {
+				if tasks.process.GetStatus() != tasktypes.Status_STOPPED {
+					return nil, errors.New("compatibility cleanup started before native task shutdown")
+				}
+				if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"--namespace", "default", "stop", id}) {
+					return nil, fmt.Errorf("unexpected stopped-task cleanup: %+v", command)
+				}
+				if got, ok := cleanupContext.Deadline(); !ok || !got.Equal(deadline) {
+					return nil, errors.New("cleanup reset the original caller deadline")
+				}
+				close(cleanupStarted)
+				select {
+				case err := <-releaseCleanup:
+					return nil, err
+				case <-cleanupContext.Done():
+					return nil, context.Cause(cleanupContext)
+				}
+			}))
+			runtimeClient := &grpcContainerRuntime{
+				namespace: "default", tasks: tasks, containers: containers,
+				stopCleanup: manager.containerStopCleanup(commandBackend{name: "nerdctl"}, "default"),
+			}
+			manager.operationsConnector = func(context.Context) (containerOperations, error) {
+				return borrowedContainerOperations{runtimeClient}, nil
+			}
+			completed := make(chan error, 1)
+			done := make(chan struct{})
+			go func() {
+				defer close(done)
+				completed <- manager.ContainerAction(ctx, id, "stop")
+			}()
+			t.Cleanup(func() {
+				cancel()
+				select {
+				case <-done:
+				case <-time.After(time.Second):
+					t.Error("stop did not settle after caller cancellation")
+				}
+			})
+			select {
+			case <-cleanupStarted:
+			case err := <-completed:
+				t.Fatalf("stop did not reach stopped-task cleanup: %v", err)
+			case <-ctx.Done():
+				t.Fatal("stopped-task cleanup never started")
+			}
+			select {
+			case err := <-completed:
+				t.Fatalf("stop acknowledged before compatibility cleanup finished: %v", err)
+			default:
+			}
+			if scenario.cancel {
+				cancel()
+			} else {
+				releaseCleanup <- scenario.err
+			}
+			select {
+			case err := <-completed:
+				want := scenario.err
+				if scenario.cancel {
+					want = context.Canceled
+				}
+				if !errors.Is(err, want) {
+					t.Fatalf("cleanup result = %v, want %v", err, want)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("stop did not return after cleanup settled")
+			}
+			if !reflect.DeepEqual(tasks.killSignals, []uint32{15}) ||
+				containers.container.GetSnapshotKey() != "synthetic-retained-rootfs" {
+				t.Fatalf("cleanup changed native stop signals or retained storage: signals=%v metadata=%+v", tasks.killSignals, containers.container)
+			}
+		})
+	}
+}
+
 func TestContainerLifecycleDoesNotSignalWithoutOwnershipMetadata(t *testing.T) {
 	for _, action := range []string{"stop", "restart"} {
 		t.Run(action, func(t *testing.T) {

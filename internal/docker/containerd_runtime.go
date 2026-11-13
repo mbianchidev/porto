@@ -96,6 +96,7 @@ type grpcContainerRuntime struct {
 	tasks             tasksapi.TasksClient
 	events            eventsapi.EventsClient
 	enrich            func(context.Context) ([]Container, error)
+	stopCleanup       func(context.Context, string) error
 
 	enrichMu          sync.Mutex
 	enrichmentReady   bool
@@ -213,6 +214,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		if err == nil {
 			client.address = socket
 			client.commandSource = backend
+			client.stopCleanup = m.containerStopCleanup(backend, namespace)
 		}
 		return client, err
 	}
@@ -237,6 +239,7 @@ func (m *Manager) connectContainerRuntime(ctx context.Context) (containerRuntime
 		)
 		if err == nil {
 			runtimeClient.address = normalizeContainerdAddress(address)
+			runtimeClient.stopCleanup = m.containerStopCleanup(backend, namespace)
 			return runtimeClient, nil
 		}
 		dialErrors = append(dialErrors, fmt.Errorf("%s: %w", address, err))
@@ -425,6 +428,15 @@ func (m *Manager) containerInventoryEnricher(backend commandBackend) func(contex
 			return nil, err
 		}
 		return decodeNerdctlContainers(output)
+	}
+}
+
+func (m *Manager) containerStopCleanup(backend commandBackend, namespace string) func(context.Context, string) error {
+	backend = backend.withOwnershipCheck()
+	return func(ctx context.Context, id string) error {
+		_, err := m.runBackend(ctx, backend, m.timeout, "clean up stopped Porto container", nil,
+			"--namespace", namespace, "stop", id)
+		return err
 	}
 }
 

@@ -884,8 +884,12 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		return err
 	}
 	id = resolvedID
-	if err := r.checkStopOwnership(ctx, id); err != nil {
+	record, err := r.readStopMetadata(ctx, id)
+	if err != nil {
 		return err
+	}
+	if usesCompatibilityLifecycle(record) && r.stopCleanup == nil {
+		return fmt.Errorf("%w: nerdctl owns stop cleanup for container %q", ErrUnsupported, id)
 	}
 	unlock := r.networkLocks.lock(id)
 	defer unlock()
@@ -897,7 +901,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 			}
 			return errors.Join(
 				r.setRestartDesired(ctx, id, false),
-				r.cleanupNetworksResolved(ctx, id),
+				r.completeContainerStop(ctx, id),
 			)
 		}
 		return containerdOperationError("inspect task for", id, err)
@@ -906,8 +910,10 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 		return err
 	}
 	switch process.GetStatus() {
-	case tasktypes.Status_CREATED, tasktypes.Status_STOPPED:
+	case tasktypes.Status_CREATED:
 		return nil
+	case tasktypes.Status_STOPPED:
+		return r.completeContainerStop(ctx, id)
 	case tasktypes.Status_PAUSED:
 		if _, err := r.tasks.Resume(
 			withContainerdNamespace(ctx, r.namespace),
@@ -937,7 +943,7 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	waitErr = containerdOperationError("wait for stopped", id, waitErr)
 	graceExpired := errors.Is(waitContext.Err(), context.DeadlineExceeded) || !time.Now().Before(graceDeadline)
 	if waitErr == nil {
-		return r.cleanupNetworksResolved(ctx, id)
+		return r.completeContainerStop(ctx, id)
 	}
 	if (errors.Is(waitErr, context.Canceled) || errors.Is(waitErr, context.DeadlineExceeded)) && !graceExpired {
 		stopErr := r.reconcileStoppedTask(ctx, id, waitErr)
@@ -968,27 +974,47 @@ func (r *grpcContainerRuntime) Stop(ctx context.Context, id string, timeoutSecon
 	if err := containerdOperationError("wait for force-stopped", id, err); err != nil {
 		return r.reconcileStoppedTask(ctx, id, err)
 	}
-	return r.cleanupNetworksResolved(ctx, id)
+	return r.completeContainerStop(ctx, id)
 }
 
-func (r *grpcContainerRuntime) checkStopOwnership(ctx context.Context, id string) error {
+func (r *grpcContainerRuntime) readStopMetadata(ctx context.Context, id string) (*containersapi.Container, error) {
 	if r.containers == nil {
-		return fmt.Errorf("%w: live container metadata is required to verify stop ownership", ErrUnavailable)
+		return nil, fmt.Errorf("%w: live container metadata is required to verify stop ownership", ErrUnavailable)
 	}
 	response, err := r.containers.Get(
 		withContainerdNamespace(ctx, r.namespace),
 		&containersapi.GetContainerRequest{ID: id},
 	)
 	if err != nil {
-		return containerdOperationError("inspect stop ownership for", id, err)
+		return nil, containerdOperationError("inspect stop ownership for", id, err)
 	}
 	record := response.GetContainer()
 	if record.GetID() != id {
-		return fmt.Errorf("%w: container identity changed while checking stop ownership for %q", ErrConflict, id)
+		return nil, fmt.Errorf("%w: container identity changed while checking stop ownership for %q", ErrConflict, id)
 	}
+	return record, nil
+}
+
+func usesCompatibilityLifecycle(record *containersapi.Container) bool {
 	labels := record.GetLabels()
-	if labels[nerdctlNameLabel] != "" && labels[portoManagedLabel] != portoRuntimeVersion {
-		return fmt.Errorf("%w: nerdctl owns stop cleanup for container %q", ErrUnsupported, id)
+	return labels[nerdctlNameLabel] != "" && labels[portoManagedLabel] != portoRuntimeVersion
+}
+
+func (r *grpcContainerRuntime) completeContainerStop(ctx context.Context, id string) error {
+	record, err := r.readStopMetadata(ctx, id)
+	if err != nil {
+		return err
+	}
+	if err := r.cleanupNetworkRecord(ctx, record, ""); err != nil {
+		return err
+	}
+	if usesCompatibilityLifecycle(record) {
+		if r.stopCleanup == nil {
+			return fmt.Errorf("container %q stopped, but compatibility cleanup is unavailable", id)
+		}
+		if err := r.stopCleanup(ctx, id); err != nil {
+			return fmt.Errorf("container %q stopped, but compatibility cleanup failed: %w", id, err)
+		}
 	}
 	return nil
 }
@@ -1009,7 +1035,7 @@ func (r *grpcContainerRuntime) reconcileStoppedTask(ctx context.Context, id stri
 	if err == nil && process.GetStatus() != tasktypes.Status_STOPPED {
 		return stopErr
 	}
-	return r.cleanupNetworksResolved(ctx, id)
+	return r.completeContainerStop(ctx, id)
 }
 
 func (r *grpcContainerRuntime) Kill(ctx context.Context, id string, signal uint32) error {
@@ -1057,8 +1083,12 @@ func (r *grpcContainerRuntime) Restart(ctx context.Context, id string, timeoutSe
 		return err
 	}
 	id = resolvedID
-	if err := r.checkStopOwnership(ctx, id); err != nil {
+	record, err := r.readStopMetadata(ctx, id)
+	if err != nil {
 		return err
+	}
+	if usesCompatibilityLifecycle(record) {
+		return fmt.Errorf("%w: nerdctl owns restart cleanup for container %q", ErrUnsupported, id)
 	}
 	process, err := r.getTask(ctx, id)
 	if err != nil {
