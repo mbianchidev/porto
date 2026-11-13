@@ -136,6 +136,11 @@ then serves these immutable inputs without upstream network access during
 boot/configuration; the guest still authenticates archives with its Ubuntu
 keyring and resolves/installs packages through real APT. See
 [CI documentation](ci-cd.md) for the bootstrap details.
+On Windows ARM64, preparation overlaps the independent native installer build.
+The owned preparation worker must finish successfully before installed acceptance
+starts; a failed build cancels and joins that worker. Acceptance revalidates the
+same immutable cache normally. Both clean-install and post-update passes, their
+assertions, and all existing command and job deadlines remain unchanged.
 Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
 Intel macOS TCG additionally uses Lima's upstream `no_timer_check` CI workaround
