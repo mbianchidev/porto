@@ -173,6 +173,14 @@ porto runtime status
 
 See [local runtimes](docs/runtimes.md) for container, Kubernetes, VM, and provider-install commands, and [runtime data management](docs/data-management.md) for storage, backups, migration, and native file access.
 
+## Use Porto from coding agents
+
+The [Porto agent skill](.github/skills/porto/SKILL.md) teaches coding agents to install Porto, check the daemon, and drive projects, containers, clusters and VMs through the `porto` CLI. Agents working in this repository discover it automatically. For other projects, copy `.github/skills/porto/` into the agent's skills directory, or paste this prompt:
+
+```text
+Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. Install Porto if `porto version` fails, make sure its daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
+```
+
 ## Configuration and local state
 
 Set environment variables in the environment that launches Porto. Keep the same user and `PORTO_HOME` for the desktop, daemon, and CLI.

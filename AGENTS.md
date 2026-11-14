@@ -1,3 +1,18 @@
+# Using the Porto CLI
+
+Use the [Porto agent skill](.github/skills/porto/SKILL.md) whenever a task needs
+Porto installed or asks to run projects, containers, Compose stacks, Kubernetes
+clusters or VMs through `porto`. Check `porto version` before installing, and ask
+before destructive or global changes. Users can hand the same workflow to an
+agent in another project with this prompt:
+
+```text
+Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. Install Porto if `porto version` fails, make sure its daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
+```
+
+Keep the skill in sync with `porto help` (`cmd/porto/main.go`) and the docs when
+CLI commands, flags, installer variables or safety behavior change.
+
 # macOS startup regression coverage
 
 Electron 44.9.3 passes the unguarded, injected power-registration failure that
