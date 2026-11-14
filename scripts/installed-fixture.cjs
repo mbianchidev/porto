@@ -584,6 +584,12 @@ function failureDiagnostic(error) {
       return 'An untrusted executable or script was refused. Use the verified workspace package or documented OS-installed prerequisite tools, not an inherited PATH override.'
     case 'PORTO_PROCESS_INSPECTION_UNAVAILABLE':
       return 'Process identity inspection is unavailable. Check runner permissions and native process-inspection support; never treat an unverified owned process as stopped.'
+    case 'PORTO_EXISTING_LISTENER':
+      return 'A fixed Porto port or Docker socket already has a listener. Use a fresh disposable CI runner; never reuse or stop another Porto instance.'
+    case 'PORTO_LISTENER_UNVERIFIED':
+      return 'Could not prove the fixed Porto ports and Docker socket are unused. Check runner IPv4 and IPv6 loopback networking, then retry on a fresh disposable CI runner.'
+    case 'EEXIST':
+      return 'An acceptance fixture path already exists. Use a new fixture directory in a fresh disposable checkout; never reuse earlier fixture state.'
     case 'ENOENT':
       return 'A required installed file or executable is missing. Verify the complete package and documented runner prerequisites, then rerun the clean fixture.'
     case 'EACCES':
@@ -598,21 +604,26 @@ function failureDiagnostic(error) {
   }
 }
 
-async function available(address) {
+async function available(address, { connect = net.connect } = {}) {
+  const unverified = (cause) => Object.assign(
+    new Error(`Cannot establish that ${JSON.stringify(address)} is unused`, cause ? { cause } : undefined),
+    { code: 'PORTO_LISTENER_UNVERIFIED' })
   await new Promise((resolve, reject) => {
-    const socket = net.connect(address)
+    const socket = connect(address)
     socket.setTimeout(1500)
     socket.once('connect', () => {
       socket.destroy()
-      reject(new Error(`Refusing existing listener ${JSON.stringify(address)}; never reuse or stop another Porto instance`))
+      reject(Object.assign(
+        new Error(`Refusing existing listener ${JSON.stringify(address)}; never reuse or stop another Porto instance`),
+        { code: 'PORTO_EXISTING_LISTENER' }))
     })
     socket.once('timeout', () => {
       socket.destroy()
-      reject(new Error(`Cannot establish that ${JSON.stringify(address)} is unused`))
+      reject(unverified())
     })
     socket.once('error', (error) => {
       if (['ECONNREFUSED', 'ENOENT'].includes(error.code)) resolve()
-      else reject(error)
+      else reject(unverified(error))
     })
   })
 }

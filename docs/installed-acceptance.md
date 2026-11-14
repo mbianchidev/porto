@@ -216,7 +216,9 @@ journals. The diagnostic has its own three-minute cap so it can observe a
 repair or restart the guest. Host CPU count and available memory are reported
 separately from guest pressure. No provisioning or acceptance deadline changes.
 Fixed stage labels identify the failing operation, and each original failure
-category is reported before cleanup errors are combined. Raw exception
+category is reported before cleanup errors are combined. Setup failures name
+an occupied fixed port or Docker socket, an unprovable unused port (including
+unexpected IPv4/IPv6 loopback errors), or a reused fixture path. Raw exception
 messages, arguments and environment values are not printed.
 Renderer-origin container start requests have a bounded three-minute debugger
 envelope for metadata/architecture preflight, the existing one-minute start
