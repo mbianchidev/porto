@@ -148,7 +148,7 @@ async function configureLima(fixture, env) {
       networkDiagnostics: intel,
     }).slice('.provision += '.length))
     if (intel) {
-      console.warn('::warning::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
+      console.log('::notice::Intel macOS TCG uses Lima\'s CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged.')
     }
     const availableCPUs = os.availableParallelism()
     const cpus = tcgGuestCPUs(arch, availableCPUs)

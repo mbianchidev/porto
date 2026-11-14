@@ -7,6 +7,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 - [Installation](installation.md) — install a release, build from source, or configure a custom dashboard path
 - [Quickstart](../README.md#quickstart) — discover projects and start the daemon
 - [Daily use](daily-use.md) — keep Porto available at login or boot on a development machine or home system
+- [Porto agent skill](../.github/skills/porto/SKILL.md): let coding agents install Porto and drive its CLI ([copiable prompt](../README.md#use-porto-from-coding-agents))
 
 ## Use Porto
 

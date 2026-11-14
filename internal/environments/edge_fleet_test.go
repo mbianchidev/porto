@@ -312,10 +312,22 @@ func TestFleetCancellationDoesNotQueueLaterTargets(t *testing.T) {
 	if err := ops.Cancel(run.Operation); err != nil {
 		t.Fatal(err)
 	}
-	eventually(t, func() bool {
-		value, err := fleet.Get(run.ID)
-		return err == nil && value.Results[0].Status == "canceled"
-	})
+	waitCtx, cancelWait := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelWait()
+	operation, err := ops.Wait(waitCtx, run.Operation)
+	if err != nil {
+		t.Fatalf("canceled fleet operation did not finish: %v", err)
+	}
+	if operation.Status != "partial" {
+		t.Fatalf("canceled fleet operation status = %q (%s), want partial", operation.Status, operation.Error)
+	}
+	value, err := fleet.Get(run.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result := value.Results[0]; result.Status != "canceled" {
+		t.Fatalf("canceled fleet target status = %q (%s), want canceled", result.Status, result.Error)
+	}
 }
 
 func TestTLSMismatchMissingAuthorizationAndUnsupportedDockerVersions(t *testing.T) {

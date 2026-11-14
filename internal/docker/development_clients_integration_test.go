@@ -160,7 +160,11 @@ func TestDockerDevelopmentClientsIntegration(t *testing.T) {
 		t.Fatalf("Docker SDK build: %v", err)
 	}
 	readClientProgress(t, build.Body)
-	runContext, runCancel := context.WithTimeout(ctx, time.Minute)
+	runBudget := time.Minute
+	if softwareEmulation {
+		runBudget = 5 * time.Minute
+	}
+	runContext, runCancel := context.WithTimeout(ctx, runBudget)
 	runOutput, runErr := dockerCommand(runContext, "run", "--rm", "--network", "none", "--label", "porto.test.suite="+suite,
 		image, "echo", "hello docker")
 	runCancel()

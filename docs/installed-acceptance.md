@@ -10,8 +10,9 @@ The two installed-package matrices collect every platform's result even when
 one sibling fails. A canceled build is not qualification evidence, and
 rebuilding all canceled siblings repeatedly obscures independent defects.
 This diagnostic/release need can consume more minutes in a failing run;
-every row remains required and any failure still fails CI. Other CI matrices
-retain their normal fail-fast policy.
+every row except the flaky, non-blocking Windows ARM64 row remains required
+and any other failure still fails CI. Other CI matrices retain their normal
+fail-fast policy.
 
 ## What the gate exercises
 
@@ -178,7 +179,9 @@ same gate with the `default` backend to qualify the normal first-run driver.
 Do not infer a capability blocker from a fail-fast cancellation. A concrete
 unsupported host, unavailable runner/toolchain, missing prerequisite, failed
 download or failed real workflow is a failed/unqualified row, never a skip,
-host-CLI fallback, `continue-on-error` result or another platform's pass.
+host-CLI fallback or another platform's pass. A failed Windows ARM64 row stays
+unqualified even though its [`continue-on-error`](ci-cd.md#ci-details) keeps
+the workflow green.
 
 Build macOS DMGs/archives only on macOS with the existing documented
 [Icon Composer toolchain](ci-cd.md#ci-details). The acceptance scripts never
@@ -216,7 +219,9 @@ journals. The diagnostic has its own three-minute cap so it can observe a
 repair or restart the guest. Host CPU count and available memory are reported
 separately from guest pressure. No provisioning or acceptance deadline changes.
 Fixed stage labels identify the failing operation, and each original failure
-category is reported before cleanup errors are combined. Raw exception
+category is reported before cleanup errors are combined. Setup failures name
+an occupied fixed port or Docker socket, an unprovable unused port (including
+unexpected IPv4/IPv6 loopback errors), or a reused fixture path. Raw exception
 messages, arguments and environment values are not printed.
 Renderer-origin container start requests have a bounded three-minute debugger
 envelope for metadata/architecture preflight, the existing one-minute start

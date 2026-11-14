@@ -508,7 +508,12 @@ func runOwnedRuntimePolicyAcceptance(t *testing.T, ctx context.Context, manager 
 		if err := server.resourceSaver.Configure(configuration); err != nil {
 			t.Fatal(err)
 		}
-		waitPolicy(t, ctx, func() bool {
+		suspensionTimeout := 90 * time.Second
+		if os.Getenv("PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION") == "1" {
+			// TCG guest shutdown can use most of the manager's five-minute limactl stop bound.
+			suspensionTimeout = 6 * time.Minute
+		}
+		waitPolicyWithin(t, ctx, suspensionTimeout, func() bool {
 			if err := server.resourceSaver.Tick(ctx); err != nil {
 				t.Fatalf("engine idle sample: %v", err)
 			}
@@ -671,7 +676,12 @@ func nativePolicyCPUSeconds(t *testing.T, ctx context.Context, pid int) float64 
 
 func waitPolicy(t *testing.T, ctx context.Context, predicate func() bool, description string) {
 	t.Helper()
-	deadline := time.NewTimer(90 * time.Second)
+	waitPolicyWithin(t, ctx, 90*time.Second, predicate, description)
+}
+
+func waitPolicyWithin(t *testing.T, ctx context.Context, timeout time.Duration, predicate func() bool, description string) {
+	t.Helper()
+	deadline := time.NewTimer(timeout)
 	defer deadline.Stop()
 	ticker := time.NewTicker(200 * time.Millisecond)
 	defer ticker.Stop()

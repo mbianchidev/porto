@@ -225,6 +225,8 @@ Complete Windows guest shutdown/wake uses an explicit 180-second fixture
 policy: QEMU/WHPX boot plus Lima's final rootless provisioning can exceed the
 60-second product default on hosted runners. Native Linux/macOS keep their
 60-second check; software-emulated macOS keeps its existing 600-second policy.
+Its complete-suspension wait is six minutes, covering Porto's five-minute
+`limactl stop` bound for slow TCG guest shutdowns; other fixtures keep 90 seconds.
 The original binary body, real task readiness, shared-wake assertions and
 configured deadline remain mandatory. The product default is unchanged.
 
@@ -465,7 +467,9 @@ Deferring this matrix is an explicit coverage tradeoff, not a fix for those upst
 timing problems. Passing the default gate does **not** establish full
 software-emulated Lima migration, native-resource integration, or engine-restart
 acceptance. Those results require a separate successful run on the selected
-revision and platform. Nothing uses `continue-on-error` to disguise failures.
+revision and platform. Only the flaky `windows-11-arm` cells use
+`continue-on-error` (see [CI details](#ci-details)); their failures are still
+failures, not acceptance.
 
 Once the manual workflow is available on the repository's default branch, run
 one platform/phase against an explicit branch or tag:
@@ -689,6 +693,13 @@ step. Go test invocations stop starting tests after a failure, and Playwright
 stops after its first failed test. Existing cleanup, timeouts, and bounded
 download retries remain in place.
 
+Hosted `windows-11-arm` runners are inherently flaky, so every Windows ARM64
+row (platform networking, native filesystem, native installers and emulated
+runtime) uses job-level `continue-on-error`. A failed Windows ARM64 row neither
+fails the workflow nor cancels fail-fast siblings. It still runs every step and
+is reported as failed, so it never counts as Windows ARM64 qualification
+evidence. All other rows remain blocking.
+
 Installers are retained for three days as
 `desktop-installers-<darwin|windows>-<amd64|arm64>` CI artifacts. Artifact
 compression is disabled because DMGs, EXEs, and desktop tarballs are already
@@ -710,7 +721,9 @@ Hosted macOS and Windows runners use small host-architecture Ubuntu 26.04 QEMU
 guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
 requires software emulation because nested Virtualization.framework support is
 unavailable; matching the host architecture keeps its guest agent/runtime helper
-aligned without cross-architecture x86 emulation. Windows ARM64 hosted runners
+aligned without cross-architecture x86 emulation. The first `docker run` keeps
+a one-minute budget, raised to five minutes only for that software-emulated
+fixture, inside the unchanged 20-minute suite deadline. Windows ARM64 hosted runners
 also use TCG through Lima's QEMU command override because nested WHPX cannot
 provide the required physical address width. This affects only disposable CI
 guests, not packaged runtime defaults or native WinFsp mounting. Windows x64
@@ -859,7 +872,7 @@ with its matching dated-release kernel and initrd also pinned by SHA-256, and
 append only `no_timer_check` to the guest command line. This disables the guest
 kernel's hardware-timer sanity check in those emulated fixtures, not a Porto
 assertion. Both source and destination use the same override. CI emits an
-explicit warning; packaged runtime defaults, non-Intel fixtures and native
+explicit notice; packaged runtime defaults, non-Intel fixtures and native
 hardware acceptance are unchanged. Keep all three dated image/kernel/initrd pins
 aligned when updating this fixture. Raising Lima's outer timeout does not repair an
 emergency-mode boot.
@@ -902,7 +915,7 @@ Every interval checks available, monotonic backend counters; each window must
 report finite, positive busy-workload activity and has a two-minute deadline.
 Linux, Windows, and hardware-accelerated macOS retain the existing CPU ceiling
 with its 5% quantization allowance. When macOS reports `kern.hv_support=0`, CI
-explicitly warns and gates only that physical ceiling for its software-emulated
+emits an explicit notice and gates only that physical ceiling for its software-emulated
 fixture: cgroup nanoseconds can outpace guest `/proc/stat` ticks even across a
 longer window. Linux documents these
 [tick-based CPU-accounting limitations](https://docs.kernel.org/admin-guide/cpu-load.html).

@@ -82,7 +82,11 @@ test('fixture creation refuses an existing HOME or state instead of adopting it'
   const current = fixture(t)
   const sentinel = path.join(current.home, 'keep')
   write(sentinel, 'Unrelated existing fixture')
-  assert.throws(() => prepare(current.directory), /EEXIST/)
+  assert.throws(() => prepare(current.directory), (error) => {
+    assert.equal(error.code, 'EEXIST')
+    assert.match(failureDiagnostic(error), /fixture path already exists/)
+    return true
+  })
   assert.equal(fs.readFileSync(sentinel, 'utf8'), 'Unrelated existing fixture')
 })
 
@@ -448,8 +452,26 @@ test('an existing listener is refused without stopping it or using its backend',
   await new Promise((resolve) => listener.listen(0, '127.0.0.1', resolve))
   t.after(() => new Promise((resolve) => listener.close(resolve)))
   const address = { host: '127.0.0.1', port: listener.address().port }
-  await assert.rejects(available(address), /Refusing existing listener.*never reuse or stop/)
+  await assert.rejects(available(address), (error) => {
+    assert.equal(error.code, 'PORTO_EXISTING_LISTENER')
+    assert.match(error.message, /Refusing existing listener.*never reuse or stop/)
+    return true
+  })
   assert.equal(listener.listening, true)
+})
+
+test('unexpected listener probe errors fail closed with a public category', async () => {
+  const connect = () => {
+    const socket = Object.assign(new EventEmitter(), { setTimeout() {}, destroy() {} })
+    setImmediate(() => socket.emit('error', Object.assign(new Error('synthetic unreachable loopback'), { code: 'ENETUNREACH' })))
+    return socket
+  }
+  await assert.rejects(available({ host: '::1', port: 37623 }, { connect }), (error) => {
+    assert.equal(error.code, 'PORTO_LISTENER_UNVERIFIED')
+    assert.equal(error.cause.code, 'ENETUNREACH')
+    assert.match(failureDiagnostic(error), /prove the fixed Porto ports/)
+    return true
+  })
 })
 
 test('preflight recognizes existing desktops before installers can quit them', () => {
@@ -651,6 +673,7 @@ test('public failure diagnostics use fixed actionable categories without seriali
     'PORTO_COMMAND_TIMEOUT', 'PORTO_COMMAND_OUTPUT_LIMIT', 'PORTO_COMMAND_IO',
     'PORTO_COMMAND_SHELL_FORBIDDEN', 'PORTO_PROCESS_INSPECTION_UNAVAILABLE',
     'PORTO_COMMAND_UNTRUSTED_EXECUTABLE', 'PORTO_COMMAND_FAILED',
+    'PORTO_EXISTING_LISTENER', 'PORTO_LISTENER_UNVERIFIED', 'EEXIST',
     'ENOENT', 'EACCES', 'EPERM', 'ENOSPC', 'ERR_ASSERTION', secret, undefined,
   ]) {
     const error = Object.assign(new Error(`https://user:${secret}@synthetic.invalid/?token=${secret}`), {
