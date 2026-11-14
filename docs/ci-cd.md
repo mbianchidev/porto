@@ -212,6 +212,8 @@ Complete Windows guest shutdown/wake uses an explicit 180-second fixture
 policy: QEMU/WHPX boot plus Lima's final rootless provisioning can exceed the
 60-second product default on hosted runners. Native Linux/macOS keep their
 60-second check; software-emulated macOS keeps its existing 600-second policy.
+Its complete-suspension wait is six minutes, covering Porto's five-minute
+`limactl stop` bound for slow TCG guest shutdowns; other fixtures keep 90 seconds.
 The original binary body, real task readiness, shared-wake assertions and
 configured deadline remain mandatory. The product default is unchanged.
 
