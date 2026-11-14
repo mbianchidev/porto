@@ -855,7 +855,7 @@ with its matching dated-release kernel and initrd also pinned by SHA-256, and
 append only `no_timer_check` to the guest command line. This disables the guest
 kernel's hardware-timer sanity check in those emulated fixtures, not a Porto
 assertion. Both source and destination use the same override. CI emits an
-explicit warning; packaged runtime defaults, non-Intel fixtures and native
+explicit notice; packaged runtime defaults, non-Intel fixtures and native
 hardware acceptance are unchanged. Keep all three dated image/kernel/initrd pins
 aligned when updating this fixture. Raising Lima's outer timeout does not repair an
 emergency-mode boot.
@@ -898,7 +898,7 @@ Every interval checks available, monotonic backend counters; each window must
 report finite, positive busy-workload activity and has a two-minute deadline.
 Linux, Windows, and hardware-accelerated macOS retain the existing CPU ceiling
 with its 5% quantization allowance. When macOS reports `kern.hv_support=0`, CI
-explicitly warns and gates only that physical ceiling for its software-emulated
+emits an explicit notice and gates only that physical ceiling for its software-emulated
 fixture: cgroup nanoseconds can outpace guest `/proc/stat` ticks even across a
 longer window. Linux documents these
 [tick-based CPU-accounting limitations](https://docs.kernel.org/admin-guide/cpu-load.html).
