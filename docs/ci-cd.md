@@ -706,7 +706,9 @@ Hosted macOS and Windows runners use small host-architecture Ubuntu 26.04 QEMU
 guests with no host mounts and a bounded 20-minute startup budget. Hosted macOS
 requires software emulation because nested Virtualization.framework support is
 unavailable; matching the host architecture keeps its guest agent/runtime helper
-aligned without cross-architecture x86 emulation. Windows ARM64 hosted runners
+aligned without cross-architecture x86 emulation. The first `docker run` keeps
+a one-minute budget, raised to five minutes only for that software-emulated
+fixture, inside the unchanged 20-minute suite deadline. Windows ARM64 hosted runners
 also use TCG through Lima's QEMU command override because nested WHPX cannot
 provide the required physical address width. This affects only disposable CI
 guests, not packaged runtime defaults or native WinFsp mounting. Windows x64
