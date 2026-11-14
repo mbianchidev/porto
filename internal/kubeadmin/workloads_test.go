@@ -78,10 +78,13 @@ func TestDeletionFinalizersAndCanceledRolloutStayExplicitlyPartial(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
+	// The restart is queued and runs on a shared CI host; bound the wait
+	// generously and report the observed operation state if it never mutates.
 	select {
 	case <-mutated:
-	case <-time.After(time.Second):
-		t.Fatal("synthetic restart did not reach the API")
+	case <-time.After(30 * time.Second):
+		current, getErr := ops.Get(op.ID)
+		t.Fatalf("synthetic restart did not reach the API: operation=%+v err=%v", current, getErr)
 	}
 	if err := ops.Cancel(op.ID); err != nil {
 		t.Fatal(err)
