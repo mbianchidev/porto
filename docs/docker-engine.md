@@ -100,6 +100,12 @@ and refreshes after container, task, exec, image, namespace, snapshot, and
 sandbox events. Bursts are coalesced for 100 ms, while a 30-second
 reconciliation repairs missed or reordered events.
 
+A refresh deadline marks the snapshot unavailable and preserves its last-known
+containers as stale, without closing the live event connection used by in-flight
+mutations. The next lifecycle event or scheduled reconciliation must restore a
+fresh snapshot before new operations can borrow that connection again. The
+20-second refresh budget is unchanged; event-stream failures still reconnect.
+
 The dashboard receives snapshots from
 `/api/docker/containers/events` over server-sent events. It reconnects with
 bounded exponential backoff and falls back to a 30-second refresh only while

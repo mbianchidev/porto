@@ -386,6 +386,72 @@ func TestContainerInventoryKeepsDistinctEventsWithSameTimestamp(t *testing.T) {
 	}
 }
 
+func TestContainerInventoryRefreshTimeoutPreservesRuntimeAndRecoversFromEvents(t *testing.T) {
+	client := newFakeContainerRuntime(
+		[]Container{{ID: "one", Name: "api", State: "running"}},
+		nil,
+		[]Container{{ID: "one", Name: "api", State: "running"}, {ID: "two", Name: "worker", State: "running"}},
+	)
+	client.snapshotErrors = []error{nil, context.DeadlineExceeded}
+	inventory := newContainerInventory(
+		func(context.Context) (containerRuntime, error) { return client, nil },
+		inventoryOptions{
+			debounce:          time.Millisecond,
+			reconcileInterval: time.Hour,
+			connectBackoff:    time.Hour,
+			maxBackoff:        time.Hour,
+			operationTimeout:  time.Second,
+		},
+	)
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		inventory.run(ctx)
+	}()
+	t.Cleanup(func() {
+		cancel()
+		<-done
+	})
+	initial := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available
+	})
+	inventory.triggerRefresh()
+	stale := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Revision > initial.Revision && !snapshot.Available && snapshot.Stale
+	})
+	if !strings.Contains(stale.Message, context.DeadlineExceeded.Error()) ||
+		len(stale.Containers) != 1 || stale.Containers[0].ID != "one" {
+		t.Fatalf("refresh timeout lost its diagnostic or last-known containers: %+v", stale)
+	}
+	if inventory.activeRuntime() != nil {
+		t.Fatal("new operations must not borrow a runtime with unavailable inventory")
+	}
+	client.mu.Lock()
+	closed := client.closed
+	client.mu.Unlock()
+	if closed {
+		t.Fatal("a timed-out inventory refresh closed the runtime used by in-flight operations")
+	}
+	client.events <- ContainerLifecycleEvent{
+		Topic: "/containers/create", Type: "container-create", ContainerID: "two",
+	}
+	recovered := waitForInventorySnapshot(t, inventory, func(snapshot ContainerSnapshot) bool {
+		return snapshot.Available && len(snapshot.Containers) == 2
+	})
+	if recovered.Stale || recovered.ConnectedAt != initial.ConnectedAt || inventory.activeRuntime() != client {
+		t.Fatalf("lifecycle event did not recover the existing connection: %+v", recovered)
+	}
+	cancel()
+	<-done
+	client.mu.Lock()
+	closed = client.closed
+	client.mu.Unlock()
+	if !closed {
+		t.Fatal("inventory shutdown did not close its retained runtime")
+	}
+}
+
 func TestContainerInventoryPreservesStaleSnapshotAcrossReconnect(t *testing.T) {
 	first := newFakeContainerRuntime([]Container{{ID: "one", Name: "api", State: "running"}})
 	second := newFakeContainerRuntime([]Container{{ID: "one", Name: "api", State: "exited"}})

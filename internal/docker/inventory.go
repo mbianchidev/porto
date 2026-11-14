@@ -279,6 +279,12 @@ func (i *containerInventory) runConnected(ctx context.Context, runtimeClient con
 			debounceChannel = nil
 			containers, err := i.readSnapshot(ctx, runtimeClient)
 			if err != nil {
+				if errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {
+					// A refresh deadline must not close the transport used by in-flight mutations.
+					i.markUnavailable(err)
+					log.Printf("container inventory refresh: %v", err)
+					continue
+				}
 				return err
 			}
 			i.publishContainers(runtimeClient.Namespace(), runtimeClient.Backend(), connectedAt, containers)
