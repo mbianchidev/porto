@@ -84,6 +84,19 @@ on Windows; synthetic setup fixtures retain their 15-second deadline. It still
 requires the installed development dependency and an HTTP-ready application.
 Setup timeouts include stored command output instead of only a generic failure.
 
+Docker CLI parity tests allow one minute for the initial context creation on
+Windows, separating cold CLI/configuration bootstrap from the 30-second budget
+for each subsequent command. They still execute every command through the real
+`porto` context and native named pipe; no command is retried or skipped.
+
+Lima installation verifies containerd with `nerdctl info --format
+'{{.ServerVersion}}'` within the existing 30-second deadline, taking the version
+only from stdout and rejecting a missing version. Unlike `nerdctl version`,
+this daemon probe does not launch separate `buildctl --version` and
+`runc --version` subprocesses, whose cold starts compete with boot work under
+TCG. The independent BuildKit connection check remains required before saving
+engine state.
+
 The native platform-networking job runs on Ubuntu, Windows x64 and Windows
 ARM64. Disposable hosts install the real loopback HTTPS integration, check
 occupied IPv4/IPv6 port rollback, import two synthetic CAs, and verify a dotted

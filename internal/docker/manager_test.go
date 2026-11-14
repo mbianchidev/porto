@@ -192,6 +192,8 @@ func (r *engineInstallRunner) Run(_ context.Context, command runtimes.Command) (
 			return []byte("configure guest QEMU/binfmt\n"), r.binfmtErr
 		case joined == "shell --workdir=/ porto-engine -- nerdctl version":
 			return []byte("nerdctl version 2.1.0\n"), nil
+		case joined == "shell --workdir=/ porto-engine -- nerdctl info --format {{.ServerVersion}}":
+			return []byte("v2.2.0-synthetic\n"), nil
 		case joined == "delete --force porto-engine":
 			r.removed = true
 			return nil, nil

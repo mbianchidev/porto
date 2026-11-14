@@ -198,8 +198,11 @@ Process ownership uses kernel executable and creation metadata, not mutable
 command-line titles. Linux reads the owned PID's procfs records; macOS builds
 an invocation-private libproc inspector with the same native Xcode/clang
 toolchain required for packaging. That inspector is test-only and is removed
-on exit, not installed or shipped. Windows retains native executable-path and
-creation-time checks. Unknown or changed ownership never permits signaling.
+on exit, not installed or shipped. Its fallback BSD-info lookup explicitly
+includes zombies: an unreaped process still answers `kill(pid, 0)` but cannot
+execute, so only a matching kernel zombie record or `ESRCH` establishes exit.
+Windows retains native executable-path and creation-time checks. Unknown or
+changed ownership never permits signaling.
 Failed startup retains bounded, sanitized Lima/QEMU diagnostics under the
 synthetic fixture's `diagnostics` directory, even if failed-guest cleanup
 removes the original log paths. The same bounded desktop, daemon and guest

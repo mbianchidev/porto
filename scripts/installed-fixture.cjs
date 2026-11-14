@@ -240,7 +240,8 @@ static int missing(pid_t pid) {
 
 static int unavailable(pid_t pid) {
   struct proc_bsdinfo state = {0};
-  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 0, &state, sizeof(state)) == (int)sizeof(state) &&
+  // A nonzero BSD-info argument includes zombies that kill(pid, 0) still finds.
+  if (proc_pidinfo(pid, PROC_PIDTBSDINFO, 1, &state, sizeof(state)) == (int)sizeof(state) &&
       state.pbi_pid == (uint32_t)pid && state.pbi_status == SZOMB) return missing(pid);
   if (kill(pid, 0) == -1 && errno == ESRCH) return missing(pid);
   fputs("Native process inspection unavailable.\\n", stderr);

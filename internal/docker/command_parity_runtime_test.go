@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -177,9 +178,9 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 	manager.operationsConnector = func(context.Context) (containerOperations, error) { return operations, nil }
 	endpoint := startDockerTestAPI(t, manager)
 	environment := append(os.Environ(), "DOCKER_CONFIG="+t.TempDir(), "DOCKER_CONTEXT=", "DOCKER_HOST=", "DOCKER_TLS_VERIFY=", "DOCKER_CERT_PATH=")
-	run := func(args ...string) {
+	run := func(timeout time.Duration, args ...string) {
 		t.Helper()
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
 		command := exec.CommandContext(ctx, "docker", args...)
 		command.Env = environment
@@ -187,7 +188,11 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 			t.Fatalf("docker %s: %v: %s", strings.Join(args, " "), errors.Join(err, ctx.Err()), output)
 		}
 	}
-	run("context", "create", "porto", "--docker", "host="+endpoint)
+	contextTimeout := 30 * time.Second
+	if runtime.GOOS == "windows" {
+		contextTimeout = time.Minute
+	}
+	run(contextTimeout, "context", "create", "porto", "--docker", "host="+endpoint)
 	for _, args := range [][]string{
 		{"top", "demo"}, {"diff", "demo"}, {"history", "synthetic:latest"},
 		{"ps", "--all", "--size", "--last", "1"}, {"images", "--all"}, {"rmi", "--no-prune", "synthetic:latest"},
@@ -195,6 +200,6 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 		{"update", "--cpu-shares", "512", "--pids-limit", "64", "--memory", "256m", "--restart", "always", "demo"},
 		{"create", "--cpus", "1.5", "--memory", "256m", "--pids-limit", "64", "--read-only", "--cap-add", "NET_ADMIN", "synthetic:latest", "true"},
 	} {
-		run(append([]string{"--context", "porto"}, args...)...)
+		run(30*time.Second, append([]string{"--context", "porto"}, args...)...)
 	}
 }

@@ -500,7 +500,11 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 		if err := reportEngineInstall(ctx, "verifying", "containerd", "Verifying the containerd backend."); err != nil {
 			return Status{}, err
 		}
-		versionOutput, err = m.runBackend(ctx, limaBackend, 30*time.Second, "verify Porto container runtime", nil, "version")
+		versionOutput, err = m.runBackendStdout(ctx, limaBackend, 30*time.Second, "verify Porto container runtime",
+			"info", "--format", "{{.ServerVersion}}")
+		if err == nil && strings.TrimSpace(string(versionOutput)) == "" {
+			err = errors.New("Porto container runtime omitted its server version")
+		}
 	}
 	if err != nil {
 		return Status{}, err
