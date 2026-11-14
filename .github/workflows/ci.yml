@@ -98,6 +98,8 @@ jobs:
     name: Native HTTPS and console (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 15
+    # Hosted Windows ARM runners are inherently flaky; see docs/ci-cd.md.
+    continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
     strategy:
       fail-fast: false
       matrix:
@@ -471,6 +473,8 @@ jobs:
     name: Native filesystem (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    # Hosted Windows ARM runners are inherently flaky; see docs/ci-cd.md.
+    continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
     strategy:
       fail-fast: true
       matrix:
@@ -619,6 +623,8 @@ jobs:
     name: Native installers (${{ matrix.goos }}/${{ matrix.arch }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 120
+    # Hosted Windows ARM runners are inherently flaky; see docs/ci-cd.md.
+    continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
     env:
       CGO_ENABLED: '0'
     strategy:

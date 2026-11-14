@@ -36,6 +36,8 @@ jobs:
     name: Emulated runtime (${{ matrix.phase }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 85
+    # Hosted Windows ARM runners are inherently flaky; see docs/ci-cd.md.
+    continue-on-error: ${{ matrix.os == 'windows-11-arm' }}
     strategy:
       fail-fast: true
       matrix:

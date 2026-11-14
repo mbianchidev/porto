@@ -452,7 +452,9 @@ Deferring this matrix is an explicit coverage tradeoff, not a fix for those upst
 timing problems. Passing the default gate does **not** establish full
 software-emulated Lima migration, native-resource integration, or engine-restart
 acceptance. Those results require a separate successful run on the selected
-revision and platform. Nothing uses `continue-on-error` to disguise failures.
+revision and platform. Only the flaky `windows-11-arm` cells use
+`continue-on-error` (see [CI details](#ci-details)); their failures are still
+failures, not acceptance.
 
 Once the manual workflow is available on the repository's default branch, run
 one platform/phase against an explicit branch or tag:
@@ -675,6 +677,13 @@ Successful runs still execute every platform, architecture, and validation
 step. Go test invocations stop starting tests after a failure, and Playwright
 stops after its first failed test. Existing cleanup, timeouts, and bounded
 download retries remain in place.
+
+Hosted `windows-11-arm` runners are inherently flaky, so every Windows ARM64
+row (platform networking, native filesystem, native installers and emulated
+runtime) uses job-level `continue-on-error`. A failed Windows ARM64 row neither
+fails the workflow nor cancels fail-fast siblings. It still runs every step and
+is reported as failed, so it never counts as Windows ARM64 qualification
+evidence. All other rows remain blocking.
 
 Installers are retained for three days as
 `desktop-installers-<darwin|windows>-<amd64|arm64>` CI artifacts. Artifact
