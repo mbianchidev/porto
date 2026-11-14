@@ -875,6 +875,58 @@ test('native identity works under synthetic HOME and distinguishes an exited or 
   assert.notEqual(await identity(child.pid, env), original)
 })
 
+if (process.platform === 'darwin') {
+  test('macOS inspection recognizes an unreaped zombie without assuming a live PID has stopped', async (t) => {
+    const current = fixture(t)
+    const env = environment(current)
+    const source = path.join(current.home, 'zombie.c')
+    const executable = path.join(current.home, 'zombie')
+    write(source, `
+#include <signal.h>
+#include <stdio.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
+int main(void) {
+  pid_t child = fork();
+  if (child == -1) { perror("fork"); return 2; }
+  if (child == 0) _exit(0);
+  siginfo_t info = {0};
+  if (waitid(P_PID, child, &info, WEXITED | WNOWAIT) == -1) { perror("waitid"); return 2; }
+  printf("%d\\n", child);
+  fflush(stdout);
+  char input;
+  if (read(STDIN_FILENO, &input, 1) != 1) return 2;
+  if (waitpid(child, NULL, 0) != child) { perror("waitpid"); return 2; }
+  return 0;
+}
+`)
+    await run('clang', ['-std=c11', '-Wall', '-Wextra', '-Werror', source, '-o', executable], { env })
+    const parent = spawn(executable, [], { env, cwd: current.home, stdio: ['pipe', 'pipe', 'pipe'] })
+    t.after(() => stopSynthetic(parent))
+    const exited = once(parent, 'exit')
+    let output = ''
+    let diagnostics = ''
+    parent.stdout.on('data', (data) => { output += data })
+    parent.stderr.on('data', (data) => { diagnostics += data })
+    await once(parent, 'spawn')
+    await waitFor(() => {
+      assert.equal(parent.exitCode, null, `Synthetic zombie parent exited: ${diagnostics}`)
+      assert.equal(parent.signalCode, null, `Synthetic zombie parent was signaled: ${diagnostics}`)
+      return output.includes('\n')
+    }, 'synthetic unreaped zombie readiness', 30000)
+    assert.match(output.trim(), /^[1-9][0-9]*$/)
+    const pid = Number(output.trim())
+    assert.doesNotThrow(() => process.kill(pid, 0), 'The zombie must still have a kernel PID')
+    assert.ok(await identity(parent.pid, env), 'The live parent must retain verifiable ownership')
+    assert.equal(await identity(pid, env), '', 'An unreaped zombie cannot execute or receive teardown signals')
+    parent.stdin.end('reap')
+    await waitFor(() => parent.exitCode !== null, 'synthetic parent must reap its child and exit', 30000)
+    assert.deepEqual(await exited, [0, null])
+    assert.equal(await identity(pid, env), '')
+  })
+}
+
 test('Linux kernel identity ignores mutable comm and verifies executable/start generation', () => {
   const stat = (start, name = 'node', state = 'S') => {
     const fields = Array(20).fill('0')

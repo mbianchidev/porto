@@ -421,6 +421,52 @@ func TestEngineInstallProgressBackendMustPassFinalVerification(t *testing.T) {
 	}
 }
 
+func TestEngineInstallVerifiesContainerdWithoutComponentVersionSubprocesses(t *testing.T) {
+	probeFailure := errors.New("synthetic containerd unavailable")
+	for _, scenario := range []struct {
+		name    string
+		output  string
+		err     error
+		message string
+	}{
+		{name: "ready", output: "v2.2.0-synthetic\n"},
+		{name: "unavailable", err: probeFailure, message: probeFailure.Error()},
+		{name: "missing version", output: "\n", message: "omitted its server version"},
+	} {
+		t.Run(scenario.name, func(t *testing.T) {
+			manager, runner := progressEngineFixture(t, false)
+			runner.run = func(ctx context.Context, command runtimes.Command) ([]byte, error) {
+				switch strings.Join(command.Args, " ") {
+				case "shell --workdir=/ porto-engine -- nerdctl version":
+					return nil, errors.New("synthetic component-version subprocess is unavailable")
+				case "shell --workdir=/ porto-engine -- nerdctl info --format {{.ServerVersion}}":
+					deadline, ok := ctx.Deadline()
+					if !ok || time.Until(deadline) <= 0 || time.Until(deadline) > 30*time.Second {
+						t.Fatal("containerd verification lost its bounded deadline")
+					}
+					return []byte(scenario.output), scenario.err
+				default:
+					return runner.base.Run(ctx, command)
+				}
+			}
+			status, err := manager.InstallEngineWithProgress(context.Background(), func(EngineInstallProgress) error { return nil })
+			if scenario.message == "" {
+				if err != nil || !status.Available || status.ServerVersion != strings.TrimSpace(scenario.output) {
+					t.Fatalf("containerd readiness = %+v, %v", status, err)
+				}
+				if _, err := manager.readEngineState(); err != nil {
+					t.Fatalf("verified engine state was not saved: %v", err)
+				}
+				return
+			}
+			if err == nil || status.Available || !strings.Contains(EngineInstallationCause(err).Error(), scenario.message) {
+				t.Fatalf("unverified containerd = %+v, %v", status, err)
+			}
+			assertProgressEnginePreserved(t, manager, runner, false)
+		})
+	}
+}
+
 func TestEngineInstallStartupFailureStopsLegacyAndStreamingProvisioning(t *testing.T) {
 	for _, streamed := range []bool{false, true} {
 		t.Run(map[bool]string{false: "legacy", true: "stream"}[streamed], func(t *testing.T) {
