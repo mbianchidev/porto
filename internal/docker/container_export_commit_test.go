@@ -44,6 +44,9 @@ func TestDockerAPICommitsContainerImage(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		joined := strings.Join(command.Args, " ")
+		if joined == "images --digests --no-trunc --format {{json .}}" {
+			return []byte(`{"ID":"sha256:committed-target","Repository":"example/app","Tag":"v1","Name":"docker.io/example/app:v1"}` + "\n"), nil
+		}
 		for _, expected := range []string{
 			"commit", "--author Porto", "--message snapshot", "--pause=false",
 			"--change CMD [\"sleep\",\"30\"]", "demo", "example/app:v1",
@@ -52,7 +55,7 @@ func TestDockerAPICommitsContainerImage(t *testing.T) {
 				return nil, errors.New("missing commit arguments: " + joined)
 			}
 		}
-		return []byte("sha256:committed\n"), nil
+		return []byte("sha256:committed-config\n"), nil
 	}
 	response := httptest.NewRecorder()
 	request := httptest.NewRequest(
@@ -63,7 +66,7 @@ func TestDockerAPICommitsContainerImage(t *testing.T) {
 
 	NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, request)
 
-	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), "sha256:committed") {
+	if response.Code != http.StatusCreated || !strings.Contains(response.Body.String(), `"Id":"sha256:committed-target"`) {
 		t.Fatalf("commit = %d: %s", response.Code, response.Body.String())
 	}
 }
@@ -77,6 +80,9 @@ func TestDockerCLIContainerExportAndCommitCompatibility(t *testing.T) {
 	}
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
+		if strings.Join(command.Args, " ") == "images --digests --no-trunc --format {{json .}}" {
+			return []byte(`{"ID":"sha256:committed-target","Repository":"example/app","Tag":"v1","Name":"docker.io/example/app:v1"}` + "\n"), nil
+		}
 		if len(command.Args) == 0 || command.Args[0] != "commit" {
 			return nil, errors.New("unexpected commit command: " + strings.Join(command.Args, " "))
 		}
