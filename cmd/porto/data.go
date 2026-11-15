@@ -94,16 +94,12 @@ func dockerDataCmd(args []string) error {
 		if len(args) == 1 {
 			return runtimeGET("/api/data/operations")
 		}
-		if len(args) == 3 && args[1] == "cancel" {
+		if len(args) == 3 && (args[1] == "cancel" || args[1] == "watch") {
 			id, err := strconv.ParseInt(args[2], 10, 64)
 			if err != nil || id < 1 {
 				return errors.New("invalid operation ID")
 			}
-			if len(args) == 3 && args[1] == "watch" {
-				id, err := strconv.ParseInt(args[2], 10, 64)
-				if err != nil || id < 1 {
-					return errors.New("invalid operation ID")
-				}
+			if args[1] == "watch" {
 				return watchDataOperation(id)
 			}
 			return api("DELETE", "/api/data/operations/"+strconv.FormatInt(id, 10), nil, os.Stdout)

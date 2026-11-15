@@ -84,6 +84,23 @@ func TestStorageCLIConfirmsOnlyFrozenPreviewSelections(t *testing.T) {
 	}
 }
 
+func TestOperationsCLIWatchesWithoutCancelling(t *testing.T) {
+	watched := false
+	mockDataAPI(t, func(request *http.Request) (any, error) {
+		if request.Method != http.MethodGet || request.URL.Path != "/api/data/operations/7" {
+			return nil, fmt.Errorf("watch sent %s %s", request.Method, request.URL.Path)
+		}
+		watched = true
+		return dataops.Operation{ID: 7, Status: "succeeded", Phase: "succeeded"}, nil
+	})
+	if err := dockerDataCmd([]string{"operations", "watch", "7"}); err != nil {
+		t.Fatal(err)
+	}
+	if !watched {
+		t.Fatal("operation was not watched")
+	}
+}
+
 func TestStorageCLIResolvesExactObjectSelectors(t *testing.T) {
 	mockDataAPI(t, func(request *http.Request) (any, error) {
 		if request.URL.Path == "/api/docker/storage" {
