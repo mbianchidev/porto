@@ -212,9 +212,9 @@ if [ "$backend" = lima ] || [ "$suite" = data ]; then
   apt_ready="$temporary/apt-ready.json"
   node scripts/ci-ubuntu-snapshot.cjs "$goarch" "$apt_ready" resolute > "$temporary/apt-bootstrap.log" 2>&1 &
   apt_repository_pid=$!
-  for attempt in {1..900}; do
+  for attempt in {1..1800}; do
     if [ -f "$apt_ready" ]; then break; fi
-    if ! kill -0 "$apt_repository_pid" 2>/dev/null || [ "$attempt" = 900 ]; then
+    if ! kill -0 "$apt_repository_pid" 2>/dev/null || [ "$attempt" = 1800 ]; then
       cat "$temporary/apt-bootstrap.log" >&2
       echo "Unable to prepare signed CI dependencies before starting the guest." >&2
       exit 1

@@ -45,3 +45,4 @@ runs:
         key: porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ steps.locations.outputs.snapshot }}
         restore-keys: |
           porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-
+          porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-

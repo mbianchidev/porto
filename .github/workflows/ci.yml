@@ -360,7 +360,7 @@ jobs:
   development-clients:
     name: Development clients (${{ matrix.backend }}, ${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 75
     strategy:
       fail-fast: true
       matrix:

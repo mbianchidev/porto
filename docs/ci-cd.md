@@ -789,15 +789,18 @@ largest 25-40 MB packages at well under 100 KB/s, so a fixed five-minute
 per-object deadline aborted slow but progressing transfers. Each object now
 retries only after 60 seconds without received bytes, resumes the verified
 partial download with an HTTP range, and keeps a 15-minute per-object bound.
-The first failed object stops its sibling transfers. Job caches contain only
+The first failed object stops its sibling transfers. Snapshot paths change
+daily, and the service answers uncached objects far more slowly, so the
+client/data harness waits up to 30 minutes for a cold preparation; the
+development-client job allows 75 minutes for it. Job caches contain only
 immutable snapshot inputs, keyed by snapshot day, host/guest architecture and
 fixture target, not incidental bootstrap-source edits. Restore falls back to
-the newest earlier snapshot day for the same target, so a cold default-branch
-push, which cannot read pull-request caches, fetches only new signed releases,
-changed indexes and changed packages. Entries unused for a day are pruned after
-successful preparation, bounding cache growth. Index and package content is
-reverified on reuse, and newly required content is fetched by its authoritative
-hash.
+the newest earlier snapshot day for the same target, then to any target on the
+same runner OS and architecture, so a cold default-branch push, which cannot
+read pull-request caches, fetches only new signed releases, changed indexes
+and changed packages. Entries unused for a day are pruned after successful
+preparation, bounding cache growth. Index and package content is reverified on
+reuse, and newly required content is fetched by its authoritative hash.
 Corrupt cached inputs fail rather
 than being silently accepted or repaired. The owned repository closes during
 fixture cleanup, including failed installed-desktop startup.
