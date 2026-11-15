@@ -475,4 +475,14 @@ func TestCreatedContainerVolumesReceiveDockerDefaultRootMode(t *testing.T) {
 			t.Fatalf("volume %s permission request = %+v", name, envelope)
 		}
 	}
+	clear(requests)
+	if _, err := manager.CreateVolume(context.Background(), "app_cache-data", "local", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateVolume(context.Background(), "restored-data", "local", map[string]string{transferOwnerLabel: "synthetic-transfer"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := requests["app_cache-data"]; !ok || len(requests) != 1 {
+		t.Fatalf("volume creation permission requests = %v, want only the new non-transfer volume", slices.Sorted(maps.Keys(requests)))
+	}
 }

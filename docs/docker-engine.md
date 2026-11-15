@@ -671,7 +671,9 @@ After Porto creates a volume, and after a container creation adds named,
 `-v /path` or image `VOLUME` volumes, the runtime helper opens a root that is
 still empty, exactly `0700` and untouched since the volume was created. Image
 copy-up still gives the root the image directory's owner and mode, as Docker
-does, and roots that hold data or were changed are never modified.
+does, and roots that hold data or were changed are never modified. Clone,
+import and migration destinations are skipped so their restore keeps its own
+root mode.
 
 Volumes expose file browsing, container/Compose mount relationships, clone,
 empty, local import/export, staged restore and confirmed removal. Scheduled

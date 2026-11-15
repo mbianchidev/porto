@@ -211,8 +211,11 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 	if createdName == "" {
 		createdName = name
 	}
-	if err := m.applyDefaultVolumeRootMode(ctx, createdName); err != nil {
-		log.Printf("set default permissions on volume %s: %v", createdName, err)
+	// Clones, imports and migrations restore into the root and keep its mode.
+	if labels[transferOwnerLabel] == "" {
+		if err := m.applyDefaultVolumeRootMode(ctx, createdName); err != nil {
+			log.Printf("set default permissions on volume %s: %v", createdName, err)
+		}
 	}
 	return Volume{Name: createdName, Driver: firstNonEmpty(driver, "local"), Scope: "local", Labels: labels}, nil
 }
