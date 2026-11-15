@@ -99,8 +99,9 @@ record actually removed before Porto records success. Cache records are removed
 children first, because BuildKit releases a parent record only after its child
 records are gone. Selecting a parent without its unused children fails with a
 conflict. Cleanup outcomes remain
-in Activity, including partial failures. Existing opt-in weekly image/cache
-cleanup remains separate from explicit category/object cleanup.
+in Activity, including partial failures. The daily
+[automatic runtime cleanup](docker-engine.md#automatic-runtime-cleanup) remains
+separate from explicit category/object cleanup.
 
 ```sh
 porto docker storage usage
