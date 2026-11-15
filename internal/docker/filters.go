@@ -117,7 +117,7 @@ func (filters dockerFilters) boolean(key string) (value, set bool, err error) {
 			return false, false, fmt.Errorf("invalid filter '%s=%s'", key, candidate)
 		}
 		if set && parsed != value {
-			return false, false, fmt.Errorf("invalid filter '%s': conflicting values", key)
+			return false, false, fmt.Errorf("invalid filter '%s': true and false were both requested", key)
 		}
 		value, set = parsed, true
 	}

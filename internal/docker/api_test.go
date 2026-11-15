@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -25,6 +26,7 @@ import (
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc"
@@ -2527,3 +2529,146 @@ func (p *fakeProcess) Kill() error {
 	return nil
 }
 func (p *fakeProcess) PID() int { return 1234 }
+
+func TestDockerImageInspectReportsTheIDThatImageListsAndContainersUse(t *testing.T) {
+	const target = "sha256:9a8afca54e7861fd90fab5fdf4c42477a6b1cb7d293595148e674e0a3181de15"
+	for _, test := range []struct {
+		name        string
+		repoDigests string
+		listed      string
+		want        string
+	}{
+		{name: "nerdctl target digest", repoDigests: `["postgres@` + target + `"]`, want: target},
+		{name: "listed image fallback", repoDigests: `[]`, listed: target, want: target},
+		{name: "no target identity", repoDigests: `[]`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				switch args := strings.Join(command.Args, " "); args {
+				case "images --digests --no-trunc --format {{json .}}":
+					if test.listed == "" {
+						return nil, nil
+					}
+					return []byte(`{"ID":"` + test.listed + `","Repository":"postgres","Tag":"18.4-alpine","Digest":"` + test.listed + `","Name":"docker.io/library/postgres:18.4-alpine","Platform":"linux/arm64"}` + "\n"), nil
+				case "image inspect postgres:18.4-alpine", "image inspect --platform linux/arm64 postgres:18.4-alpine":
+					return []byte(`[{"Id":"sha256:db676a0ed906c00f55020fb8999e4fb30c598bf5c3b5c188630aef2812d3f11d","RepoTags":["postgres:18.4-alpine"],"RepoDigests":` + test.repoDigests + `,"Os":"linux","Architecture":"arm64"}]`), nil
+				default:
+					return nil, fmt.Errorf("unexpected command: %s", args)
+				}
+			}}
+			response := httptest.NewRecorder()
+			NewAPI(New(runner), "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/images/postgres:18.4-alpine/json", nil))
+			if test.want == "" {
+				if response.Code == http.StatusOK {
+					t.Fatalf("inspect reported an ID without a target identity: %s", response.Body.String())
+				}
+				return
+			}
+			var document struct{ Id string }
+			if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &document) != nil || document.Id != test.want {
+				t.Fatalf("image inspect = %d %s, want Id %s", response.Code, response.Body.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestDockerListDanglingFiltersAndUnsupportedFilters(t *testing.T) {
+	runner := &fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		switch args := strings.Join(command.Args, " "); args {
+		case "volume ls --format {{json .}}":
+			return []byte(`{"Name":"app_postgres-data","Driver":"local","Mountpoint":"/var/lib/nerdctl/volumes/default/app_postgres-data/_data","Labels":"com.docker.compose.volume=postgres-data"}` + "\n" +
+				`{"Name":"app_cache-data","Driver":"local","Mountpoint":"/var/lib/nerdctl/volumes/default/app_cache-data/_data","Labels":""}` + "\n"), nil
+		case "ps -a --no-trunc --format {{json .}}":
+			return []byte(`{"ID":"synthetic-postgres","Names":"app-postgres-1","State":"running","Mounts":"app_postgres-data"}` + "\n"), nil
+		case "images --digests --no-trunc --format {{json .}}":
+			return []byte(`{"ID":"sha256:tagged","Repository":"example/app","Tag":"latest","Name":"docker.io/example/app:latest"}` + "\n" +
+				`{"ID":"sha256:untagged","Repository":"moby-dangling","Tag":"<none>","Name":"moby-dangling@sha256:untagged"}` + "\n"), nil
+		default:
+			return nil, fmt.Errorf("unexpected command: %s", args)
+		}
+	}}
+	api := NewAPI(New(runner), "/tmp/porto.sock")
+	get := func(path string) (int, string) {
+		response := httptest.NewRecorder()
+		api.ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+		return response.Code, response.Body.String()
+	}
+	for _, test := range []struct {
+		path      string
+		includes  string
+		excludes  string
+		wantError int
+	}{
+		{path: `/volumes?filters={"dangling":["true"]}`, includes: "app_cache-data", excludes: "app_postgres-data"},
+		{path: `/volumes?filters={"dangling":["false"]}`, includes: "app_postgres-data", excludes: "app_cache-data"},
+		{path: `/volumes?filters={"dangling":["maybe"]}`, wantError: http.StatusBadRequest},
+		{path: `/volumes?filters={"dangling":["true","false"]}`, wantError: http.StatusBadRequest},
+		{path: `/volumes?filters={"mystery":["x"]}`, wantError: http.StatusNotImplemented},
+		{path: `/images/json?filters={"dangling":["true"]}`, includes: "sha256:untagged", excludes: "sha256:tagged"},
+		{path: `/images/json?filters={"dangling":["false"]}`, includes: "sha256:tagged", excludes: "sha256:untagged"},
+		{path: `/images/json?filters={"since":["example/app"]}`, wantError: http.StatusNotImplemented},
+	} {
+		code, body := get(test.path)
+		if test.wantError != 0 {
+			if code != test.wantError {
+				t.Errorf("%s = %d %s, want %d", test.path, code, body, test.wantError)
+			}
+			continue
+		}
+		if code != http.StatusOK || !strings.Contains(body, test.includes) || strings.Contains(body, test.excludes) {
+			t.Errorf("%s = %d %s; want %q without %q", test.path, code, body, test.includes, test.excludes)
+		}
+	}
+}
+
+func TestDockerVolumePruneKeepsNamedVolumesUnlessAllIsRequested(t *testing.T) {
+	anonymous := strings.Repeat("a", 64)
+	for _, test := range []struct {
+		path string
+		want []string
+	}{
+		{path: "/volumes/prune", want: []string{anonymous}},
+		{path: `/volumes/prune?filters={"all":["true"]}`, want: []string{anonymous, "app_postgres-data", "manual-data"}},
+		{path: "/v1.41/volumes/prune", want: []string{anonymous, "app_postgres-data", "manual-data"}},
+	} {
+		t.Run(test.path, func(t *testing.T) {
+			var removed []string
+			manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+				args := strings.Join(command.Args, " ")
+				switch {
+				case strings.HasPrefix(args, "volume inspect "):
+					name := strings.TrimPrefix(args, "volume inspect ")
+					return []byte(`[{"Name":"` + name + `","Mountpoint":"/var/lib/nerdctl/volumes/default/` + name + `/_data"}]`), nil
+				case strings.HasPrefix(args, "volume rm "):
+					removed = append(removed, strings.TrimPrefix(args, "volume rm "))
+					return nil, nil
+				case strings.HasPrefix(args, "ps "):
+					return nil, nil
+				default:
+					return nil, fmt.Errorf("unexpected command: %s", args)
+				}
+			}})
+			manager.dialBuildKit = buildKitControlTestDialer(t, &cleanupBuildKitServer{})
+			size := int64(1024)
+			var items []StorageResource
+			for name, labels := range map[string]map[string]string{
+				anonymous:           {},
+				"app_postgres-data": {"com.docker.compose.volume": "postgres-data"},
+				"manual-data":       {},
+			} {
+				item := StorageResource{Resource: datafiles.Resource{Kind: "volume", Name: name, ID: name}, AllocatedBytes: &size, Labels: labels, Owners: []StorageOwner{}}
+				finishStorageResource(manager, &item)
+				items = append(items, item)
+			}
+			manager.storageReader = func(context.Context) (StorageUsage, error) {
+				return StorageUsage{Resources: items}, nil
+			}
+			response := httptest.NewRecorder()
+			NewAPI(manager, "/tmp/porto.sock").ServeHTTP(response, httptest.NewRequest(http.MethodPost, test.path, nil))
+			slices.Sort(removed)
+			if response.Code != http.StatusOK || !reflect.DeepEqual(removed, test.want) {
+				t.Fatalf("%s = %d %s; removed %v, want %v", test.path, response.Code, response.Body.String(), removed, test.want)
+			}
+		})
+	}
+}

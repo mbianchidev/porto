@@ -8,26 +8,33 @@ import (
 
 func TestNewDockerCleanupResultStartsEveryStepNotRun(t *testing.T) {
 	result := NewDockerCleanupResult()
+	for name, step := range map[string]DockerCleanupStep{
+		"containers": result.Containers, "build cache": result.BuildCache, "images": result.Images,
+		"volumes": result.Volumes, "host disk": result.HostDisk,
+	} {
+		if step.Status != CleanupNotRun || step.ItemsRemoved != 0 || step.BytesReclaimed != nil {
+			t.Fatalf("new %s step = %+v, want an unrun step without counts", name, step)
+		}
+	}
+}
 
-	if result.BuildCache.Status != CleanupNotRun {
-		t.Fatalf("build cache status = %q, want %q", result.BuildCache.Status, CleanupNotRun)
+func TestLegacyDockerCleanupResultsNormalizeMissingSteps(t *testing.T) {
+	var result DockerCleanupResult
+	if err := json.Unmarshal([]byte(`{"buildCache":{"status":"succeeded","itemsRemoved":3},"images":{"status":"failed","itemsRemoved":1}}`), &result); err != nil {
+		t.Fatal(err)
 	}
-	if result.Images.Status != CleanupNotRun {
-		t.Fatalf("image status = %q, want %q", result.Images.Status, CleanupNotRun)
-	}
-	if result.BuildCache.ItemsRemoved != 0 || result.Images.ItemsRemoved != 0 {
-		t.Fatalf("new cleanup result has removed items: %+v", result)
-	}
-	if result.BuildCache.BytesReclaimed != nil || result.Images.BytesReclaimed != nil {
-		t.Fatalf("new cleanup result has reclaimed byte counts: %+v", result)
+	result.Normalize()
+	if result.Containers.Status != CleanupNotRun || result.Volumes.Status != CleanupNotRun || result.HostDisk.Status != CleanupNotRun ||
+		result.BuildCache.Status != CleanupSucceeded || result.Images.Status != CleanupFailed {
+		t.Fatalf("legacy cleanup result was not normalized without losing recorded steps: %+v", result)
 	}
 }
 
 func TestDockerCleanupDurations(t *testing.T) {
-	if DockerCleanupInterval != 7*24*time.Hour {
+	if DockerCleanupInterval != 24*time.Hour {
 		t.Fatalf("cleanup interval = %s", DockerCleanupInterval)
 	}
-	if DockerCleanupTimeout != 10*time.Minute {
+	if DockerCleanupTimeout != 20*time.Minute {
 		t.Fatalf("cleanup timeout = %s", DockerCleanupTimeout)
 	}
 }
@@ -37,7 +44,7 @@ func TestDockerCleanupResultJSONOmitsOptionalEmptyFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal cleanup result: %v", err)
 	}
-	const expected = `{"buildCache":{"status":"not_run","itemsRemoved":0},"images":{"status":"not_run","itemsRemoved":0}}`
+	const expected = `{"containers":{"status":"not_run","itemsRemoved":0},"buildCache":{"status":"not_run","itemsRemoved":0},"images":{"status":"not_run","itemsRemoved":0},"volumes":{"status":"not_run","itemsRemoved":0},"hostDisk":{"status":"not_run","itemsRemoved":0}}`
 	if string(encoded) != expected {
 		t.Fatalf("cleanup result JSON = %s, want %s", encoded, expected)
 	}

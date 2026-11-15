@@ -250,9 +250,9 @@ func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
 		t.Fatal(err)
 	}
 	runner := &fakeRunner{outputs: map[string][]byte{
-		"limactl list porto-engine --json": listing,
+		"limactl list porto-engine --json":                                                listing,
 		`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
-		"limactl shell --workdir=/ porto-engine -- sudo -n fstrim --all --verbose":         []byte("/: 1 MiB (1048576 bytes) trimmed on /dev/vda1\n"),
+		"limactl shell --workdir=/ porto-engine -- sudo -n fstrim --all --verbose":        []byte("/: 1 MiB (1048576 bytes) trimmed on /dev/vda1\n"),
 	}}
 	runner.streamer = func(command runtimes.Command, _ func(runtimes.OutputChunk) error) ([]byte, error) {
 		if command.Name != "limactl" || strings.Join(command.Args, " ") != "shell --workdir=/ porto-engine -- nerdctl image prune --all --force --filter until=24h0m0s" {
@@ -334,5 +334,82 @@ func TestCleanupUnusedRequiresDiagnosticCaptureBeforePruning(t *testing.T) {
 	manager := New(&cancellationCleanupRunner{})
 	if _, err := manager.CleanupUnused(context.Background()); !errors.Is(err, ErrUnsupported) {
 		t.Fatalf("non-streaming cleanup = %v, want unsupported", err)
+	}
+}
+
+func TestCleanupRemovesOnlyStandaloneContainersStoppedLongEnough(t *testing.T) {
+	now := time.Date(2026, time.November, 15, 12, 0, 0, 0, time.UTC)
+	old := now.Add(-48 * time.Hour).Format(time.RFC3339Nano)
+	recent := now.Add(-time.Hour).Format(time.RFC3339Nano)
+	manager := New(&fakeRunner{})
+	manager.SetManagedContainerGuard(func(_ context.Context, name string) error {
+		if name == "porto-cluster-node" {
+			return errors.New("managed cluster node")
+		}
+		return nil
+	})
+	sleeping := map[string]bool{"sleeping-app": true}
+	cutoff := now.Add(-app.DockerCleanupMinimumAge)
+	for _, test := range []struct {
+		container Container
+		remove    bool
+	}{
+		{Container{Name: "one-off", State: "exited", ExitAt: old}, true},
+		{Container{Name: "one-off-updated-recently", State: "exited", ExitAt: old, UpdatedAt: recent}, false},
+		{Container{Name: "recently-stopped", State: "exited", ExitAt: recent}, false},
+		{Container{Name: "unknown-stop-time", State: "exited", CreatedAt: old}, false},
+		{Container{Name: "compose-service", State: "exited", ExitAt: old, ComposeProject: "app"}, false},
+		{Container{Name: "kind-node", State: "exited", ExitAt: old, Labels: map[string]string{"io.x-k8s.kind.cluster": "dev"}}, false},
+		{Container{Name: "sleeping-app", State: "exited", ExitAt: old}, false},
+		{Container{Name: "porto-cluster-node", State: "exited", ExitAt: old}, false},
+		{Container{Name: "transfer-helper", State: "exited", ExitAt: old, Labels: map[string]string{transferOwnerLabel: "synthetic"}}, false},
+	} {
+		if got := manager.removableStoppedContainer(context.Background(), test.container, sleeping, cutoff); got != test.remove {
+			t.Errorf("%s removable = %t, want %t", test.container.Name, got, test.remove)
+		}
+	}
+	for _, state := range []string{"running", "paused", "created", "restarting"} {
+		if stoppedContainer(Container{State: state}) {
+			t.Errorf("%s container was treated as stopped", state)
+		}
+	}
+}
+
+func TestCleanupRemovesOnlyUnusedAnonymousVolumes(t *testing.T) {
+	generated := strings.Repeat("b", 64)
+	attached := strings.Repeat("c", 64)
+	var removed []string
+	manager := New(&fakeRunner{handler: func(command runtimes.Command) ([]byte, error) {
+		args := strings.Join(command.Args, " ")
+		switch {
+		case args == "volume ls --format {{json .}}":
+			return []byte(strings.Join([]string{
+				`{"Name":"` + generated + `","Labels":""}`,
+				`{"Name":"porto-0123456789ab","Labels":"nerdctl/anonymous-volumes="}`,
+				`{"Name":"` + attached + `","Labels":""}`,
+				`{"Name":"app_postgres-data","Labels":"com.docker.compose.project=app,com.docker.compose.volume=postgres-data"}`,
+				`{"Name":"manual-data","Labels":""}`,
+			}, "\n") + "\n"), nil
+		case strings.HasPrefix(args, "ps "):
+			return []byte(`{"ID":"stopped-app","Names":"stopped-app","State":"exited","Mounts":"` + attached + `"}` + "\n"), nil
+		case strings.HasPrefix(args, "volume inspect "):
+			name := strings.TrimPrefix(args, "volume inspect ")
+			return []byte(`[{"Name":"` + name + `","Mountpoint":"/var/lib/nerdctl/volumes/default/` + name + `/_data"}]`), nil
+		case strings.HasPrefix(args, "volume rm "):
+			removed = append(removed, strings.TrimPrefix(args, "volume rm "))
+			return nil, nil
+		default:
+			return nil, errors.New("unexpected command: " + args)
+		}
+	}})
+	step, err := manager.pruneAnonymousVolumes(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{generated, "porto-0123456789ab"}; !reflect.DeepEqual(removed, want) || step.ItemsRemoved != 2 {
+		t.Fatalf("removed %v (%d), want only unused anonymous volumes %v", removed, step.ItemsRemoved, want)
+	}
+	if !strings.Contains(step.Output, "Kept 2 named volume(s)") || !strings.Contains(step.Output, "Kept 1 anonymous volume(s)") {
+		t.Fatalf("retained volumes were not reported: %s", step.Output)
 	}
 }

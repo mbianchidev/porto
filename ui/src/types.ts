@@ -163,7 +163,7 @@ export type LogLine = {
 // --- Docker -----------------------------------------------------------------
 
 export type DockerCleanupStep = {
-  status: 'not_run' | 'succeeded' | 'failed'
+  status: 'not_run' | 'succeeded' | 'failed' | 'skipped'
   itemsRemoved: number
   bytesReclaimed?: number
   output?: string
@@ -177,8 +177,11 @@ export type DockerCleanupRun = {
   startedAt: string
   completedAt?: string
   result: {
+    containers: DockerCleanupStep
     buildCache: DockerCleanupStep
     images: DockerCleanupStep
+    volumes: DockerCleanupStep
+    hostDisk: DockerCleanupStep
   }
   error?: string
 }
