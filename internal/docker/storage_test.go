@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -269,6 +270,61 @@ func (s *scopedCacheServer) Prune(request *controlapi.PruneRequest, stream grpc.
 
 func (s *scopedCacheServer) DiskUsage(context.Context, *controlapi.DiskUsageRequest) (*controlapi.DiskUsageResponse, error) {
 	return &controlapi.DiskUsageResponse{Record: s.records}, nil
+}
+
+type lineageCacheServer struct {
+	buildKitPlatformServer
+	records []*controlapi.UsageRecord
+}
+
+func (s *lineageCacheServer) Prune(request *controlapi.PruneRequest, stream grpc.ServerStreamingServer[controlapi.UsageRecord]) error {
+	id, ok := strings.CutPrefix(strings.Join(request.Filter, ","), "id==")
+	if !request.All || !ok || strings.Contains(id, ",") {
+		return fmt.Errorf("cleanup escaped the exact cache selection: %+v", request)
+	}
+	for _, record := range s.records {
+		if slices.Contains(record.Parents, id) {
+			return nil
+		}
+	}
+	for index, record := range s.records {
+		if record.ID == id {
+			s.records = slices.Delete(s.records, index, index+1)
+			return stream.Send(record)
+		}
+	}
+	return nil
+}
+
+func (s *lineageCacheServer) DiskUsage(context.Context, *controlapi.DiskUsageRequest) (*controlapi.DiskUsageResponse, error) {
+	return &controlapi.DiskUsageResponse{Record: s.records}, nil
+}
+
+func TestScopedPruneRemovesCacheDescendantsBeforeParents(t *testing.T) {
+	service := &lineageCacheServer{records: []*controlapi.UsageRecord{
+		{ID: "a-parent", Size: 1024},
+		{ID: "b-child", Size: 1024, Parents: []string{"a-parent"}},
+		{ID: "c-grandchild", Size: 1024, Parents: []string{"b-child"}},
+		{ID: "z-unrelated", Size: 1024},
+	}}
+	manager := New(&fakeRunner{})
+	manager.dialBuildKit = buildKitControlTestDialer(t, service)
+	manager.storageReader = func(ctx context.Context) (StorageUsage, error) {
+		resources, err := manager.BuildCacheUsage(ctx)
+		return StorageUsage{Resources: resources}, err
+	}
+	preview, err := manager.PreviewPrune(context.Background(), dataops.Request{Action: "prune", Categories: []string{"cache"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	request := preview.Request
+	request.Confirm = true
+	if result, err := manager.Prune(context.Background(), request, func(string, int64) error { return nil }); err != nil {
+		t.Fatalf("cache lineage blocked cleanup: %+v, %v", result, err)
+	}
+	if len(service.records) != 0 {
+		t.Fatalf("unused cache records remained: %+v", service.records)
+	}
 }
 
 func TestStorageUsageReportsMeasuredMetadataAndExclusiveBuildCache(t *testing.T) {

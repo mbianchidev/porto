@@ -2,6 +2,7 @@ package docker
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -52,6 +53,7 @@ type StorageResource struct {
 	Labels         map[string]string  `json:"labels,omitempty"`
 	Description    string             `json:"description,omitempty"`
 	CacheType      string             `json:"cacheType,omitempty"`
+	Parents        []string           `json:"parents,omitempty"`
 	LastUsedAt     string             `json:"lastUsedAt,omitempty"`
 	UsageCount     int64              `json:"usageCount,omitempty"`
 }
@@ -500,6 +502,7 @@ func (m *Manager) BuildCacheUsage(ctx context.Context) ([]StorageResource, error
 		item := StorageResource{
 			Resource: resource, InUse: record.InUse, Owners: make([]StorageOwner, 0),
 			Description: record.Description, CacheType: record.RecordType, UsageCount: record.UsageCount,
+			Parents: record.Parents,
 		}
 		if record.LastUsedAt != nil {
 			item.LastUsedAt = record.LastUsedAt.AsTime().UTC().Format(time.RFC3339Nano)
@@ -520,6 +523,40 @@ func (m *Manager) BuildCacheUsage(ctx context.Context) ([]StorageResource, error
 		result = append(result, item)
 	}
 	return result, nil
+}
+
+func cacheDepths(resources []StorageResource) map[string]int {
+	parents := make(map[string][]string)
+	for _, item := range resources {
+		if item.Resource.Kind == "cache" {
+			parents[item.Resource.ID] = item.Parents
+		}
+	}
+	depths := make(map[string]int, len(parents))
+	visiting := make(map[string]bool)
+	var depth func(string) int
+	depth = func(id string) int {
+		if value, ok := depths[id]; ok {
+			return value
+		}
+		if visiting[id] {
+			return 0
+		}
+		visiting[id] = true
+		value := 0
+		for _, parent := range parents[id] {
+			if _, known := parents[parent]; known {
+				value = max(value, depth(parent)+1)
+			}
+		}
+		delete(visiting, id)
+		depths[id] = value
+		return value
+	}
+	for id := range parents {
+		depth(id)
+	}
+	return depths
 }
 
 func (m *Manager) storageBuildKitClient(ctx context.Context) (*grpc.ClientConn, error) {
@@ -583,8 +620,16 @@ func (m *Manager) PreviewPrune(ctx context.Context, request dataops.Request) (Pr
 			}
 		}
 	}
+	depths := cacheDepths(usage.Resources)
 	slices.SortFunc(preview.Candidates, func(left, right StorageResource) int {
-		return strings.Compare(left.Resource.Kind+"\x00"+left.Resource.Name, right.Resource.Kind+"\x00"+right.Resource.Name)
+		if order := strings.Compare(left.Resource.Kind, right.Resource.Kind); order != 0 {
+			return order
+		}
+		// BuildKit releases a parent record only after its children, so remove the deepest records first.
+		if order := cmp.Compare(depths[right.Resource.ID], depths[left.Resource.ID]); left.Resource.Kind == "cache" && order != 0 {
+			return order
+		}
+		return strings.Compare(left.Resource.Name, right.Resource.Name)
 	})
 	if known {
 		preview.UpperBound = &upper

@@ -95,7 +95,10 @@ attachments and active builds are protected at the backend. A changed identity
 invalidates a preview. A category preview freezes the exact candidate identities;
 new unused objects never join a confirmed run. Ownership, protections and active
 builds are checked again before each removal. BuildKit must report the selected
-record actually removed before Porto records success. Cleanup outcomes remain
+record actually removed before Porto records success. Cache records are removed
+children first, because BuildKit releases a parent record only after its child
+records are gone. Selecting a parent without its unused children fails with a
+conflict. Cleanup outcomes remain
 in Activity, including partial failures. Existing opt-in weekly image/cache
 cleanup remains separate from explicit category/object cleanup.
 
