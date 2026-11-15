@@ -52,12 +52,12 @@ func (m *Manager) pruneStoppedContainers(ctx context.Context, now time.Time) (st
 	if err != nil {
 		return step, fmt.Errorf("list stopped containers: %w", err)
 	}
-	images, err := m.imagesWithTimeout(ctx, max(m.timeout, imageTransferTimeout))
+	checkpointed, err := m.checkpointSources(ctx)
 	if err != nil {
-		return step, fmt.Errorf("list container checkpoints: %w", err)
+		return step, err
 	}
 	retained := m.resourceSaverMembers()
-	for id := range checkpointedContainers(images) {
+	for id := range checkpointed {
 		retained[id] = true
 	}
 	cutoff := now.Add(-app.DockerCleanupMinimumAge)
@@ -138,20 +138,6 @@ func shortContainerID(id string) string {
 		return id[:12]
 	}
 	return id
-}
-
-// checkpointedContainers returns the IDs of containers with saved checkpoints,
-// so cleanup keeps the containers that restoring those checkpoints needs.
-func checkpointedContainers(images []Image) map[string]bool {
-	sources := make(map[string]bool)
-	for _, image := range images {
-		if source, ok := strings.CutPrefix(image.Name, checkpointImagePrefix); ok {
-			if id, _, found := strings.Cut(source, ":"); found && id != "" {
-				sources[id] = true
-			}
-		}
-	}
-	return sources
 }
 
 func (m *Manager) resourceSaverMembers() map[string]bool {

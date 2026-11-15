@@ -18,6 +18,8 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/core/images"
 	"github.com/mbianchidev/porto/internal/acceleration"
 	"github.com/mbianchidev/porto/internal/config"
 	"github.com/mbianchidev/porto/internal/dataops"
@@ -106,6 +108,7 @@ type Manager struct {
 	metricHistory             map[string][]InspectorStatsPoint
 	dataMu                    sync.RWMutex
 	storageReader             func(context.Context) (StorageUsage, error)
+	imageMetadataConnector    func(context.Context) (context.Context, images.Store, containers.Store, func() error, error)
 	nativeGuard               func(string, string) error
 	managedContainerGuard     func(context.Context, string) error
 	storageReporter           func(context.Context, dataops.Request, dataops.Result, error) error

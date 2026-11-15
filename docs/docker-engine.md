@@ -694,12 +694,15 @@ Both paths run these steps, in order, against Porto's configured backend:
    is kept.
 2. **BuildKit cache.** All unused records are pruned. The `builder` and `buildx`
    commands address the same Porto BuildKit cache, so it is pruned once.
-3. **Images.** Porto removes unused image references, including tagged ones,
-   whose local record is more than 24 hours old, with namespace-scoped
-   `nerdctl image rm` and no `--force`. An image is kept when any running or
-   stopped container references it by name or image ID. Checkpoint images
-   (`porto.local/checkpoints/...`) are always kept; `nerdctl image prune` would
-   delete them because no container names them.
+3. **Images.** Porto reads the namespace's containerd image records and
+   removes unused references, including tagged ones, that were not created,
+   pulled or rebuilt in the last 24 hours. A reference is kept when any running
+   or stopped container uses it by name or image ID. Checkpoint images (labeled
+   with their source container or named `porto.local/checkpoints/...`) are
+   always kept; `nerdctl image prune` would delete them because no container
+   names them. Right before each deletion Porto re-reads the record and its
+   container users and deletes only the target it listed, so a tag rebuilt,
+   re-pulled or used during cleanup survives.
 4. **Anonymous volumes.** Volumes nobody named (labeled anonymous by nerdctl or
    Docker, or carrying the random 64-hex name both engines generate for
    `-v /path` mounts) are removed when no container references them. Named
@@ -724,14 +727,9 @@ the trigger, start/end times, outcome and each step's removal count, reported
 bytes, retained items and diagnostic output in SQLite. Settings shows the
 latest ten results, including failures and partial results. Image layer storage
 can be shared, so Porto does not invent a reclaimed-byte total for images.
-Image-deletion warnings and unknown diagnostics are reported as failures even
-when the CLI exits successfully. The known host-platform rootfs warning
-(`no match for platform in manifest`) only prevents nerdctl from listing layer
-digests for a foreign-platform image; it does not prevent image-reference
-deletion. Porto retains that warning in the image step output without failing
-an otherwise successful run. Diagnostics are checked even after retained output
-is truncated, so a later deletion failure cannot be hidden by earlier warnings.
-One failed removal does not stop the remaining items or steps.
+Step output is bounded; removal counts include every removal even when the
+output is truncated. One failed removal is reported and does not stop the
+remaining items or steps.
 
 If a result cannot be saved, the running daemon still exposes its observed
 counts and storage error instead of leaving the UI stuck on "running".
