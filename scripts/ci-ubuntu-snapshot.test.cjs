@@ -1,12 +1,13 @@
 const assert = require('node:assert/strict')
 const crypto = require('node:crypto')
 const fs = require('node:fs')
+const http = require('node:http')
 const os = require('node:os')
 const path = require('node:path')
 const test = require('node:test')
 const { gzipSync } = require('node:zlib')
 
-const { prepareSnapshot } = require('./ci-ubuntu-snapshot.cjs')
+const { downloadFile, prepareSnapshot } = require('./ci-ubuntu-snapshot.cjs')
 
 function fixture(t) {
   const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-ci-snapshot-'))
@@ -129,4 +130,68 @@ test('the repository cannot proxy arbitrary requests, expose host files, or acce
   await assert.rejects(prepareSnapshot('arm64', {
     ...failing.options, download: async () => { throw new Error('Synthetic snapshot HTTP 503') },
   }), /snapshot HTTP 503/)
+})
+
+test('reuses unchanged inputs across snapshot days and prunes cache entries unused for a day', async (t) => {
+  const f = fixture(t)
+  const first = await prepareSnapshot('arm64', f.options)
+  await first.close()
+  const stale = path.join(f.options.cacheDirectory, 'f'.repeat(64))
+  const reused = path.join(f.options.cacheDirectory, f.digest(f.packageBytes))
+  const unrelated = path.join(f.options.cacheDirectory, '.download-synthetic')
+  const old = new Date(Date.now() - 2 * 86400000)
+  fs.writeFileSync(stale, 'Synthetic input from an older snapshot')
+  fs.writeFileSync(unrelated, 'Synthetic partial transfer')
+  for (const file of [stale, reused, unrelated]) fs.utimesSync(file, old, old)
+  const requests = f.calls.length
+  const next = await prepareSnapshot('arm64', { ...f.options, date: new Date('2026-11-12T12:00:00Z') })
+  t.after(() => next.close())
+  assert.deepEqual(f.calls.slice(requests), ['dists/noble/InRelease'], 'Only the new signed release is fetched')
+  assert.equal(fs.existsSync(stale), false)
+  assert.equal(fs.existsSync(reused), true)
+  assert.equal(fs.existsSync(unrelated), true)
+})
+
+test('slow snapshot transfers resume stalled bytes instead of failing or restarting the object', async (t) => {
+  for (const [name, sent, honorsRange] of [
+    ['range resume', 0.5, true], ['range ignored', 0.5, false], ['headers only', 0, true],
+  ]) {
+    await t.test(name, async (t) => {
+      const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-ci-snapshot-download-'))
+      const content = crypto.randomBytes(65536)
+      const ranges = []
+      const server = http.createServer((request, response) => {
+        ranges.push(request.headers.range)
+        const start = Number(/^bytes=([0-9]+)-$/.exec(request.headers.range || '')?.[1])
+        if (ranges.length === 1) {
+          response.writeHead(200, { 'Content-Length': content.length })
+          if (sent) response.write(content.subarray(0, content.length * sent))
+          else response.flushHeaders()
+        } else if (honorsRange && start) {
+          response.writeHead(206, {
+            'Content-Length': content.length - start,
+            'Content-Range': `bytes ${start}-${content.length - 1}/${content.length}`,
+          })
+          response.end(content.subarray(start))
+        } else {
+          response.writeHead(200, { 'Content-Length': content.length })
+          response.end(content)
+        }
+      })
+      await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+      t.after(() => {
+        server.closeAllConnections()
+        server.close()
+        fs.rmSync(directory, { recursive: true, force: true })
+      })
+      const destination = path.join(directory, 'object')
+      await downloadFile(`http://127.0.0.1:${server.address().port}/object`, destination,
+        new AbortController().signal, { stallTimeout: 200 })
+      assert.deepEqual(fs.readFileSync(destination), content)
+      assert.equal(ranges.length, 2)
+      assert.equal(ranges[0], undefined)
+      if (sent) assert.match(ranges[1], /^bytes=[1-9][0-9]*-$/)
+      else assert.equal(ranges[1], undefined)
+    })
+  }
 })

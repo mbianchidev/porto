@@ -784,7 +784,8 @@ if (level === 'leaf') {
     stdio: ['ignore', 'ignore', 'ignore', 'ipc'],
   })
   await once(unrelated, 'message')
-  const timeout = process.platform === 'win32' ? 10000 : 2500
+  // Three sequential Node startups can exceed 2.5s on hosted Intel macOS and Windows runners.
+  const timeout = 10000
   const started = Date.now()
   let failure
   let deadline
