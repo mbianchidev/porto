@@ -303,7 +303,7 @@ func TestDockerAPIVersionsShapeImageInspectAndPreserveEscapedNames(t *testing.T)
 		if strings.Join(command.Args, " ") != "image inspect registry.example.test/team/synthetic:latest" {
 			return nil, fmt.Errorf("escaped image identifier was changed: %v", command.Args)
 		}
-		return []byte(`[{"Id":"sha256:synthetic","Size":123,"VirtualSize":123,"Container":"legacy","ContainerConfig":{},"Config":{"Healthcheck":{"StartInterval":1000}}}]`), nil
+		return []byte(`[{"Id":"sha256:synthetic-config","RepoDigests":["registry.example.test/team/synthetic@sha256:synthetic"],"Size":123,"VirtualSize":123,"Container":"legacy","ContainerConfig":{},"Config":{"Healthcheck":{"StartInterval":1000}}}]`), nil
 	}}
 	for _, version := range []string{"1.41", "1.43", "1.44", "1.45", "1.47"} {
 		response := httptest.NewRecorder()

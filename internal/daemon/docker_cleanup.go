@@ -111,12 +111,16 @@ func (s *Server) executeDockerCleanup(ctx context.Context, cancel context.Cancel
 		s.cleanupUnstored = &run
 		s.cleanupMu.Unlock()
 	}
-	cacheBytes := "not reported"
-	if result.BuildCache.BytesReclaimed != nil {
-		cacheBytes = fmt.Sprintf("%d", *result.BuildCache.BytesReclaimed)
+	log.Printf("Docker cleanup %d (%s) %s: containers removed=%d, build cache records removed=%d, build cache bytes reclaimed=%s, image references removed=%d, anonymous volumes removed=%d, host disk %s bytes reclaimed=%s, error=%q",
+		run.ID, run.Trigger, status, result.Containers.ItemsRemoved, result.BuildCache.ItemsRemoved, reportedBytes(result.BuildCache),
+		result.Images.ItemsRemoved, result.Volumes.ItemsRemoved, result.HostDisk.Status, reportedBytes(result.HostDisk), message)
+}
+
+func reportedBytes(step app.DockerCleanupStep) string {
+	if step.BytesReclaimed == nil {
+		return "not reported"
 	}
-	log.Printf("Docker cleanup %d (%s) %s: image references removed=%d, build cache records removed=%d, build cache bytes reclaimed=%s, error=%q",
-		run.ID, run.Trigger, status, result.Images.ItemsRemoved, result.BuildCache.ItemsRemoved, cacheBytes, message)
+	return fmt.Sprintf("%d", *step.BytesReclaimed)
 }
 
 func (s *Server) dockerCleanupLoop(ctx context.Context) {

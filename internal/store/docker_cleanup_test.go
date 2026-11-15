@@ -15,14 +15,26 @@ import (
 func TestDockerCleanupScheduleAndResultsPersist(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "porto.db")
+	opened := time.Now().UTC()
 	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	status, err := st.DockerCleanupStatus(ctx)
-	if err != nil || status.Enabled || status.NextRunAt != "" || len(status.Runs) != 0 {
+	if err != nil || !status.Enabled || len(status.Runs) != 0 {
 		t.Fatalf("initial cleanup status = %+v, %v", status, err)
+	}
+	if due, err := time.Parse(time.RFC3339Nano, status.NextRunAt); err != nil || due.Before(opened.Add(app.DockerCleanupInterval)) {
+		t.Fatalf("default cleanup must first run one interval after install: %q, %v", status.NextRunAt, err)
+	}
+	initial, err := st.Settings(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	initial.DockerAutoPruneEnabled = false
+	if err := st.SetSettings(ctx, initial); err != nil {
+		t.Fatal(err)
 	}
 	now := time.Date(2026, time.September, 1, 12, 0, 0, 0, time.UTC)
 	run, err := st.BeginDockerCleanup(ctx, app.CleanupManual, now)
@@ -66,10 +78,10 @@ func TestDockerCleanupScheduleAndResultsPersist(t *testing.T) {
 	}
 	due, err := time.Parse(time.RFC3339Nano, status.NextRunAt)
 	if err != nil || due.Before(before.Add(app.DockerCleanupInterval)) || due.After(time.Now().Add(app.DockerCleanupInterval)) {
-		t.Fatalf("first cleanup must be one week after opt-in: %q, %v", status.NextRunAt, err)
+		t.Fatalf("first cleanup must be one interval after opt-in: %q, %v", status.NextRunAt, err)
 	}
 	if run, err := st.BeginDockerCleanup(ctx, app.CleanupScheduled, due.Add(-time.Nanosecond)); err != nil || run != nil {
-		t.Fatalf("cleanup ran before its weekly deadline: %+v, %v", run, err)
+		t.Fatalf("cleanup ran before its deadline: %+v, %v", run, err)
 	}
 	run, err = st.BeginDockerCleanup(ctx, app.CleanupScheduled, due)
 	if err != nil || run == nil {
@@ -91,7 +103,7 @@ func TestDockerCleanupScheduleAndResultsPersist(t *testing.T) {
 	if status.Runs[0].Trigger != app.CleanupScheduled || status.Runs[0].Error != result.Images.Error ||
 		status.Runs[0].Result.BuildCache.ItemsRemoved != 3 ||
 		status.NextRunAt != finished.Add(app.DockerCleanupInterval).Format(time.RFC3339Nano) {
-		t.Fatalf("scheduled failure lost partial results or changed the weekly cadence: %+v", status)
+		t.Fatalf("scheduled failure lost partial results or changed the cadence: %+v", status)
 	}
 	settings.DockerAutoPruneEnabled = false
 	if err := st.SetSettings(ctx, settings); err != nil {

@@ -3,8 +3,11 @@ package app
 import "time"
 
 const (
-	DockerCleanupInterval = 7 * 24 * time.Hour
-	DockerCleanupTimeout  = 10 * time.Minute
+	DockerCleanupInterval = 24 * time.Hour
+	DockerCleanupTimeout  = 20 * time.Minute
+	// DockerCleanupMinimumAge keeps recently stopped containers and recently
+	// pulled or built images out of automatic and manual cleanup.
+	DockerCleanupMinimumAge = 24 * time.Hour
 )
 
 type CleanupStatus string
@@ -34,14 +37,29 @@ type DockerCleanupStep struct {
 }
 
 type DockerCleanupResult struct {
+	Containers DockerCleanupStep `json:"containers"`
 	BuildCache DockerCleanupStep `json:"buildCache"`
 	Images     DockerCleanupStep `json:"images"`
+	Volumes    DockerCleanupStep `json:"volumes"`
+	HostDisk   DockerCleanupStep `json:"hostDisk"`
 }
 
 func NewDockerCleanupResult() DockerCleanupResult {
 	return DockerCleanupResult{
+		Containers: DockerCleanupStep{Status: CleanupNotRun},
 		BuildCache: DockerCleanupStep{Status: CleanupNotRun},
 		Images:     DockerCleanupStep{Status: CleanupNotRun},
+		Volumes:    DockerCleanupStep{Status: CleanupNotRun},
+		HostDisk:   DockerCleanupStep{Status: CleanupNotRun},
+	}
+}
+
+// Normalize marks steps that results saved before they existed did not run.
+func (r *DockerCleanupResult) Normalize() {
+	for _, step := range []*DockerCleanupStep{&r.Containers, &r.BuildCache, &r.Images, &r.Volumes, &r.HostDisk} {
+		if step.Status == "" {
+			step.Status = CleanupNotRun
+		}
 	}
 }
 

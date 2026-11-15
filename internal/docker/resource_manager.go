@@ -187,6 +187,12 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 			return Volume{}, err
 		}
 		name = generated
+		// Like Docker and nerdctl, an unnamed volume is anonymous so default prune may remove it.
+		labels = cloneStringMap(labels)
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[nerdctlAnonymousVolumeLabel] = ""
 	}
 	if err := validateObjectID(name); err != nil {
 		return Volume{}, err

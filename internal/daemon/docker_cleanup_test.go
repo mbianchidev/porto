@@ -81,6 +81,14 @@ func waitForTestCleanup(t *testing.T, server *Server) app.DockerCleanupStatus {
 
 func TestDockerCleanupRunNowIsAsynchronousAndIndependentOfScheduling(t *testing.T) {
 	server, mux := cleanupServerFixture(t)
+	settings, err := server.store.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	settings.DockerAutoPruneEnabled = false
+	if err := server.store.SetSettings(context.Background(), settings); err != nil {
+		t.Fatal(err)
+	}
 	started := make(chan struct{})
 	release := make(chan struct{})
 	canceled := make(chan struct{})
@@ -139,7 +147,7 @@ func TestDockerCleanupRunNowIsAsynchronousAndIndependentOfScheduling(t *testing.
 	}
 }
 
-func TestScheduledDockerCleanupReportsFailuresAndRetainsWeeklyCadence(t *testing.T) {
+func TestScheduledDockerCleanupReportsFailuresAndRetainsItsCadence(t *testing.T) {
 	server, mux := cleanupServerFixture(t)
 	settings, err := server.store.Settings(context.Background())
 	if err != nil {
@@ -180,7 +188,7 @@ func TestScheduledDockerCleanupReportsFailuresAndRetainsWeeklyCadence(t *testing
 	}
 	server.checkScheduledDockerCleanup(context.Background())
 	if calls.Load() != 1 {
-		t.Fatal("missed weeks or a failure caused an immediate cleanup retry loop")
+		t.Fatal("missed intervals or a failure caused an immediate cleanup retry loop")
 	}
 	response := httptest.NewRecorder()
 	mux.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/docker/cleanup", nil))

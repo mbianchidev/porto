@@ -193,13 +193,13 @@ func TestDockerContainerResizeAndCheckpointRoutes(t *testing.T) {
 func TestDockerImageHistoryAndAllImages(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string][]byte{
 		"nerdctl history --no-trunc --human=false --format {{json .}} example.test/demo:v1": []byte("{\"Snapshot\":\"sha256:layer\",\"CreatedAt\":\"2026-01-01T00:00:00Z\",\"CreatedBy\":\"COPY synthetic /data\",\"Size\":\"42\",\"Comment\":\"synthetic\"}\n"),
-		"nerdctl image inspect example.test/demo:v1":                                        []byte(`[{"Id":"sha256:config","RepoTags":["example.test/demo:v1"]}]`),
+		"nerdctl image inspect example.test/demo:v1":                                        []byte(`[{"Id":"sha256:config","RepoTags":["example.test/demo:v1"],"RepoDigests":["example.test/demo@sha256:target"]}]`),
 		"nerdctl images --digests --no-trunc --format {{json .}}":                           nil,
 		"nerdctl image rm example.test/demo:v1":                                             nil,
 	}}
 	handler := NewAPI(New(runner), "")
 	for _, test := range []struct{ method, path, expected string }{
-		{"GET", "/images/example.test%2Fdemo:v1/history", `"Id":"sha256:config","Created":1767225600`},
+		{"GET", "/images/example.test%2Fdemo:v1/history", `"Id":"sha256:target","Created":1767225600`},
 		{"GET", "/images/json?all=1", "[]"},
 		{"DELETE", "/images/example.test%2Fdemo:v1?noprune=1", `"Deleted":"example.test/demo:v1"`},
 	} {

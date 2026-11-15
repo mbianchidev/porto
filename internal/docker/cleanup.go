@@ -23,13 +23,19 @@ const maxCleanupOutput = 32 * 1024
 
 var imagePrunePlatformWarning = regexp.MustCompile(`^(?:time="[^"]+" )?level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:[0-9a-f]{64}: not found"$`)
 
+// CleanupUnused removes unused runtime data in dependency order: stopped
+// standalone containers first, so the build cache, image and anonymous-volume
+// passes can release what they referenced, then trims the engine's host disk.
 func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, error) {
 	result := app.NewDockerCleanupResult()
-	ctx, release, err := m.BeginDataTransaction(ctx)
+	ctx, cancel := context.WithTimeout(ctx, app.DockerCleanupTimeout)
+	defer cancel()
+	transaction, release, err := m.BeginDataTransaction(ctx)
 	if err != nil {
 		return result, err
 	}
-	defer release()
+	releaseTransaction := sync.OnceFunc(release)
+	defer releaseTransaction()
 	if m.nativeGuard != nil {
 		if err := m.nativeGuard("image", "*"); err != nil {
 			return result, err
@@ -39,9 +45,7 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 		return result, fmt.Errorf("%w: Porto runtime cleanup is already running", ErrConflict)
 	}
 	defer m.cleanupMu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, app.DockerCleanupTimeout)
-	defer cancel()
-	backend, err := m.backend(ctx)
+	backend, err := m.backend(transaction)
 	if err != nil {
 		return result, err
 	}
@@ -56,16 +60,34 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 	}
 	defer connection.Close()
 	client := controlapi.NewControlClient(connection)
-	probeContext, cancelProbe := context.WithTimeout(ctx, 20*time.Second)
+	probeContext, cancelProbe := context.WithTimeout(transaction, 20*time.Second)
 	err = ensureBuildKitIdle(probeContext, client)
 	cancelProbe()
 	if err != nil {
 		return result, err
 	}
+	disk := m.measureHostDisk(ctx, backend)
+	runtimeErr := m.pruneUnusedRuntime(transaction, backend, client, &result)
+	// Trimming only touches the VM's free blocks, so runtime operations may resume.
+	releaseTransaction()
+	if ctx.Err() != nil {
+		return result, errors.Join(runtimeErr, context.Cause(ctx))
+	}
+	var diskErr error
+	result.HostDisk, diskErr = m.reclaimHostDisk(ctx, disk)
+	return result, errors.Join(runtimeErr, diskErr)
+}
+
+func (m *Manager) pruneUnusedRuntime(ctx context.Context, backend commandBackend, client controlapi.ControlClient, result *app.DockerCleanupResult) error {
+	var containersErr error
+	result.Containers, containersErr = m.pruneStoppedContainers(ctx, time.Now())
+	if ctx.Err() != nil {
+		return errors.Join(containersErr, context.Cause(ctx))
+	}
 	var cacheErr error
 	result.BuildCache, cacheErr = pruneBuildCache(ctx, client)
 	if ctx.Err() != nil || status.Code(cacheErr) == codes.Canceled || status.Code(cacheErr) == codes.DeadlineExceeded {
-		return result, errors.Join(cacheErr, context.Cause(ctx))
+		return errors.Join(containersErr, cacheErr, context.Cause(ctx))
 	}
 	if backend.limaInstance != "" {
 		backend.prefix = []string{"shell", "--workdir=/", backend.limaInstance, "--", "nerdctl"}
@@ -73,10 +95,15 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 	var output imagePruneOutput
 	imageErr := m.runBackendStreamingInput(
 		ctx, backend, app.DockerCleanupTimeout, "prune unused Porto images", nil, nil, output.write,
-		"image", "prune", "--all", "--force",
+		"image", "prune", "--all", "--force", "--filter", "until="+app.DockerCleanupMinimumAge.String(),
 	)
 	result.Images, imageErr = output.result(imageErr)
-	return result, errors.Join(cacheErr, imageErr)
+	if ctx.Err() != nil {
+		return errors.Join(containersErr, cacheErr, imageErr, context.Cause(ctx))
+	}
+	var volumesErr error
+	result.Volumes, volumesErr = m.pruneAnonymousVolumes(ctx)
+	return errors.Join(containersErr, cacheErr, imageErr, volumesErr)
 }
 
 func pruneBuildCache(ctx context.Context, client controlapi.ControlClient) (result app.DockerCleanupStep, err error) {

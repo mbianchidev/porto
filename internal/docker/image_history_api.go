@@ -56,7 +56,7 @@ func (a *API) imageHistory(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	if len(result) > 0 {
-		document, err := a.manager.inspect(r.Context(), "image", normalizeNerdctlReference(id))
+		document, err := a.manager.InspectImage(r.Context(), id, "")
 		if err != nil {
 			writeDockerError(w, err)
 			return

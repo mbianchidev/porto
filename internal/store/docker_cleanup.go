@@ -41,6 +41,7 @@ FROM docker_cleanup_runs ORDER BY id DESC LIMIT 10`)
 		if err := json.Unmarshal([]byte(result), &run.Result); err != nil {
 			return status, fmt.Errorf("decode Docker cleanup result %d: %w", run.ID, err)
 		}
+		run.Result.Normalize()
 		status.Runs = append(status.Runs, run)
 	}
 	return status, rows.Err()
@@ -170,6 +171,33 @@ WHERE status='running'`, now.UTC().Format(time.RFC3339Nano),
 		if err := scheduleDockerCleanup(ctx, tx, enabled == 1, now); err != nil {
 			return err
 		}
+	}
+	return tx.Commit()
+}
+
+// dockerCleanupDefaultsVersion 1 made daily cleanup the default. Installations
+// created while cleanup was opt-in are enabled once; later choices persist.
+const dockerCleanupDefaultsVersion = 1
+
+func (s *Store) applyDockerCleanupDefaults(now time.Time) error {
+	tx, err := s.db.Begin()
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var version int
+	if err := tx.QueryRow(`SELECT defaults_version FROM docker_cleanup_schedule WHERE id=1`).Scan(&version); err != nil {
+		return fmt.Errorf("read Docker cleanup defaults: %w", err)
+	}
+	if version >= dockerCleanupDefaultsVersion {
+		return nil
+	}
+	if _, err := tx.Exec(`UPDATE settings SET docker_auto_prune_enabled=1 WHERE id=1`); err != nil {
+		return fmt.Errorf("enable default Docker cleanup: %w", err)
+	}
+	if _, err := tx.Exec(`UPDATE docker_cleanup_schedule SET next_run_at=?,defaults_version=? WHERE id=1`,
+		now.Add(app.DockerCleanupInterval).Format(time.RFC3339Nano), dockerCleanupDefaultsVersion); err != nil {
+		return fmt.Errorf("schedule default Docker cleanup: %w", err)
 	}
 	return tx.Commit()
 }

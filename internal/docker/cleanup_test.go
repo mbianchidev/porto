@@ -2,7 +2,10 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"sync"
@@ -53,7 +56,7 @@ func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 	imageCalls := 0
 	runner := &fakeRunner{streamer: func(command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 		imageCalls++
-		if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"image", "prune", "--all", "--force"}) {
+		if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"image", "prune", "--all", "--force", "--filter", "until=24h0m0s"}) {
 			return nil, errors.New("cleanup must invoke only native unused-image pruning")
 		}
 		for _, data := range []string{
@@ -82,6 +85,10 @@ func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 	if result.Images.Status != app.CleanupSucceeded || result.Images.ItemsRemoved != 2 ||
 		result.Images.BytesReclaimed != nil || !strings.Contains(result.Images.Output, "example/unused:two") {
 		t.Fatalf("incorrect image result: %+v", result.Images)
+	}
+	if result.Containers.Status != app.CleanupSucceeded || result.Volumes.Status != app.CleanupSucceeded ||
+		result.HostDisk.Status != app.CleanupSkipped {
+		t.Fatalf("cleanup skipped a runtime step or claimed a host disk it does not own: %+v", result)
 	}
 }
 
@@ -231,12 +238,24 @@ func TestCleanupUnusedCancellationDoesNotStartImagePrune(t *testing.T) {
 }
 
 func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
+	directory := filepath.Join(t.TempDir(), engineInstanceName)
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, "disk"), []byte("synthetic disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	listing, err := json.Marshal(map[string]string{"name": engineInstanceName, "status": "Running", "dir": directory})
+	if err != nil {
+		t.Fatal(err)
+	}
 	runner := &fakeRunner{outputs: map[string][]byte{
-		"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+		"limactl list porto-engine --json": listing,
 		`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
+		"limactl shell --workdir=/ porto-engine -- sudo -n fstrim --all --verbose":         []byte("/: 1 MiB (1048576 bytes) trimmed on /dev/vda1\n"),
 	}}
 	runner.streamer = func(command runtimes.Command, _ func(runtimes.OutputChunk) error) ([]byte, error) {
-		if command.Name != "limactl" || strings.Join(command.Args, " ") != "shell --workdir=/ porto-engine -- nerdctl image prune --all --force" {
+		if command.Name != "limactl" || strings.Join(command.Args, " ") != "shell --workdir=/ porto-engine -- nerdctl image prune --all --force --filter until=24h0m0s" {
 			return nil, errors.New("cleanup escaped the owned backend or used the host working directory")
 		}
 		return nil, nil
@@ -247,8 +266,27 @@ func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
 	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := manager.CleanupUnused(context.Background()); err != nil {
+	result, err := manager.CleanupUnused(context.Background())
+	if err != nil {
 		t.Fatal(err)
+	}
+	if result.HostDisk.Status != app.CleanupSucceeded || result.HostDisk.BytesReclaimed == nil ||
+		!strings.Contains(result.HostDisk.Output, "1048576 bytes") {
+		t.Fatalf("owned engine disk was not trimmed and measured: %+v", result.HostDisk)
+	}
+}
+
+func TestCleanupUnusedReportsEngineDisksWithoutDiscardAsSkipped(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "disk")
+	if err := os.WriteFile(path, []byte("synthetic disk"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	manager := New(&fakeRunner{errors: map[string]error{
+		"limactl shell --workdir=/ porto-engine -- sudo -n fstrim --all --verbose": errors.New("fstrim: /: the discard operation is not supported"),
+	}})
+	step, err := manager.reclaimHostDisk(context.Background(), hostDiskTarget{instance: engineInstanceName, path: path})
+	if err != nil || step.Status != app.CleanupSkipped || step.Error != "" || !strings.Contains(step.Output, "does not support discard") {
+		t.Fatalf("unsupported discard was not reported as skipped: %+v, %v", step, err)
 	}
 }
 

@@ -3,6 +3,8 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -87,4 +89,37 @@ func (filters dockerFilters) matchesLabels(labels map[string]string) bool {
 		}
 	}
 	return true
+}
+
+// unsupportedKey returns the first filter Porto cannot evaluate. Ignoring such
+// a filter would silently widen a listing that scripts may feed into removal.
+func (filters dockerFilters) unsupportedKey(supported ...string) string {
+	for _, key := range slices.Sorted(maps.Keys(filters)) {
+		if !slices.Contains(supported, key) {
+			return key
+		}
+	}
+	return ""
+}
+
+// boolean reads a single-valued Docker boolean filter such as dangling.
+func (filters dockerFilters) boolean(key string) (value, set bool, err error) {
+	for candidate, enabled := range filters[key] {
+		if !enabled {
+			continue
+		}
+		var parsed bool
+		switch strings.ToLower(strings.TrimSpace(candidate)) {
+		case "true", "1":
+			parsed = true
+		case "false", "0":
+		default:
+			return false, false, fmt.Errorf("invalid filter '%s=%s'", key, candidate)
+		}
+		if set && parsed != value {
+			return false, false, fmt.Errorf("invalid filter '%s': conflicting values", key)
+		}
+		value, set = parsed, true
+	}
+	return value, set, nil
 }
