@@ -44,4 +44,4 @@ runs:
         path: ${{ env.PORTO_CI_APT_CACHE }}
         key: porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ steps.locations.outputs.snapshot }}
         restore-keys: |
-          porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-${{ steps.locations.outputs.snapshot }}-
+          porto-ci-apt-v1-${{ runner.os }}-${{ runner.arch }}-${{ inputs.target }}-

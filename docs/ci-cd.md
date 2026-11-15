@@ -784,11 +784,20 @@ This removes external snapshot availability from the 20-minute VM boot and
 five-minute engine-configuration paths. Repeated snapshot HTTP 5xx failures had
 consumed both deadlines, including after successful client workflows. An
 unavailable input now fails preparation before launching an expensive guest,
-with its exact failed artifact reported. Job caches contain only immutable
-snapshot inputs, keyed by snapshot day, host/guest architecture and fixture
-target, not incidental bootstrap-source edits. A same-snapshot restore prefix
-also accepts older compatible keys. Index and package content is reverified on
-reuse, and newly required content is fetched by its authoritative hash.
+with its exact failed artifact reported. Hosted runners can receive the
+largest 25-40 MB packages at well under 100 KB/s, so a fixed five-minute
+per-object deadline aborted slow but progressing transfers. Each object now
+retries only after 60 seconds without received bytes, resumes the verified
+partial download with an HTTP range, and keeps a 15-minute per-object bound.
+The first failed object stops its sibling transfers. Job caches contain only
+immutable snapshot inputs, keyed by snapshot day, host/guest architecture and
+fixture target, not incidental bootstrap-source edits. Restore falls back to
+the newest earlier snapshot day for the same target, so a cold default-branch
+push, which cannot read pull-request caches, fetches only new signed releases,
+changed indexes and changed packages. Entries unused for a day are pruned after
+successful preparation, bounding cache growth. Index and package content is
+reverified on reuse, and newly required content is fetched by its authoritative
+hash.
 Corrupt cached inputs fail rather
 than being silently accepted or repaired. The owned repository closes during
 fixture cleanup, including failed installed-desktop startup.
