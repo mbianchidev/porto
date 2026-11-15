@@ -132,8 +132,9 @@ Porto cleans up unused runtime data daily by default. Each run removes
 standalone containers stopped for more than 24 hours, unused BuildKit cache,
 unused images older than 24 hours, and unused anonymous volumes, then trims the
 engine VM disk so its host file shrinks. Compose service containers, Kubernetes
-nodes, Resource Saver workloads, named volumes and images used by any container
-are kept, so stopped apps keep their data and can start again. Later builds may
+nodes, Resource Saver workloads, checkpoints, named volumes and images used by
+any container are kept, so stopped apps keep their data and can start again.
+Docker commands keep working while cleanup runs. Later builds may
 need to download or rebuild removed images and cache.
 
 Turn the schedule off, or choose **Run now** for a one-off cleanup, in

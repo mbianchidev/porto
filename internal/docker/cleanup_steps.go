@@ -52,7 +52,14 @@ func (m *Manager) pruneStoppedContainers(ctx context.Context, now time.Time) (st
 	if err != nil {
 		return step, fmt.Errorf("list stopped containers: %w", err)
 	}
-	sleeping := m.resourceSaverMembers()
+	images, err := m.imagesWithTimeout(ctx, max(m.timeout, imageTransferTimeout))
+	if err != nil {
+		return step, fmt.Errorf("list container checkpoints: %w", err)
+	}
+	retained := m.resourceSaverMembers()
+	for id := range checkpointedContainers(images) {
+		retained[id] = true
+	}
 	cutoff := now.Add(-app.DockerCleanupMinimumAge)
 	kept := 0
 	var failures []error
@@ -60,7 +67,7 @@ func (m *Manager) pruneStoppedContainers(ctx context.Context, now time.Time) (st
 		if !stoppedContainer(container) {
 			continue
 		}
-		if !m.removableStoppedContainer(ctx, container, sleeping, cutoff) {
+		if !m.removableStoppedContainer(ctx, container, retained, cutoff) {
 			kept++
 			continue
 		}
@@ -76,7 +83,7 @@ func (m *Manager) pruneStoppedContainers(ctx context.Context, now time.Time) (st
 		output.line("Removed stopped container %s (%s)", name, shortContainerID(container.ID))
 	}
 	if kept > 0 {
-		output.line("Kept %d stopped container(s): Compose services, Kubernetes nodes, Resource Saver workloads, Porto helpers, and containers stopped less than %s ago are never removed.", kept, app.DockerCleanupMinimumAge)
+		output.line("Kept %d stopped container(s): Compose services, Kubernetes nodes, Resource Saver workloads, Porto helpers, checkpointed containers, and containers stopped less than %s ago are never removed.", kept, app.DockerCleanupMinimumAge)
 	}
 	return step, errors.Join(failures...)
 }
@@ -89,10 +96,12 @@ func stoppedContainer(container Container) bool {
 	return false
 }
 
-func (m *Manager) removableStoppedContainer(ctx context.Context, container Container, sleeping map[string]bool, cutoff time.Time) bool {
+// removableStoppedContainer reports whether cleanup may remove a stopped
+// container. retained holds Resource Saver members and checkpointed containers.
+func (m *Manager) removableStoppedContainer(ctx context.Context, container Container, retained map[string]bool, cutoff time.Time) bool {
 	if container.ComposeProject != "" || container.Labels["com.docker.compose.project"] != "" ||
-		managedClusterContainer(container) ||
-		sleeping[container.ID] || sleeping[strings.TrimPrefix(container.Name, "/")] ||
+		kubernetesNodeContainer(container) ||
+		retained[container.ID] || retained[strings.TrimPrefix(container.Name, "/")] ||
 		container.Labels[resourceSaverOwnerLabel] != "" || container.Labels[transferOwnerLabel] != "" {
 		return false
 	}
@@ -103,6 +112,13 @@ func (m *Manager) removableStoppedContainer(ctx context.Context, container Conta
 		return false
 	}
 	return m.nativeGuard == nil || m.nativeGuard("container", container.Name) == nil
+}
+
+// kubernetesNodeContainer recognizes node containers of kind, Porto, k3d and
+// minikube clusters, whose state would be lost if a stopped node were removed.
+func kubernetesNodeContainer(container Container) bool {
+	return managedClusterContainer(container) || container.Labels["k3d.cluster"] != "" ||
+		container.Labels["name.minikube.sigs.k8s.io"] != "" || container.Labels["created_by.minikube.sigs.k8s.io"] != ""
 }
 
 // containerLastActiveBefore uses the latest exit, update or lifecycle time.
@@ -122,6 +138,20 @@ func shortContainerID(id string) string {
 		return id[:12]
 	}
 	return id
+}
+
+// checkpointedContainers returns the IDs of containers with saved checkpoints,
+// so cleanup keeps the containers that restoring those checkpoints needs.
+func checkpointedContainers(images []Image) map[string]bool {
+	sources := make(map[string]bool)
+	for _, image := range images {
+		if source, ok := strings.CutPrefix(image.Name, checkpointImagePrefix); ok {
+			if id, _, found := strings.Cut(source, ":"); found && id != "" {
+				sources[id] = true
+			}
+		}
+	}
+	return sources
 }
 
 func (m *Manager) resourceSaverMembers() map[string]bool {

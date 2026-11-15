@@ -12,6 +12,8 @@ import (
 )
 
 const (
+	// checkpointImagePrefix names the containerd images that hold container checkpoints.
+	checkpointImagePrefix       = "porto.local/checkpoints/"
 	checkpointSourceIDLabel     = "io.porto.checkpoint.source-id"
 	checkpointSourceLabelsLabel = "io.porto.checkpoint.source-labels"
 	checkpointRuntimeLabel      = "io.porto.checkpoint.runtime"
@@ -29,7 +31,7 @@ func (r *grpcContainerRuntime) checkpointContainer(
 		return nil, containerdOperationError("load metadata for checkpointing", id, err)
 	}
 	if strings.TrimSpace(name) == "" {
-		name = fmt.Sprintf("porto.local/checkpoints/%s:%d", id, time.Now().UTC().UnixNano())
+		name = fmt.Sprintf("%s%s:%d", checkpointImagePrefix, id, time.Now().UTC().UnixNano())
 	}
 	options = append(options,
 		containerd.WithCheckpointTask,

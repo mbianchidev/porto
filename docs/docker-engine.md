@@ -687,16 +687,19 @@ Both paths run these steps, in order, against Porto's configured backend:
 
 1. **Stopped standalone containers.** Exited containers whose latest exit,
    update or lifecycle time is more than 24 hours old are removed. Compose
-   service containers (so `docker compose start` keeps working), Kubernetes
-   nodes, Resource Saver workloads, Porto volume-transfer helpers and
-   containers with active native file access are kept. A container without a
-   known stop time is kept.
+   service containers (so `docker compose start` keeps working), kind, k3d,
+   minikube and Porto Kubernetes nodes, Resource Saver workloads, containers
+   with saved checkpoints, Porto volume-transfer helpers and containers with
+   active native file access are kept. A container without a known stop time
+   is kept.
 2. **BuildKit cache.** All unused records are pruned. The `builder` and `buildx`
    commands address the same Porto BuildKit cache, so it is pruned once.
-3. **Images.** Namespace-scoped `nerdctl image prune --all --force --filter
-   until=24h0m0s` removes unused image references, including tagged ones,
-   whose local record is more than 24 hours old. Images referenced by any
-   running or stopped container are kept.
+3. **Images.** Porto removes unused image references, including tagged ones,
+   whose local record is more than 24 hours old, with namespace-scoped
+   `nerdctl image rm` and no `--force`. An image is kept when any running or
+   stopped container references it by name or image ID. Checkpoint images
+   (`porto.local/checkpoints/...`) are always kept; `nerdctl image prune` would
+   delete them because no container names them.
 4. **Anonymous volumes.** Volumes nobody named (labeled anonymous by nerdctl or
    Docker, or carrying the random 64-hex name both engines generate for
    `-v /path` mounts) are removed when no container references them. Named
@@ -710,9 +713,11 @@ Both paths run these steps, in order, against Porto's configured backend:
 Networks, other Docker contexts, and VMs are not removed. Porto checks for
 active builds before starting and reports a skipped run rather than
 interfering with a build. Concurrent manual and scheduled requests cannot
-start overlapping cleanup runs. Docker operations that change runtime state
-wait for the container, cache, image and volume steps; trimming the host disk
-does not block them.
+start overlapping cleanup runs. Docker commands keep working during cleanup:
+every removal refuses an object that gained a container or reference
+meanwhile, and that refusal is reported as a failed item. Storage transfers,
+restores, migrations and **Containers → Storage** cleanup cannot overlap the
+container, cache, image and volume steps and report a conflict instead.
 
 Accepted runs continue when the Settings page is closed. The daemon records
 the trigger, start/end times, outcome and each step's removal count, reported

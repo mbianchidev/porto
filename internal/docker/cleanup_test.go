@@ -48,16 +48,41 @@ func (s *cleanupBuildKitServer) Prune(request *controlapi.PruneRequest, stream g
 	return s.pruneErr
 }
 
+const cleanupImageListArgs = "images --digests --no-trunc --format {{json .}}"
+
+// cleanupImageList lists two removable images and three that cleanup keeps:
+// one used by a container, a Porto checkpoint, and a recently pulled image.
+func cleanupImageList() []byte {
+	old := "2026-01-01 00:00:00 +0000 UTC"
+	recent := time.Now().UTC().Format("2006-01-02 15:04:05 -0700 MST")
+	return []byte(strings.Join([]string{
+		`{"ID":"sha256:unused-one","Repository":"example/unused","Tag":"one","Name":"docker.io/example/unused:one","CreatedAt":"` + old + `"}`,
+		`{"ID":"sha256:unused-two","Repository":"example/unused","Tag":"two","Name":"docker.io/example/unused:two","CreatedAt":"` + old + `"}`,
+		`{"ID":"sha256:used","Repository":"example/used","Tag":"latest","Name":"docker.io/example/used:latest","CreatedAt":"` + old + `"}`,
+		`{"ID":"sha256:checkpoint","Repository":"porto.local/checkpoints/stopped-app","Tag":"before-upgrade","Name":"porto.local/checkpoints/stopped-app:before-upgrade","CreatedAt":"` + old + `"}`,
+		`{"ID":"sha256:recent","Repository":"example/recent","Tag":"latest","Name":"docker.io/example/recent:latest","CreatedAt":"` + recent + `"}`,
+	}, "\n") + "\n")
+}
+
+const cleanupContainerList = `{"ID":"running-app","Names":"running-app","Image":"docker.io/example/used:latest","State":"running"}` + "\n"
+
+func cleanupOutputs() map[string][]byte {
+	return map[string][]byte{
+		"nerdctl " + cleanupImageListArgs:              cleanupImageList(),
+		"nerdctl ps -a --no-trunc --format {{json .}}": []byte(cleanupContainerList),
+	}
+}
+
 func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 	service := &cleanupBuildKitServer{records: []*controlapi.UsageRecord{
 		{ID: "synthetic-cache-1", Size: 1024},
 		{ID: "synthetic-cache-2", Size: 2048},
 	}}
 	imageCalls := 0
-	runner := &fakeRunner{streamer: func(command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+	runner := &fakeRunner{outputs: cleanupOutputs(), streamer: func(command runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 		imageCalls++
-		if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"image", "prune", "--all", "--force", "--filter", "until=24h0m0s"}) {
-			return nil, errors.New("cleanup must invoke only native unused-image pruning")
+		if command.Name != "nerdctl" || !reflect.DeepEqual(command.Args, []string{"image", "rm", "docker.io/example/unused:one", "docker.io/example/unused:two"}) {
+			return nil, errors.New("cleanup must remove exactly the unused, old, non-checkpoint images without force: " + strings.Join(command.Args, " "))
 		}
 		for _, data := range []string{
 			"Deleted Images:\nUntag",
@@ -83,7 +108,8 @@ func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 		t.Fatalf("incorrect build-cache result: %+v", result.BuildCache)
 	}
 	if result.Images.Status != app.CleanupSucceeded || result.Images.ItemsRemoved != 2 ||
-		result.Images.BytesReclaimed != nil || !strings.Contains(result.Images.Output, "example/unused:two") {
+		result.Images.BytesReclaimed != nil || !strings.Contains(result.Images.Output, "example/unused:two") ||
+		!strings.Contains(result.Images.Output, "Kept 3 image reference(s)") {
 		t.Fatalf("incorrect image result: %+v", result.Images)
 	}
 	if result.Containers.Status != app.CleanupSucceeded || result.Volumes.Status != app.CleanupSucceeded ||
@@ -95,7 +121,7 @@ func TestCleanupUnusedRunsOneCachePassAndReportsImageReferences(t *testing.T) {
 func TestCleanupUnusedRetainsPlatformWarningsWithoutFailing(t *testing.T) {
 	warning := `time="2026-01-01T00:00:00Z" level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:` +
 		strings.Repeat("a", 64) + `: not found"`
-	manager := New(&fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+	manager := New(&fakeRunner{outputs: cleanupOutputs(), streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 		for _, chunk := range []runtimes.OutputChunk{
 			{Stream: "stderr", Data: []byte(warning[:70])},
 			{Stream: "stdout", Data: []byte("Deleted Images:\nUntagged: example/foreign-platform:unused\n")},
@@ -155,8 +181,8 @@ func TestCleanupUnusedRetainsPartialResultsAndSoftFailures(t *testing.T) {
 				records:  []*controlapi.UsageRecord{{ID: "synthetic-cache", Size: 4096}},
 				pruneErr: test.cacheError,
 			}
-			manager := New(&fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
-				if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("Deleted Images:\nUntagged: example/unused:one\n" + test.stdout)}); err != nil {
+			manager := New(&fakeRunner{outputs: cleanupOutputs(), streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+				if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("Untagged: docker.io/example/unused:one@sha256:unused-one\n" + test.stdout)}); err != nil {
 					return nil, err
 				}
 				if test.stderr != "" {
@@ -253,9 +279,10 @@ func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
 		"limactl list porto-engine --json":                                                listing,
 		`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
 		"limactl shell --workdir=/ porto-engine -- sudo -n fstrim --all --verbose":        []byte("/: 1 MiB (1048576 bytes) trimmed on /dev/vda1\n"),
+		"limactl shell porto-engine -- nerdctl " + cleanupImageListArgs:                   cleanupImageList(),
 	}}
 	runner.streamer = func(command runtimes.Command, _ func(runtimes.OutputChunk) error) ([]byte, error) {
-		if command.Name != "limactl" || strings.Join(command.Args, " ") != "shell --workdir=/ porto-engine -- nerdctl image prune --all --force --filter until=24h0m0s" {
+		if command.Name != "limactl" || !strings.HasPrefix(strings.Join(command.Args, " "), "shell --workdir=/ porto-engine -- nerdctl image rm docker.io/example/unused:one ") {
 			return nil, errors.New("cleanup escaped the owned backend or used the host working directory")
 		}
 		return nil, nil
@@ -302,7 +329,7 @@ func TestCleanupUnusedDoesNotInventUnknownCacheSizes(t *testing.T) {
 
 func TestCleanupUnusedBoundsOutputWithoutLosingRemovalCounts(t *testing.T) {
 	const references = 2000
-	manager := New(&fakeRunner{streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
+	manager := New(&fakeRunner{outputs: cleanupOutputs(), streamer: func(_ runtimes.Command, emit func(runtimes.OutputChunk) error) ([]byte, error) {
 		for range references {
 			if err := emit(runtimes.OutputChunk{Stream: "stdout", Data: []byte("Untagged: example/synthetic-image:unused\n")}); err != nil {
 				return nil, err
@@ -348,7 +375,8 @@ func TestCleanupRemovesOnlyStandaloneContainersStoppedLongEnough(t *testing.T) {
 		}
 		return nil
 	})
-	sleeping := map[string]bool{"sleeping-app": true}
+	retained := checkpointedContainers([]Image{{Name: checkpointImagePrefix + "checkpointed-app:before-upgrade"}})
+	retained["sleeping-app"] = true
 	cutoff := now.Add(-app.DockerCleanupMinimumAge)
 	for _, test := range []struct {
 		container Container
@@ -360,11 +388,14 @@ func TestCleanupRemovesOnlyStandaloneContainersStoppedLongEnough(t *testing.T) {
 		{Container{Name: "unknown-stop-time", State: "exited", CreatedAt: old}, false},
 		{Container{Name: "compose-service", State: "exited", ExitAt: old, ComposeProject: "app"}, false},
 		{Container{Name: "kind-node", State: "exited", ExitAt: old, Labels: map[string]string{"io.x-k8s.kind.cluster": "dev"}}, false},
+		{Container{Name: "k3d-node", State: "exited", ExitAt: old, Labels: map[string]string{"k3d.cluster": "dev"}}, false},
+		{Container{Name: "minikube", State: "exited", ExitAt: old, Labels: map[string]string{"name.minikube.sigs.k8s.io": "minikube"}}, false},
+		{Container{ID: "checkpointed-app", Name: "checkpointed", State: "exited", ExitAt: old}, false},
 		{Container{Name: "sleeping-app", State: "exited", ExitAt: old}, false},
 		{Container{Name: "porto-cluster-node", State: "exited", ExitAt: old}, false},
 		{Container{Name: "transfer-helper", State: "exited", ExitAt: old, Labels: map[string]string{transferOwnerLabel: "synthetic"}}, false},
 	} {
-		if got := manager.removableStoppedContainer(context.Background(), test.container, sleeping, cutoff); got != test.remove {
+		if got := manager.removableStoppedContainer(context.Background(), test.container, retained, cutoff); got != test.remove {
 			t.Errorf("%s removable = %t, want %t", test.container.Name, got, test.remove)
 		}
 	}

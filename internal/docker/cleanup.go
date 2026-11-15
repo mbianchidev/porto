@@ -8,6 +8,7 @@ import (
 	"math"
 	"net"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -26,11 +27,13 @@ var imagePrunePlatformWarning = regexp.MustCompile(`^(?:time="[^"]+" )?level=war
 // CleanupUnused removes unused runtime data in dependency order: stopped
 // standalone containers first, so the build cache, image and anonymous-volume
 // passes can release what they referenced, then trims the engine's host disk.
+// It shares the runtime read gate with ordinary Docker operations, which keep
+// working; every removal refuses objects that gained a reference meanwhile.
 func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, error) {
 	result := app.NewDockerCleanupResult()
 	ctx, cancel := context.WithTimeout(ctx, app.DockerCleanupTimeout)
 	defer cancel()
-	transaction, release, err := m.BeginDataTransaction(ctx)
+	transaction, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return result, err
 	}
@@ -68,7 +71,7 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 	}
 	disk := m.measureHostDisk(ctx, backend)
 	runtimeErr := m.pruneUnusedRuntime(transaction, backend, client, &result)
-	// Trimming only touches the VM's free blocks, so runtime operations may resume.
+	// Trimming only touches the VM's free blocks, so storage transactions may resume.
 	releaseTransaction()
 	if ctx.Err() != nil {
 		return result, errors.Join(runtimeErr, context.Cause(ctx))
@@ -89,21 +92,75 @@ func (m *Manager) pruneUnusedRuntime(ctx context.Context, backend commandBackend
 	if ctx.Err() != nil || status.Code(cacheErr) == codes.Canceled || status.Code(cacheErr) == codes.DeadlineExceeded {
 		return errors.Join(containersErr, cacheErr, context.Cause(ctx))
 	}
-	if backend.limaInstance != "" {
-		backend.prefix = []string{"shell", "--workdir=/", backend.limaInstance, "--", "nerdctl"}
-	}
-	var output imagePruneOutput
-	imageErr := m.runBackendStreamingInput(
-		ctx, backend, app.DockerCleanupTimeout, "prune unused Porto images", nil, nil, output.write,
-		"image", "prune", "--all", "--force", "--filter", "until="+app.DockerCleanupMinimumAge.String(),
-	)
-	result.Images, imageErr = output.result(imageErr)
+	var imageErr error
+	result.Images, imageErr = m.pruneUnusedImages(ctx, backend, time.Now())
 	if ctx.Err() != nil {
 		return errors.Join(containersErr, cacheErr, imageErr, context.Cause(ctx))
 	}
 	var volumesErr error
 	result.Volumes, volumesErr = m.pruneAnonymousVolumes(ctx)
 	return errors.Join(containersErr, cacheErr, imageErr, volumesErr)
+}
+
+// pruneUnusedImages removes image references no container uses by name or
+// ID. Unlike `nerdctl image prune`, it keeps Porto checkpoint images, which no
+// container names, and references created in the last minimum-age window.
+// `nerdctl image rm` without --force still refuses an image that gained a user.
+func (m *Manager) pruneUnusedImages(ctx context.Context, backend commandBackend, now time.Time) (app.DockerCleanupStep, error) {
+	step := app.DockerCleanupStep{Status: app.CleanupFailed}
+	images, err := m.imagesWithTimeout(ctx, max(m.timeout, imageTransferTimeout))
+	if err != nil {
+		err = fmt.Errorf("list images for cleanup: %w", err)
+		step.Error = err.Error()
+		return step, err
+	}
+	containers, err := m.storageContainers(ctx)
+	if err != nil {
+		err = fmt.Errorf("list image references for cleanup: %w", err)
+		step.Error = err.Error()
+		return step, err
+	}
+	cutoff := now.Add(-app.DockerCleanupMinimumAge)
+	candidates := make([]string, 0)
+	listed := make(map[string]bool)
+	kept := 0
+	for _, image := range images {
+		if image.Name == "" || listed[image.Name] {
+			continue
+		}
+		listed[image.Name] = true
+		created := parseDockerTimestamp(image.CreatedAt)
+		if strings.HasPrefix(image.Name, checkpointImagePrefix) || created.IsZero() || !created.Before(cutoff) ||
+			slices.ContainsFunc(containers, func(container Container) bool { return containerUsesImage(container, image) }) {
+			kept++
+			continue
+		}
+		candidates = append(candidates, image.Name)
+	}
+	var output imagePruneOutput
+	if kept > 0 {
+		output.append(&output.stdout, fmt.Sprintf("Kept %d image reference(s): used by a container, holding a Porto checkpoint, or created less than %s ago.\n", kept, app.DockerCleanupMinimumAge))
+	}
+	var runErr error
+	if len(candidates) > 0 {
+		if backend.limaInstance != "" {
+			backend.prefix = []string{"shell", "--workdir=/", backend.limaInstance, "--", "nerdctl"}
+		}
+		runErr = m.runBackendStreamingInput(
+			ctx, backend, app.DockerCleanupTimeout, "remove unused Porto images", nil, nil, output.write,
+			append([]string{"image", "rm"}, candidates...)...,
+		)
+	}
+	return output.result(runErr)
+}
+
+func containerUsesImage(container Container, image Image) bool {
+	for _, reference := range []string{container.Image, container.ImageID, container.Labels[nerdctlImageDigestLabel]} {
+		if imageMatchesIdentifier(image, reference) || reference != "" && imageMatchesIdentifier(image, normalizeNerdctlReference(reference)) {
+			return true
+		}
+	}
+	return false
 }
 
 func pruneBuildCache(ctx context.Context, client controlapi.ControlClient) (result app.DockerCleanupStep, err error) {

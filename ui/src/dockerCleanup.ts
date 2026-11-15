@@ -1,7 +1,7 @@
 import { bytesLabel } from './dataTypes'
 import type { DockerCleanupRun, DockerCleanupStep } from './types'
 
-export const DOCKER_CLEANUP_WARNING = 'Cleanup permanently removes standalone containers stopped for more than 24 hours, unused BuildKit cache, unused images (including tagged ones) pulled or built more than 24 hours ago, and unused anonymous volumes, then trims the engine disk so its host file shrinks. Compose service containers, Kubernetes nodes, Resource Saver workloads, named volumes, and images used by any container are kept. Later builds may require rebuilds or image downloads.'
+export const DOCKER_CLEANUP_WARNING = 'Cleanup permanently removes standalone containers stopped for more than 24 hours, unused BuildKit cache, unused images (including tagged ones) pulled or built more than 24 hours ago, and unused anonymous volumes, then trims the engine disk so its host file shrinks. Compose service containers, Kubernetes nodes, Resource Saver workloads, checkpoints, named volumes, and images used by any container are kept. Later builds may require rebuilds or image downloads.'
 
 export const CLEANUP_RUN_LABELS: Record<DockerCleanupRun['status'], string> = {
   running: 'Running',
