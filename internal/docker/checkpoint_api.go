@@ -106,7 +106,7 @@ func (a *API) dockerDeleteCheckpoint(w http.ResponseWriter, r *http.Request) {
 }
 
 func namedCheckpointReference(id, name string) string {
-	return "porto.local/checkpoints/" + id + ":" + name
+	return checkpointImagePrefix + id + ":" + name
 }
 
 func (r *grpcContainerRuntime) CreateNamedCheckpoint(ctx context.Context, id, name string, exit bool) error {

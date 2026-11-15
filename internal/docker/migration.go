@@ -998,7 +998,7 @@ func (m *Manager) migrationImageMatches(ctx context.Context, name string, source
 			OS: expected.Os, Architecture: expected.Architecture, Variant: expected.Variant,
 		})
 	}
-	current, err := m.InspectImage(ctx, name, "")
+	current, err := m.inspectStoredNativeImage(ctx, name)
 	if err != nil {
 		return false, err
 	}
@@ -1085,7 +1085,9 @@ func (m *Manager) migrationOCIImageMatches(ctx context.Context, name string, sou
 
 func (m *Manager) migrationImageConfigDigest(ctx context.Context, name string) (digest string, err error) {
 	if m.directCLI {
-		document, err := m.InspectImage(ctx, name, "")
+		// Migration verifies image configuration bytes, so it needs nerdctl's
+		// native config digest rather than the Docker-facing target digest.
+		document, err := m.inspectStoredNativeImage(ctx, name)
 		if err != nil {
 			return "", err
 		}

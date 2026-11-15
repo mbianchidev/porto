@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
@@ -417,5 +419,70 @@ func TestScopedPruneRechecksOwnershipAndReportsActualCacheRemoval(t *testing.T) 
 				t.Fatalf("actual removal was not recorded: %+v", result)
 			}
 		})
+	}
+}
+
+func TestCreatedContainerVolumesReceiveDockerDefaultRootMode(t *testing.T) {
+	var mu sync.Mutex
+	requests := map[string]runtimefiles.Envelope{}
+	runner := &fakeRunner{outputs: map[string][]byte{
+		"limactl list porto-engine --json":                                                []byte(`{"name":"porto-engine","status":"Running"}`),
+		`limactl shell --workdir=/ porto-engine -- sh -c cat "$HOME/.porto-engine-owner"`: []byte("synthetic-owner\n"),
+	}}
+	runner.streamer = func(command runtimes.Command, _ func(runtimes.OutputChunk) error) ([]byte, error) {
+		header, err := bufio.NewReader(command.StdinReader).ReadBytes('\n')
+		if err != nil {
+			return nil, err
+		}
+		var envelope runtimefiles.Envelope
+		if err := json.Unmarshal(header, &envelope); err != nil {
+			return nil, err
+		}
+		mu.Lock()
+		requests[envelope.Descriptor.Resource.Name] = envelope
+		mu.Unlock()
+		return nil, nil
+	}
+	manager := NewWithStateDir(runner, t.TempDir())
+	manager.lookPath = func(name string) (string, error) { return name, nil }
+	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
+		t.Fatal(err)
+	}
+	manager.fileDescriptorReader = func(_ context.Context, kind, name string) (runtimefiles.Descriptor, error) {
+		return runtimefiles.Descriptor{
+			Resource:       datafiles.Resource{Kind: kind, Name: name, ID: name},
+			RootPath:       "/var/lib/nerdctl/volumes/default/" + name + "/_data",
+			VolumeIdentity: "synthetic-identity-" + name,
+		}, nil
+	}
+	anonymous := strings.Repeat("d", 64)
+	manager.inventoryCancel = func() {}
+	manager.inventory = &containerInventory{snapshot: ContainerSnapshot{Available: true, Containers: []Container{{
+		ID: "synthetic-app", Name: "synthetic-app", Labels: map[string]string{
+			"nerdctl/mounts.0": `{"Type":"volume","Name":"app_session-data","Source":"/var/lib/nerdctl/volumes/default/app_session-data/_data","Destination":"/sessions"}`,
+			"nerdctl/mounts.1": `{"Type":"bind","Source":"/srv/app","Destination":"/app"}`,
+			"nerdctl/mounts.2": `{"Type":"volume","Name":"` + anonymous + `","Source":"/var/lib/nerdctl/volumes/default/` + anonymous + `/_data","Destination":"/cache"}`,
+		},
+	}}}}
+	manager.applyContainerVolumeRootModes(context.Background(), "synthetic-app")
+	if len(requests) != 2 {
+		t.Fatalf("volume permission requests = %v, want the named and anonymous volumes only", slices.Sorted(maps.Keys(requests)))
+	}
+	for _, name := range []string{"app_session-data", anonymous} {
+		envelope, ok := requests[name]
+		if !ok || envelope.Request.Action != "default-root-mode" || envelope.Request.Identity != envelope.Descriptor.Resource.Fingerprint() ||
+			envelope.Descriptor.VolumeIdentity != "synthetic-identity-"+name {
+			t.Fatalf("volume %s permission request = %+v", name, envelope)
+		}
+	}
+	clear(requests)
+	if _, err := manager.CreateVolume(context.Background(), "app_cache-data", "local", nil); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.CreateVolume(context.Background(), "restored-data", "local", map[string]string{transferOwnerLabel: "synthetic-transfer"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := requests["app_cache-data"]; !ok || len(requests) != 1 {
+		t.Fatalf("volume creation permission requests = %v, want only the new non-transfer volume", slices.Sorted(maps.Keys(requests)))
 	}
 }

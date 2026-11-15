@@ -106,6 +106,7 @@ type Manager struct {
 	metricHistory             map[string][]InspectorStatsPoint
 	dataMu                    sync.RWMutex
 	storageReader             func(context.Context) (StorageUsage, error)
+	imageMetadataConnector    func(context.Context) (context.Context, imageMetadataStores, func() error, error)
 	nativeGuard               func(string, string) error
 	managedContainerGuard     func(context.Context, string) error
 	storageReporter           func(context.Context, dataops.Request, dataops.Result, error) error
@@ -1121,7 +1122,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", errors.Join(err, cleanupErr)
 		}
 	}
-	return m.completeContainerCreation(ctx, id, nil)
+	id, err = m.completeContainerCreation(ctx, id, nil)
+	if err == nil {
+		m.applyContainerVolumeRootModes(ctx, id)
+	}
+	return id, err
 }
 
 func (m *Manager) RunContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
@@ -2231,33 +2236,111 @@ func (m *Manager) readContainerMetric(ctx context.Context, id string) (sample Co
 	return provider.ContainerMetric(ctx, id)
 }
 
+// InspectImage returns the Docker-facing image document. Its Id is the image
+// target digest, the identity used by image lists, containers, storage
+// accounting and Docker's containerd image store.
 func (m *Manager) InspectImage(ctx context.Context, id, platform string) (json.RawMessage, error) {
 	if m.windows != nil {
 		return m.inspectWindowsImage(ctx, id, platform)
 	}
 	normalized := normalizeNerdctlReference(id)
+	var listed *Image
 	if platform == "" {
-		var err error
-		platform, err = m.imagePlatform(ctx, normalized)
+		image, found, err := m.listedImage(ctx, normalized)
 		if err != nil {
 			return nil, err
 		}
+		if found {
+			listed, platform = &image, image.Platform
+		}
 	}
-	options := appendStringFlag(nil, "--platform", platform)
-	return m.inspectWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "image", normalized, options...)
+	document, err := m.inspectNativeImage(ctx, normalized, platform)
+	if err != nil {
+		return nil, err
+	}
+	target, err := inspectedImageTarget(document)
+	if err != nil {
+		return nil, err
+	}
+	if target == "" && listed == nil {
+		image, found, err := m.listedImage(ctx, normalized)
+		if err != nil {
+			return nil, err
+		}
+		if found {
+			listed = &image
+		}
+	}
+	if target == "" && listed != nil && strings.HasPrefix(listed.ID, "sha256:") {
+		target = listed.ID
+	}
+	if target == "" {
+		return nil, fmt.Errorf("image %q has no reported target digest; refusing to report an image ID that differs from image lists and containers", id)
+	}
+	return replaceInspectedImageID(document, target)
 }
 
-func (m *Manager) imagePlatform(ctx context.Context, id string) (string, error) {
+// inspectNativeImage returns nerdctl's document, whose Id is the platform
+// configuration digest rather than the Docker-facing target digest.
+func (m *Manager) inspectNativeImage(ctx context.Context, reference, platform string) (json.RawMessage, error) {
+	options := appendStringFlag(nil, "--platform", platform)
+	return m.inspectWithTimeout(ctx, max(m.timeout, imageTransferTimeout), "image", reference, options...)
+}
+
+func (m *Manager) inspectStoredNativeImage(ctx context.Context, name string) (json.RawMessage, error) {
+	reference := normalizeNerdctlReference(name)
+	listed, _, err := m.listedImage(ctx, reference)
+	if err != nil {
+		return nil, err
+	}
+	return m.inspectNativeImage(ctx, reference, listed.Platform)
+}
+
+func (m *Manager) listedImage(ctx context.Context, id string) (Image, bool, error) {
 	images, err := m.imagesWithTimeout(ctx, max(m.timeout, imageTransferTimeout))
 	if err != nil {
-		return "", fmt.Errorf("resolve Porto image platform: %w", err)
+		return Image{}, false, fmt.Errorf("resolve Porto image identity: %w", err)
 	}
 	for _, image := range images {
 		if imageMatchesIdentifier(image, id) {
-			return image.Platform, nil
+			return image, true, nil
 		}
 	}
-	return "", nil
+	return Image{}, false, nil
+}
+
+// inspectedImageTarget reads the target digest nerdctl records in RepoDigests.
+func inspectedImageTarget(document json.RawMessage) (string, error) {
+	var image struct{ RepoDigests []string }
+	if err := json.Unmarshal(document, &image); err != nil {
+		return "", fmt.Errorf("decode Porto image inspection: %w", err)
+	}
+	target := ""
+	for _, reference := range image.RepoDigests {
+		index := strings.LastIndex(reference, "@")
+		if index < 0 || !strings.HasPrefix(reference[index+1:], "sha256:") {
+			continue
+		}
+		candidate := reference[index+1:]
+		if target != "" && target != candidate {
+			return "", fmt.Errorf("image inspection reported conflicting target digests %s and %s", target, candidate)
+		}
+		target = candidate
+	}
+	return target, nil
+}
+
+func replaceInspectedImageID(document json.RawMessage, target string) (json.RawMessage, error) {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(document, &fields); err != nil {
+		return nil, fmt.Errorf("decode Porto image inspection: %w", err)
+	}
+	encoded, err := json.Marshal(target)
+	if err != nil {
+		return nil, err
+	}
+	fields["Id"] = encoded
+	return json.Marshal(fields)
 }
 
 func imageMatchesIdentifier(image Image, id string) bool {

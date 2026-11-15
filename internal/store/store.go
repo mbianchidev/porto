@@ -121,7 +121,7 @@ CREATE TABLE IF NOT EXISTS settings (
  kill_switch_enabled INTEGER NOT NULL DEFAULT 0,
  sendbox_enabled INTEGER NOT NULL DEFAULT 0,
  docker_enabled INTEGER NOT NULL DEFAULT 1,
- docker_auto_prune_enabled INTEGER NOT NULL DEFAULT 0,
+ docker_auto_prune_enabled INTEGER NOT NULL DEFAULT 1,
  kubernetes_enabled INTEGER NOT NULL DEFAULT 0,
  kubeconfig_directory TEXT NOT NULL DEFAULT '',
  vms_enabled INTEGER NOT NULL DEFAULT 0,
@@ -136,7 +136,8 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 CREATE TABLE IF NOT EXISTS docker_cleanup_schedule (
  id INTEGER PRIMARY KEY CHECK (id = 1),
- next_run_at TEXT NOT NULL DEFAULT ''
+ next_run_at TEXT NOT NULL DEFAULT '',
+ defaults_version INTEGER NOT NULL DEFAULT 0
 );
 INSERT OR IGNORE INTO docker_cleanup_schedule(id) VALUES(1);
 CREATE TABLE IF NOT EXISTS docker_cleanup_runs (
@@ -186,7 +187,7 @@ CREATE TABLE IF NOT EXISTS registries (
 	if err := s.ensureSettingsColumn("docker_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
-	if err := s.ensureSettingsColumn("docker_auto_prune_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+	if err := s.ensureSettingsColumn("docker_auto_prune_enabled", "INTEGER NOT NULL DEFAULT 1"); err != nil {
 		return err
 	}
 	if err := s.ensureSettingsColumn("kubernetes_enabled", "INTEGER NOT NULL DEFAULT 0"); err != nil {
@@ -240,8 +241,13 @@ UPDATE projects SET base_hostname=hostname WHERE base_hostname=''`); err != nil 
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(`INSERT OR IGNORE INTO settings(id, protected_branches, docker_enabled) VALUES(1, ?, 1)`, string(protected))
-	return err
+	if _, err := s.db.Exec(`INSERT OR IGNORE INTO settings(id, protected_branches, docker_enabled) VALUES(1, ?, 1)`, string(protected)); err != nil {
+		return err
+	}
+	if err := s.ensureColumn("docker_cleanup_schedule", "defaults_version", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+	return s.applyDockerCleanupDefaults(time.Now().UTC())
 }
 
 func (s *Store) UpsertProject(ctx context.Context, p app.Project) (int64, error) {
@@ -797,31 +803,15 @@ func scanRegistry(scanner registryScanner) (app.RegistryProfile, error) {
 }
 
 func (s *Store) ensureSettingsColumn(name, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(settings)`)
-	if err != nil {
-		return err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var cid, notNull, primaryKey int
-		var columnName, columnType string
-		var defaultValue any
-		if err := rows.Scan(&cid, &columnName, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
-			return err
-		}
-		if columnName == name {
-			return nil
-		}
-	}
-	if err := rows.Err(); err != nil {
-		return err
-	}
-	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE settings ADD COLUMN %s %s`, name, definition))
-	return err
+	return s.ensureColumn("settings", name, definition)
 }
 
 func (s *Store) ensureProjectColumn(name, definition string) error {
-	rows, err := s.db.Query(`PRAGMA table_info(projects)`)
+	return s.ensureColumn("projects", name, definition)
+}
+
+func (s *Store) ensureColumn(table, name, definition string) error {
+	rows, err := s.db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, table))
 	if err != nil {
 		return err
 	}
@@ -840,7 +830,7 @@ func (s *Store) ensureProjectColumn(name, definition string) error {
 	if err := rows.Err(); err != nil {
 		return err
 	}
-	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE projects ADD COLUMN %s %s`, name, definition))
+	_, err = s.db.Exec(fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, name, definition))
 	return err
 }
 

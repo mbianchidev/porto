@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
@@ -169,9 +170,7 @@ func (m *Manager) StorageUsage(ctx context.Context) (usage StorageUsage, err err
 			}
 		}
 		item.InUse = len(item.Owners) > 0
-		item.Dangling = strings.HasPrefix(image.Name(), buildKitMobyDanglingPrefix+"@") ||
-			strings.HasPrefix(image.Name(), "docker.io/library/"+buildKitMobyDanglingPrefix+"@") ||
-			strings.HasPrefix(image.Name(), "sha256:")
+		item.Dangling = danglingImageName(image.Name())
 		finishStorageResource(m, &item)
 		usage.Resources = append(usage.Resources, item)
 	}
@@ -471,6 +470,45 @@ func containerdStateActive(state string) bool {
 
 func managedClusterContainer(container Container) bool {
 	return container.Labels["io.x-k8s.kind.cluster"] != "" || container.Labels["io.porto.kubernetes.cluster"] != ""
+}
+
+// danglingImageName matches untagged images: BuildKit's moby-dangling records
+// and digest-named references, as Docker's containerd image store does.
+func danglingImageName(name string) bool {
+	return strings.HasPrefix(name, buildKitMobyDanglingPrefix+"@") ||
+		strings.HasPrefix(name, "docker.io/library/"+buildKitMobyDanglingPrefix+"@") ||
+		strings.HasPrefix(name, "sha256:")
+}
+
+func imageDangling(image Image) bool {
+	if image.Name != "" {
+		return danglingImageName(image.Name)
+	}
+	return image.Repository == "" || image.Repository == "<none>"
+}
+
+const (
+	nerdctlAnonymousVolumeLabel = "nerdctl/anonymous-volumes"
+	dockerAnonymousVolumeLabel  = "com.docker.volume.anonymous"
+	composeVolumeLabel          = "com.docker.compose.volume"
+)
+
+var generatedVolumeName = regexp.MustCompile(`^[0-9a-f]{64}$`)
+
+// anonymousVolume reports volumes nobody named: those labeled anonymous by
+// nerdctl or Docker, and the random 64-hex names both engines generate for
+// container `-v /path` mounts. Compose and other named volumes are never anonymous.
+func anonymousVolume(name string, labels map[string]string) bool {
+	if _, named := labels[composeVolumeLabel]; named {
+		return false
+	}
+	if value, ok := labels[nerdctlAnonymousVolumeLabel]; ok && value == "" {
+		return true
+	}
+	if _, ok := labels[dockerAnonymousVolumeLabel]; ok {
+		return true
+	}
+	return generatedVolumeName.MatchString(name)
 }
 
 func containerUsesVolume(container Container, name, mountpoint string) bool {

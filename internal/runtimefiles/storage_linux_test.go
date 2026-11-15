@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	introspectionapi "github.com/containerd/containerd/api/services/introspection/v1"
 	"github.com/mbianchidev/porto/internal/datafiles"
@@ -97,5 +98,60 @@ func TestNativeVolumeIdentitySurvivesDataReplacementButNotRecreation(t *testing.
 	recreated, err := nativeVolumeResource(descriptor)
 	if err != nil || recreated.Fingerprint() == first.Fingerprint() {
 		t.Fatalf("recreated native volume retained an obsolete identity: %+v, %v", recreated, err)
+	}
+}
+
+func TestDefaultVolumeRootModeOnlyOpensNeverUsedNerdctlRoots(t *testing.T) {
+	for _, test := range []struct {
+		name    string
+		prepare func(t *testing.T, data string)
+		want    os.FileMode
+	}{
+		{name: "fresh nerdctl root", prepare: func(*testing.T, string) {}, want: 0o755},
+		{name: "image copy-up", want: 0o700, prepare: func(t *testing.T, data string) {
+			old := time.Now().Add(-48 * time.Hour)
+			if err := os.Chtimes(data, old, old); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "written data", want: 0o700, prepare: func(t *testing.T, data string) {
+			if err := os.WriteFile(filepath.Join(data, "state"), []byte("synthetic"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{name: "image-defined sticky mode", want: os.ModeSticky | 0o777, prepare: func(t *testing.T, data string) {
+			if err := os.Chmod(data, os.ModeSticky|0o777); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			volume := filepath.Join(t.TempDir(), "synthetic-volume")
+			data := filepath.Join(volume, "_data")
+			if err := os.Mkdir(volume, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(volume, "volume.json"), []byte(`{"labels":null}`), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Chmod(data, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			test.prepare(t, data)
+			changed, err := applyDefaultVolumeRootMode(Descriptor{RootPath: data})
+			if err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if mode := info.Mode() & (os.ModePerm | os.ModeSticky); mode != test.want || changed != (test.want == 0o755) {
+				t.Fatalf("volume root mode = %v (changed=%t), want %v", mode, changed, test.want)
+			}
+		})
 	}
 }

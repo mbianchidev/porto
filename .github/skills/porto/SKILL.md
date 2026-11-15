@@ -145,6 +145,11 @@ porto docker status                              # engine state
 - Docker API 1.41 to 1.47 is supported; Swarm and engine plugins aren't. Check
   the [compatibility matrix](https://github.com/mbianchidev/porto/blob/main/docs/docker-engine.md#docker-api-compatibility-matrix)
   before relying on an unusual feature.
+- A daily runtime cleanup is on by default. It removes standalone containers
+  stopped for over 24 hours, unused cache, unused images older than 24 hours
+  and unused anonymous volumes. Compose containers and named volumes are kept.
+  Use `docker run --rm` for throwaway containers, and don't keep data only in a
+  stopped standalone container.
 
 ## 6. Kubernetes clusters
 

@@ -162,7 +162,7 @@ func TestDockerCLIExtendedCommandsUseThePortoContext(t *testing.T) {
 		case strings.HasPrefix(args, "history "):
 			return []byte("{\"Snapshot\":\"sha256:layer\",\"CreatedAt\":\"2026-01-01T00:00:00Z\",\"CreatedBy\":\"synthetic\",\"Size\":\"42\"}\n"), nil
 		case strings.HasPrefix(args, "image inspect "):
-			return []byte(`[{"Id":"sha256:config","RepoTags":["synthetic:latest"]}]`), nil
+			return []byte(`[{"Id":"sha256:config","RepoTags":["synthetic:latest"],"RepoDigests":["synthetic@sha256:target"]}]`), nil
 		case strings.HasPrefix(args, "ps "):
 			return []byte("{\"ID\":\"demo\",\"Names\":\"demo\",\"State\":\"running\",\"CreatedAt\":\"2026-01-01T00:00:00Z\"}\n"), nil
 		case strings.HasPrefix(args, "create "):

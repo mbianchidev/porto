@@ -347,7 +347,9 @@ before any backend operation. Escaped image names remain intact.
 | `POST /auth`, `GET /images/search`, `GET /images/{name}/history` | HTTPS challenge-based login, bounded/filterable registry search, and image configuration history with actual image identity |
 | `GET /events` | bounded container-lifecycle replay with immutable actor names/images/labels; supports both map and array filter encodings |
 | `POST /images/load`, `POST /images/create?fromSrc=-`, `POST /images/{name}/push` | incremental progress/error frames are flushed immediately; interrupted uploads, canceled transports, malformed archives, and partial failures remain errors |
-| `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45 |
+| `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45. Image inspect, image lists, container `Image` fields, history, `POST /commit` and `/system/df` all report the image target digest as the image ID, as Docker's containerd image store does |
+| `GET /images/json`, `GET /volumes` filters | images accept `reference`, `label`, `dangling` and `id`; volumes accept `name`, `driver`, `label` and `dangling` (a volume is dangling when no running or stopped container references it). Other filters return 501 instead of silently listing everything |
+| `POST /volumes/prune` | removes only unused anonymous volumes unless `all=true` is set, matching API 1.42+; requests negotiated below 1.42 keep the older all-unused behavior. Unnamed `POST /volumes/create` volumes are labeled anonymous |
 | Container health configuration | `StartInterval` requires API 1.44; older inspect responses omit it |
 | Structured mount options | recursive read-only controls require API 1.44 and a capable Linux kernel/runtime; volume subpaths require 1.45 but remain unsupported; tmpfs option arrays require 1.46 |
 
@@ -663,6 +665,16 @@ protected instead of breaking the whole report. Select exact objects or one
 category, inspect its frozen preview and confirm. Backend ownership and
 active-build checks run again before each removal.
 
+New local volumes get Docker's `0755` data root, so non-root container users
+can traverse them. nerdctl creates every volume's `_data` directory as `0700`.
+After Porto creates a volume, and after a container creation adds named,
+`-v /path` or image `VOLUME` volumes, the runtime helper opens a root that is
+still empty, exactly `0700` and untouched since the volume was created. Image
+copy-up still gives the root the image directory's owner and mode, as Docker
+does, and roots that hold data or were changed are never modified. Clone,
+import and migration destinations are skipped so their restore keeps its own
+root mode.
+
 Volumes expose file browsing, container/Compose mount relationships, clone,
 empty, local import/export, staged restore and confirmed removal. Scheduled
 local backups use SQLite-backed schedules and operation history. Retention
@@ -673,39 +685,61 @@ capabilities and external volume drivers/options remain explicit limitations.
 See [runtime data management](data-management.md) for CLI commands, archive
 integrity/ownership, cancellation, restore safety and local backup controls.
 
-## Unused image and build-cache cleanup
+## Automatic runtime cleanup
 
-The Settings page offers opt-in weekly cleanup and a separate **Run now**
-action. Automatic cleanup is disabled for both new and existing installations.
-Enabling it requires confirmation and schedules the first run seven days later;
-saving unrelated settings does not reset that deadline. **Run now** also works
-with automatic cleanup disabled and requires its own confirmation.
+Porto runs runtime cleanup daily by default. New installations schedule the
+first run one day after setup; installations created while cleanup was opt-in
+are switched on once during the upgrade. Turning the setting off in
+**Settings → Runtime cleanup** is kept across restarts and later upgrades.
+**Run now** also works with the schedule off and requires its own confirmation.
 
-Both paths perform the same cleanup against Porto's configured backend:
+Both paths run these steps, in order, against Porto's configured backend:
 
-- Prune all unused BuildKit cache records. The `builder` and `buildx` commands
-  address the same Porto BuildKit cache, so it is pruned once, not twice.
-- Run namespace-scoped `nerdctl image prune --all --force`, including unused
-  tagged image references. Images referenced by running or stopped containers
-  are retained.
+1. **Stopped standalone containers.** Exited containers whose latest exit,
+   update or lifecycle time is more than 24 hours old are removed. Compose
+   service containers (so `docker compose start` keeps working), kind, k3d,
+   minikube and Porto Kubernetes nodes, Resource Saver workloads, containers
+   with saved checkpoints, Porto volume-transfer helpers and containers with
+   active native file access are kept. A container without a known stop time
+   is kept.
+2. **BuildKit cache.** All unused records are pruned. The `builder` and `buildx`
+   commands address the same Porto BuildKit cache, so it is pruned once.
+3. **Images.** Porto reads the namespace's containerd image records and
+   removes unused references, including tagged ones, that were not created,
+   pulled or rebuilt in the last 24 hours. A reference is kept when any running
+   or stopped container uses it by name or image ID. Checkpoint images (labeled
+   with their source container or named `porto.local/checkpoints/...`) and the
+   base images their restores load are always kept; `nerdctl image prune` would
+   delete them because no container names them. Right before each deletion Porto re-reads the record and its
+   container users and deletes only the target it listed, so a tag rebuilt,
+   re-pulled or used during cleanup survives.
+4. **Anonymous volumes.** Volumes nobody named (labeled anonymous by nerdctl or
+   Docker, or carrying the random 64-hex name both engines generate for
+   `-v /path` mounts) are removed when no container references them. Named
+   volumes, including Compose volumes of stopped projects, are never removed.
+5. **Host disk.** On the Lima engine Porto owns, `fstrim --all` discards the
+   VM's free blocks so the sparse `disk` file on the host shrinks. Porto reports
+   the host file's allocation change across the whole run. A VM disk without
+   discard support is reported as skipped, and external or native backends
+   skip this step.
 
-Containers, volumes, networks, other Docker contexts, and VMs are not removed.
-Porto checks for active builds before starting and reports a skipped run rather
-than interfering with a build. Concurrent manual and scheduled requests cannot
-start overlapping cleanup runs.
+Networks, other Docker contexts, and VMs are not removed. Porto checks for
+active builds before starting and reports a skipped run rather than
+interfering with a build. Concurrent manual and scheduled requests cannot
+start overlapping cleanup runs. Docker commands keep working during cleanup:
+every removal refuses an object that gained a container or reference
+meanwhile, and that refusal is reported as a failed item. Storage transfers,
+restores, migrations and **Containers → Storage** cleanup cannot overlap the
+container, cache, image and volume steps and report a conflict instead.
 
 Accepted runs continue when the Settings page is closed. The daemon records
-the trigger, start/end times, outcome, removed image-reference count, build-cache
-record count, reported cache bytes, and diagnostic output in SQLite. Settings
-shows the latest ten results, including failures and partial results. Image
-layer storage can be shared, so Porto does not invent a reclaimed-byte total for
-images. Image-deletion warnings and unknown diagnostics are reported as failures
-even when the CLI exits successfully. The known host-platform rootfs warning
-(`no match for platform in manifest`) only prevents nerdctl from listing layer
-digests for a foreign-platform image; it does not prevent image-reference
-deletion. Porto retains that warning in **Image cleanup output** without failing
-an otherwise successful run. Diagnostics are checked even after retained output
-is truncated, so a later deletion failure cannot be hidden by earlier warnings.
+the trigger, start/end times, outcome and each step's removal count, reported
+bytes, retained items and diagnostic output in SQLite. Settings shows the
+latest ten results, including failures and partial results. Image layer storage
+can be shared, so Porto does not invent a reclaimed-byte total for images.
+Step output is bounded; removal counts include every removal even when the
+output is truncated. One failed removal is reported and does not stop the
+remaining items or steps.
 
 If a result cannot be saved, the running daemon still exposes its observed
 counts and storage error instead of leaving the UI stuck on "running".
@@ -713,12 +747,12 @@ Further cleanup is blocked until the storage problem is resolved and Porto
 restarts; results that could not be persisted cannot survive that restart.
 
 Every completed attempt, including **Run now**, schedules the next automatic
-attempt seven days later when enabled. Missed weeks do not cause a burst of
-catch-up runs, and failures do not silently turn weekly cleanup into an hourly
+attempt one day later when enabled. Missed days do not cause a burst of
+catch-up runs, and failures do not silently turn daily cleanup into an hourly
 retry loop. Disable Docker to pause automatic execution, or disable the cleanup
 setting to remove the schedule; retained results remain available.
 
-Cleanup has a ten-minute deadline. Daemon shutdown cancels an active run and
+Cleanup has a twenty-minute deadline. Daemon shutdown cancels an active run and
 records its partial outcome before closing the runtime. On restart, an
 unfinished persisted run is marked interrupted rather than successful. Counts
 reflect runtime-reported removals; an interrupted operation can have additional

@@ -123,9 +123,18 @@ func (m *Manager) CommitContainer(
 	if err != nil {
 		return "", err
 	}
-	id := strings.TrimSpace(string(output))
-	if id == "" {
+	configDigest := strings.TrimSpace(string(output))
+	if configDigest == "" {
 		return "", errors.New("container runtime returned an empty committed image identifier")
 	}
-	return id, nil
+	// nerdctl prints the config digest; report the target digest every other
+	// image API uses so the returned ID can be inspected, tagged and removed.
+	image, found, err := m.listedImage(ctx, normalizeNerdctlReference(request.Reference))
+	if err != nil {
+		return "", fmt.Errorf("container was committed as %s, but its image ID could not be resolved: %w", request.Reference, err)
+	}
+	if !found || !strings.HasPrefix(image.ID, "sha256:") {
+		return "", fmt.Errorf("container was committed as %s, but the image is not listed with a target digest", request.Reference)
+	}
+	return image.ID, nil
 }

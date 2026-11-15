@@ -1062,6 +1062,15 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
+	if key := filters.unsupportedKey("id", "reference", "label", "dangling"); key != "" {
+		writeDockerUnsupported(w, "image list filter "+key)
+		return
+	}
+	dangling, filterDangling, err := filters.boolean("dangling")
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	images, err := a.manager.Images(r.Context())
 	if err != nil {
 		writeDockerError(w, err)
@@ -1075,7 +1084,8 @@ func (a *API) images(w http.ResponseWriter, r *http.Request) {
 		}
 		if !filters.matchesID(image.ID) ||
 			!filters.matchesValue("reference", reference) ||
-			!filters.matchesLabels(image.Labels) {
+			!filters.matchesLabels(image.Labels) ||
+			filterDangling && imageDangling(image) != dangling {
 			continue
 		}
 		tag := image.Repository

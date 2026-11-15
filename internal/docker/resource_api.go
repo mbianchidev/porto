@@ -2,6 +2,7 @@ package docker
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 )
 
@@ -158,10 +159,27 @@ func (a *API) volumes(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
+	if key := filters.unsupportedKey("name", "driver", "label", "dangling"); key != "" {
+		writeDockerUnsupported(w, "volume list filter "+key)
+		return
+	}
+	dangling, filterDangling, err := filters.boolean("dangling")
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	volumes, err := a.manager.Volumes(r.Context())
 	if err != nil {
 		writeDockerError(w, err)
 		return
+	}
+	var containers []Container
+	if filterDangling {
+		// Every container counts, including stopped ones, as in Docker.
+		if containers, err = a.manager.storageContainers(r.Context()); err != nil {
+			writeDockerError(w, err)
+			return
+		}
 	}
 	response := make([]map[string]any, 0, len(volumes))
 	for _, volume := range volumes {
@@ -170,9 +188,18 @@ func (a *API) volumes(w http.ResponseWriter, r *http.Request) {
 			!filters.matchesLabels(volume.Labels) {
 			continue
 		}
+		if filterDangling && volumeReferenced(containers, volume) == dangling {
+			continue
+		}
 		response = append(response, dockerVolume(volume))
 	}
 	writeDockerJSON(w, http.StatusOK, map[string]any{"Volumes": response, "Warnings": []string{}})
+}
+
+func volumeReferenced(containers []Container, volume Volume) bool {
+	return slices.ContainsFunc(containers, func(container Container) bool {
+		return containerUsesVolume(container, volume.Name, volume.Mountpoint)
+	})
 }
 
 func (a *API) createVolume(w http.ResponseWriter, r *http.Request) {

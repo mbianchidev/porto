@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"strings"
 	"time"
 
@@ -187,6 +188,12 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 			return Volume{}, err
 		}
 		name = generated
+		// Like Docker and nerdctl, an unnamed volume is anonymous so default prune may remove it.
+		labels = cloneStringMap(labels)
+		if labels == nil {
+			labels = map[string]string{}
+		}
+		labels[nerdctlAnonymousVolumeLabel] = ""
 	}
 	if err := validateObjectID(name); err != nil {
 		return Volume{}, err
@@ -203,6 +210,12 @@ func (m *Manager) CreateVolume(ctx context.Context, name, driver string, labels 
 	createdName := strings.TrimSpace(string(output))
 	if createdName == "" {
 		createdName = name
+	}
+	// Clones, imports and migrations restore into the root and keep its mode.
+	if labels[transferOwnerLabel] == "" {
+		if err := m.applyDefaultVolumeRootMode(ctx, createdName); err != nil {
+			log.Printf("set default permissions on volume %s: %v", createdName, err)
+		}
 	}
 	return Volume{Name: createdName, Driver: firstNonEmpty(driver, "local"), Scope: "local", Labels: labels}, nil
 }

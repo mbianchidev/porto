@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"slices"
 	"strings"
 
 	"github.com/mbianchidev/porto/internal/dataops"
@@ -55,16 +54,25 @@ func (a *API) pruneResources(kind string) http.HandlerFunc {
 			writeDockerError(w, err)
 			return
 		}
-		for key := range filters {
-			if !slices.Contains([]string{"label", "dangling", "until"}, key) {
-				writeDockerUnsupported(w, "prune filter "+key)
-				return
-			}
+		supported := []string{"label", "dangling", "until"}
+		if kind == "volume" {
+			supported = append(supported, "all")
+		}
+		if key := filters.unsupportedKey(supported...); key != "" {
+			writeDockerUnsupported(w, "prune filter "+key)
+			return
 		}
 		if len(filters["until"]) > 1 {
 			writeDockerUnsupported(w, "multiple prune deadlines")
 			return
 		}
+		// API 1.42 made volume prune remove only anonymous volumes unless all=true.
+		allVolumes, _, err := filters.boolean("all")
+		if err != nil {
+			writeDockerError(w, err)
+			return
+		}
+		allVolumes = allVolumes || dockerVersionBefore(dockerRequestVersion(r), "1.42")
 		usage, err := a.manager.StorageUsage(r.Context())
 		if err != nil {
 			writeDockerError(w, err)
@@ -77,6 +85,9 @@ func (a *API) pruneResources(kind string) http.HandlerFunc {
 			}
 			danglingOnly := kind == "image" && !filters["dangling"]["false"]
 			if danglingOnly && !item.Dangling {
+				continue
+			}
+			if kind == "volume" && !allVolumes && !anonymousVolume(item.Resource.Name, item.Labels) {
 				continue
 			}
 			if values := filters["until"]; len(values) != 0 {

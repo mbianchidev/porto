@@ -201,39 +201,37 @@ func TestSettingsRoundTrip(t *testing.T) {
 	}
 }
 
-func TestDockerCleanupSettingIsOptInAndPersists(t *testing.T) {
-	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+func TestDockerCleanupIsOnByDefaultAndKeepsALaterOptOut(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "porto.db")
+	st, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
 	settings, err := st.Settings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err := json.Marshal(settings)
-	if err != nil {
-		t.Fatal(err)
+	if !settings.DockerAutoPruneEnabled {
+		t.Fatal("daily runtime cleanup must be enabled by default")
 	}
-	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":false`) {
-		t.Fatalf("weekly cleanup must be explicitly disabled by default: %s", data)
-	}
-	if err := json.Unmarshal([]byte(`{"dockerAutoPruneEnabled":true}`), &settings); err != nil {
-		t.Fatal(err)
-	}
+	settings.DockerAutoPruneEnabled = false
 	if err := st.SetSettings(context.Background(), settings); err != nil {
 		t.Fatal(err)
 	}
+	if err := st.Close(); err != nil {
+		t.Fatal(err)
+	}
+	st, err = Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
 	saved, err := st.Settings(context.Background())
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, err = json.Marshal(saved)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":true`) {
-		t.Fatalf("weekly cleanup opt-in was not persisted: %s", data)
+	if saved.DockerAutoPruneEnabled {
+		t.Fatal("reopening the store re-enabled cleanup the user turned off")
 	}
 }
 
@@ -280,8 +278,8 @@ INSERT INTO settings(id, protected_branches) VALUES(1, '["main"]');`)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":false`) {
-		t.Fatalf("migration must not enable cleanup of existing images: %s", data)
+	if !strings.Contains(string(data), `"dockerAutoPruneEnabled":true`) {
+		t.Fatalf("installs created while cleanup was opt-in must get the daily default once: %s", data)
 	}
 	if settings.InterfaceDensity != app.DefaultInterfaceDensity ||
 		settings.Theme != app.DefaultTheme ||

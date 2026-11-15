@@ -150,7 +150,7 @@ export function SettingsPage({
       }
     }
     if (draft.dockerAutoPruneEnabled && !settings?.dockerAutoPruneEnabled) {
-      if (!window.confirm(`Enable weekly runtime cleanup? ${DOCKER_CLEANUP_WARNING} The first automatic run is scheduled seven days after enabling; scheduling pauses while Docker is disabled.`)) {
+      if (!window.confirm(`Enable daily runtime cleanup? ${DOCKER_CLEANUP_WARNING} The first automatic run is scheduled one day after enabling; scheduling pauses while Docker is disabled.`)) {
         updateDraft('dockerAutoPruneEnabled', false)
         return
       }

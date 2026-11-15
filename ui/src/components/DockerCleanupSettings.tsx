@@ -1,20 +1,20 @@
 import { useRef, useState } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
-import { cleanupRunTitle, cleanupStepSummary, DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
+import { CLEANUP_STEPS, cleanupRunTitle, cleanupStep, cleanupStepSummary, DOCKER_CLEANUP_WARNING } from '../dockerCleanup'
 import { usePolledResource } from '../hooks'
 import type { DockerCleanupRun, DockerCleanupState, DockerCleanupStep } from '../types'
 import { useMessages } from '../useMessages'
 
-function CleanupStepResult({ step, images = false }: { step: DockerCleanupStep; images?: boolean }) {
+function CleanupStepResult({ step, label, item }: { step: DockerCleanupStep; label: string; item?: string }) {
   return (
     <div>
-      <dt>{images ? 'Unused image references' : 'BuildKit cache (builder / buildx, cleaned once)'}</dt>
+      <dt>{label}</dt>
       <dd>
-        <span>{cleanupStepSummary(step, images)}</span>
+        <span>{cleanupStepSummary(step, item)}</span>
         {step.error && <p className="errorLine">{step.error}</p>}
         {step.output && (
           <details>
-            <summary>{images ? 'Image cleanup output' : 'BuildKit cleanup output'}</summary>
+            <summary>{label} output</summary>
             <pre>{step.output}</pre>
           </details>
         )}
@@ -88,14 +88,13 @@ export function DockerCleanupSettings({
         <h2 id="docker-cleanup-title">Runtime cleanup</h2>
         <p id="docker-cleanup-scope">{DOCKER_CLEANUP_WARNING}</p>
         <p>
-          Built into Porto and off by default. Opt in for a first automatic run seven days after
-          enabling. While enabled, each completed manual or scheduled attempt sets the next automatic attempt
-          seven days later. Unrelated settings saves do not reset the schedule.
+          Built into Porto and on by default. Each completed manual or scheduled attempt sets the next
+          automatic attempt one day later. Unrelated settings saves do not reset the schedule.
         </p>
       </div>
       <div className="hygieneControls">
         <label className="toggleRow">
-          <span><strong>Enable weekly runtime cleanup</strong><small>Opt-in. Save to apply; scheduling pauses while Docker is disabled.</small></span>
+          <span><strong>Enable daily runtime cleanup</strong><small>On by default. Save to apply; scheduling pauses while Docker is disabled.</small></span>
           <input
             type="checkbox"
             checked={enabled}
@@ -106,11 +105,11 @@ export function DockerCleanupSettings({
         </label>
         {enabled !== savedEnabled && (
           <p className="hintLine" role="status">
-            Weekly cleanup will be {enabled ? 'enabled' : 'disabled'} when you save. Other draft settings will also be saved.
+            Daily cleanup will be {enabled ? 'enabled' : 'disabled'} when you save. Other draft settings will also be saved.
           </p>
         )}
         <div className={`integrationStatus ${running ? 'running' : 'idle'}`} role="status">
-          <strong>{!scheduled ? 'Weekly cleanup off' : runtimePaused ? 'Weekly cleanup paused' : 'Weekly cleanup enabled'}</strong>
+          <strong>{!scheduled ? 'Daily cleanup off' : runtimePaused ? 'Daily cleanup paused' : 'Daily cleanup enabled'}</strong>
           {scheduled && !runtimeAvailable && (
             <span>
               {runtimePaused
@@ -123,7 +122,7 @@ export function DockerCleanupSettings({
           {scheduled && runtimeAvailable && (
             <span>
               {running
-                ? 'Cleanup is running. The next automatic attempt will be seven days after completion.'
+                ? 'Cleanup is running. The next automatic attempt will be one day after completion.'
                 : snapshot?.nextRunAt
                   ? <>Next automatic attempt: <time dateTime={snapshot.nextRunAt}>{new Date(snapshot.nextRunAt).toLocaleString()}</time>.</>
                   : 'The next automatic run time has not been reported yet.'}
@@ -139,7 +138,7 @@ export function DockerCleanupSettings({
           </button>
         </div>
         <p className="hintLine">
-          Run now works with weekly scheduling off and does not enable it.
+          Run now works with daily scheduling off and does not enable it.
           {!dockerEnabled && ' Enable Docker above to run cleanup.'}
           {' '}Accepted runs continue if you leave Settings. Results also appear in Activity.
         </p>
@@ -172,8 +171,9 @@ export function DockerCleanupSettings({
                 </span>
                 {run.error && <p className="errorLine">{run.error}</p>}
                 <dl className="cleanupSteps">
-                  <CleanupStepResult step={run.result.buildCache} />
-                  <CleanupStepResult step={run.result.images} images />
+                  {CLEANUP_STEPS.map(({ key, label, item }) => (
+                    <CleanupStepResult key={key} step={cleanupStep(run, key)} label={label} item={item} />
+                  ))}
                 </dl>
               </li>
             ))}

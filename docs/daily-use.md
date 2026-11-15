@@ -128,21 +128,25 @@ likewise accept either a listed release or a manually entered name.
 
 ## Clean up unused runtime data
 
-Use the runtime cleanup controls in **Settings** to opt in to weekly cleanup,
-or choose **Run now** for a one-off cleanup without enabling a schedule. Both
-actions warn that unused tagged images and build caches will be removed, so
-future builds may need to download or rebuild them.
+Porto cleans up unused runtime data daily by default. Each run removes
+standalone containers stopped for more than 24 hours, unused BuildKit cache,
+unused images older than 24 hours, and unused anonymous volumes, then trims the
+engine VM disk so its host file shrinks. Compose service containers, Kubernetes
+nodes, Resource Saver workloads, checkpoints, named volumes and images used by
+any container are kept, so stopped apps keep their data and can start again.
+Docker commands keep working while cleanup runs. Later builds may
+need to download or rebuild removed images and cache.
 
-The first automatic run is seven days after enabling the setting. Later
-attempts are scheduled seven days after the previous attempt finishes. The
-daemon must be running and Docker enabled; overdue schedules run once when
-available rather than replaying every missed week.
+Turn the schedule off, or choose **Run now** for a one-off cleanup, in
+**Settings → Runtime cleanup**. Attempts are scheduled one day after the
+previous attempt finishes. The daemon must be running and Docker enabled;
+overdue schedules run once when available rather than replaying every missed
+day.
 
-Settings retains the latest manual and scheduled results, including partial
-failures and interruptions. Running and stopped containers keep their referenced
-images; containers, volumes, and VMs are never pruned. See
-[runtime cleanup](docker-engine.md#unused-image-and-build-cache-cleanup) for
-scope, reporting, and lifecycle details.
+Settings retains the latest manual and scheduled results, including each
+step's removals, the host disk space reclaimed, partial failures and
+interruptions. See [automatic runtime cleanup](docker-engine.md#automatic-runtime-cleanup)
+for scope, reporting, and lifecycle details.
 
 ## Application diagnostic logs
 

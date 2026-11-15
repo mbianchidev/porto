@@ -7,13 +7,10 @@ import (
 	"io"
 	"math"
 	"net"
-	"regexp"
-	"strings"
 	"sync"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -21,15 +18,21 @@ import (
 
 const maxCleanupOutput = 32 * 1024
 
-var imagePrunePlatformWarning = regexp.MustCompile(`^(?:time="[^"]+" )?level=warning msg="failed to enumerate rootfs" error="no match for platform in manifest sha256:[0-9a-f]{64}: not found"$`)
-
+// CleanupUnused removes unused runtime data in dependency order: stopped
+// standalone containers first, so the build cache, image and anonymous-volume
+// passes can release what they referenced, then trims the engine's host disk.
+// It shares the runtime read gate with ordinary Docker operations, which keep
+// working; every removal refuses objects that gained a reference meanwhile.
 func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, error) {
 	result := app.NewDockerCleanupResult()
-	ctx, release, err := m.BeginDataTransaction(ctx)
+	ctx, cancel := context.WithTimeout(ctx, app.DockerCleanupTimeout)
+	defer cancel()
+	transaction, release, err := m.dataReadGate(ctx)
 	if err != nil {
 		return result, err
 	}
-	defer release()
+	releaseTransaction := sync.OnceFunc(release)
+	defer releaseTransaction()
 	if m.nativeGuard != nil {
 		if err := m.nativeGuard("image", "*"); err != nil {
 			return result, err
@@ -39,14 +42,9 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 		return result, fmt.Errorf("%w: Porto runtime cleanup is already running", ErrConflict)
 	}
 	defer m.cleanupMu.Unlock()
-	ctx, cancel := context.WithTimeout(ctx, app.DockerCleanupTimeout)
-	defer cancel()
-	backend, err := m.backend(ctx)
+	backend, err := m.backend(transaction)
 	if err != nil {
 		return result, err
-	}
-	if _, ok := m.runner.(streamingRunner); !ok {
-		return result, fmt.Errorf("%w: image cleanup requires separate stdout/stderr capture", ErrUnsupported)
 	}
 	connection, err := newBuildKitControlConnection(func(dialContext context.Context) (net.Conn, error) {
 		return m.dialBuildKitBackend(dialContext, backend)
@@ -56,27 +54,43 @@ func (m *Manager) CleanupUnused(ctx context.Context) (app.DockerCleanupResult, e
 	}
 	defer connection.Close()
 	client := controlapi.NewControlClient(connection)
-	probeContext, cancelProbe := context.WithTimeout(ctx, 20*time.Second)
+	probeContext, cancelProbe := context.WithTimeout(transaction, 20*time.Second)
 	err = ensureBuildKitIdle(probeContext, client)
 	cancelProbe()
 	if err != nil {
 		return result, err
 	}
+	disk := m.measureHostDisk(ctx, backend)
+	runtimeErr := m.pruneUnusedRuntime(transaction, client, &result)
+	// Trimming only touches the VM's free blocks, so storage transactions may resume.
+	releaseTransaction()
+	if ctx.Err() != nil {
+		return result, errors.Join(runtimeErr, context.Cause(ctx))
+	}
+	var diskErr error
+	result.HostDisk, diskErr = m.reclaimHostDisk(ctx, disk)
+	return result, errors.Join(runtimeErr, diskErr)
+}
+
+func (m *Manager) pruneUnusedRuntime(ctx context.Context, client controlapi.ControlClient, result *app.DockerCleanupResult) error {
+	var containersErr error
+	result.Containers, containersErr = m.pruneStoppedContainers(ctx, time.Now())
+	if ctx.Err() != nil {
+		return errors.Join(containersErr, context.Cause(ctx))
+	}
 	var cacheErr error
 	result.BuildCache, cacheErr = pruneBuildCache(ctx, client)
 	if ctx.Err() != nil || status.Code(cacheErr) == codes.Canceled || status.Code(cacheErr) == codes.DeadlineExceeded {
-		return result, errors.Join(cacheErr, context.Cause(ctx))
+		return errors.Join(containersErr, cacheErr, context.Cause(ctx))
 	}
-	if backend.limaInstance != "" {
-		backend.prefix = []string{"shell", "--workdir=/", backend.limaInstance, "--", "nerdctl"}
+	var imageErr error
+	result.Images, imageErr = m.pruneUnusedImages(ctx, time.Now())
+	if ctx.Err() != nil {
+		return errors.Join(containersErr, cacheErr, imageErr, context.Cause(ctx))
 	}
-	var output imagePruneOutput
-	imageErr := m.runBackendStreamingInput(
-		ctx, backend, app.DockerCleanupTimeout, "prune unused Porto images", nil, nil, output.write,
-		"image", "prune", "--all", "--force",
-	)
-	result.Images, imageErr = output.result(imageErr)
-	return result, errors.Join(cacheErr, imageErr)
+	var volumesErr error
+	result.Volumes, volumesErr = m.pruneAnonymousVolumes(ctx)
+	return errors.Join(containersErr, cacheErr, imageErr, volumesErr)
 }
 
 func pruneBuildCache(ctx context.Context, client controlapi.ControlClient) (result app.DockerCleanupStep, err error) {
@@ -121,95 +135,4 @@ func pruneBuildCache(ctx context.Context, client controlapi.ControlClient) (resu
 		result.BytesReclaimed = &reclaimed
 	}
 	return result, nil
-}
-
-type imagePruneOutput struct {
-	mu                sync.Mutex
-	stdout            strings.Builder
-	stderr            strings.Builder
-	pending           string
-	diagnosticPending string
-	removed           int64
-	parseErr          error
-	diagnosticErr     error
-	truncated         bool
-}
-
-func (o *imagePruneOutput) write(chunk runtimes.OutputChunk) error {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	output, pending, parseLine := &o.stdout, &o.pending, o.parseLine
-	switch chunk.Stream {
-	case "stdout":
-	case "stderr":
-		output, pending, parseLine = &o.stderr, &o.diagnosticPending, o.parseDiagnosticLine
-	default:
-		return fmt.Errorf("unknown image prune output stream %q", chunk.Stream)
-	}
-	o.append(output, string(chunk.Data))
-	lines := strings.Split(*pending+string(chunk.Data), "\n")
-	for _, line := range lines[:len(lines)-1] {
-		parseLine(line)
-	}
-	*pending = lines[len(lines)-1]
-	if len(*pending) > maxCleanupOutput {
-		return fmt.Errorf("image prune %s line exceeds the result limit", chunk.Stream)
-	}
-	return nil
-}
-
-func (o *imagePruneOutput) append(output *strings.Builder, data string) {
-	remaining := maxCleanupOutput - output.Len()
-	if len(data) > remaining {
-		o.truncated = true
-		data = data[:remaining]
-	}
-	output.WriteString(data)
-}
-
-func (o *imagePruneOutput) parseLine(line string) {
-	line = strings.TrimSpace(line)
-	lower := strings.ToLower(line)
-	switch {
-	case strings.HasPrefix(lower, "untagged: ") && strings.TrimSpace(line[len("untagged: "):]) != "":
-		o.removed++
-	case line == "", lower == "deleted images:", strings.HasPrefix(lower, "deleted: "), strings.HasPrefix(lower, "total reclaimed space:"):
-	default:
-		if o.parseErr == nil {
-			o.parseErr = fmt.Errorf("unexpected image prune output: %.512s", line)
-		}
-	}
-}
-
-func (o *imagePruneOutput) parseDiagnosticLine(line string) {
-	line = strings.TrimSpace(line)
-	// nerdctl uses the host-platform rootfs only to print deleted layer digests.
-	if line == "" || imagePrunePlatformWarning.MatchString(line) {
-		return
-	}
-	if o.diagnosticErr == nil {
-		o.diagnosticErr = fmt.Errorf("image cleanup reported runtime diagnostics: %.512s", line)
-	}
-}
-
-func (o *imagePruneOutput) result(runErr error) (app.DockerCleanupStep, error) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	o.parseLine(o.pending)
-	o.parseDiagnosticLine(o.diagnosticPending)
-	output := strings.TrimSpace(o.stdout.String())
-	diagnostics := strings.TrimSpace(o.stderr.String())
-	if diagnostics != "" {
-		output = strings.TrimSpace(output + "\n" + diagnostics)
-	}
-	if o.truncated {
-		output += "\n[Runtime output truncated; reported removal counts include all parsed lines.]"
-	}
-	err := errors.Join(runErr, o.parseErr, o.diagnosticErr)
-	result := app.DockerCleanupStep{Status: app.CleanupSucceeded, ItemsRemoved: o.removed, Output: output}
-	if err != nil {
-		result.Status = app.CleanupFailed
-		result.Error = err.Error()
-	}
-	return result, err
 }
