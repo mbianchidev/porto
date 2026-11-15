@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,7 +18,9 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
+	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/errdefs"
 	"github.com/mbianchidev/porto/internal/app"
 	"github.com/mbianchidev/porto/internal/runtimes"
@@ -59,6 +62,7 @@ func (s *cleanupBuildKitServer) Prune(request *controlapi.PruneRequest, stream g
 
 type cleanupImageStore struct {
 	images.Store
+	blobs     content.Store
 	mu        sync.Mutex
 	records   map[string]images.Image
 	deleted   []string
@@ -138,23 +142,48 @@ func cleanupImageRecord(name string, created, updated time.Time, labels map[stri
 	}
 }
 
-// cleanupImages has two removable images and five that cleanup keeps: used by
-// name, used by image ID, a default and a custom-named checkpoint, and a tag
-// first pulled long ago but rebuilt an hour ago.
-func cleanupImages(now time.Time) *cleanupImageStore {
-	old, recent := now.Add(-72*time.Hour), now.Add(-time.Hour)
-	store := &cleanupImageStore{records: map[string]images.Image{}}
-	for _, record := range []images.Image{
-		cleanupImageRecord("docker.io/example/unused:one", old, old, nil),
-		cleanupImageRecord("docker.io/example/unused:two", old, old, nil),
-		cleanupImageRecord("docker.io/example/used:latest", old, old, nil),
-		cleanupImageRecord("docker.io/example/used-by-id:latest", old, old, nil),
-		cleanupImageRecord(checkpointImagePrefix+"stopped-app:before-upgrade", old, old, map[string]string{checkpointSourceIDLabel: "stopped-app"}),
-		cleanupImageRecord("registry.example.test/team/custom-checkpoint:v1", old, old, map[string]string{checkpointSourceIDLabel: "stopped-app"}),
-		cleanupImageRecord("docker.io/example/rebuilt:dev", old, recent, nil),
-	} {
-		store.records[record.Name] = record
+// cleanupImages has two removable images and seven that cleanup keeps: used
+// by name, used by image ID, a default and a custom-named checkpoint, the base
+// images their restores load by name and by target, and a tag first pulled
+// long ago but rebuilt an hour ago.
+func cleanupImages(t *testing.T, now time.Time) *cleanupImageStore {
+	t.Helper()
+	blobs, err := local.NewStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
 	}
+	old, recent := now.Add(-72*time.Hour), now.Add(-time.Hour)
+	store := &cleanupImageStore{blobs: blobs, records: map[string]images.Image{}}
+	add := func(record images.Image) images.Image {
+		store.records[record.Name] = record
+		return record
+	}
+	checkpoint := func(name, base string, baseTarget ocispec.Descriptor) {
+		index := ocispec.Index{Manifests: []ocispec.Descriptor{baseTarget}}
+		if base != "" {
+			index.Annotations = map[string]string{ocispec.AnnotationRefName: base}
+		}
+		data, err := json.Marshal(index)
+		if err != nil {
+			t.Fatal(err)
+		}
+		descriptor := ocispec.Descriptor{MediaType: ocispec.MediaTypeImageIndex, Digest: digest.FromBytes(data), Size: int64(len(data))}
+		if err := content.WriteBlob(context.Background(), blobs, descriptor.Digest.String(), bytes.NewReader(data), descriptor); err != nil {
+			t.Fatal(err)
+		}
+		record := cleanupImageRecord(name, old, old, map[string]string{checkpointSourceIDLabel: "stopped-app"})
+		record.Target = descriptor
+		add(record)
+	}
+	add(cleanupImageRecord("docker.io/example/unused:one", old, old, nil))
+	add(cleanupImageRecord("docker.io/example/unused:two", old, old, nil))
+	add(cleanupImageRecord("docker.io/example/used:latest", old, old, nil))
+	add(cleanupImageRecord("docker.io/example/used-by-id:latest", old, old, nil))
+	add(cleanupImageRecord("docker.io/example/rebuilt:dev", old, recent, nil))
+	byName := add(cleanupImageRecord("docker.io/example/restore-base:latest", old, old, nil))
+	byTarget := add(cleanupImageRecord("registry.example.test/team/restore-base:v1", old, old, nil))
+	checkpoint(checkpointImagePrefix+"stopped-app:before-upgrade", byName.Name, byName.Target)
+	checkpoint("registry.example.test/team/custom-checkpoint:v1", "", byTarget.Target)
 	return store
 }
 
@@ -173,10 +202,14 @@ func newCleanupManager(t *testing.T, runner *fakeRunner, store *cleanupImageStor
 	}
 	manager := New(runner)
 	manager.dialBuildKit = buildKitControlTestDialer(t, service)
-	manager.imageMetadataConnector = func(ctx context.Context) (context.Context, images.Store, containers.Store, func() error, error) {
-		return ctx, store, &cleanupContainerStore{}, func() error { return nil }, nil
-	}
+	manager.imageMetadataConnector = cleanupMetadata(store, &cleanupContainerStore{})
 	return manager
+}
+
+func cleanupMetadata(store *cleanupImageStore, users *cleanupContainerStore) func(context.Context) (context.Context, imageMetadataStores, func() error, error) {
+	return func(ctx context.Context) (context.Context, imageMetadataStores, func() error, error) {
+		return ctx, imageMetadataStores{images: store, containers: users, content: store.blobs}, func() error { return nil }, nil
+	}
 }
 
 func TestCleanupUnusedRemovesOnlyOldUnusedNonCheckpointImages(t *testing.T) {
@@ -184,7 +217,7 @@ func TestCleanupUnusedRemovesOnlyOldUnusedNonCheckpointImages(t *testing.T) {
 		{ID: "synthetic-cache-1", Size: 1024},
 		{ID: "synthetic-cache-2", Size: 2048},
 	}}
-	store := cleanupImages(time.Now())
+	store := cleanupImages(t, time.Now())
 	result, err := newCleanupManager(t, &fakeRunner{}, store, service).CleanupUnused(context.Background())
 	if err != nil {
 		t.Fatal(err)
@@ -200,7 +233,7 @@ func TestCleanupUnusedRemovesOnlyOldUnusedNonCheckpointImages(t *testing.T) {
 		t.Fatalf("deleted images %v, want only %v", store.deleted, want)
 	}
 	if result.Images.Status != app.CleanupSucceeded || result.Images.ItemsRemoved != 2 || result.Images.BytesReclaimed != nil ||
-		!strings.Contains(result.Images.Output, "example/unused:two") || !strings.Contains(result.Images.Output, "Kept 5 image reference(s)") {
+		!strings.Contains(result.Images.Output, "example/unused:two") || !strings.Contains(result.Images.Output, "Kept 7 image reference(s)") {
 		t.Fatalf("incorrect image result: %+v", result.Images)
 	}
 	if result.Containers.Status != app.CleanupSucceeded || result.Volumes.Status != app.CleanupSucceeded ||
@@ -236,9 +269,7 @@ func TestCleanupImageRemovalRechecksEachReferenceBeforeDeleting(t *testing.T) {
 				store.deleteErr = map[string]error{"docker.io/example/unused:one": test.err}
 			}
 			manager := newCleanupManager(t, &fakeRunner{}, store, &cleanupBuildKitServer{})
-			manager.imageMetadataConnector = func(ctx context.Context) (context.Context, images.Store, containers.Store, func() error, error) {
-				return ctx, store, &cleanupContainerStore{users: map[string]bool{"docker.io/example/unused:one": test.users}}, func() error { return nil }, nil
-			}
+			manager.imageMetadataConnector = cleanupMetadata(store, &cleanupContainerStore{users: map[string]bool{"docker.io/example/unused:one": test.users}})
 			step, err := manager.pruneUnusedImages(context.Background(), now)
 			if err != nil || step.Status != app.CleanupSucceeded || step.ItemsRemoved != 0 || len(store.deleted) != 0 {
 				t.Fatalf("changed reference was removed: %+v, deleted=%v, error=%v", step, store.deleted, err)
@@ -250,7 +281,7 @@ func TestCleanupImageRemovalRechecksEachReferenceBeforeDeleting(t *testing.T) {
 func TestCleanupUnusedPreservesActiveBuilds(t *testing.T) {
 	service := &cleanupBuildKitServer{}
 	service.active = true
-	store := cleanupImages(time.Now())
+	store := cleanupImages(t, time.Now())
 	result, err := newCleanupManager(t, &fakeRunner{}, store, service).CleanupUnused(context.Background())
 	if !errors.Is(err, ErrConflict) || service.pruneCalls != 0 || len(store.deleted) != 0 ||
 		result.BuildCache.Status != app.CleanupNotRun || result.Images.Status != app.CleanupNotRun {
@@ -272,7 +303,7 @@ func TestCleanupUnusedRetainsPartialResultsAndContinuesAfterFailures(t *testing.
 				records:  []*controlapi.UsageRecord{{ID: "synthetic-cache", Size: 4096}},
 				pruneErr: test.cacheError,
 			}
-			store := cleanupImages(time.Now())
+			store := cleanupImages(t, time.Now())
 			if test.imageError != nil {
 				store.deleteErr = map[string]error{"docker.io/example/unused:one": test.imageError}
 			}
@@ -297,7 +328,7 @@ func TestCleanupUnusedRetainsPartialResultsAndContinuesAfterFailures(t *testing.
 }
 
 func TestCleanupUnusedCancellationDoesNotStartImageRemoval(t *testing.T) {
-	store := cleanupImages(time.Now())
+	store := cleanupImages(t, time.Now())
 	manager := newCleanupManager(t, &fakeRunner{}, store, &cleanupBuildKitServer{wait: true})
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
@@ -327,10 +358,7 @@ func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
 	manager := NewWithStateDir(runner, t.TempDir())
 	manager.lookPath = func(name string) (string, error) { return name, nil }
 	manager.dialBuildKit = buildKitControlTestDialer(t, &cleanupBuildKitServer{})
-	store := cleanupImages(time.Now())
-	manager.imageMetadataConnector = func(ctx context.Context) (context.Context, images.Store, containers.Store, func() error, error) {
-		return ctx, store, &cleanupContainerStore{}, func() error { return nil }, nil
-	}
+	manager.imageMetadataConnector = cleanupMetadata(cleanupImages(t, time.Now()), &cleanupContainerStore{})
 	if err := manager.writeEngineState(engineState{Mode: "lima", Instance: engineInstanceName, OwnerID: "synthetic-owner"}); err != nil {
 		t.Fatal(err)
 	}

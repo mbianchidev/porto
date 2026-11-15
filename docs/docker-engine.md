@@ -698,9 +698,9 @@ Both paths run these steps, in order, against Porto's configured backend:
    removes unused references, including tagged ones, that were not created,
    pulled or rebuilt in the last 24 hours. A reference is kept when any running
    or stopped container uses it by name or image ID. Checkpoint images (labeled
-   with their source container or named `porto.local/checkpoints/...`) are
-   always kept; `nerdctl image prune` would delete them because no container
-   names them. Right before each deletion Porto re-reads the record and its
+   with their source container or named `porto.local/checkpoints/...`) and the
+   base images their restores load are always kept; `nerdctl image prune` would
+   delete them because no container names them. Right before each deletion Porto re-reads the record and its
    container users and deletes only the target it listed, so a tag rebuilt,
    re-pulled or used during cleanup survives.
 4. **Anonymous volumes.** Volumes nobody named (labeled anonymous by nerdctl or

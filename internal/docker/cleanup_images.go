@@ -2,6 +2,7 @@ package docker
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strconv"
@@ -9,29 +10,40 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/core/containers"
+	"github.com/containerd/containerd/v2/core/content"
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
 	"github.com/mbianchidev/porto/internal/app"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 )
 
-// imageMetadata returns the namespace-scoped containerd image and container
-// stores. Cleanup reads image records directly because `nerdctl images` hides
-// checkpoint images and reports a creation time that rebuilds don't update.
-func (m *Manager) imageMetadata(ctx context.Context) (context.Context, images.Store, containers.Store, func() error, error) {
+type imageMetadataStores struct {
+	images     images.Store
+	containers containers.Store
+	content    content.Provider
+}
+
+// imageMetadata returns the namespace-scoped containerd stores. Cleanup reads
+// image records directly because `nerdctl images` hides checkpoint images and
+// reports a creation time that rebuilds don't update.
+func (m *Manager) imageMetadata(ctx context.Context) (context.Context, imageMetadataStores, func() error, error) {
 	if m.imageMetadataConnector != nil {
 		return m.imageMetadataConnector(ctx)
 	}
 	runtimeClient, closeRuntime, err := m.storageRuntime(ctx)
 	if err != nil {
-		return ctx, nil, nil, nil, err
+		return ctx, imageMetadataStores{}, nil, err
 	}
 	backend, ok := runtimeClient.(*grpcContainerRuntime)
 	if !ok || backend.client == nil {
-		return ctx, nil, nil, nil, errors.Join(fmt.Errorf("%w: image cleanup requires containerd metadata", ErrUnsupported), closeRuntime())
+		return ctx, imageMetadataStores{}, nil, errors.Join(fmt.Errorf("%w: image cleanup requires containerd metadata", ErrUnsupported), closeRuntime())
 	}
-	return namespaces.WithNamespace(ctx, backend.namespace), backend.client.ImageService(), backend.client.ContainerService(), closeRuntime, nil
+	stores := imageMetadataStores{
+		images: backend.client.ImageService(), containers: backend.client.ContainerService(), content: backend.client.ContentStore(),
+	}
+	return namespaces.WithNamespace(ctx, backend.namespace), stores, closeRuntime, nil
 }
 
 // pruneUnusedImages removes image references that no container uses and that
@@ -40,14 +52,18 @@ func (m *Manager) imageMetadata(ctx context.Context) (context.Context, images.St
 func (m *Manager) pruneUnusedImages(ctx context.Context, now time.Time) (step app.DockerCleanupStep, err error) {
 	var output cleanupOutput
 	defer func() { finishCleanupStep(&step, &output, err) }()
-	ctx, store, containerStore, closeMetadata, err := m.imageMetadata(ctx)
+	ctx, stores, closeMetadata, err := m.imageMetadata(ctx)
 	if err != nil {
 		return step, fmt.Errorf("open image metadata: %w", err)
 	}
 	defer func() { err = errors.Join(err, closeMetadata()) }()
-	records, err := store.List(ctx)
+	records, err := stores.images.List(ctx)
 	if err != nil {
 		return step, fmt.Errorf("list images: %w", err)
+	}
+	restoreBases, err := checkpointBaseImages(ctx, stores.content, records)
+	if err != nil {
+		return step, err
 	}
 	containers, err := m.storageContainers(ctx)
 	if err != nil {
@@ -57,14 +73,15 @@ func (m *Manager) pruneUnusedImages(ctx context.Context, now time.Time) (step ap
 	kept := 0
 	var failures []error
 	for _, record := range records {
-		if checkpointImage(record) || !imageRecordOlderThan(record, cutoff) || imageRecordInUse(record, containers) {
+		if checkpointImage(record) || restoreBases[record.Name] || restoreBases[record.Target.Digest.String()] ||
+			!imageRecordOlderThan(record, cutoff) || imageRecordInUse(record, containers) {
 			kept++
 			continue
 		}
 		if err := ctx.Err(); err != nil {
 			return step, errors.Join(append(failures, err)...)
 		}
-		removed, err := removeUnusedImageRecord(ctx, store, containerStore, record, cutoff)
+		removed, err := removeUnusedImageRecord(ctx, stores.images, stores.containers, record, cutoff)
 		if err != nil {
 			failures = append(failures, fmt.Errorf("remove image %s: %w", record.Name, err))
 			continue
@@ -77,7 +94,7 @@ func (m *Manager) pruneUnusedImages(ctx context.Context, now time.Time) (step ap
 		output.line("Removed unused image reference %s", record.Name)
 	}
 	if kept > 0 {
-		output.line("Kept %d image reference(s): used by a container, holding a container checkpoint, or created, pulled or rebuilt less than %s ago.", kept, app.DockerCleanupMinimumAge)
+		output.line("Kept %d image reference(s): used by a container, a container checkpoint or its restore base, or created, pulled or rebuilt less than %s ago.", kept, app.DockerCleanupMinimumAge)
 	}
 	return step, errors.Join(failures...)
 }
@@ -111,6 +128,33 @@ func removeUnusedImageRecord(ctx context.Context, store images.Store, containerS
 	return err == nil, err
 }
 
+// checkpointBaseImages returns the image names and target digests that
+// checkpoint restores load: containerd records the base image name in the
+// checkpoint index annotations and its target among the index manifests.
+func checkpointBaseImages(ctx context.Context, provider content.Provider, records []images.Image) (map[string]bool, error) {
+	bases := make(map[string]bool)
+	for _, record := range records {
+		if !checkpointImage(record) {
+			continue
+		}
+		data, err := content.ReadBlob(ctx, provider, record.Target)
+		if err != nil {
+			return nil, fmt.Errorf("read checkpoint %s to protect its restore image: %w", record.Name, err)
+		}
+		var index ocispec.Index
+		if err := json.Unmarshal(data, &index); err != nil {
+			return nil, fmt.Errorf("decode checkpoint %s to protect its restore image: %w", record.Name, err)
+		}
+		if name := index.Annotations[ocispec.AnnotationRefName]; name != "" {
+			bases[name] = true
+		}
+		for _, manifest := range index.Manifests {
+			bases[manifest.Digest.String()] = true
+		}
+	}
+	return bases, nil
+}
+
 func checkpointImage(record images.Image) bool {
 	return record.Labels[checkpointSourceIDLabel] != "" || strings.HasPrefix(record.Name, checkpointImagePrefix)
 }
@@ -141,12 +185,12 @@ func imageRecordInUse(record images.Image, containers []Container) bool {
 
 // checkpointSources lists the containers that saved checkpoints belong to.
 func (m *Manager) checkpointSources(ctx context.Context) (sources map[string]bool, err error) {
-	ctx, store, _, closeMetadata, err := m.imageMetadata(ctx)
+	ctx, stores, closeMetadata, err := m.imageMetadata(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("open image metadata: %w", err)
 	}
 	defer func() { err = errors.Join(err, closeMetadata()) }()
-	records, err := store.List(ctx)
+	records, err := stores.images.List(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("list container checkpoints: %w", err)
 	}
