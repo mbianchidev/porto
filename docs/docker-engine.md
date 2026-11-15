@@ -665,6 +665,15 @@ protected instead of breaking the whole report. Select exact objects or one
 category, inspect its frozen preview and confirm. Backend ownership and
 active-build checks run again before each removal.
 
+New local volumes get Docker's `0755` data root, so non-root container users
+can traverse them. nerdctl creates every volume's `_data` directory as `0700`.
+After Porto creates a volume, and after a container creation adds named,
+`-v /path` or image `VOLUME` volumes, the runtime helper opens a root that is
+still empty, exactly `0700` and untouched since the volume was created. Image
+copy-up still gives the root the image directory's owner and mode, as Docker
+does, and roots that hold data or were changed are never modified. Volumes
+created before this change keep their current permissions.
+
 Volumes expose file browsing, container/Compose mount relationships, clone,
 empty, local import/export, staged restore and confirmed removal. Scheduled
 local backups use SQLite-backed schedules and operation history. Retention

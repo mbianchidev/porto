@@ -120,6 +120,16 @@ func Run(ctx context.Context, input io.Reader, output io.Writer) error {
 				return errors.Join(datafiles.ErrConflict, err)
 			}
 		}
+		if envelope.Request.Action == "default-root-mode" {
+			if descriptor.VolumeIdentity == "" || envelope.Request.Identity != descriptor.Resource.Fingerprint() {
+				return datafiles.ErrConflict
+			}
+			changed, err := applyDefaultVolumeRootMode(descriptor)
+			if err != nil {
+				return err
+			}
+			return json.NewEncoder(output).Encode(map[string]bool{"changed": changed})
+		}
 	}
 	switch envelope.Request.Action {
 	case "changes":

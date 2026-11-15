@@ -334,6 +334,61 @@ func nativeVolumeResource(descriptor Descriptor) (datafiles.Resource, error) {
 	return resource, nil
 }
 
+// applyDefaultVolumeRootMode gives a never-used volume Docker's 0755 data
+// root. nerdctl writes volume.json and then creates _data as 0700, which
+// non-root container users cannot traverse. Image copy-up replaces the root's
+// owner, mode and modification time with the older image directory's, so a
+// root that is still empty, 0700 and stamped right after volume.json was never
+// copied up, written or changed.
+func applyDefaultVolumeRootMode(descriptor Descriptor) (bool, error) {
+	if !filepath.IsAbs(descriptor.RootPath) || filepath.Base(descriptor.RootPath) != "_data" {
+		return false, fmt.Errorf("%w: volume permissions require a native _data directory", datafiles.ErrUnsupported)
+	}
+	root, err := os.OpenRoot(filepath.Dir(descriptor.RootPath))
+	if err != nil {
+		return false, err
+	}
+	defer root.Close()
+	metadata, err := root.Lstat("volume.json")
+	if err != nil || !metadata.Mode().IsRegular() {
+		return false, errors.Join(fmt.Errorf("%w: native volume metadata is missing or not a regular file", datafiles.ErrUnsupported), err)
+	}
+	linked, err := root.Lstat("_data")
+	if err != nil || !linked.IsDir() || linked.Mode()&os.ModeSymlink != 0 {
+		return false, errors.Join(fmt.Errorf("%w: native volume data is not a real directory", datafiles.ErrConflict), err)
+	}
+	data, err := root.Open("_data")
+	if err != nil {
+		return false, err
+	}
+	defer data.Close()
+	opened, err := data.Stat()
+	if err != nil || !os.SameFile(linked, opened) {
+		return false, errors.Join(datafiles.ErrConflict, err)
+	}
+	var stat unix.Stat_t
+	if err := unix.Fstat(int(data.Fd()), &stat); err != nil {
+		return false, err
+	}
+	created := metadata.ModTime()
+	stampedAtCreation := func(value unix.Timespec) bool {
+		elapsed := time.Unix(value.Unix()).Sub(created)
+		return elapsed >= 0 && elapsed <= time.Second
+	}
+	if stat.Mode&0o7777 != 0o700 || !stampedAtCreation(stat.Mtim) || !stampedAtCreation(stat.Ctim) {
+		return false, nil
+	}
+	if entries, err := data.ReadDir(1); err != nil && !errors.Is(err, io.EOF) {
+		return false, err
+	} else if len(entries) != 0 {
+		return false, nil
+	}
+	if err := unix.Fchmod(int(data.Fd()), 0o755); err != nil {
+		return false, fmt.Errorf("set default volume permissions: %w", err)
+	}
+	return true, nil
+}
+
 func ensureVolumeIdle(ctx context.Context, descriptor Descriptor) error {
 	client, err := runtimeClient(descriptor)
 	if err != nil {

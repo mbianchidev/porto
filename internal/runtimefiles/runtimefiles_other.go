@@ -39,3 +39,7 @@ func runtimeMetadataUsage(context.Context, Descriptor, io.Writer) error {
 func nativeVolumeResource(descriptor Descriptor) (datafiles.Resource, error) {
 	return descriptor.Resource, datafiles.ErrUnsupported
 }
+
+func applyDefaultVolumeRootMode(Descriptor) (bool, error) {
+	return false, datafiles.ErrUnsupported
+}

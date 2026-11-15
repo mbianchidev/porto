@@ -1122,7 +1122,11 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", errors.Join(err, cleanupErr)
 		}
 	}
-	return m.completeContainerCreation(ctx, id, nil)
+	id, err = m.completeContainerCreation(ctx, id, nil)
+	if err == nil {
+		m.applyContainerVolumeRootModes(ctx, id)
+	}
+	return id, err
 }
 
 func (m *Manager) RunContainer(ctx context.Context, request CreateContainerRequest) (string, error) {
