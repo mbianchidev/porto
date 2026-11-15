@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -365,6 +366,12 @@ func TestCleanupUnusedIsScopedToOwnedLimaEngine(t *testing.T) {
 	result, err := manager.CleanupUnused(context.Background())
 	if err != nil {
 		t.Fatal(err)
+	}
+	if runtime.GOOS == "windows" {
+		if result.HostDisk.Status != app.CleanupSkipped || result.HostDisk.Error != "" {
+			t.Fatalf("unmeasurable host disk was not reported as skipped: %+v", result.HostDisk)
+		}
+		return
 	}
 	if result.HostDisk.Status != app.CleanupSucceeded || result.HostDisk.BytesReclaimed == nil ||
 		!strings.Contains(result.HostDisk.Output, "1048576 bytes") {
