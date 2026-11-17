@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mbianchidev/porto/internal/app"
 )
 
 func TestDailyLogRotationCreatesZipAndKeepsCurrentLog(t *testing.T) {
@@ -333,19 +335,45 @@ func TestSizeLimitsFromEnvironmentValidatesSettings(t *testing.T) {
 	environment := func(values map[string]string) func(string) string {
 		return func(name string) string { return values[name] }
 	}
-	file, total, err := SizeLimitsFromEnvironment(environment(nil))
-	if err != nil || file != 10*mebibyte || total != 50*mebibyte {
-		t.Fatalf("defaults = %d %d %v", file, total, err)
+	file, total, fromEnvironment, err := SizeLimitsFromEnvironment(environment(nil))
+	if err != nil || file != 10 || total != 50 || fromEnvironment {
+		t.Fatalf("defaults = %d %d %v %v", file, total, fromEnvironment, err)
 	}
-	file, total, err = SizeLimitsFromEnvironment(environment(map[string]string{MaxFileEnv: "2", MaxTotalEnv: "200"}))
-	if err != nil || file != 2*mebibyte || total != 200*mebibyte {
-		t.Fatalf("overrides = %d %d %v", file, total, err)
+	file, total, fromEnvironment, err = SizeLimitsFromEnvironment(environment(map[string]string{MaxTotalEnv: "200"}))
+	if err != nil || file != 10 || total != 200 || !fromEnvironment {
+		t.Fatalf("override = %d %d %v %v", file, total, fromEnvironment, err)
 	}
 	for _, values := range []map[string]string{
 		{MaxFileEnv: "0"}, {MaxTotalEnv: "unlimited"}, {MaxFileEnv: "-1"}, {MaxFileEnv: "50", MaxTotalEnv: "50"},
 	} {
-		if _, _, err := SizeLimitsFromEnvironment(environment(values)); err == nil {
+		if _, _, _, err := SizeLimitsFromEnvironment(environment(values)); err == nil {
 			t.Errorf("accepted invalid limits %v", values)
 		}
+	}
+}
+
+func TestStoredSizeLimitsApplyImmediatelyUnlessTheEnvironmentSetThem(t *testing.T) {
+	directory := t.TempDir()
+	now := time.Date(2026, time.September, 29, 12, 0, 0, 0, time.UTC)
+	diagnostics := openTestSession(t, directory, now, 50*app.LogMegabyte, 100*app.LogMegabyte)
+	if _, err := diagnostics.Write([]byte(strings.Repeat("x", 1_500_000) + "\n")); err != nil {
+		t.Fatal(err)
+	}
+	if err := diagnostics.SetSizeLimitsMB(1, 0); err == nil {
+		t.Fatal("accepted a total limit below the file limit")
+	}
+	if err := diagnostics.SetSizeLimitsMB(1, 3); err != nil {
+		t.Fatal(err)
+	}
+	if info, err := os.Stat(filepath.Join(directory, "porto.log")); err != nil || info.Size() != 0 {
+		t.Fatalf("lowered file limit did not rotate the live log: %v %v", info, err)
+	}
+	if _, err := os.Stat(filepath.Join(directory, "porto-2026-09-29.1.zip")); err != nil {
+		t.Fatalf("rotated segment was not archived: %v", err)
+	}
+
+	diagnostics.limitsFromEnvironment = true
+	if err := diagnostics.SetSizeLimitsMB(20, 40); err != nil || diagnostics.maxFileBytes != 1*app.LogMegabyte || !diagnostics.SizeLimitsFromEnvironment() {
+		t.Fatalf("stored limits replaced environment limits: %d %v", diagnostics.maxFileBytes, err)
 	}
 }

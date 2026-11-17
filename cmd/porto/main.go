@@ -657,12 +657,19 @@ func daemonCmd(st *store.Store, args []string, diagnostics *logging.Session) err
 		}
 		server := daemon.New(st, dashboardFS())
 		if diagnostics != nil {
+			if err := diagnostics.SetSizeLimitsMB(settings.LogMaxFileMB, settings.LogMaxTotalMB); err != nil {
+				slog.Error("Unable to apply stored diagnostic log size limits; keeping the defaults",
+					"fileMB", settings.LogMaxFileMB, "totalMB", settings.LogMaxTotalMB, "error", err)
+			}
+			server.SetLogSizeLimitUpdater(diagnostics.SetSizeLimitsMB, diagnostics.SizeLimitsFromEnvironment())
 			if err := diagnostics.SetRetentionDays(settings.LogRetentionDays); err != nil {
 				slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
 			}
 			server.SetLogRetentionUpdater(diagnostics.SetRetentionDays)
 			go diagnostics.RunMaintenance(ctx)
-			slog.Debug("Configured diagnostic log retention", "days", settings.LogRetentionDays)
+			slog.Debug("Configured diagnostic logs", "retentionDays", settings.LogRetentionDays,
+				"fileMB", settings.LogMaxFileMB, "totalMB", settings.LogMaxTotalMB,
+				"sizeLimitsFromEnvironment", diagnostics.SizeLimitsFromEnvironment())
 		}
 		return server.Run(ctx)
 	case "status":

@@ -51,6 +51,7 @@ func (s *Server) applyKubeconfigStorage(ctx context.Context, settings app.Settin
 }
 
 func (s *Server) kubeconfigSettings(settings app.Settings) app.Settings {
+	settings.LogSizeLimitsFromEnvironment = s.logSizeLimitsFromEnvironment
 	settings.KubeconfigActiveDirectory = s.kubeconfigDir
 	settings.KubeconfigStorageError = ""
 	if s.kubeStorageErr != nil {

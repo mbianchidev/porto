@@ -189,6 +189,8 @@ func TestSettingsRoundTrip(t *testing.T) {
 		TerminalCursorBlink: false,
 		TerminalScrollback:  20000,
 		LogRetentionDays:    30,
+		LogMaxFileMB:        20,
+		LogMaxTotalMB:       120,
 	}
 	if err := st.SetSettings(context.Background(), want); err != nil {
 		t.Fatalf("save settings: %v", err)

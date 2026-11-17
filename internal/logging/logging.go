@@ -14,20 +14,18 @@ import (
 	"sync"
 	"time"
 	"unicode/utf8"
+
+	"github.com/mbianchidev/porto/internal/app"
 )
 
 const (
 	LevelEnv        = "PORTO_LOG_LEVEL"
 	MirrorStderrEnv = "PORTO_LOG_MIRROR_STDERR"
-	// MaxFileEnv caps the live log in MiB before it rotates within a day.
-	MaxFileEnv = "PORTO_LOG_MAX_FILE_MIB"
-	// MaxTotalEnv caps the live log plus its archives in MiB.
-	MaxTotalEnv = "PORTO_LOG_MAX_TOTAL_MIB"
-
-	DefaultMaxFileMiB  = 10
-	DefaultMaxTotalMiB = 50
-	maximumLimitMiB    = 1 << 20
-	mebibyte           = 1 << 20
+	// MaxFileEnv caps the live log in MB before it rotates within a day. Like
+	// MaxTotalEnv, it overrides the limits stored in Settings.
+	MaxFileEnv = "PORTO_LOG_MAX_FILE_MB"
+	// MaxTotalEnv caps the live log plus its archives in MB.
+	MaxTotalEnv = "PORTO_LOG_MAX_TOTAL_MB"
 )
 
 type Session struct {
@@ -43,16 +41,18 @@ type Session struct {
 	retentionReady bool
 	maxFileBytes   int64
 	maxTotalBytes  int64
-	now            func() time.Time
-	archiveDelay   time.Duration
-	renameDelay    time.Duration
-	renameAttempts int
-	previousLogger *slog.Logger
-	previousOutput io.Writer
-	previousFlags  int
-	previousPrefix string
-	closeOnce      sync.Once
-	closeErr       error
+	// limitsFromEnvironment keeps environment caps ahead of stored settings.
+	limitsFromEnvironment bool
+	now                   func() time.Time
+	archiveDelay          time.Duration
+	renameDelay           time.Duration
+	renameAttempts        int
+	previousLogger        *slog.Logger
+	previousOutput        io.Writer
+	previousFlags         int
+	previousPrefix        string
+	closeOnce             sync.Once
+	closeErr              error
 }
 
 type openOptions struct {
@@ -62,52 +62,82 @@ type openOptions struct {
 	renameAttempts int
 	maxFileBytes   int64
 	maxTotalBytes  int64
+	// limitsFromEnvironment marks caps that stored settings must not replace.
+	limitsFromEnvironment bool
 }
 
 // Open routes process-wide diagnostics until the returned session is closed.
 func Open(path, levelName string, stderr *os.File) (*Session, error) {
-	maxFileBytes, maxTotalBytes, err := SizeLimitsFromEnvironment(os.Getenv)
+	fileMB, totalMB, fromEnvironment, err := SizeLimitsFromEnvironment(os.Getenv)
 	if err != nil {
 		return nil, err
 	}
 	return open(path, levelName, stderr, openOptions{
-		now:            time.Now,
-		archiveDelay:   time.Minute,
-		renameDelay:    25 * time.Millisecond,
-		renameAttempts: 80,
-		maxFileBytes:   maxFileBytes,
-		maxTotalBytes:  maxTotalBytes,
+		now:                   time.Now,
+		archiveDelay:          time.Minute,
+		renameDelay:           25 * time.Millisecond,
+		renameAttempts:        80,
+		maxFileBytes:          int64(fileMB) * app.LogMegabyte,
+		maxTotalBytes:         int64(totalMB) * app.LogMegabyte,
+		limitsFromEnvironment: fromEnvironment,
 	})
 }
 
-// SizeLimitsFromEnvironment resolves the live-file and total log caps in bytes.
-// The total must leave room for archives beyond one full live file.
-func SizeLimitsFromEnvironment(getenv func(string) string) (maxFileBytes, maxTotalBytes int64, err error) {
-	fileMiB, err := mebibytesSetting(getenv, MaxFileEnv, DefaultMaxFileMiB)
+// SizeLimitsFromEnvironment resolves the live-file and total log caps in MB,
+// reporting whether either environment variable set them. Unset variables use
+// the defaults until stored settings are applied.
+func SizeLimitsFromEnvironment(getenv func(string) string) (fileMB, totalMB int, fromEnvironment bool, err error) {
+	fileMB, fileSet, err := megabytesSetting(getenv, MaxFileEnv, app.DefaultLogMaxFileMB)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
-	totalMiB, err := mebibytesSetting(getenv, MaxTotalEnv, DefaultMaxTotalMiB)
+	totalMB, totalSet, err := megabytesSetting(getenv, MaxTotalEnv, app.DefaultLogMaxTotalMB)
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, false, err
 	}
-	if totalMiB <= fileMiB {
-		return 0, 0, fmt.Errorf("%s (%d MiB) must be larger than %s (%d MiB) to leave room for archives",
-			MaxTotalEnv, totalMiB, MaxFileEnv, fileMiB)
+	if err := app.ValidateLogSizeLimits(fileMB, totalMB); err != nil {
+		return 0, 0, false, fmt.Errorf("%s/%s: %w", MaxFileEnv, MaxTotalEnv, err)
 	}
-	return fileMiB * mebibyte, totalMiB * mebibyte, nil
+	return fileMB, totalMB, fileSet || totalSet, nil
 }
 
-func mebibytesSetting(getenv func(string) string, name string, fallback int64) (int64, error) {
+func megabytesSetting(getenv func(string) string, name string, fallback int) (int, bool, error) {
 	value := strings.TrimSpace(getenv(name))
 	if value == "" {
-		return fallback, nil
+		return fallback, false, nil
 	}
-	parsed, err := strconv.ParseInt(value, 10, 64)
-	if err != nil || parsed < 1 || parsed > maximumLimitMiB {
-		return 0, fmt.Errorf("%s must be a whole number of MiB from 1 to %d, got %q", name, maximumLimitMiB, value)
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 || parsed > app.MaximumLogSizeMB {
+		return 0, false, fmt.Errorf("%s must be a whole number of MB from 1 to %d, got %q", name, app.MaximumLogSizeMB, value)
 	}
-	return parsed, nil
+	return parsed, true, nil
+}
+
+// SizeLimitsFromEnvironment reports whether environment variables fixed this
+// session's caps, in which case stored settings do not change them.
+func (s *Session) SizeLimitsFromEnvironment() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.limitsFromEnvironment
+}
+
+// SetSizeLimitsMB applies stored size limits and immediately rotates or prunes
+// to honor them. It keeps environment overrides in place.
+func (s *Session) SetSizeLimitsMB(fileMB, totalMB int) error {
+	if err := app.ValidateLogSizeLimits(fileMB, totalMB); err != nil {
+		return err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.limitsFromEnvironment {
+		return nil
+	}
+	s.maxFileBytes = int64(fileMB) * app.LogMegabyte
+	s.maxTotalBytes = int64(totalMB) * app.LogMegabyte
+	if s.file == nil {
+		return nil
+	}
+	return s.maintainLocked(s.now())
 }
 
 func open(path, levelName string, stderr *os.File, options openOptions) (*Session, error) {
@@ -145,10 +175,10 @@ func open(path, levelName string, stderr *os.File, options openOptions) (*Sessio
 		options.renameAttempts = 1
 	}
 	if options.maxFileBytes <= 0 {
-		options.maxFileBytes = DefaultMaxFileMiB * mebibyte
+		options.maxFileBytes = app.DefaultLogMaxFileMB * app.LogMegabyte
 	}
 	if options.maxTotalBytes <= 0 {
-		options.maxTotalBytes = DefaultMaxTotalMiB * mebibyte
+		options.maxTotalBytes = app.DefaultLogMaxTotalMB * app.LogMegabyte
 	}
 	if options.maxTotalBytes <= options.maxFileBytes {
 		return nil, errors.Join(fmt.Errorf("total log cap %d bytes must exceed the %d byte live file cap",
@@ -168,21 +198,22 @@ func open(path, levelName string, stderr *os.File, options openOptions) (*Sessio
 	previousLogger := slog.Default()
 	previousOutput, previousFlags, previousPrefix := log.Writer(), log.Flags(), log.Prefix()
 	session := &Session{
-		path:           path,
-		file:           file,
-		stderr:         stderr,
-		mirror:         stderrErr == nil && !redirected && !mirrorStderrDisabled(),
-		crashOutput:    !redirected,
-		now:            options.now,
-		archiveDelay:   options.archiveDelay,
-		renameDelay:    options.renameDelay,
-		renameAttempts: options.renameAttempts,
-		maxFileBytes:   options.maxFileBytes,
-		maxTotalBytes:  options.maxTotalBytes,
-		previousLogger: previousLogger,
-		previousOutput: previousOutput,
-		previousFlags:  previousFlags,
-		previousPrefix: previousPrefix,
+		path:                  path,
+		file:                  file,
+		stderr:                stderr,
+		mirror:                stderrErr == nil && !redirected && !mirrorStderrDisabled(),
+		crashOutput:           !redirected,
+		now:                   options.now,
+		archiveDelay:          options.archiveDelay,
+		renameDelay:           options.renameDelay,
+		renameAttempts:        options.renameAttempts,
+		maxFileBytes:          options.maxFileBytes,
+		maxTotalBytes:         options.maxTotalBytes,
+		previousLogger:        previousLogger,
+		limitsFromEnvironment: options.limitsFromEnvironment,
+		previousOutput:        previousOutput,
+		previousFlags:         previousFlags,
+		previousPrefix:        previousPrefix,
 	}
 	if err := session.initializeActiveDateLocked(options.now()); err != nil {
 		if !redirected {

@@ -24,6 +24,16 @@ const RUNTIME_LABELS: Record<RuntimeFeatureName, string> = {
 }
 
 const DEFAULT_LOG_RETENTION_DAYS = 7
+const DEFAULT_LOG_MAX_FILE_MB = 10
+const DEFAULT_LOG_MAX_TOTAL_MB = 50
+const MAXIMUM_LOG_SIZE_MB = 100_000
+
+function logSizeError(fileMB: number, totalMB: number): string {
+  const valid = (value: number) => Number.isInteger(value) && value >= 1 && value <= MAXIMUM_LOG_SIZE_MB
+  if (!valid(fileMB) || !valid(totalMB)) return `Enter whole numbers from 1 to ${MAXIMUM_LOG_SIZE_MB.toLocaleString()} MB.`
+  if (totalMB <= fileMB) return 'The total limit must be larger than the file limit to leave room for archives.'
+  return ''
+}
 
 function editableSettings(settings: Settings | null): Settings | null {
   return settings ? {
@@ -31,6 +41,8 @@ function editableSettings(settings: Settings | null): Settings | null {
     dockerAutoPruneEnabled: settings.dockerAutoPruneEnabled ?? false,
     etcqliteEnabled: settings.etcqliteEnabled ?? false,
     logRetentionDays: settings.logRetentionDays ?? DEFAULT_LOG_RETENTION_DAYS,
+    logMaxFileMB: settings.logMaxFileMB ?? DEFAULT_LOG_MAX_FILE_MB,
+    logMaxTotalMB: settings.logMaxTotalMB ?? DEFAULT_LOG_MAX_TOTAL_MB,
     kubeconfigDirectory: settings.kubeconfigDirectory ?? '',
     ...normalizeExperiencePreferences(settings),
   } : null
@@ -85,7 +97,9 @@ export function SettingsPage({
     Number.isInteger(draft.logRetentionDays) &&
     draft.logRetentionDays >= 1 &&
     draft.logRetentionDays <= 365
-  const saveDisabled = draftDisabled || runtimeBusy !== null || !logRetentionValid
+  const logSizeOverridden = settings?.logSizeLimitsFromEnvironment ?? false
+  const logSizeMessage = draft === null || logSizeOverridden ? '' : logSizeError(draft.logMaxFileMB, draft.logMaxTotalMB)
+  const saveDisabled = draftDisabled || runtimeBusy !== null || !logRetentionValid || logSizeMessage !== ''
 
   // Sync editable draft state whenever the loaded/saved settings change, following
   // React's "adjust state during render" pattern instead of an effect so the
@@ -350,7 +364,7 @@ export function SettingsPage({
       <section className="hygiene" aria-labelledby="diagnostic-log-settings-title">
         <div className="hygieneIntro">
           <h2 id="diagnostic-log-settings-title">Keep logs bounded.</h2>
-          <p>Porto rotates the shared desktop and daemon log each day or at 10 MiB, compresses completed parts as ZIP archives and keeps all of them under 50 MiB.</p>
+          <p>Porto rotates the shared desktop and daemon log each day or when it reaches the file limit, compresses completed parts as ZIP archives and deletes the oldest archives to stay under the total limit.</p>
         </div>
         <div className="hygieneControls">
           <label className="settingsField">
@@ -375,11 +389,62 @@ export function SettingsPage({
                 : 'Calendar days, including today. Older diagnostic archives, project logs and update logs are deleted automatically.'}
             </small>
           </label>
+          <label className="settingsField">
+            <span>Rotate the log file at (MB)</span>
+            <input
+              type="number"
+              min={1}
+              max={MAXIMUM_LOG_SIZE_MB}
+              step={1}
+              value={draft?.logMaxFileMB ?? DEFAULT_LOG_MAX_FILE_MB}
+              disabled={draftDisabled || logSizeOverridden}
+              aria-invalid={logSizeMessage !== ''}
+              aria-describedby="log-size-hint"
+              onChange={(event) => {
+                if (Number.isInteger(event.currentTarget.valueAsNumber)) {
+                  updateDraft('logMaxFileMB', event.currentTarget.valueAsNumber)
+                }
+              }}
+            />
+          </label>
+          <label className="settingsField">
+            <span>Keep all diagnostic logs under (MB)</span>
+            <input
+              type="number"
+              min={2}
+              max={MAXIMUM_LOG_SIZE_MB}
+              step={1}
+              value={draft?.logMaxTotalMB ?? DEFAULT_LOG_MAX_TOTAL_MB}
+              disabled={draftDisabled || logSizeOverridden}
+              aria-invalid={logSizeMessage !== ''}
+              aria-describedby="log-size-hint"
+              onChange={(event) => {
+                if (Number.isInteger(event.currentTarget.valueAsNumber)) {
+                  updateDraft('logMaxTotalMB', event.currentTarget.valueAsNumber)
+                }
+              }}
+            />
+          </label>
+          <small id="log-size-hint" role={logSizeMessage !== '' ? 'alert' : undefined}>
+            {logSizeOverridden
+              ? 'PORTO_LOG_MAX_FILE_MB or PORTO_LOG_MAX_TOTAL_MB sets these limits for the running daemon. Remove them and restart Porto to edit here.'
+              : logSizeMessage || '1 MB is 1,000,000 bytes. Changes apply immediately: an oversized log rotates and the oldest archives are deleted, even inside the retention window.'}
+          </small>
           <div className="settingsActions">
-            <button type="button" onClick={() => updateDraft('logRetentionDays', DEFAULT_LOG_RETENTION_DAYS)} disabled={draftDisabled}>
-              Reset to 7 days
+            <button
+              type="button"
+              disabled={draftDisabled}
+              onClick={() => {
+                updateDraft('logRetentionDays', DEFAULT_LOG_RETENTION_DAYS)
+                if (!logSizeOverridden) {
+                  updateDraft('logMaxFileMB', DEFAULT_LOG_MAX_FILE_MB)
+                  updateDraft('logMaxTotalMB', DEFAULT_LOG_MAX_TOTAL_MB)
+                }
+              }}
+            >
+              Reset to 7 days, 10 MB and 50 MB
             </button>
-            <button type="button" onClick={save} disabled={saveDisabled}>Save log retention</button>
+            <button type="button" onClick={save} disabled={saveDisabled}>Save log settings</button>
           </div>
         </div>
       </section>

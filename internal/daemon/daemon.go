@@ -158,20 +158,24 @@ type Server struct {
 	registryConfigKey  string
 	registryConfig     []byte
 	updateLogRetention func(int) error
-	dataMu             sync.Mutex
-	dataCancels        map[int64]context.CancelFunc
-	dataDone           map[int64]chan struct{}
-	dataUnstored       map[int64]*dataops.Operation
-	dataExecutor       func(context.Context, dataops.Operation) (dataops.Result, error)
-	nativeFiles        *nativefiles.Manager
-	networking         *networking.Manager
-	wsl                *wsl.Manager
-	platformCommand    func(context.Context, ...string) error
-	networkRoutesMu    sync.RWMutex
-	networkRoutes      map[string]containerHTTPRoute
-	linuxRouteViewMu   sync.Mutex
-	linuxRouteView     *containerRouteView
-	defaultBranches    defaultBranchCache
+	// updateLogSizeLimits applies stored MB caps; logSizeLimitsFromEnvironment
+	// reports that environment variables fixed them for this daemon.
+	updateLogSizeLimits          func(fileMB, totalMB int) error
+	logSizeLimitsFromEnvironment bool
+	dataMu                       sync.Mutex
+	dataCancels                  map[int64]context.CancelFunc
+	dataDone                     map[int64]chan struct{}
+	dataUnstored                 map[int64]*dataops.Operation
+	dataExecutor                 func(context.Context, dataops.Operation) (dataops.Result, error)
+	nativeFiles                  *nativefiles.Manager
+	networking                   *networking.Manager
+	wsl                          *wsl.Manager
+	platformCommand              func(context.Context, ...string) error
+	networkRoutesMu              sync.RWMutex
+	networkRoutes                map[string]containerHTTPRoute
+	linuxRouteViewMu             sync.Mutex
+	linuxRouteView               *containerRouteView
+	defaultBranches              defaultBranchCache
 
 	nativeRouteSnapshot portodocker.ContainerSnapshot
 	nativeRouteUpdated  time.Time
@@ -328,6 +332,11 @@ func New(st *store.Store, ui fs.FS) *Server {
 
 func (s *Server) SetLogRetentionUpdater(update func(int) error) {
 	s.updateLogRetention = update
+}
+
+func (s *Server) SetLogSizeLimitUpdater(update func(fileMB, totalMB int) error, fromEnvironment bool) {
+	s.updateLogSizeLimits = update
+	s.logSizeLimitsFromEnvironment = fromEnvironment
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -980,6 +989,12 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		}
 		s.applyProjectLogRetention(r.Context(), time.Time{})
 	}
+	if (settings.LogMaxFileMB != current.LogMaxFileMB || settings.LogMaxTotalMB != current.LogMaxTotalMB) &&
+		s.updateLogSizeLimits != nil {
+		if err := s.updateLogSizeLimits(settings.LogMaxFileMB, settings.LogMaxTotalMB); err != nil {
+			slog.Error("Unable to apply diagnostic log size limits", "fileMB", settings.LogMaxFileMB, "totalMB", settings.LogMaxTotalMB, "error", err)
+		}
+	}
 	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
 		s.syncSQLNotSoLite(r.Context())
 	}
@@ -1040,6 +1055,15 @@ func normalizeSettings(settings app.Settings) (app.Settings, error) {
 	}
 	if settings.LogRetentionDays < 1 || settings.LogRetentionDays > app.MaximumLogRetentionDays {
 		return settings, fmt.Errorf("log retention must be between 1 and %d days", app.MaximumLogRetentionDays)
+	}
+	if settings.LogMaxFileMB == 0 {
+		settings.LogMaxFileMB = app.DefaultLogMaxFileMB
+	}
+	if settings.LogMaxTotalMB == 0 {
+		settings.LogMaxTotalMB = app.DefaultLogMaxTotalMB
+	}
+	if err := app.ValidateLogSizeLimits(settings.LogMaxFileMB, settings.LogMaxTotalMB); err != nil {
+		return settings, err
 	}
 	return settings, nil
 }

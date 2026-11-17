@@ -203,17 +203,24 @@ for up to one minute so desktop writes already in flight finish before ZIP
 creation. The desktop daemon bootstrap uses `daemon-startup.log`, which is
 overwritten on each daemon launch instead of accumulating.
 
-The live file is also capped at **10 MiB**. When the next record would exceed
-it, Porto rotates first, so a busy day becomes `porto-YYYY-MM-DD.1.zip`,
-`.2.zip` and so on in write order, with the undecorated
-`porto-YYYY-MM-DD.zip` holding the day's last part. A single record larger than
-the cap is truncated with a `[truncated N bytes ...]` marker. The live file and
-its archives together stay under **50 MiB**: Porto deletes the oldest archives
-first, even inside the retention window, and records a `WARN` entry with the
-number of files and bytes removed. Set `PORTO_LOG_MAX_FILE_MIB` and
-`PORTO_LOG_MAX_TOTAL_MIB` to whole MiB values to change these caps; the total
-must be larger than the file cap, and invalid values stop the daemon with an
-explicit error. Sizes are measured from the files on disk.
+The live file is also capped at **10 MB** by default. When the next record
+would exceed it, Porto rotates first, so a busy day becomes
+`porto-YYYY-MM-DD.1.zip`, `.2.zip` and so on in write order, with the
+undecorated `porto-YYYY-MM-DD.zip` holding the day's last part. A single record
+larger than the cap is truncated with a `[truncated N bytes ...]` marker. The
+live file and its archives together stay under **50 MB** by default: Porto
+deletes the oldest archives first, even inside the retention window, and
+records a `WARN` entry with the number of files and bytes removed. Sizes are
+measured from the files on disk, and 1 MB is 1,000,000 bytes.
+
+Change both limits in **System settings → Rotate the log file at (MB)** and
+**Keep all diagnostic logs under (MB)**, from 1 to 100,000 MB. The total must be
+larger than the file limit. Saving applies them immediately: an oversized live
+file rotates and the oldest archives are pruned at once. The
+`PORTO_LOG_MAX_FILE_MB` and `PORTO_LOG_MAX_TOTAL_MB` environment variables
+override the saved limits for the daemon they launch; Settings then shows the
+fields as read-only until you remove them and restart Porto. Invalid
+environment values stop the daemon with an explicit error.
 
 Porto keeps **7 calendar days** of logs by default, including the current day.
 Change **System settings → Keep logs for** to retain between 1 and 365 days.

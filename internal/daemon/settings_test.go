@@ -59,6 +59,56 @@ func TestSettingsUpdateAppliesLogRetention(t *testing.T) {
 	}
 }
 
+func TestSettingsUpdateAppliesLogSizeLimits(t *testing.T) {
+	st, err := store.Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	settings, err := st.Settings(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if settings.LogMaxFileMB != app.DefaultLogMaxFileMB || settings.LogMaxTotalMB != app.DefaultLogMaxTotalMB {
+		t.Fatalf("default limits = %d/%d MB", settings.LogMaxFileMB, settings.LogMaxTotalMB)
+	}
+	var applied [2]int
+	server := &Server{store: st, logSizeLimitsFromEnvironment: true}
+	server.updateLogSizeLimits = func(fileMB, totalMB int) error {
+		applied = [2]int{fileMB, totalMB}
+		return nil
+	}
+	put := func(fileMB, totalMB int) *httptest.ResponseRecorder {
+		settings.LogMaxFileMB, settings.LogMaxTotalMB = fileMB, totalMB
+		body, err := json.Marshal(settings)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response := httptest.NewRecorder()
+		server.setSettings(response, httptest.NewRequest(http.MethodPut, "/api/settings", bytes.NewReader(body)))
+		return response
+	}
+
+	if response := put(25, 25); response.Code != http.StatusBadRequest {
+		t.Fatalf("equal limits response = %d: %s", response.Code, response.Body.String())
+	}
+	response := put(5, 200)
+	if response.Code != http.StatusOK {
+		t.Fatalf("settings response = %d: %s", response.Code, response.Body.String())
+	}
+	var returned app.Settings
+	if err := json.NewDecoder(response.Body).Decode(&returned); err != nil {
+		t.Fatal(err)
+	}
+	if applied != [2]int{5, 200} || returned.LogMaxFileMB != 5 || returned.LogMaxTotalMB != 200 || !returned.LogSizeLimitsFromEnvironment {
+		t.Fatalf("applied %v, returned %+v", applied, returned)
+	}
+	saved, err := st.Settings(context.Background())
+	if err != nil || saved.LogMaxFileMB != 5 || saved.LogMaxTotalMB != 200 {
+		t.Fatalf("saved limits = %d/%d MB (%v)", saved.LogMaxFileMB, saved.LogMaxTotalMB, err)
+	}
+}
+
 func TestKubeconfigStorageSettingPersistsBeforeRestartAndMovesExistingClustersOnStartup(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("PORTO_HOME", root)
