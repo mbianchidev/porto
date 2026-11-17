@@ -169,6 +169,9 @@ type Server struct {
 	platformCommand    func(context.Context, ...string) error
 	networkRoutesMu    sync.RWMutex
 	networkRoutes      map[string]containerHTTPRoute
+	linuxRouteViewMu   sync.Mutex
+	linuxRouteView     *containerRouteView
+	defaultBranches    defaultBranchCache
 
 	nativeRouteSnapshot portodocker.ContainerSnapshot
 	nativeRouteUpdated  time.Time
@@ -1502,6 +1505,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			_ = s.store.AddLog(ctx, p.ID, "git", strings.TrimSpace(out))
 			return p, fmt.Errorf("git pull failed: %w", err)
 		}
+		// Fetching can move the remote HEAD that defines the default branch.
+		s.defaultBranches.invalidate(p.SourcePath)
+		s.defaultBranches.invalidate(p.Path)
 	}
 	runtimeProject := p
 	runtimeProject.Port = port
@@ -1985,6 +1991,7 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(p.SourcePath, defaultBranch)
 	hostname, err := s.availableBranchHostname(r.Context(), p, req.Branch, defaultBranch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -2057,6 +2064,7 @@ func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(p.SourcePath, defaultBranch)
 	writeJSON(w, map[string]any{
 		"branches":      branches,
 		"current":       gitutil.Branch(p.Path),
@@ -2091,6 +2099,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(source.Path, defaultBranch)
 	worktreeRoot, err := config.ManagedWorktreeRoot()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2378,7 +2387,7 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := loadProjectGitMetadata(ctx, ps, resolveProjectGitMetadata)
+	metadata, err := loadProjectGitMetadata(ctx, ps, s.resolveProjectGitMetadata)
 	if err != nil {
 		return nil, err
 	}
@@ -2422,7 +2431,7 @@ type projectGitMetadata struct {
 	defaultBranch string
 }
 
-func resolveProjectGitMetadata(ctx context.Context, project app.Project) projectGitMetadata {
+func (s *Server) resolveProjectGitMetadata(ctx context.Context, project app.Project) projectGitMetadata {
 	branch, dirty, repository := gitutil.StatusContext(ctx, project.Path)
 	metadata := projectGitMetadata{branch: branch, dirty: dirty}
 	if !repository {
@@ -2432,7 +2441,7 @@ func resolveProjectGitMetadata(ctx context.Context, project app.Project) project
 	if sourcePath == "" {
 		sourcePath = project.Path
 	}
-	metadata.defaultBranch, _ = gitutil.DefaultBranchContext(ctx, sourcePath)
+	metadata.defaultBranch = s.defaultBranches.lookup(ctx, sourcePath)
 	return metadata
 }
 

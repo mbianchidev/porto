@@ -403,7 +403,7 @@ func (m *Manager) WakeResourceSaverEngine(ctx context.Context, token string) err
 	ticker := time.NewTicker(50 * time.Millisecond)
 	defer ticker.Stop()
 	for {
-		if snapshot := m.ContainerSnapshot(); snapshot.Available && !snapshot.Stale {
+		if m.containerInventoryFresh() {
 			state.ResourceSaverToken = ""
 			return m.writeEngineState(state)
 		}
