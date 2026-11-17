@@ -311,6 +311,10 @@ porto docker engine-stop
 porto docker engine-remove --confirm
 ```
 
+`engine-start` boots the existing Porto-owned engine; it never creates one. With the daemon running, both `engine-start` and `engine-stop` go through it, the same path as the sidebar power button and the tray's Docker engine items (see [Rest and operate modes](daily-use.md#rest-and-operate-modes)). Stopping is refused while runtime or data work is in progress.
+
+On macOS, Activity Monitor lists the running engine as **Virtual Machine Service for Porto Docker Engine**, plus its **Porto Docker Engine** Lima hostagent. macOS names the Virtualization service after the process that created the VM, so Porto boots the engine through `docker/launcher/bin/Porto Docker Engine` in its state directory: a hard link to the bundled or `PATH` `limactl` (a copy when linking is refused), with `share` and `libexec` links so Lima finds its files. It is refreshed whenever `limactl` changes. If it cannot be prepared, the engine starts as `limactl` and the daemon log records why. Other Lima commands, Kubernetes nodes and VMs still use `limactl`.
+
 `engine-remove --confirm` deletes the Porto-owned Lima VM and every container resource stored in it. It does not delete a system containerd installation used through local `nerdctl`.
 
 ## Docker API compatibility matrix

@@ -264,3 +264,23 @@ test('Helm previews hide values and gate explicit storage consequences before ac
   expect(requests[1].body).toEqual({ context, namespace: 'default', preview: preview.token, confirm: true, acknowledgeStorage: true })
   await expect(page.getByRole('table').filter({ hasText: 'helm.upgrade' })).toContainText('partial')
 })
+
+test('RBAC shows only access-control kinds and Resources shows everything else', async ({ page }) => {
+  const role: AdminResource = { group: 'rbac.authorization.k8s.io', version: 'v1', resource: 'roles', kind: 'Role', namespaced: true, verbs: ['get', 'list'] }
+  const serviceAccount: AdminResource = { group: '', version: 'v1', resource: 'serviceaccounts', kind: 'ServiceAccount', namespaced: true, verbs: ['get', 'list'] }
+  await page.route('**/api/**', async (route) => {
+    const path = new URL(route.request().url()).pathname
+    let value = baseline(path)
+    if (path === '/api/kubernetes/admin/discovery') value = { resources: [deployment, role, serviceAccount], partial: false }
+    if (path === '/api/kubernetes/admin/resources') value = { items: [] }
+    if (path === '/api/kubernetes/admin/access') value = { verbs: { get: { allowed: true }, list: { allowed: true } } }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/kubernetes-rbac')
+  const kinds = page.getByRole('combobox', { name: 'Served API resource', exact: true })
+  await expect(kinds).toHaveValue('rbac.authorization.k8s.io/v1/roles')
+  await expect(kinds.locator('option')).toHaveText([/^Role /, /^ServiceAccount /])
+  await page.goto('/#/kubernetes-admin')
+  await expect(kinds).toHaveValue('apps/v1/deployments')
+  await expect(kinds.locator('option')).toHaveText([/^Deployment /])
+})

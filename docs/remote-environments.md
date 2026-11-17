@@ -201,7 +201,7 @@ Insecure TLS, credential/CA file references, executable/auth-provider plugins,
 basic authentication, kubeconfig proxy URLs and impersonation are rejected.
 Input kubeconfig content is limited to 1 MiB.
 
-The imported environment exposes **Resources and RBAC**, **Helm**, **GitOps applications**, resource
+The imported environment exposes **Resources**, **RBAC**, **Helm**, **GitOps applications**, resource
 inspection and authorized pod logs. `operate: true` separately permits workload
 operations; native Kubernetes RBAC remains authoritative. Optional
 `capabilities: ["terminal.open", "secrets.read"]` must be explicitly requested

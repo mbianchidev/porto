@@ -16,6 +16,7 @@ func (s *Server) dockerResourceRoutes(mux *http.ServeMux) {
 		mux.HandleFunc("POST /api/docker/engine/resources/apply", s.requireRuntime("docker", s.applyEngineResources))
 		mux.HandleFunc("POST /api/docker/cleanup", s.requireRuntime("docker", s.runDockerCleanupNow))
 		mux.HandleFunc("POST /api/docker/engine/install", s.requireRuntime("docker", s.installDockerEngine))
+		mux.HandleFunc("POST /api/docker/engine/start", s.requireRuntime("docker", s.startDockerEngine))
 		mux.HandleFunc("POST /api/docker/engine/stop", s.requireRuntime("docker", s.stopDockerEngine))
 		mux.HandleFunc("POST /api/docker/engine/remove", s.requireRuntime("docker", s.removeDockerEngine))
 		mux.HandleFunc("POST /api/docker/engine/prepare-update", s.prepareDockerEngineUpdate)

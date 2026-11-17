@@ -18,19 +18,19 @@ const navigation: Array<{
     ],
   },
   {
-    name: 'Kubernetes', pages: [['kubernetes', 'Overview']],
+    name: 'Kubernetes', pages: [],
     sections: [
+      { name: 'Clusters', pages: [['kubernetes', 'Overview'], ['kubernetes-admin', 'Resources'], ['kubernetes-rbac', 'RBAC'], ['nodes', 'Nodes']] },
       { name: 'Workloads', pages: [['deployments', 'Deployments'], ['pods', 'Pods'], ['jobs', 'Jobs'], ['cronjobs', 'Scheduled jobs']] },
       { name: 'Networking', pages: [['services', 'Services'], ['port-forwards', 'Port forwarding'], ['gateways', 'Gateway API']] },
       { name: 'Storage & config', pages: [['storage', 'Storage'], ['configs', 'ConfigMaps'], ['secrets', 'Secrets']] },
       { name: 'Delivery', pages: [['helm', 'Helm releases'], ['gitops', 'GitOps applications']] },
-      { name: 'Cluster tools', pages: [['nodes', 'Nodes'], ['kubernetes-admin', 'Resources and RBAC']] },
     ],
   },
+  { name: 'Nodes', pages: [['environments', 'Environments and fleets'], ['machines', 'Virtual machines']] },
   {
     name: 'System', pages: [
-      ['environments', 'Environments and fleets'], ['machines', 'Virtual machines'], ['extensions', 'Extensions'],
-      ['activity', 'Activity'], ['diagnostics', 'Diagnostics'], ['settings', 'Settings'],
+      ['extensions', 'Extensions'], ['activity', 'Activity'], ['diagnostics', 'Diagnostics'], ['settings', 'Settings'],
     ],
   },
 ]
@@ -81,11 +81,11 @@ test.afterEach(async ({ page }) => {
   expect(await page.pageErrors()).toEqual([])
 })
 
-test('four main sections retain every existing destination in short groups', async ({ page }, testInfo) => {
+test('main sections retain every existing destination in short groups', async ({ page }, testInfo) => {
   await page.goto('/#/localhost-ing', { waitUntil: 'networkidle' })
   const rail = page.getByRole('navigation', { name: 'Primary navigation' })
   await page.screenshot({ path: testInfo.outputPath('sidebar.png'), animations: 'disabled' })
-  await expect(rail.getByRole('button')).toHaveCount(6)
+  await expect(rail.getByRole('button')).toHaveCount(7)
   await expect(rail.getByRole('button', { name: 'Development', exact: true })).toHaveAttribute('aria-expanded', 'true')
   const destinations = navigation.flatMap((group) => [...group.pages, ...(group.sections ?? []).flatMap((section) => section.pages)])
   const hrefs = await rail.locator('a').evaluateAll((links) => links
@@ -194,10 +194,11 @@ for (const [route, label, group, section] of [
   ['cronjobs', 'Scheduled jobs', 'Kubernetes', 'Workloads'],
   ['gateways', 'Gateway API', 'Kubernetes', 'Networking'],
   ['configs', 'ConfigMaps', 'Kubernetes', 'Storage & config'],
-  ['kubernetes-admin', 'Resources and RBAC', 'Kubernetes', 'Cluster tools'],
+  ['kubernetes-admin', 'Resources', 'Kubernetes', 'Clusters'],
+  ['kubernetes-rbac', 'RBAC', 'Kubernetes', 'Clusters'],
   ['docker-storage', 'Storage tools', 'Containers', 'Storage & data'],
   ['builds', 'Builds', 'Containers', 'Images & builds'],
-  ['machines', 'Virtual machines', 'System', ''],
+  ['machines', 'Virtual machines', 'Nodes', ''],
 ]) {
   test(`deep link to ${route} reveals its current page and only its branch`, async ({ page }) => {
     await page.goto(`/#/${route}`)
@@ -227,7 +228,7 @@ test('navigation and browser history reveal the current branch without closing o
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await page.getByRole('link', { name: 'Manage environments', exact: true }).click()
-  await expect(rail.getByRole('button', { name: 'System', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await expect(rail.getByRole('button', { name: 'Nodes', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await expect(rail.getByRole('link', { name: 'Environments and fleets', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(rail.getByRole('button', { name: 'Kubernetes', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toBeVisible()
@@ -247,8 +248,9 @@ test('environment capabilities filter both groups and nested destinations withou
   await expect(rail.getByRole('button', { name: 'Storage & config', exact: true })).toHaveCount(0)
   await expect(rail.getByRole('link', { name: 'GitOps applications', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(rail.getByRole('link', { name: 'Helm releases', exact: true })).toBeVisible()
-  await expand(rail.getByRole('button', { name: 'Cluster tools', exact: true }))
-  await expect(rail.getByRole('link', { name: 'Resources and RBAC', exact: true })).toBeVisible()
+  await expand(rail.getByRole('button', { name: 'Clusters', exact: true }))
+  await expect(rail.getByRole('link', { name: 'Resources', exact: true })).toBeVisible()
+  await expect(rail.getByRole('link', { name: 'RBAC', exact: true })).toBeVisible()
   await expect(rail.getByRole('link', { name: 'Nodes', exact: true })).toHaveCount(0)
   await rail.getByRole('button', { name: 'Expand all', exact: true }).click()
   await expect(rail.getByRole('button', { expanded: false, includeHidden: true })).toHaveCount(0)
@@ -388,4 +390,48 @@ test('narrow navigation preserves expansion and recursive collapse when dismisse
   await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'false')
   await page.keyboard.press('Escape')
   await expect(open).toBeFocused()
+})
+
+test('the brand switch rests and wakes the local Docker engine', async ({ page }) => {
+  let available = false
+  const actions: string[] = []
+  await page.route((url) => /\/api\/(?:environments\/local\/api\/)?docker\/(?:status|containers|engine\/(?:start|stop))$/.test(url.pathname), async (route) => {
+    const path = new URL(route.request().url()).pathname
+    let value: unknown = { enabled: true, available, context: 'porto' }
+    if (path.endsWith('/containers')) value = [{ id: 'synthetic', name: 'synthetic-running', state: 'running' }]
+    if (path.includes('/engine/')) {
+      const action = path.endsWith('/start') ? 'start' : 'stop'
+      actions.push(action)
+      available = action === 'start'
+      value = { status: action === 'start' ? 'started' : 'stopped' }
+    }
+    await route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+  })
+  await page.goto('/#/localhost-ing')
+  const rail = page.getByRole('navigation', { name: 'Primary navigation' })
+  const brand = rail.getByRole('link', { name: 'Porto', exact: true })
+  await expect(brand).toContainText('Rest mode')
+
+  await rail.getByRole('button', { name: 'Start Docker engine', exact: true }).click()
+  await expect(brand).toContainText('Operate mode')
+  expect(actions).toEqual(['start'])
+
+  const stop = rail.getByRole('button', { name: 'Stop Docker engine', exact: true })
+  const prompts: string[] = []
+  let confirmStop = false
+  page.on('dialog', async (dialog) => {
+    prompts.push(dialog.message())
+    await (confirmStop ? dialog.accept() : dialog.dismiss())
+  })
+  await stop.click()
+  await expect.poll(() => prompts.length).toBe(1)
+  expect(prompts[0]).toContain('1 running container will stop.')
+  await expect(brand).toContainText('Operate mode')
+  expect(actions).toEqual(['start'])
+
+  confirmStop = true
+  await stop.click()
+  await expect(brand).toContainText('Rest mode')
+  expect(actions).toEqual(['start', 'stop'])
+  await expect(rail.getByRole('button', { name: 'Start Docker engine', exact: true })).toBeEnabled()
 })

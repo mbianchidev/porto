@@ -150,6 +150,15 @@ porto docker status                              # engine state
   and unused anonymous volumes. Compose containers and named volumes are kept.
   Use `docker run --rm` for throwaway containers, and don't keep data only in a
   stopped standalone container.
+- The engine runs in a Lima VM. On macOS, Activity Monitor shows it as
+  **Virtual Machine Service for Porto Docker Engine**, started by a **Porto
+  Docker Engine** hostagent (`... hostagent ... porto-engine`; older releases
+  show `limactl`). To free its CPU and memory,
+  run `porto docker engine-stop` (rest mode) and later `porto docker
+  engine-start`; the tray and the sidebar power button do the same. Stopping
+  stops running containers but keeps containers, images and volumes, so check
+  `docker --context porto ps` and ask first if any are running. Never kill the
+  VM process directly.
 
 ## 6. Kubernetes clusters
 

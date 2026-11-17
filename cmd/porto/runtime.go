@@ -205,6 +205,9 @@ func dockerCmd(args []string) error {
 		if len(args) != 1 {
 			return errors.New("usage: porto docker engine-start")
 		}
+		if daemonUp() {
+			return runtimePOST("/api/docker/engine/start", nil)
+		}
 		if err := portodocker.New(nil).StartEngine(context.Background()); err != nil {
 			return err
 		}

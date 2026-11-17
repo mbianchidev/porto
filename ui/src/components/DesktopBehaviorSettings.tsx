@@ -92,7 +92,7 @@ export function DesktopBehaviorSettings() {
           />
         </label>
         <label className="toggleRow">
-          <span><strong>Close the window to the menu bar or system tray</strong><small>The tray menu always provides Open Porto and Quit Porto.</small></span>
+          <span><strong>Close the window to the menu bar or system tray</strong><small>The tray icon is always shown, with Open Porto, Docker engine start/stop and Quit Porto.</small></span>
           <input
             type="checkbox"
             checked={current.keepInTray}

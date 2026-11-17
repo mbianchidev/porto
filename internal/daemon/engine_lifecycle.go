@@ -1,6 +1,7 @@
 package daemon
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 
@@ -15,6 +16,27 @@ func (s *Server) requireDetachedVMFiles(w http.ResponseWriter, name string) bool
 		}
 	}
 	return true
+}
+
+// startDockerEngine boots the existing Porto-owned engine. It never creates or
+// repairs one; use engine/install for that. The boot is bound to the daemon's
+// lifetime rather than the request, so a reloaded dashboard or an impatient
+// client cannot interrupt limactl halfway through starting the guest.
+func (s *Server) startDockerEngine(w http.ResponseWriter, r *http.Request) {
+	if !s.beginRuntimeOperation() {
+		http.Error(w, "Porto is shutting down; the engine was not started", http.StatusServiceUnavailable)
+		return
+	}
+	defer s.endRuntimeOperation()
+	ctx := s.runtimeContext
+	if ctx == nil {
+		ctx = context.WithoutCancel(r.Context())
+	}
+	if err := s.docker.StartEngine(ctx); err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSON(w, map[string]string{"status": "started"})
 }
 
 func (s *Server) stopDockerEngine(w http.ResponseWriter, r *http.Request) {

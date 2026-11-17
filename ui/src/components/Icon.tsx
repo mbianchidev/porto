@@ -55,6 +55,7 @@ export type IconName =
   | 'stats'
   | 'events'
   | 'manifest'
+  | 'power'
 
 export function Icon({ name }: { name: IconName }) {
   return (
@@ -111,6 +112,7 @@ export function Icon({ name }: { name: IconName }) {
       {name === 'stats' && <path d="M5 19V9m6 10V5m6 14v-7" />}
       {name === 'events' && <path d="M12 8v5l3 2M12 3a9 9 0 1 0 9 9" />}
       {name === 'manifest' && <><path d="M7 3h10v18H7Z" /><path d="M9 8h6M9 12h6M9 16h4" /></>}
+      {name === 'power' && <path d="M12 3v8M7.1 6.3a7 7 0 1 0 9.8 0" />}
     </svg>
   )
 }
