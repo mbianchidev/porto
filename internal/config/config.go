@@ -17,7 +17,7 @@ var Version = "1.10.0"
 
 const (
 	AppName                  = "porto"
-	APIVersion               = 30
+	APIVersion               = 31
 	DaemonAddr               = "127.0.0.1:37623"
 	RouterAddr               = "127.0.0.1:37680"
 	RouterTLSAddr            = "127.0.0.1:37681"
