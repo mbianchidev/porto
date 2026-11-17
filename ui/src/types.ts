@@ -909,6 +909,7 @@ export type RouteID =
   | 'migration'
   | 'kubernetes'
   | 'kubernetes-admin'
+  | 'kubernetes-rbac'
   | 'helm'
   | 'gitops'
   | 'deployments'

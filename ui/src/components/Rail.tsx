@@ -1,8 +1,10 @@
 import { useState, type Ref } from 'react'
+import { ActionButton } from './ActionButton'
 import { Icon, type IconName } from './Icon'
 import { StatusLamp } from './StatusLamp'
 import type { RouteID } from '../types'
 import { environmentSupportsRoute } from '../managementTypes'
+import { useDockerEngine, type DockerEnginePhase } from '../dockerEngine'
 
 type NavItem = { id: RouteID; label: string; icon?: IconName; badge?: string }
 type NavSection = { id: string; title: string; items: NavItem[] }
@@ -49,8 +51,17 @@ const NAV_GROUPS: NavGroup[] = [
     id: 'kubernetes',
     title: 'Kubernetes',
     icon: 'kubernetes',
-    items: [{ id: 'kubernetes', label: 'Overview', icon: 'kubernetes' }],
+    items: [],
     sections: [
+      {
+        id: 'kubernetes-clusters', title: 'Clusters',
+        items: [
+          { id: 'kubernetes', label: 'Overview' },
+          { id: 'kubernetes-admin', label: 'Resources' },
+          { id: 'kubernetes-rbac', label: 'RBAC' },
+          { id: 'nodes', label: 'Nodes' },
+        ],
+      },
       {
         id: 'kubernetes-workloads', title: 'Workloads',
         items: [
@@ -83,13 +94,15 @@ const NAV_GROUPS: NavGroup[] = [
           { id: 'gitops', label: 'GitOps applications' },
         ],
       },
-      {
-        id: 'kubernetes-cluster', title: 'Cluster tools',
-        items: [
-          { id: 'nodes', label: 'Nodes' },
-          { id: 'kubernetes-admin', label: 'Resources and RBAC' },
-        ],
-      },
+    ],
+  },
+  {
+    id: 'infrastructure-nodes',
+    title: 'Nodes',
+    icon: 'nodes',
+    items: [
+      { id: 'environments', label: 'Environments and fleets', icon: 'networks' },
+      { id: 'machines', label: 'Virtual machines', icon: 'machines' },
     ],
   },
   {
@@ -97,8 +110,6 @@ const NAV_GROUPS: NavGroup[] = [
     title: 'System',
     icon: 'settings',
     items: [
-      { id: 'environments', label: 'Environments and fleets', icon: 'networks' },
-      { id: 'machines', label: 'Virtual machines', icon: 'machines' },
       { id: 'extensions', label: 'Extensions', icon: 'configs' },
       { id: 'diagnostics', label: 'Diagnostics', icon: 'diagnostics' },
       { id: 'activity', label: 'Activity', icon: 'activity' },
@@ -107,6 +118,12 @@ const NAV_GROUPS: NavGroup[] = [
   },
 ]
 
+const MODE_LABELS: Partial<Record<DockerEnginePhase, string>> = {
+  resting: 'Rest mode',
+  starting: 'Starting engine',
+  stopping: 'Stopping engine',
+}
+
 export function Rail({
   route,
   open,
@@ -114,6 +131,7 @@ export function Rail({
   kubernetesRunningCount,
   onNavigate,
   backend = 'local',
+  engineControl = false,
   ref,
 }: {
   route: RouteID
@@ -122,8 +140,10 @@ export function Rail({
   kubernetesRunningCount: number
   onNavigate: () => void
   backend?: string
+  engineControl?: boolean
   ref?: Ref<HTMLElement>
 }) {
+  const engine = useDockerEngine(engineControl)
   const groups = NAV_GROUPS.map((group) => ({
     ...group,
     items: group.items.filter((item) => environmentSupportsRoute(backend, item.id)),
@@ -170,13 +190,25 @@ export function Rail({
 
   return (
     <nav ref={ref} id="primary-navigation" className={`rail ${open ? 'open' : ''}`} aria-label="Primary navigation" inert={narrow && !open}>
-      <a className="railBrand" href="#/localhost-ing" aria-label="Porto" onClick={onNavigate}>
-        <span className="brandMark" aria-hidden="true"><span /><span /><span /></span>
-        <span className="railBrandText">
-          <strong>Porto</strong>
-          <small>Operate mode</small>
-        </span>
-      </a>
+      <div className="railBrandRow">
+        <a className={`railBrand ${engine.phase === 'resting' ? 'resting' : ''}`} href="#/localhost-ing" aria-label="Porto" onClick={onNavigate}>
+          <span className="brandMark" aria-hidden="true"><span /><span /><span /></span>
+          <span className="railBrandText">
+            <strong>Porto</strong>
+            <small>{MODE_LABELS[engine.phase] ?? 'Operate mode'}</small>
+          </span>
+        </a>
+        {engine.phase !== 'unknown' && (
+          <ActionButton
+            className={`railEngineToggle ${engine.phase === 'running' ? 'engineOn' : ''}`}
+            label={engine.phase === 'running' || engine.phase === 'stopping' ? 'Stop Docker engine' : 'Start Docker engine'}
+            icon="power"
+            disabled={engine.phase === 'starting' || engine.phase === 'stopping'}
+            aria-busy={engine.phase === 'starting' || engine.phase === 'stopping'}
+            onClick={() => void engine.toggle()}
+          />
+        )}
+      </div>
       <div className="railExpansionControls">
         <button
           className="railExpansionButton"

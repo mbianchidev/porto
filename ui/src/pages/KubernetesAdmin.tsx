@@ -13,19 +13,20 @@ import { LocalOperations } from '../components/LocalOperations'
 import { RuntimeGate } from '../components/SectionChrome'
 import { ResourceInput } from '../components/ResourceInput'
 import { StatusLamp } from '../components/StatusLamp'
-import { adminQuery, resourceActions, resourceKey } from '../kubeAdminTypes'
+import { adminQuery, isAccessControlResource, resourceActions, resourceKey } from '../kubeAdminTypes'
 import { useKubernetesAdminTarget } from '../kubeAdminTargetContext'
 import type { AdminAccess, AdminDiscovery, AdminObject, AdminObjectList, AdminPreview, AdminSchema, AdminTarget, RolloutRevision } from '../kubeAdminTypes'
 import type { KubernetesContext } from '../types'
 
-export function KubernetesAdmin({ context, contexts, onContextChange, operateAllowed = true, terminalAllowed = true }: { context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void; operateAllowed?: boolean; terminalAllowed?: boolean }) {
+export function KubernetesAdmin({ view = 'resources', context, contexts, onContextChange, operateAllowed = true, terminalAllowed = true }: { view?: 'resources' | 'rbac'; context: string; contexts: KubernetesContext[]; onContextChange: (context: string) => void; operateAllowed?: boolean; terminalAllowed?: boolean }) {
   const { notifyError, notifyNotice } = useMessages()
   const { target: pendingTarget, setTarget } = useKubernetesAdminTarget()
   const [incoming] = useState(pendingTarget)
   useEffect(() => setTarget(null), [setTarget])
-  const initial = incoming?.context === context ? incoming : null
+  const rbac = view === 'rbac'
+  const initial = incoming?.context === context && isAccessControlResource(incoming) === rbac ? incoming : null
   const [namespace, setNamespace] = useState(initial?.namespace ?? 'default')
-  const [chosenResource, setChosenResource] = useState(initial ? `${initial.group}/${initial.version}/${initial.resource}` : 'apps/v1/deployments')
+  const [chosenResource, setChosenResource] = useState(initial ? `${initial.group}/${initial.version}/${initial.resource}` : rbac ? 'rbac.authorization.k8s.io/v1/roles' : 'apps/v1/deployments')
   const [selectedName, setSelectedName] = useState(initial?.name ?? '')
   const [nameDraft, setNameDraft] = useState(initial?.name ?? '')
   const [continuation, setContinuation] = useState('')
@@ -46,7 +47,7 @@ export function KubernetesAdmin({ context, contexts, onContextChange, operateAll
   const status = useKubernetesStatus(context)
   const available = !status.loading && !status.error && Boolean(status.data?.available)
   const discovery = usePolledResource<AdminDiscovery>((signal) => context ? apiGet(`/api/kubernetes/admin/discovery?context=${encodeURIComponent(context)}`, signal) : Promise.resolve({ resources: [], partial: false }), 0, [context])
-  const kinds = discovery.data?.resources ?? []
+  const kinds = (discovery.data?.resources ?? []).filter((entry) => isAccessControlResource(entry) === rbac)
   const resource = kinds.find((entry) => resourceKey(entry) === chosenResource) ?? kinds[0]
   const scope = resource?.namespaced ? namespace : ''
   const ready = available && Boolean(resource) && (!resource?.namespaced || scope.trim() !== '')
@@ -124,7 +125,7 @@ export function KubernetesAdmin({ context, contexts, onContextChange, operateAll
 
   return <>
     <section className="fleetRail" aria-label="Kubernetes administration status">
-      <span className="fleetRailTitle">Resources and native RBAC</span>
+      <span className="fleetRailTitle">{rbac ? 'Native RBAC' : 'Kubernetes resources'}</span>
       <span className="fleetDatum"><StatusLamp state={available ? 'running' : 'crashed'} />{available ? 'Available' : 'Unavailable'}</span>
       <span className="fleetDatum">{context || 'Select context'} / {scope || 'cluster scope'}</span>
       <span className="fleetMessage">{access.error ? 'Authorization unavailable' : readOnly ? 'Read-only or not authorized to mutate' : 'Native permissions available'}</span>

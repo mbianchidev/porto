@@ -311,6 +311,8 @@ porto docker engine-stop
 porto docker engine-remove --confirm
 ```
 
+`engine-start` boots the existing Porto-owned engine; it never creates one. With the daemon running, both `engine-start` and `engine-stop` go through it, the same path as the sidebar power button and the tray's Docker engine items (see [Rest and operate modes](daily-use.md#rest-and-operate-modes)). Stopping is refused while runtime or data work is in progress.
+
 `engine-remove --confirm` deletes the Porto-owned Lima VM and every container resource stored in it. It does not delete a system containerd installation used through local `nerdctl`.
 
 ## Docker API compatibility matrix

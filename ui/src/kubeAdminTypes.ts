@@ -55,6 +55,13 @@ export function adminQuery(target: AdminTarget): string {
   return query.toString()
 }
 
+const RBAC_API_GROUP = 'rbac.authorization.k8s.io'
+
+/** Roles, bindings and ServiceAccounts live in the RBAC view; every other kind in Resources. */
+export function isAccessControlResource({ group, resource }: Pick<AdminResource, 'group' | 'resource'>): boolean {
+  return group === RBAC_API_GROUP || (group === '' && resource === 'serviceaccounts')
+}
+
 export function resourceKey(resource: AdminResource): string {
   return `${resource.group}/${resource.version}/${resource.resource}`
 }

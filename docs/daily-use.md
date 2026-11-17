@@ -62,8 +62,9 @@ Installed desktop builds add two shell preferences:
 - **Open Porto when I sign in** registers or removes the operating-system login
   item on Windows and after the macOS app has been moved into Applications.
 - **Close the window to the menu bar or system tray** hides Porto instead of
-  quitting the desktop shell. The tray menu provides explicit **Open Porto**
-  and **Quit Porto** actions. When both settings are enabled, Windows login
+  quitting the desktop shell. The tray icon is always shown; its menu provides
+  **Open Porto**, the Docker engine controls described below, and **Quit
+  Porto**. When both settings are enabled, Windows login
   launches quietly in the tray while the daemon starts and resumes its managed
   runtime. Electron 44 no longer supports hidden login launch on macOS, so the
   macOS window opens normally and can then be closed to the menu bar.
@@ -72,9 +73,27 @@ These preferences are stored in the desktop app's user-data directory. The web
 dashboard shows the controls as unavailable because a browser cannot manage
 login items or a system tray.
 
+## Rest and operate modes
+
+Stop Porto's Docker engine when you don't need containers, and start it again
+when you do. Either control talks to the daemon, which owns the engine VM:
+
+- The power button beside **Porto** at the top of the sidebar. The label under
+  the name reads **Operate mode** while the engine runs and **Rest mode** while
+  it is stopped. The button appears for the local environment in the Linux
+  container view when the Docker runtime is enabled.
+- **Start Docker engine** / **Stop Docker engine** in the menu bar or system
+  tray. The line above it shows the engine state, refreshed every 10 seconds.
+
+Stopping asks for confirmation when containers are running; they stop with the
+engine. Containers, images and volumes are kept. Stopping is refused while
+runtime or data work is in progress. Starting boots the existing engine only;
+use `porto docker engine-install` to create or repair one. The CLI equivalents
+are `porto docker engine-start` and `porto docker engine-stop`.
+
 ## Navigate the dashboard
 
-The sidebar has four main sections. Expand a section, then a short subgroup
+The sidebar has five main sections. Expand a section, then a short subgroup
 when needed; each link still opens a separate, focused page.
 
 | Section | Group | Pages |
@@ -83,13 +102,18 @@ when needed; each link still opens a separate, focused page.
 | Containers | Direct links | Containers, Networks |
 | Containers | Images & builds | Images, Builds |
 | Containers | Storage & data | Volumes, Storage tools, Migrate runtime data |
-| Kubernetes | Direct link | Overview |
+| Kubernetes | Clusters | Overview, Resources, RBAC, Nodes |
 | Kubernetes | Workloads | Deployments, Pods, Jobs, Scheduled jobs |
 | Kubernetes | Networking | Services, Port forwarding, Gateway API |
 | Kubernetes | Storage & config | Storage, ConfigMaps, Secrets |
 | Kubernetes | Delivery | Helm releases, GitOps applications |
-| Kubernetes | Cluster tools | Nodes, Resources and RBAC |
-| System | Direct links | Environments and fleets, Virtual machines, Extensions, Diagnostics, Activity, Settings |
+| Nodes | Direct links | Environments and fleets, Virtual machines |
+| System | Direct links | Extensions, Diagnostics, Activity, Settings |
+
+**Resources** and **RBAC** are the same native administration page split by
+API kind. **RBAC** lists Roles, ClusterRoles, their bindings and
+ServiceAccounts; **Resources** lists every other served kind. Links from other
+inspectors open whichever page owns the resource.
 
 Multiple sections and subgroups can stay expanded together. Collapsing a section
 preserves its subgroup choices; **Expand all** and **Collapse all** open or close
@@ -119,7 +143,7 @@ resource is missing from the inventory. This escape hatch is useful when a
 list/filter is incomplete; the actual API response and selected identity's
 permissions remain authoritative.
 
-**Resources and RBAC** and **Port forwarding** populate their named-target
+**Resources**, **RBAC** and **Port forwarding** populate their named-target
 dropdowns from all metadata-only API pages in the selected context, namespace
 and resource type. A failed or forbidden list shows a suggestion error but does
 not disable manually named inspection or forwarding. Kubernetes still checks

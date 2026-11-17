@@ -1,8 +1,8 @@
-import type { AdminTarget } from '../kubeAdminTypes'
+import { isAccessControlResource, type AdminTarget } from '../kubeAdminTypes'
 import type { ReactNode } from 'react'
 import { useKubernetesAdminTarget } from '../kubeAdminTargetContext'
 
 export function KubernetesAdminLink({ target, children = 'Administer this resource' }: { target: AdminTarget; children?: ReactNode }) {
   const { setTarget } = useKubernetesAdminTarget()
-  return <a href="#/kubernetes-admin" onClick={() => setTarget(target)}>{children}</a>
+  return <a href={isAccessControlResource(target) ? '#/kubernetes-rbac' : '#/kubernetes-admin'} onClick={() => setTarget(target)}>{children}</a>
 }

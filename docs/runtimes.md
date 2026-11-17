@@ -338,7 +338,7 @@ returning an error; daemon shutdown also cancels pending startup checks.
 
 ### Manifest, workload and permission administration
 
-Open **Kubernetes > Cluster tools > Resources and RBAC** for native administration. Existing
+Open **Kubernetes > Clusters > Resources** (or **RBAC** for Roles, bindings and ServiceAccounts) for native administration. Existing
 Deployment, Job, CronJob, ConfigMap and Secret inspectors link to the same
 resource using only explicit context/namespace/name metadata. There is no second
 cluster/context store or administrator fallback: an unavailable managed

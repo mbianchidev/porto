@@ -1810,11 +1810,61 @@ button:disabled {
 
 .railBrand {
   display: inline-flex;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
   gap: 10px;
   padding: 0 2px;
   color: inherit;
   text-decoration: none;
+}
+
+.railBrandRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.railBrand.resting .brandMark span {
+  opacity: 0.3;
+}
+
+.railEngineToggle.iconButton {
+  flex: 0 0 auto;
+  border: 1px solid var(--instrument-line);
+  border-radius: var(--radius-md);
+  background: transparent;
+  box-shadow: none;
+  color: var(--rail-faint);
+}
+
+.railEngineToggle.iconButton:hover:not(:disabled) {
+  background: var(--rail-hover);
+  color: var(--white);
+}
+
+.railEngineToggle.iconButton.engineOn {
+  color: var(--olive);
+}
+
+.railEngineToggle.iconButton[aria-busy="true"] svg {
+  animation: railEnginePulse 1.2s ease-in-out infinite;
+}
+
+/* The rail scrolls, so a tooltip above its first control would be clipped. */
+.railEngineToggle.iconButton::after {
+  top: calc(100% + 7px);
+  bottom: auto;
+}
+
+@keyframes railEnginePulse {
+  50% { opacity: 0.35; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .railEngineToggle.iconButton[aria-busy="true"] svg {
+    animation: none;
+  }
 }
 
 .railExpansionControls {
@@ -3345,6 +3395,11 @@ button:disabled {
   .railBrand,
   .railGroup a {
     min-height: 44px;
+  }
+
+  .railEngineToggle.iconButton {
+    width: 44px;
+    height: 44px;
   }
 
   .appMain {

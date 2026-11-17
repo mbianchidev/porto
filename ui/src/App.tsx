@@ -51,7 +51,7 @@ const KNOWN_ROUTES: RouteID[] = [
   'localhost-ing', 'applications', 'containers', 'images', 'builds', 'volumes', 'networks',
   'docker-storage',
   'migration',
-  'kubernetes', 'kubernetes-admin', 'helm', 'gitops', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
+  'kubernetes', 'kubernetes-admin', 'kubernetes-rbac', 'helm', 'gitops', 'deployments', 'pods', 'services', 'jobs', 'cronjobs', 'port-forwards',
   'storage', 'gateways', 'configs', 'secrets', 'nodes', 'databases', 'machines', 'diagnostics', 'activity', 'settings',
 ]
 
@@ -227,7 +227,7 @@ function AppShell() {
           aria-controls="primary-navigation"
           onClick={() => setRailOpen((value) => !value)}
         />
-        <Rail ref={railRef} route={route} open={railOpen} narrow={narrow} backend={backend} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
+        <Rail ref={railRef} route={route} open={railOpen} narrow={narrow} backend={backend} engineControl={backend === 'local' && dockerMode === 'linux'} kubernetesRunningCount={kubernetesRunningCount} onNavigate={() => setRailOpen(false)} />
         {narrow && railOpen && <button type="button" className="railScrim" tabIndex={-1} aria-label="Dismiss navigation" onClick={() => setRailOpen(false)} />}
         <main ref={mainRef} id="main-content" className="appMain" tabIndex={-1} inert={narrow && railOpen}>
           <EnvironmentSelector profiles={environments.data ?? []} error={environments.error} />
@@ -255,7 +255,7 @@ function AppShell() {
           />
         )}
         {route === 'deployments' && <KubernetesDeployments key={`deployments:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} />}
-        {route === 'kubernetes-admin' && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`administration:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} terminalAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('terminal.open'))} /></Suspense>}
+        {(route === 'kubernetes-admin' || route === 'kubernetes-rbac') && <Suspense fallback={<p role="status">Loading native resource administration...</p>}><KubernetesAdmin key={`${route}:${activeKubeContext}`} view={route === 'kubernetes-rbac' ? 'rbac' : 'resources'} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} terminalAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('terminal.open'))} /></Suspense>}
         {route === 'helm' && <Suspense fallback={<p role="status">Loading Helm administration...</p>}><Helm key={`helm:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} /></Suspense>}
         {route === 'gitops' && <Suspense fallback={<p role="status">Loading Kubernetes GitOps...</p>}><GitOps key={`gitops:${activeKubeContext}`} context={activeKubeContext} contexts={kubeContexts} onContextChange={setKubeContext} operateAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('workload.operate'))} infrastructureAllowed={backend === 'local' || Boolean(environment?.capabilities.includes('infrastructure.operate'))} /></Suspense>}
         {route === 'pods' && (
