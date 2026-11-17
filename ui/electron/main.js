@@ -19,6 +19,7 @@ const {
 } = require('./desktop-logging.cjs')
 const {
   bundledExecutablePaths,
+  countRunningContainers,
   daemonBinaryIdentity,
   daemonProcesses,
   dashboardLoadAction,
@@ -36,8 +37,15 @@ const {
   resolvePortoBinary,
   resolveLoginShellPath,
   runtimeFailureDiagnostic,
+  startDockerEngine,
+  stopDockerEngine,
   waitForDockerEngine,
 } = require('./daemon-readiness.cjs')
+const {
+  dockerEngineMenuItems,
+  dockerEngineState,
+  dockerEngineStatusLabel,
+} = require('./docker-engine-menu.cjs')
 const {
   DEFAULT_DESKTOP_PREFERENCES,
   loadDesktopPreferences,
@@ -60,6 +68,7 @@ const APP_ID = 'dev.mbianchi.porto'
 const APP_ICON = path.join(__dirname, 'assets', 'porto.png')
 const UPDATE_CHECK_MENU_ID = 'porto-check-for-updates'
 const DAEMON_URL = 'http://127.0.0.1:37623'
+const DOCKER_ENGINE_POLL_INTERVAL = 10000
 const windows = new Set()
 const execFileAsync = promisify(execFile)
 let desktopPreferences = { ...DEFAULT_DESKTOP_PREFERENCES }
@@ -72,7 +81,10 @@ let promptedAvailableVersion = ''
 let promptedDownloadedVersion = ''
 let manualUpdateCheckActive = false
 let tray = null
-let trayMenu = null
+let dockerEngineObserved = 'checking'
+let dockerEngineTransition = null
+let dockerEngineRefreshing = false
+let dockerEngineTimer = null
 let quitting = false
 let desktopLogging = null
 
@@ -173,36 +185,27 @@ function configureApplicationMenu() {
 
 function refreshUpdateCheckMenus(status = desktopUpdater?.getStatus()) {
   const { label, enabled } = updateCheckMenuItem(status)
-  for (const menu of [Menu.getApplicationMenu(), trayMenu]) {
-    const item = menu?.getMenuItemById(UPDATE_CHECK_MENU_ID)
-    if (item) {
-      item.label = label
-      item.enabled = enabled
-    }
+  const item = Menu.getApplicationMenu()?.getMenuItemById(UPDATE_CHECK_MENU_ID)
+  if (item) {
+    item.label = label
+    item.enabled = enabled
   }
-  if (tray !== null && trayMenu !== null) tray.setContextMenu(trayMenu)
+  refreshTrayMenu()
 }
 
-function configureTray(enabled) {
-  if (!enabled) {
-    tray?.destroy()
-    tray = null
-    trayMenu = null
-    return
-  }
-  if (tray !== null) return
-  const size = process.platform === 'darwin' ? 18 : 20
-  const icon = nativeImage.createFromPath(APP_ICON).resize({ width: size, height: size })
-  if (icon.isEmpty()) {
-    throw new Error(`Unable to load Porto tray icon from ${APP_ICON}`)
-  }
-  tray = new Tray(icon)
-  tray.setToolTip(APP_NAME)
-  trayMenu = Menu.buildFromTemplate([
+function currentDockerEngineState() {
+  return dockerEngineTransition ?? dockerEngineObserved
+}
+
+function trayMenuTemplate() {
+  return [
     {
       label: 'Open Porto',
       click: showMainWindow,
     },
+    { type: 'separator' },
+    ...dockerEngineMenuItems(currentDockerEngineState(), toggleDockerEngine),
+    { type: 'separator' },
     updateCheckMenuItem(),
     { type: 'separator' },
     {
@@ -212,9 +215,100 @@ function configureTray(enabled) {
         app.quit()
       },
     },
-  ])
-  tray.setContextMenu(trayMenu)
+  ]
+}
+
+// Electron menus are immutable once shown on macOS, so every state change
+// rebuilds the tray menu instead of mutating its items.
+function refreshTrayMenu() {
+  if (tray === null) return
+  tray.setContextMenu(Menu.buildFromTemplate(trayMenuTemplate()))
+  tray.setToolTip(`${APP_NAME}: ${dockerEngineStatusLabel(currentDockerEngineState())}`)
+}
+
+function ensureTray() {
+  if (tray !== null) return
+  const size = process.platform === 'darwin' ? 18 : 20
+  const icon = nativeImage.createFromPath(APP_ICON).resize({ width: size, height: size })
+  if (icon.isEmpty()) {
+    throw new Error(`Unable to load Porto tray icon from ${APP_ICON}`)
+  }
+  tray = new Tray(icon)
+  refreshTrayMenu()
   tray.on('click', showMainWindow)
+}
+
+async function refreshDockerEngineState() {
+  if (tray === null || dockerEngineRefreshing) return
+  dockerEngineRefreshing = true
+  let observed
+  try {
+    observed = dockerEngineState(await inspectDockerStatus({ daemonURL: DAEMON_URL, timeoutMs: 5000 }))
+  } catch {
+    observed = 'unavailable'
+  } finally {
+    dockerEngineRefreshing = false
+  }
+  if (observed === dockerEngineObserved) return
+  dockerEngineObserved = observed
+  refreshTrayMenu()
+}
+
+function startDockerEngineMonitor() {
+  if (dockerEngineTimer !== null) return
+  void refreshDockerEngineState()
+  dockerEngineTimer = setInterval(() => { void refreshDockerEngineState() }, DOCKER_ENGINE_POLL_INTERVAL)
+  dockerEngineTimer.unref?.()
+}
+
+async function confirmDockerEngineStop() {
+  let running = null
+  try {
+    running = await countRunningContainers({ daemonURL: DAEMON_URL })
+  } catch (error) {
+    console.error('Unable to count running containers before stopping the Porto engine', error)
+  }
+  if (running === 0) return true
+  const { response } = await dialog.showMessageBox({
+    type: 'warning',
+    title: 'Stop the Porto Docker engine?',
+    message: running === null
+      ? 'Porto could not list running containers. Any running containers will stop.'
+      : `${running} running container${running === 1 ? '' : 's'} will stop.`,
+    detail: 'Containers, images and volumes are kept. Start the engine again from the tray or the Porto sidebar.',
+    buttons: ['Stop engine', 'Cancel'],
+    defaultId: 1,
+    cancelId: 1,
+    noLink: true,
+  })
+  return response === 0
+}
+
+async function toggleDockerEngine() {
+  const state = currentDockerEngineState()
+  if (state !== 'running' && state !== 'stopped') return
+  const starting = state === 'stopped'
+  if (!starting && !(await confirmDockerEngineStop())) return
+  dockerEngineTransition = starting ? 'starting' : 'stopping'
+  refreshTrayMenu()
+  try {
+    if (starting) {
+      await startDockerEngine({ daemonURL: DAEMON_URL })
+      await waitForDockerEngine({ daemonURL: DAEMON_URL })
+    } else {
+      await stopDockerEngine({ daemonURL: DAEMON_URL })
+    }
+  } catch (error) {
+    const diagnostic = runtimeFailureDiagnostic(error)
+    console.error('Unable to %s the Porto Docker engine: %s', starting ? 'start' : 'stop', diagnostic)
+    const logHint = desktopLogging ? `\n\nLog file: ${desktopLogging.path}` : ''
+    dialog.showErrorBox(`Porto engine ${starting ? 'start' : 'stop'} failed`, `${diagnostic}${logHint}`)
+  } finally {
+    dockerEngineTransition = null
+    dockerEngineObserved = 'checking'
+    refreshTrayMenu()
+    await refreshDockerEngineState()
+  }
 }
 
 function assertTrustedDashboardRequest(event) {
@@ -425,7 +519,7 @@ function registerDesktopIPC() {
     const previous = { ...desktopPreferences }
     try {
       applyLoginItemSettings(next)
-      configureTray(next.keepInTray)
+      if (next.keepInTray) ensureTray()
       saveDesktopPreferences(desktopPreferencesPath, next)
       desktopPreferences = next
       if (next.automaticallyDownloadUpdates && desktopUpdater?.getStatus().phase === 'available') {
@@ -435,7 +529,6 @@ function registerDesktopIPC() {
     } catch (error) {
       try {
         applyLoginItemSettings(previous)
-        configureTray(previous.keepInTray)
       } catch (rollbackError) {
         console.error('Unable to roll back desktop preference changes', rollbackError)
       }
@@ -1016,17 +1109,20 @@ app.whenReady().then(async () => {
   configureApplicationMenu()
   let trayError = null
   try {
-    configureTray(desktopPreferences.keepInTray)
+    ensureTray()
   } catch (error) {
-    trayError = error
-    desktopPreferences.keepInTray = false
     console.error('Unable to initialize the Porto tray icon', error)
-    try {
-      saveDesktopPreferences(desktopPreferencesPath, desktopPreferences)
-    } catch (saveError) {
-      console.error('Unable to persist the tray fallback', saveError)
+    if (desktopPreferences.keepInTray) {
+      trayError = error
+      desktopPreferences.keepInTray = false
+      try {
+        saveDesktopPreferences(desktopPreferencesPath, desktopPreferences)
+      } catch (saveError) {
+        console.error('Unable to persist the tray fallback', saveError)
+      }
     }
   }
+  startDockerEngineMonitor()
   if (!startHidden || trayError !== null) createWindow()
   bootstrapWindow.close()
   if (trayError !== null) {
@@ -1054,6 +1150,7 @@ app.on('before-quit', () => {
   console.debug('Quitting Porto desktop; daemon continues independently')
   quitting = true
   if (updateCheckTimer !== null) clearInterval(updateCheckTimer)
+  if (dockerEngineTimer !== null) clearInterval(dockerEngineTimer)
 })
 
 app.on('window-all-closed', () => {

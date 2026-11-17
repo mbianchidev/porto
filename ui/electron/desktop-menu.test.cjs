@@ -22,7 +22,10 @@ function menuFixture(template) {
   }
 }
 
-function desktopFixture({ platform = 'darwin', phase = 'idle', resultPhase = 'up-to-date', checkError = null } = {}) {
+function desktopFixture({
+  platform = 'darwin', phase = 'idle', resultPhase = 'up-to-date', checkError = null,
+  readiness = {}, messageBoxResponse = 1,
+} = {}) {
   const calls = { checks: 0, dialogs: [], errors: [], shown: 0, applicationMenu: null, trayMenu: null }
   let status = {
     phase, currentVersion: '1.2.3', availableVersion: '', progressPercent: null,
@@ -44,9 +47,9 @@ function desktopFixture({ platform = 'darwin', phase = 'idle', resultPhase = 'up
         focus() {}, dock: { show() {} },
       },
       dialog: {
-        showMessageBox: async (_window, options) => {
-          calls.dialogs.push(options)
-          return { response: 1 }
+        showMessageBox: async (...args) => {
+          calls.dialogs.push(args.length > 1 ? args[1] : args[0])
+          return { response: messageBoxResponse }
         },
         showErrorBox: (title, message) => calls.errors.push([title, message]),
       },
@@ -64,7 +67,7 @@ function desktopFixture({ platform = 'darwin', phase = 'idle', resultPhase = 'up
         on() {}
         destroy() { calls.trayMenu = null }
       },
-    } : require(name),
+    } : name === './daemon-readiness.cjs' ? { ...require(name), ...readiness } : require(name),
   })
   vm.runInContext(fs.readFileSync(path.join(__dirname, 'main.js'), 'utf8'), context)
   context.fixtureUpdater = {
@@ -110,7 +113,7 @@ function desktopFixture({ platform = 'darwin', phase = 'idle', resultPhase = 'up
 test('update menus track busy and unsupported states', () => {
   const { calls, context, publish } = desktopFixture()
   context.configureApplicationMenu()
-  context.configureTray(true)
+  context.ensureTray()
   for (const phase of ['unsupported', 'checking', 'downloading', 'installing', 'error', 'up-to-date']) {
     publish(phase)
     for (const menu of [calls.applicationMenu, calls.trayMenu]) {
@@ -150,7 +153,7 @@ for (const phase of ['available', 'downloaded']) {
 test('repeated menu clicks do not duplicate an in-progress manual check', async () => {
   const { calls, context } = desktopFixture()
   context.configureApplicationMenu()
-  context.configureTray(true)
+  context.ensureTray()
   let release
   const gate = new Promise((resolve) => { release = resolve })
   const check = context.fixtureUpdater.check
@@ -184,7 +187,7 @@ for (const platform of ['darwin', 'win32', 'linux']) {
   test(`${platform} Help and tray menus check for updates with visible results`, async () => {
     const { calls, context } = desktopFixture({ platform })
     context.configureApplicationMenu()
-    context.configureTray(true)
+    context.ensureTray()
 
     const help = calls.applicationMenu.items.find((item) => item.role === 'help')
     const helpCheck = help.submenu.getMenuItemById('porto-check-for-updates')
@@ -202,5 +205,73 @@ for (const platform of ['darwin', 'win32', 'linux']) {
     assert.equal(calls.dialogs.length, 2)
     assert.match(calls.dialogs[0].message, /Porto 1\.2\.3 is up to date/)
     assert.ok(calls.shown > 0)
+  })
+}
+
+function engineDaemon({ available, running = 0 }) {
+  const daemon = { available, running, starts: 0, stops: 0, release: null }
+  daemon.readiness = {
+    inspectDockerStatus: async () => ({ enabled: true, available: daemon.available }),
+    waitForDockerEngine: async () => ({ enabled: true, available: daemon.available }),
+    countRunningContainers: async () => daemon.running,
+    startDockerEngine: async () => {
+      daemon.starts++
+      if (daemon.release) await daemon.release
+      daemon.available = true
+      return { status: 'started' }
+    },
+    stopDockerEngine: async () => {
+      daemon.stops++
+      daemon.available = false
+      return { status: 'stopped' }
+    },
+  }
+  return daemon
+}
+
+function engineItems(calls) {
+  return {
+    status: calls.trayMenu.getMenuItemById('porto-docker-engine-status'),
+    toggle: calls.trayMenu.getMenuItemById('porto-docker-engine-toggle'),
+  }
+}
+
+test('tray wakes a resting Docker engine and blocks repeat clicks while it boots', async () => {
+  const daemon = engineDaemon({ available: false })
+  let release
+  daemon.release = new Promise((resolve) => { release = resolve })
+  const { calls, context } = desktopFixture({ readiness: daemon.readiness })
+  context.ensureTray()
+  await context.refreshDockerEngineState()
+  assert.equal(engineItems(calls).status.label, 'Docker engine: Stopped (rest mode)')
+  assert.equal(engineItems(calls).toggle.label, 'Start Docker engine')
+
+  const starting = engineItems(calls).toggle.click()
+  await new Promise(setImmediate)
+  assert.equal(engineItems(calls).status.label, 'Docker engine: Starting...')
+  assert.equal(engineItems(calls).toggle.enabled, false)
+  await engineItems(calls).toggle.click()
+  release()
+  await starting
+
+  assert.equal(daemon.starts, 1)
+  assert.equal(calls.dialogs.length, 0)
+  assert.equal(engineItems(calls).status.label, 'Docker engine: Running')
+  assert.equal(engineItems(calls).toggle.label, 'Stop Docker engine')
+})
+
+for (const [running, confirmed] of [[0, false], [2, false], [2, true]]) {
+  test(`tray stop ${running === 0 ? 'skips the prompt' : confirmed ? 'proceeds after confirmation' : 'is cancelled'} with ${running} running containers`, async () => {
+    const daemon = engineDaemon({ available: true, running })
+    const { calls, context } = desktopFixture({ readiness: daemon.readiness, messageBoxResponse: confirmed ? 0 : 1 })
+    context.ensureTray()
+    await context.refreshDockerEngineState()
+    await engineItems(calls).toggle.click()
+
+    assert.equal(calls.dialogs.length, running > 0 ? 1 : 0)
+    if (running > 0) assert.equal(calls.dialogs[0].message, '2 running containers will stop.')
+    const stopped = running === 0 || confirmed
+    assert.equal(daemon.stops, stopped ? 1 : 0)
+    assert.equal(engineItems(calls).status.label, stopped ? 'Docker engine: Stopped (rest mode)' : 'Docker engine: Running')
   })
 }

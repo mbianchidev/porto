@@ -217,23 +217,55 @@ async function readEngineInstallProgress(response, onProgress, signal) {
   }
 }
 
-async function prepareDockerEngineUpdate({
+async function postDaemon(pathname, description, {
   daemonURL = DEFAULT_DAEMON_URL,
   fetchImpl = globalThis.fetch,
-  timeoutMs = 5 * 60 * 1000,
+  timeoutMs,
 } = {}) {
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const response = await fetchImpl(`${daemonURL}/api/docker/engine/prepare-update`, {
+    const response = await fetchImpl(`${daemonURL}${pathname}`, {
       method: 'POST',
       signal: controller.signal,
     })
     if (!response.ok) {
       const message = typeof response.text === 'function' ? await response.text() : ''
-      throw new Error(message.trim() || `Porto update preparation returned HTTP ${response.status || 'error'}`)
+      throw new Error(message.trim() || `${description} returned HTTP ${response.status || 'error'}`)
     }
     return await response.json()
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
+function prepareDockerEngineUpdate({ timeoutMs = 5 * 60 * 1000, ...options } = {}) {
+  return postDaemon('/api/docker/engine/prepare-update', 'Porto update preparation', { ...options, timeoutMs })
+}
+
+function startDockerEngine({ timeoutMs = 25 * 60 * 1000, ...options } = {}) {
+  return postDaemon('/api/docker/engine/start', 'Porto engine start', { ...options, timeoutMs })
+}
+
+function stopDockerEngine({ timeoutMs = 10 * 60 * 1000, ...options } = {}) {
+  return postDaemon('/api/docker/engine/stop', 'Porto engine stop', { ...options, timeoutMs })
+}
+
+async function countRunningContainers({
+  daemonURL = DEFAULT_DAEMON_URL,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 15000,
+} = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(`${daemonURL}/api/docker/containers`, { signal: controller.signal })
+    if (!response.ok) {
+      throw new Error(`Porto container inventory returned HTTP ${response.status || 'error'}`)
+    }
+    const containers = await response.json()
+    if (!Array.isArray(containers)) throw new Error('Porto container inventory was not a list')
+    return containers.filter((container) => container?.state === 'running').length
   } finally {
     clearTimeout(timer)
   }
@@ -262,26 +294,8 @@ async function waitForDockerEngine({
   throw new Error(`Porto container runtime did not become available within ${timeoutMs / 1000}s: ${message}`)
 }
 
-async function installDockerContext({
-  daemonURL = DEFAULT_DAEMON_URL,
-  fetchImpl = globalThis.fetch,
-  timeoutMs = 30000,
-} = {}) {
-  const controller = new AbortController()
-  const timer = setTimeout(() => controller.abort(), timeoutMs)
-  try {
-    const response = await fetchImpl(`${daemonURL}/api/docker/context/install`, {
-      method: 'POST',
-      signal: controller.signal,
-    })
-    if (!response.ok) {
-      const message = typeof response.text === 'function' ? await response.text() : ''
-      throw new Error(message.trim() || `Porto Docker context setup returned HTTP ${response.status || 'error'}`)
-    }
-    return await response.json()
-  } finally {
-    clearTimeout(timer)
-  }
+function installDockerContext({ timeoutMs = 30000, ...options } = {}) {
+  return postDaemon('/api/docker/context/install', 'Porto Docker context setup', { ...options, timeoutMs })
 }
 
 async function resolveLoginShellPath({
@@ -700,6 +714,7 @@ function resolvePortoBinary({
 
 module.exports = {
   bundledExecutablePaths,
+  countRunningContainers,
   daemonBinaryIdentity,
   daemonProcessIDs,
   daemonProcesses,
@@ -719,6 +734,8 @@ module.exports = {
   resolvePortoBinary,
   resolveLoginShellPath,
   runtimeFailureDiagnostic,
+  startDockerEngine,
+  stopDockerEngine,
   windowsDaemonProcessIDs,
   windowsDaemonProcesses,
   waitForDockerEngine,
