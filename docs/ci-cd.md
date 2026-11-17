@@ -253,7 +253,10 @@ arm64 execution, unsupported combinations before creation, persistent guest-home
 data across restart, and identity-scoped teardown, with no host-folder mounts.
 
 Native HTTPS acceptance includes a real Porto daemon restart and live renewal,
-not only a substitute TLS server. Only its helper installation is elevated;
+not only a substitute TLS server. Its Linux root fixture, like the rootful local
+development-client row, forwards the CI identity, temporary directory and
+toolchain variables explicitly because Ubuntu 26's sudo-rs ignores `sudo -E`.
+Only its helper installation is elevated;
 the daemon runs under the original Unix user or a restricted Windows token.
 The approved macOS workflow uses the existing launchd/login-keychain integration
 and installed Chrome, with noninteractive sudo only for the existing root

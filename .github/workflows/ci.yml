@@ -134,7 +134,8 @@ jobs:
           go test -c -o "$RUNNER_TEMP/https-native-tests" ./internal/localhttps
           browser="$(node -e "process.stdout.write(require('./ui/node_modules/@playwright/test').chromium.executablePath())")"
           for native_test in TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval TestNativePortlessHTTPSRealDaemonRestartAndRenewal; do
-            sudo -E env "PATH=$PATH" \
+            sudo env "PATH=$PATH" "HOME=$HOME" \
+              "GITHUB_ACTIONS=$GITHUB_ACTIONS" "RUNNER_TEMP=$RUNNER_TEMP" \
               "PORTO_TEST_NATIVE_HTTPS=1" \
               "PORTO_TEST_HTTPS_BINARY=$RUNNER_TEMP/porto-native" \
               "PORTO_TEST_HTTPS_BROWSER=$browser" \
@@ -415,7 +416,12 @@ jobs:
         shell: bash
         run: |
           if [ "${{ matrix.backend }}" = local ]; then
-            sudo -E env "PATH=$PATH" bash scripts/test-docker-clients.sh local
+            sudo env "PATH=$PATH" "HOME=$HOME" \
+              "GITHUB_ACTIONS=$GITHUB_ACTIONS" "RUNNER_TEMP=$RUNNER_TEMP" \
+              "RUNNER_ARCH=$RUNNER_ARCH" "GOTOOLCHAIN=${GOTOOLCHAIN:-auto}" \
+              "PORTO_DOWNLOAD_CACHE=${PORTO_DOWNLOAD_CACHE:-}" \
+              "PORTO_CI_APT_CACHE=${PORTO_CI_APT_CACHE:-}" \
+              bash scripts/test-docker-clients.sh local
           elif [ "$RUNNER_OS" = Linux ]; then
             sg kvm -c 'bash scripts/test-docker-clients.sh lima'
           else
