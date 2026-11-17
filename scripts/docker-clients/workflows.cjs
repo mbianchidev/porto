@@ -66,7 +66,7 @@ async function main() {
     postCreateCommand: ['sh', '-c', 'cat /fixture > /workspaces/porto-synthetic/client-fixture'],
   }))
   const cli = path.join(path.dirname(require.resolve('@devcontainers/cli/package.json')), 'devcontainer.js')
-  let developmentContainer
+  let failure
   try {
     const output = await run(process.execPath, [
       cli, 'up', '--workspace-folder', workspace, '--config', config,
@@ -77,7 +77,6 @@ async function main() {
     const results = output.trim().split('\n').filter(Boolean).map((line) => JSON.parse(line))
     const result = results.find((entry) => entry.outcome === 'success')
     assert.ok(result?.containerId, `Dev Containers did not report successful creation: ${output}`)
-    developmentContainer = result.containerId
     const executed = await run(process.execPath, [
       cli, 'exec', '--workspace-folder', workspace, '--config', config,
       '--id-label', `porto.test.suite=${suite}`,
@@ -85,9 +84,27 @@ async function main() {
       'sh', '-c', 'cat /workspaces/porto-synthetic/client-fixture',
     ])
     assert.equal(executed.trim(), 'porto-synthetic-client-fixture')
-  } finally {
-    if (developmentContainer) await run('docker', ['rm', '--force', '--volumes', developmentContainer])
+  } catch (error) {
+    failure = error
+  }
+  // Remove every container the CLI created, even when `up` failed after
+  // creating one, so cleanup cannot hide the original failure.
+  const cleanupErrors = []
+  try {
+    const containers = (await run('docker', ['ps', '--all', '--quiet', '--filter', `label=porto.test.devcontainer=${suite}`]))
+      .split(/\s+/).filter(Boolean)
+    if (containers.length > 0) await run('docker', ['rm', '--force', '--volumes', ...containers])
+  } catch (error) {
+    cleanupErrors.push(error)
+  }
+  try {
     await run('docker', ['volume', 'rm', workspaceVolume])
+  } catch (error) {
+    cleanupErrors.push(error)
+  }
+  if (failure || cleanupErrors.length > 0) {
+    throw new AggregateError([failure, ...cleanupErrors].filter(Boolean),
+      failure ? `Dev Containers workflow failed: ${failure.message}` : 'Dev Containers cleanup failed')
   }
   console.log('Dev Containers up/post-create/exec/cleanup passed')
 }
