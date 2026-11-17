@@ -97,8 +97,8 @@ const NAV_GROUPS: NavGroup[] = [
     ],
   },
   {
-    id: 'infrastructure-nodes',
-    title: 'Nodes',
+    id: 'fleet',
+    title: 'Fleet',
     icon: 'nodes',
     items: [
       { id: 'environments', label: 'Environments and fleets', icon: 'networks' },

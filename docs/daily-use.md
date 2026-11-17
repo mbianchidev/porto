@@ -107,7 +107,7 @@ when needed; each link still opens a separate, focused page.
 | Kubernetes | Networking | Services, Port forwarding, Gateway API |
 | Kubernetes | Storage & config | Storage, ConfigMaps, Secrets |
 | Kubernetes | Delivery | Helm releases, GitOps applications |
-| Nodes | Direct links | Environments and fleets, Virtual machines |
+| Fleet | Direct links | Environments and fleets, Virtual machines |
 | System | Direct links | Extensions, Diagnostics, Activity, Settings |
 
 **Resources** and **RBAC** are the same native administration page split by
