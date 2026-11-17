@@ -128,6 +128,12 @@ page closes the panel and returns focus to its trigger. Dismissing the panel
 without changing pages preserves expansion choices and any open resource
 inspector. Keyboard users can also use **Skip to content** to bypass the sidebar.
 
+Open pages refresh their data every few seconds only while the dashboard is
+visible. Closing the window to the tray, minimizing it, or fully covering it on
+macOS pauses those refreshes, so an idle Porto does not keep querying projects,
+Git or runtimes. Showing the window again refreshes overdue data immediately.
+Live container updates, terminals and log streams stay connected.
+
 ## Find and target resources
 
 Resource filters offer a searchable dropdown of currently discovered names,

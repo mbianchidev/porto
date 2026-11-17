@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { apiGet, errorMessage, isAbortError } from './api'
+import { pollWhileVisible, sameJSON } from './polling'
 import type { KubernetesStatus } from './types'
 
 export function matchesNamespace(namespace: string, query: string): boolean {
@@ -59,7 +60,11 @@ export function useKubernetesStatus(context: string, enabled = true) {
           `/api/kubernetes/status?context=${encodeURIComponent(context)}`,
           controller.signal,
         )
-        if (mounted) setState({ key, data, error: '', loading: false })
+        if (mounted) {
+          setState((previous) => previous.key === key && !previous.loading && previous.error === '' && sameJSON(previous.data, data)
+            ? previous
+            : { key, data, error: '', loading: false })
+        }
       } catch (err) {
         if (mounted && !isAbortError(err)) {
           const message = errorMessage(err, 'Kubernetes status request failed')
@@ -75,11 +80,11 @@ export function useKubernetesStatus(context: string, enabled = true) {
       }
     }
     void run()
-    const timer = window.setInterval(run, 10000)
+    const stopPolling = pollWhileVisible(() => { void run() }, 10000)
     return () => {
       mounted = false
       controller.abort()
-      window.clearInterval(timer)
+      stopPolling()
     }
   }, [active, context, enabled, key, reloadToken])
 

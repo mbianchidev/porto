@@ -3,6 +3,7 @@ import type { DependencyList } from 'react'
 import { errorMessage, isAbortError } from './api'
 import { useDockerMode } from './dockerMode'
 import { useEnvironmentID } from './environment'
+import { pollWhileVisible, sameJSON } from './polling'
 
 type PolledResource<T> = {
   data: T | null
@@ -36,9 +37,11 @@ function cacheResource<T>(cacheKey: string, value: T) {
 }
 
 /**
- * Fetches a resource once, then re-fetches on an interval, aborting the in-flight
- * request on unmount or when a dependency changes so stale responses never land.
- * Pass intervalMs=0 to fetch only once (still abortable, still reloadable).
+ * Fetches a resource once, then re-fetches on an interval while the page is
+ * visible, aborting the in-flight request on unmount or when a dependency changes
+ * so stale responses never land. Unchanged responses keep the previous data
+ * object so consumers do not re-render. Pass intervalMs=0 to fetch only once
+ * (still abortable, still reloadable).
  */
 export function usePolledResource<T>(
   fetcher: (signal: AbortSignal) => Promise<T>,
@@ -76,9 +79,10 @@ export function usePolledResource<T>(
       try {
         const result = await fetcherRef.current(controller.signal)
         if (active && generation === generationRef.current) {
-          if (cacheKey) cacheResource(cacheKey, result)
-          dataRef.current = result
-          setResource({ cacheKey, data: result })
+          const next = sameJSON(dataRef.current, result) ? dataRef.current as T : result
+          if (cacheKey) cacheResource(cacheKey, next)
+          dataRef.current = next
+          setResource((current) => current.cacheKey === cacheKey && current.data === next ? current : { cacheKey, data: next })
           setError('')
         }
       } catch (err) {
@@ -92,11 +96,11 @@ export function usePolledResource<T>(
       }
     }
     run()
-    const timer = intervalMs > 0 ? window.setInterval(run, intervalMs) : undefined
+    const stopPolling = pollWhileVisible(() => { void run() }, intervalMs)
     return () => {
       active = false
       controller.abort()
-      if (timer !== undefined) window.clearInterval(timer)
+      stopPolling()
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cacheKey, environmentID, intervalMs, reloadToken, ...deps])

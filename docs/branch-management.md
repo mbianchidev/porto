@@ -22,6 +22,8 @@ Each instance receives an independent process, port, logs, and controls. The das
 
 The default branch keeps the base hostname. Other branches use compact labels: `copilot/improve-elemental-resistances-system` becomes `cop-imp-ele-res-sys`, so a project named `2dnd` receives `https://2dnd-cop-imp-ele-res-sys.porto.localhost/`. Porto shortens long labels and adds a deterministic suffix when needed to keep hostnames valid and unique.
 
+Project listings reuse each repository's resolved default branch for up to 30 seconds to avoid extra Git processes on every dashboard refresh. Switching branches, listing branches, creating an instance, or pulling on start refreshes it immediately; other remote HEAD changes appear within 30 seconds.
+
 Managed instances can be removed from their project card after their worktree is clean. Porto stops the process, removes the Git worktree, and deletes only that instance's runtime metadata and logs.
 
 ## Clean up merged branches

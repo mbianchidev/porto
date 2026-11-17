@@ -2,6 +2,7 @@ import { useEffect, useSyncExternalStore } from 'react'
 import { apiGet, errorMessage, isAbortError } from './api'
 import { dockerModeURL, getDockerMode, subscribeDockerMode } from './dockerMode'
 import { environmentURL, getEnvironmentID, subscribeEnvironment } from './environment'
+import { pollWhileVisible } from './polling'
 import type { DockerContainer, DockerContainerSnapshot } from './types'
 
 type ContainerSnapshotState = {
@@ -31,7 +32,7 @@ let consumers = 0
 let source: EventSource | null = null
 let request: AbortController | null = null
 let reconnectTimer: number | undefined
-let fallbackTimer: number | undefined
+let stopFallbackPolling: (() => void) | undefined
 let reconnectDelay = 1000
 let activeMode = getDockerMode()
 let activeEnvironment = getEnvironmentID()
@@ -88,15 +89,13 @@ function clearReconnectTimer() {
 }
 
 function clearFallbackTimer() {
-  if (fallbackTimer !== undefined) {
-    window.clearInterval(fallbackTimer)
-    fallbackTimer = undefined
-  }
+  stopFallbackPolling?.()
+  stopFallbackPolling = undefined
 }
 
 function startFallbackPolling() {
-  if (fallbackTimer !== undefined || consumers === 0) return
-  fallbackTimer = window.setInterval(refresh, 30000)
+  if (stopFallbackPolling !== undefined || consumers === 0) return
+  stopFallbackPolling = pollWhileVisible(() => { void refresh() }, 30000)
 }
 
 function scheduleReconnect() {
