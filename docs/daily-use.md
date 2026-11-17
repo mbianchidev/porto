@@ -107,7 +107,7 @@ when needed; each link still opens a separate, focused page.
 | Kubernetes | Networking | Services, Port forwarding, Gateway API |
 | Kubernetes | Storage & config | Storage, ConfigMaps, Secrets |
 | Kubernetes | Delivery | Helm releases, GitOps applications |
-| Nodes | Direct links | Environments and fleets, Virtual machines |
+| Fleet | Direct links | Environments and fleets, Virtual machines |
 | System | Direct links | Extensions, Diagnostics, Activity, Settings |
 
 **Resources** and **RBAC** are the same native administration page split by
@@ -127,6 +127,12 @@ On narrow screens, use **Open navigation**. Escape, the backdrop, or selecting a
 page closes the panel and returns focus to its trigger. Dismissing the panel
 without changing pages preserves expansion choices and any open resource
 inspector. Keyboard users can also use **Skip to content** to bypass the sidebar.
+
+Open pages refresh their data every few seconds only while the dashboard is
+visible. Closing the window to the tray, minimizing it, or fully covering it on
+macOS pauses those refreshes, so an idle Porto does not keep querying projects,
+Git or runtimes. Showing the window again refreshes overdue data immediately.
+Live container updates, terminals and log streams stay connected.
 
 ## Find and target resources
 
@@ -189,19 +195,50 @@ so initialization failures are retained. Unix directory/file permissions are
 `0700`/`0600`; Windows uses the user-profile directory's inherited permissions.
 Keep a custom `PORTO_HOME` private to your user.
 
-At the first maintenance pass after local midnight, Porto closes and renames the
-completed file, immediately reopens a fresh `porto.log`, then compresses the
-completed day as `porto-YYYY-MM-DD.zip`. Each archive contains one
-`porto-YYYY-MM-DD.log` entry. A short-lived uncompressed daily file can remain
+At the first write or maintenance pass after local midnight, Porto closes and
+renames the completed file, immediately reopens a fresh `porto.log`, then
+compresses the completed day as `porto-YYYY-MM-DD.zip`. Each archive contains
+one `.log` entry with the same name. A short-lived uncompressed file can remain
 for up to one minute so desktop writes already in flight finish before ZIP
 creation. The desktop daemon bootstrap uses `daemon-startup.log`, which is
 overwritten on each daemon launch instead of accumulating.
 
-Porto keeps **7 calendar days** of diagnostic logs by default, including the
-current day. Change **System settings → Keep diagnostic logs for** to retain
-between 1 and 365 days. Completed archives older than the configured window are
-deleted automatically; changing the setting to a shorter window triggers an
-immediate cleanup pass.
+The live file is also capped at **10 MB** by default. When the next record
+would exceed it, Porto rotates first, so a busy day becomes
+`porto-YYYY-MM-DD.1.zip`, `.2.zip` and so on in write order, with the
+undecorated `porto-YYYY-MM-DD.zip` holding the day's last part. A single record
+larger than the cap is truncated with a `[truncated N bytes ...]` marker. The
+live file and its archives together stay under **50 MB** by default: Porto
+deletes the oldest archives first, even inside the retention window, and
+records a `WARN` entry with the number of files and bytes removed. Sizes are
+measured from the files on disk, and 1 MB is 1,000,000 bytes.
+
+Change both limits in **System settings → Rotate the log file at (MB)** and
+**Keep all diagnostic logs under (MB)**, from 1 to 100,000 MB. The total must be
+larger than the file limit. Saving applies them immediately: an oversized live
+file rotates and the oldest archives are pruned at once. The
+`PORTO_LOG_MAX_FILE_MB` and `PORTO_LOG_MAX_TOTAL_MB` environment variables
+override the saved limits for the daemon they launch; Settings then shows the
+fields as read-only until you remove them and restart Porto. Invalid
+environment values stop the daemon with an explicit error.
+
+Porto keeps **7 calendar days** of logs by default, including the current day.
+Change **System settings → Keep logs for** to retain between 1 and 365 days.
+The same window applies to:
+
+- diagnostic archives in `logs/`, compressed or not;
+- project process output stored in `porto.db` (`porto logs`), deleted
+  per line after the window;
+- desktop update installer logs and helper copies in `updates/<version>/`
+  (`*.install.log`, `apply-update-<pid>.sh` or `.ps1`), plus version folders
+  they leave empty.
+
+Cleanup runs when the daemon or desktop starts, at least daily while they run,
+and immediately when the setting is shortened, so logs left by earlier Porto
+versions are cleaned on the next start. Only files with Porto's own names are
+removed; symlinks, unrelated files and downloaded update packages are kept.
+Interrupted ZIP or state writes (`*.tmp-<pid>`) are removed on daemon start
+and their source logs are compressed again.
 
 The default level is **debug**. Set `PORTO_LOG_LEVEL` to `debug`, `info`, `warn`,
 or `error` in the environment that launches Porto to change verbosity. Restart
@@ -220,7 +257,8 @@ The active day's log appends across restarts. Foreground daemon diagnostics
 remain visible on stderr, and a desktop-launched daemon keeps writing after the
 desktop exits.
 This application log is separate from project/container logs; `porto logs` and
-the dashboard's project-log clearing controls do not modify it.
+the dashboard's project-log clearing controls do not modify it, although both
+follow the same retention window.
 
 For cross-runtime health checks, redacted local support bundles, and narrowly
 scoped repairs, see [Diagnostics and repair](diagnostics.md).

@@ -79,9 +79,12 @@ of cold-starting a generated shell script and a separate `sleep` process under
 the Git deadlines. Locale checks, actual lock creation, process termination and
 owned-lock cleanup remain required; production timeouts are unchanged.
 
-The real npm dependency-startup fixture allows one minute for a cold installer
-on Windows; synthetic setup fixtures retain their 15-second deadline. It still
-requires the installed development dependency and an HTTP-ready application.
+The real npm dependency-startup fixture allows three minutes for a cold
+installer on Windows under race-enabled package parallelism; synthetic setup
+fixtures retain their 15-second deadline. It runs npm offline with an isolated
+cache, since its only dependency is a local file package, and at verbose log
+level so a timeout's stored output shows the stalled phase. It still requires
+the installed development dependency and an HTTP-ready application.
 Setup timeouts include stored command output instead of only a generic failure.
 
 Docker CLI parity tests allow one minute for the initial context creation on

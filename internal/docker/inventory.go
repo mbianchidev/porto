@@ -151,6 +151,8 @@ func containerCapabilities() ContainerCapabilities {
 func (i *containerInventory) run(ctx context.Context) {
 	defer i.closeSubscribers()
 	backoff := i.options.connectBackoff
+	// A resting engine fails every retry identically; log each distinct failure once.
+	lastConnectFailure := ""
 	for {
 		if ctx.Err() != nil {
 			i.markUnavailable(errors.New("container inventory stopped"))
@@ -159,13 +161,17 @@ func (i *containerInventory) run(ctx context.Context) {
 		runtimeClient, err := i.connector(ctx)
 		if err != nil {
 			i.markUnavailable(fmt.Errorf("connect container inventory: %w", err))
-			log.Printf("container inventory connection: %v", err)
+			if message := err.Error(); message != lastConnectFailure {
+				log.Printf("container inventory connection: %v", err)
+				lastConnectFailure = message
+			}
 			if !i.waitForRetry(ctx, backoff) {
 				return
 			}
 			backoff = min(backoff*2, i.options.maxBackoff)
 			continue
 		}
+		lastConnectFailure = ""
 		i.mu.Lock()
 		i.runtimeClient = runtimeClient
 		i.mu.Unlock()

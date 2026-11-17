@@ -158,17 +158,24 @@ type Server struct {
 	registryConfigKey  string
 	registryConfig     []byte
 	updateLogRetention func(int) error
-	dataMu             sync.Mutex
-	dataCancels        map[int64]context.CancelFunc
-	dataDone           map[int64]chan struct{}
-	dataUnstored       map[int64]*dataops.Operation
-	dataExecutor       func(context.Context, dataops.Operation) (dataops.Result, error)
-	nativeFiles        *nativefiles.Manager
-	networking         *networking.Manager
-	wsl                *wsl.Manager
-	platformCommand    func(context.Context, ...string) error
-	networkRoutesMu    sync.RWMutex
-	networkRoutes      map[string]containerHTTPRoute
+	// updateLogSizeLimits applies stored MB caps; logSizeLimitsFromEnvironment
+	// reports that environment variables fixed them for this daemon.
+	updateLogSizeLimits          func(fileMB, totalMB int) error
+	logSizeLimitsFromEnvironment bool
+	dataMu                       sync.Mutex
+	dataCancels                  map[int64]context.CancelFunc
+	dataDone                     map[int64]chan struct{}
+	dataUnstored                 map[int64]*dataops.Operation
+	dataExecutor                 func(context.Context, dataops.Operation) (dataops.Result, error)
+	nativeFiles                  *nativefiles.Manager
+	networking                   *networking.Manager
+	wsl                          *wsl.Manager
+	platformCommand              func(context.Context, ...string) error
+	networkRoutesMu              sync.RWMutex
+	networkRoutes                map[string]containerHTTPRoute
+	linuxRouteViewMu             sync.Mutex
+	linuxRouteView               *containerRouteView
+	defaultBranches              defaultBranchCache
 
 	nativeRouteSnapshot portodocker.ContainerSnapshot
 	nativeRouteUpdated  time.Time
@@ -325,6 +332,11 @@ func New(st *store.Store, ui fs.FS) *Server {
 
 func (s *Server) SetLogRetentionUpdater(update func(int) error) {
 	s.updateLogRetention = update
+}
+
+func (s *Server) SetLogSizeLimitUpdater(update func(fileMB, totalMB int) error, fromEnvironment bool) {
+	s.updateLogSizeLimits = update
+	s.logSizeLimitsFromEnvironment = fromEnvironment
 }
 
 func (s *Server) Run(ctx context.Context) error {
@@ -514,6 +526,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	go s.branchCleanupLoop(ctx)
 	go s.certificateRenewalLoop(ctx)
+	go s.projectLogRetentionLoop(ctx)
 	go s.kubernetesRouteLoop(ctx)
 	go s.dockerCleanupLoop(ctx)
 	go s.nativeFiles.Monitor(ctx)
@@ -968,9 +981,18 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if settings.LogRetentionDays != current.LogRetentionDays && s.updateLogRetention != nil {
-		if err := s.updateLogRetention(settings.LogRetentionDays); err != nil {
-			slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+	if settings.LogRetentionDays != current.LogRetentionDays {
+		if s.updateLogRetention != nil {
+			if err := s.updateLogRetention(settings.LogRetentionDays); err != nil {
+				slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+			}
+		}
+		s.applyProjectLogRetention(r.Context(), time.Time{})
+	}
+	if (settings.LogMaxFileMB != current.LogMaxFileMB || settings.LogMaxTotalMB != current.LogMaxTotalMB) &&
+		s.updateLogSizeLimits != nil {
+		if err := s.updateLogSizeLimits(settings.LogMaxFileMB, settings.LogMaxTotalMB); err != nil {
+			slog.Error("Unable to apply diagnostic log size limits", "fileMB", settings.LogMaxFileMB, "totalMB", settings.LogMaxTotalMB, "error", err)
 		}
 	}
 	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
@@ -1033,6 +1055,15 @@ func normalizeSettings(settings app.Settings) (app.Settings, error) {
 	}
 	if settings.LogRetentionDays < 1 || settings.LogRetentionDays > app.MaximumLogRetentionDays {
 		return settings, fmt.Errorf("log retention must be between 1 and %d days", app.MaximumLogRetentionDays)
+	}
+	if settings.LogMaxFileMB == 0 {
+		settings.LogMaxFileMB = app.DefaultLogMaxFileMB
+	}
+	if settings.LogMaxTotalMB == 0 {
+		settings.LogMaxTotalMB = app.DefaultLogMaxTotalMB
+	}
+	if err := app.ValidateLogSizeLimits(settings.LogMaxFileMB, settings.LogMaxTotalMB); err != nil {
+		return settings, err
 	}
 	return settings, nil
 }
@@ -1502,6 +1533,9 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			_ = s.store.AddLog(ctx, p.ID, "git", strings.TrimSpace(out))
 			return p, fmt.Errorf("git pull failed: %w", err)
 		}
+		// Fetching can move the remote HEAD that defines the default branch.
+		s.defaultBranches.invalidate(p.SourcePath)
+		s.defaultBranches.invalidate(p.Path)
 	}
 	runtimeProject := p
 	runtimeProject.Port = port
@@ -1985,6 +2019,7 @@ func (s *Server) branch(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(p.SourcePath, defaultBranch)
 	hostname, err := s.availableBranchHostname(r.Context(), p, req.Branch, defaultBranch)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
@@ -2057,6 +2092,7 @@ func (s *Server) branches(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(p.SourcePath, defaultBranch)
 	writeJSON(w, map[string]any{
 		"branches":      branches,
 		"current":       gitutil.Branch(p.Path),
@@ -2091,6 +2127,7 @@ func (s *Server) createInstance(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	s.defaultBranches.remember(source.Path, defaultBranch)
 	worktreeRoot, err := config.ManagedWorktreeRoot()
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -2378,7 +2415,7 @@ func (s *Server) enriched(ctx context.Context) ([]app.Project, error) {
 	if err != nil {
 		return nil, err
 	}
-	metadata, err := loadProjectGitMetadata(ctx, ps, resolveProjectGitMetadata)
+	metadata, err := loadProjectGitMetadata(ctx, ps, s.resolveProjectGitMetadata)
 	if err != nil {
 		return nil, err
 	}
@@ -2422,7 +2459,7 @@ type projectGitMetadata struct {
 	defaultBranch string
 }
 
-func resolveProjectGitMetadata(ctx context.Context, project app.Project) projectGitMetadata {
+func (s *Server) resolveProjectGitMetadata(ctx context.Context, project app.Project) projectGitMetadata {
 	branch, dirty, repository := gitutil.StatusContext(ctx, project.Path)
 	metadata := projectGitMetadata{branch: branch, dirty: dirty}
 	if !repository {
@@ -2432,7 +2469,7 @@ func resolveProjectGitMetadata(ctx context.Context, project app.Project) project
 	if sourcePath == "" {
 		sourcePath = project.Path
 	}
-	metadata.defaultBranch, _ = gitutil.DefaultBranchContext(ctx, sourcePath)
+	metadata.defaultBranch = s.defaultBranches.lookup(ctx, sourcePath)
 	return metadata
 }
 

@@ -116,7 +116,7 @@ Windows: %AppData%\porto\porto.db
 
 Set `PORTO_HOME=/path/to/dir` to choose another location for self-hosted or portable setups.
 
-`porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project. The dashboard console can expand to the full window and returns to its inline position when minimized or when `Escape` is pressed.
+`porto logs` and the dashboard process console can show all entries or only stdout or stderr. Clearing is scoped to the selected project and stream; `--stream all --clear` removes every stored log entry for that project. Stored lines older than the log retention window (**System settings → Keep logs for**, 7 calendar days by default) are deleted automatically. The dashboard console can expand to the full window and returns to its inline position when minimized or when `Escape` is pressed.
 
 Dashboard project rows also show each project's process ID, readiness status, assigned port, branch, and dirty state. Select a row to expand its service channel directly underneath it; select the row again to collapse it. The log quick action opens the same inline channel with the process console active.
 

@@ -53,6 +53,9 @@ export type Settings = {
   terminalCursorBlink: boolean
   terminalScrollback: number
   logRetentionDays: number
+  logMaxFileMB: number
+  logMaxTotalMB: number
+  logSizeLimitsFromEnvironment?: boolean
 }
 
 export type RegistryProvider = 'docker-hub' | 'github' | 'gitlab' | 'custom'

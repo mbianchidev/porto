@@ -80,19 +80,64 @@ func (m *Manager) StopContainerInventory(ctx context.Context) error {
 	}
 }
 
+const inactiveInventoryInstanceID = "inactive"
+
 func (m *Manager) ContainerSnapshot() ContainerSnapshot {
 	m.inventoryMu.Lock()
 	inventory := m.inventory
 	m.inventoryMu.Unlock()
 	if inventory == nil {
 		return ContainerSnapshot{
-			InstanceID:   "inactive",
+			InstanceID:   inactiveInventoryInstanceID,
 			Message:      "Container inventory is not running",
 			Containers:   []Container{},
 			Capabilities: containerCapabilities(),
 		}
 	}
 	return inventory.snapshotValue()
+}
+
+// ContainerSnapshotVersion identifies the published inventory snapshot without
+// copying it. Container data only changes together with a new revision, so
+// periodic readers can reuse a snapshot while the version is unchanged.
+func (m *Manager) ContainerSnapshotVersion() (instanceID string, revision uint64) {
+	m.inventoryMu.Lock()
+	inventory := m.inventory
+	m.inventoryMu.Unlock()
+	if inventory == nil {
+		return inactiveInventoryInstanceID, 0
+	}
+	inventory.mu.RLock()
+	defer inventory.mu.RUnlock()
+	return inventory.snapshot.InstanceID, inventory.snapshot.Revision
+}
+
+// containerSnapshotCache reuses a cloned snapshot until the inventory publishes
+// another version. It is owned by one goroutine and its snapshot is read-only.
+type containerSnapshotCache struct {
+	snapshot ContainerSnapshot
+	loaded   bool
+}
+
+func (c *containerSnapshotCache) load(m *Manager) ContainerSnapshot {
+	instanceID, revision := m.ContainerSnapshotVersion()
+	if !c.loaded || c.snapshot.InstanceID != instanceID || c.snapshot.Revision != revision {
+		c.snapshot = m.ContainerSnapshot()
+		c.loaded = true
+	}
+	return c.snapshot
+}
+
+func (m *Manager) containerInventoryFresh() bool {
+	m.inventoryMu.Lock()
+	inventory := m.inventory
+	m.inventoryMu.Unlock()
+	if inventory == nil {
+		return false
+	}
+	inventory.mu.RLock()
+	defer inventory.mu.RUnlock()
+	return inventory.snapshot.Available && !inventory.snapshot.Stale
 }
 
 func (m *Manager) SubscribeContainerSnapshots() (<-chan ContainerSnapshot, func()) {

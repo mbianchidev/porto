@@ -3,6 +3,7 @@ import type { FormEvent } from 'react'
 import { apiGet, apiSend, errorMessage } from '../api'
 import { usePolledResource } from '../hooks'
 import { useKubernetesStatus } from '../kubernetes'
+import { pollWhileVisible } from '../polling'
 import { useMessages } from '../useMessages'
 import { ActionButton } from '../components/ActionButton'
 import { Inspector, InspectorTabs } from '../components/Inspector'
@@ -250,8 +251,7 @@ export function KubernetesOverview({
 
   useEffect(() => {
     if (!hasTimedClusters) return
-    const timer = window.setInterval(() => setClock(Date.now()), 1000)
-    return () => window.clearInterval(timer)
+    return pollWhileVisible(() => setClock(Date.now()), 1000)
   }, [hasTimedClusters])
 
   function createCluster(event: FormEvent) {

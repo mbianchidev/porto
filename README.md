@@ -190,8 +190,10 @@ Set environment variables in the environment that launches Porto. Keep the same 
 | `PORTO_HOME` | Override the directory containing Porto's SQLite database, logs, certificates, and managed runtime metadata. |
 | `PORTO_UI_DIR` | Select compiled dashboard assets when `ui/dist` is not beside the binary or in the working directory. |
 | `PORTO_LOG_LEVEL` | Set application diagnostics to `debug` (default), `info`, `warn`, or `error`. Restart the desktop and daemon after changing it. |
+| `PORTO_LOG_MAX_FILE_MB` | Override the Settings limit for rotating `logs/porto.log`, in MB of 1,000,000 bytes (default `10`). |
+| `PORTO_LOG_MAX_TOTAL_MB` | Override the Settings limit for `porto.log` plus its archives, deleting the oldest archives first (default `50`; must exceed the file limit). |
 
-The default state directory is `~/Library/Application Support/porto` on macOS, `${XDG_CONFIG_HOME:-~/.config}/porto` on Linux, and `%APPDATA%\porto` on Windows. Project state and output live in `porto.db`; application diagnostics live separately in `logs/porto.log`. Completed diagnostic days are compressed, with seven calendar days retained by default. See [diagnostic logs](docs/daily-use.md#application-diagnostic-logs).
+The default state directory is `~/Library/Application Support/porto` on macOS, `${XDG_CONFIG_HOME:-~/.config}/porto` on Linux, and `%APPDATA%\porto` on Windows. Project state and output live in `porto.db`; application diagnostics live separately in `logs/porto.log`. Completed diagnostic days are compressed, and diagnostic, project and update logs keep seven calendar days by default. See [diagnostic logs](docs/daily-use.md#application-diagnostic-logs).
 
 Use **Settings** for runtime and desktop preferences, log retention, and optional cleanup schedules. Installed desktop builds offer **Check for updates** under **Settings > Software updates**, in **Help**, and in the menu bar/system tray. See [desktop updates](docs/installation.md#desktop-updates).
 

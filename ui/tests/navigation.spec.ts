@@ -27,7 +27,7 @@ const navigation: Array<{
       { name: 'Delivery', pages: [['helm', 'Helm releases'], ['gitops', 'GitOps applications']] },
     ],
   },
-  { name: 'Nodes', pages: [['environments', 'Environments and fleets'], ['machines', 'Virtual machines']] },
+  { name: 'Fleet', pages: [['environments', 'Environments and fleets'], ['machines', 'Virtual machines']] },
   {
     name: 'System', pages: [
       ['extensions', 'Extensions'], ['activity', 'Activity'], ['diagnostics', 'Diagnostics'], ['settings', 'Settings'],
@@ -198,7 +198,7 @@ for (const [route, label, group, section] of [
   ['kubernetes-rbac', 'RBAC', 'Kubernetes', 'Clusters'],
   ['docker-storage', 'Storage tools', 'Containers', 'Storage & data'],
   ['builds', 'Builds', 'Containers', 'Images & builds'],
-  ['machines', 'Virtual machines', 'Nodes', ''],
+  ['machines', 'Virtual machines', 'Fleet', ''],
 ]) {
   test(`deep link to ${route} reveals its current page and only its branch`, async ({ page }) => {
     await page.goto(`/#/${route}`)
@@ -228,7 +228,7 @@ test('navigation and browser history reveal the current branch without closing o
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(rail.getByRole('button', { name: 'Delivery', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await page.getByRole('link', { name: 'Manage environments', exact: true }).click()
-  await expect(rail.getByRole('button', { name: 'Nodes', exact: true })).toHaveAttribute('aria-expanded', 'true')
+  await expect(rail.getByRole('button', { name: 'Fleet', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await expect(rail.getByRole('link', { name: 'Environments and fleets', exact: true })).toHaveAttribute('aria-current', 'page')
   await expect(rail.getByRole('button', { name: 'Kubernetes', exact: true })).toHaveAttribute('aria-expanded', 'true')
   await expect(rail.getByRole('link', { name: 'Pods', exact: true })).toBeVisible()

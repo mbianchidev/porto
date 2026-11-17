@@ -98,15 +98,25 @@ func containerHTTPRoutes(snapshot portodocker.ContainerSnapshot) (map[string]con
 }
 
 func backendHTTPRoutes(linux, native portodocker.ContainerSnapshot) (map[string]containerHTTPRoute, []string) {
+	linuxRoutes, linuxWarnings := containerHTTPRoutes(linux)
+	return mergeBackendHTTPRoutes(linuxRoutes, linuxWarnings, native)
+}
+
+func mergeBackendHTTPRoutes(
+	linuxRoutes map[string]containerHTTPRoute,
+	linuxWarnings []string,
+	native portodocker.ContainerSnapshot,
+) (map[string]containerHTTPRoute, []string) {
+	nativeRoutes, nativeWarnings := containerHTTPRoutes(native)
 	result, warnings := map[string]containerHTTPRoute{}, []string{}
 	conflicts := map[string]bool{}
 	for _, source := range []struct {
 		name     string
-		snapshot portodocker.ContainerSnapshot
-	}{{"linux", linux}, {"windows", native}} {
-		routes, messages := containerHTTPRoutes(source.snapshot)
-		warnings = append(warnings, messages...)
-		for hostname, route := range routes {
+		routes   map[string]containerHTTPRoute
+		messages []string
+	}{{"linux", linuxRoutes, linuxWarnings}, {"windows", nativeRoutes, nativeWarnings}} {
+		warnings = append(warnings, source.messages...)
+		for hostname, route := range source.routes {
 			if _, exists := result[hostname]; exists {
 				delete(result, hostname)
 				conflicts[hostname] = true
@@ -141,12 +151,37 @@ func (s *Server) nativeContainerSnapshot(ctx context.Context, fresh bool) portod
 	return snapshot
 }
 
+// containerRouteView is an immutable Linux inventory snapshot with its derived
+// HTTP routes. Callers must not modify any field.
+type containerRouteView struct {
+	snapshot portodocker.ContainerSnapshot
+	routes   map[string]containerHTTPRoute
+	warnings []string
+}
+
+// linuxContainerRouteView reuses the snapshot and routes until the inventory
+// publishes a new version, so the route watcher and every proxied request do not
+// deep-copy the whole container inventory.
+func (s *Server) linuxContainerRouteView() *containerRouteView {
+	instanceID, revision := s.docker.ContainerSnapshotVersion()
+	s.linuxRouteViewMu.Lock()
+	defer s.linuxRouteViewMu.Unlock()
+	if view := s.linuxRouteView; view != nil &&
+		view.snapshot.InstanceID == instanceID && view.snapshot.Revision == revision {
+		return view
+	}
+	snapshot := s.docker.ContainerSnapshot()
+	routes, warnings := containerHTTPRoutes(snapshot)
+	s.linuxRouteView = &containerRouteView{snapshot: snapshot, routes: routes, warnings: warnings}
+	return s.linuxRouteView
+}
+
 func (s *Server) watchContainerRoutes(ctx context.Context) {
 	ticker := time.NewTicker(time.Second)
 	defer ticker.Stop()
 	for {
-		snapshot := s.docker.ContainerSnapshot()
-		routes, warnings := backendHTTPRoutes(snapshot, s.nativeContainerSnapshot(ctx, false))
+		view := s.linuxContainerRouteView()
+		routes, warnings := mergeBackendHTTPRoutes(view.routes, view.warnings, s.nativeContainerSnapshot(ctx, false))
 		routes, saverWarnings := s.resourceSaverRoutes(routes)
 		warnings = append(warnings, saverWarnings...)
 		s.networkRoutesMu.Lock()
@@ -189,7 +224,7 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 		}
 		if applicationID != "" || state.Config.Mode != "disabled" {
 			if applicationID == "" {
-				for _, container := range s.docker.ContainerSnapshot().Containers {
+				for _, container := range s.linuxContainerRouteView().snapshot.Containers {
 					if container.ID == route.ContainerID {
 						applicationID = saverApplicationID(container)
 					}
@@ -230,7 +265,8 @@ func (s *Server) proxyContainerRoute(w http.ResponseWriter, r *http.Request, hos
 			}
 		}
 	}
-	current, _ := backendHTTPRoutes(s.docker.ContainerSnapshot(), s.nativeContainerSnapshot(r.Context(), true))
+	view := s.linuxContainerRouteView()
+	current, _ := mergeBackendHTTPRoutes(view.routes, view.warnings, s.nativeContainerSnapshot(r.Context(), true))
 	live, exists := current[hostname]
 	backend := route.Backend
 	if backend == "" {

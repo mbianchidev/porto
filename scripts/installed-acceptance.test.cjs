@@ -821,10 +821,12 @@ if (level === 'leaf') {
   assert.ok(fs.existsSync(record), 'The complete synthetic child/grandchild tree must start before interruption')
   const { pids } = JSON.parse(fs.readFileSync(record, 'utf8'))
   assert.equal(pids.length, 3)
+  // Teardown is bounded above; this only observes the exits. Native Windows
+  // identity probes take seconds each, so allow several polls there.
   await waitFor(async () => {
     const active = await Promise.all(pids.map((pid) => running(pid, env)))
     return active.every((value) => !value)
-  }, 'owned command child and grandchild must be reaped', 5000)
+  }, 'owned command child and grandchild must be reaped', process.platform === 'win32' ? 30000 : 5000)
   assert.equal(unrelated.exitCode, null, 'Cleanup terminated the unrelated synthetic process')
   assert.equal(unrelated.signalCode, null, 'Cleanup signaled the unrelated synthetic process')
   assert.equal(await running(unrelated.pid, env), true, 'Cleanup affected an unrelated process group')

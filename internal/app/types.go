@@ -1,6 +1,9 @@
 package app
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 type Project struct {
 	ID                int64     `json:"id"`
@@ -61,6 +64,11 @@ type Settings struct {
 	TerminalCursorBlink       bool     `json:"terminalCursorBlink"`
 	TerminalScrollback        int      `json:"terminalScrollback"`
 	LogRetentionDays          int      `json:"logRetentionDays"`
+	LogMaxFileMB              int      `json:"logMaxFileMB"`
+	LogMaxTotalMB             int      `json:"logMaxTotalMB"`
+	// LogSizeLimitsFromEnvironment reports that PORTO_LOG_MAX_FILE_MB or
+	// PORTO_LOG_MAX_TOTAL_MB override the stored limits for this daemon.
+	LogSizeLimitsFromEnvironment bool `json:"logSizeLimitsFromEnvironment,omitempty"`
 }
 
 const (
@@ -71,7 +79,27 @@ const (
 	DefaultTerminalScrollback = 5000
 	DefaultLogRetentionDays   = 7
 	MaximumLogRetentionDays   = 365
+	DefaultLogMaxFileMB       = 10
+	DefaultLogMaxTotalMB      = 50
+	MaximumLogSizeMB          = 100_000
+	// LogMegabyte is the decimal megabyte used by log size limits.
+	LogMegabyte = 1_000_000
 )
+
+// ValidateLogSizeLimits checks the live log cap and the total log cap in MB.
+// The total must exceed the live cap so archives always have room.
+func ValidateLogSizeLimits(fileMB, totalMB int) error {
+	if fileMB < 1 || fileMB > MaximumLogSizeMB {
+		return fmt.Errorf("log file limit must be between 1 and %d MB, got %d", MaximumLogSizeMB, fileMB)
+	}
+	if totalMB < 1 || totalMB > MaximumLogSizeMB {
+		return fmt.Errorf("total log limit must be between 1 and %d MB, got %d", MaximumLogSizeMB, totalMB)
+	}
+	if totalMB <= fileMB {
+		return fmt.Errorf("total log limit (%d MB) must be larger than the log file limit (%d MB) to leave room for archives", totalMB, fileMB)
+	}
+	return nil
+}
 
 type RegistryProfile struct {
 	ID               int64  `json:"id"`

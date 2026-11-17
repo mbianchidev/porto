@@ -65,6 +65,31 @@ async function inspectDockerStatus({
   }
 }
 
+const DEFAULT_LOG_RETENTION_DAYS = 7
+const MAXIMUM_LOG_RETENTION_DAYS = 365
+
+async function readLogRetentionDays({
+  daemonURL = DEFAULT_DAEMON_URL,
+  fetchImpl = globalThis.fetch,
+  timeoutMs = 5000,
+} = {}) {
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  try {
+    const response = await fetchImpl(`${daemonURL}/api/settings`, { signal: controller.signal })
+    if (!response.ok) {
+      throw new Error(`Porto settings returned HTTP ${response.status || 'error'}`)
+    }
+    const days = (await response.json()).logRetentionDays
+    if (!Number.isInteger(days) || days < 1 || days > MAXIMUM_LOG_RETENTION_DAYS) {
+      throw new Error(`Porto log retention must be 1 to ${MAXIMUM_LOG_RETENTION_DAYS} days, got ${JSON.stringify(days)}`)
+    }
+    return days
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 async function installDockerEngine({
   daemonURL = DEFAULT_DAEMON_URL,
   fetchImpl = globalThis.fetch,
@@ -713,6 +738,8 @@ function resolvePortoBinary({
 }
 
 module.exports = {
+  DEFAULT_LOG_RETENTION_DAYS,
+  readLogRetentionDays,
   bundledExecutablePaths,
   countRunningContainers,
   daemonBinaryIdentity,

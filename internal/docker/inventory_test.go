@@ -1001,6 +1001,31 @@ func TestContainerInventoryUsesUniqueInstanceIDs(t *testing.T) {
 	}
 }
 
+func TestContainerSnapshotCacheReusesSnapshotUntilVersionChanges(t *testing.T) {
+	inventory := newContainerInventory(nil, defaultInventoryOptions())
+	inventory.publishContainers("default", "lima", time.Now(), []Container{{ID: "one", Name: "one"}})
+	manager := &Manager{inventory: inventory}
+	var cache containerSnapshotCache
+
+	first := cache.load(manager)
+	if again := cache.load(manager); &again.Containers[0] != &first.Containers[0] {
+		t.Fatal("unchanged inventory version was cloned again")
+	}
+
+	inventory.publishContainers("default", "lima", time.Now(), []Container{{ID: "two", Name: "two"}})
+	published := cache.load(manager)
+	if published.Revision == first.Revision || published.Containers[0].ID != "two" {
+		t.Fatalf("published revision was not reloaded: %+v", published)
+	}
+
+	replacement := newContainerInventory(nil, defaultInventoryOptions())
+	replacement.publishContainers("default", "lima", time.Now(), []Container{{ID: "three", Name: "three"}})
+	manager.inventory = replacement
+	if swapped := cache.load(manager); swapped.InstanceID != replacement.instanceID || swapped.Containers[0].ID != "three" {
+		t.Fatalf("replacement inventory was not reloaded: %+v", swapped)
+	}
+}
+
 func waitForInventorySnapshot(
 	t *testing.T,
 	inventory *containerInventory,

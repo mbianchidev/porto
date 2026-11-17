@@ -103,6 +103,8 @@ type healthSchedulerState struct {
 	networkNext        map[string]time.Time
 	networkRunning     map[string]bool
 	networkObservedPID map[string]uint32
+	// snapshot is only touched by the scheduler loop goroutine.
+	snapshot containerSnapshotCache
 }
 
 func (m *Manager) runHealthScheduler(ctx context.Context) {
@@ -133,7 +135,7 @@ func (m *Manager) scheduleHealthChecks(
 	state *healthSchedulerState,
 	now time.Time,
 ) {
-	snapshot := m.ContainerSnapshot()
+	snapshot := state.snapshot.load(m)
 	m.scheduleNetworkReconciliation(ctx, state, snapshot, now)
 	active := make(map[string]struct{})
 	for _, container := range snapshot.Containers {

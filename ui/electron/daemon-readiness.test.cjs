@@ -23,6 +23,7 @@ const {
   isDaemonReady,
   mergeExecutablePaths,
   prepareDockerEngineUpdate,
+  readLogRetentionDays,
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
@@ -1048,4 +1049,27 @@ test('packaged apps always use the bundled Porto binary', () => {
   })
 
   assert.equal(resolved, path.join(resourcesPath, 'porto'))
+})
+
+test('reads the configured log retention and rejects invalid values', async () => {
+  let requested = ''
+  const days = await readLogRetentionDays({
+    daemonURL: 'http://127.0.0.1:37623',
+    fetchImpl: async (url) => {
+      requested = url
+      return response({ logRetentionDays: 14 })
+    },
+  })
+  assert.equal(requested, 'http://127.0.0.1:37623/api/settings')
+  assert.equal(days, 14)
+  for (const invalid of [0, 366, 2.5, '7', undefined]) {
+    await assert.rejects(
+      readLogRetentionDays({ fetchImpl: async () => response({ logRetentionDays: invalid }) }),
+      /Porto log retention must be 1 to 365 days/,
+    )
+  }
+  await assert.rejects(
+    readLogRetentionDays({ fetchImpl: async () => ({ ok: false, status: 503 }) }),
+    /HTTP 503/,
+  )
 })

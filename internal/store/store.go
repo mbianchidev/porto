@@ -132,7 +132,9 @@ CREATE TABLE IF NOT EXISTS settings (
  terminal_line_height REAL NOT NULL DEFAULT 1.35,
  terminal_cursor_blink INTEGER NOT NULL DEFAULT 1,
  terminal_scrollback INTEGER NOT NULL DEFAULT 5000,
- log_retention_days INTEGER NOT NULL DEFAULT 7
+ log_retention_days INTEGER NOT NULL DEFAULT 7,
+ log_max_file_mb INTEGER NOT NULL DEFAULT 10,
+ log_max_total_mb INTEGER NOT NULL DEFAULT 50
 );
 CREATE TABLE IF NOT EXISTS docker_cleanup_schedule (
  id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -221,6 +223,12 @@ CREATE TABLE IF NOT EXISTS registries (
 		return err
 	}
 	if err := s.ensureSettingsColumn("log_retention_days", "INTEGER NOT NULL DEFAULT 7"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("log_max_file_mb", "INTEGER NOT NULL DEFAULT 10"); err != nil {
+		return err
+	}
+	if err := s.ensureSettingsColumn("log_max_total_mb", "INTEGER NOT NULL DEFAULT 50"); err != nil {
 		return err
 	}
 	for name, definition := range map[string]string{
@@ -534,7 +542,7 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 	var dockerEnabled, dockerAutoPruneEnabled, kubernetesEnabled, vmsEnabled int
 	var reduceMotion, terminalCursorBlink int
 	var protected string
-	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,etcqlite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,kubeconfig_directory,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days FROM settings WHERE id=1`).
+	err := s.db.QueryRowContext(ctx, `SELECT cleanup_local_merged,cleanup_remote_merged,prune_remote_tracking,protected_branches,sql_not_so_lite_enabled,etcqlite_enabled,kill_switch_enabled,sendbox_enabled,docker_enabled,docker_auto_prune_enabled,kubernetes_enabled,kubeconfig_directory,vms_enabled,interface_density,theme,reduce_motion,terminal_font_size,terminal_line_height,terminal_cursor_blink,terminal_scrollback,log_retention_days,log_max_file_mb,log_max_total_mb FROM settings WHERE id=1`).
 		Scan(
 			&cleanupLocal,
 			&cleanupRemote,
@@ -557,6 +565,8 @@ func (s *Store) Settings(ctx context.Context) (app.Settings, error) {
 			&terminalCursorBlink,
 			&settings.TerminalScrollback,
 			&settings.LogRetentionDays,
+			&settings.LogMaxFileMB,
+			&settings.LogMaxTotalMB,
 		)
 	if err != nil {
 		return settings, err
@@ -599,6 +609,12 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if settings.LogRetentionDays == 0 {
 		settings.LogRetentionDays = app.DefaultLogRetentionDays
 	}
+	if settings.LogMaxFileMB == 0 {
+		settings.LogMaxFileMB = app.DefaultLogMaxFileMB
+	}
+	if settings.LogMaxTotalMB == 0 {
+		settings.LogMaxTotalMB = app.DefaultLogMaxTotalMB
+	}
 	protected, err := json.Marshal(settings.ProtectedBranches)
 	if err != nil {
 		return fmt.Errorf("encode protected branches: %w", err)
@@ -612,7 +628,7 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 	if err := tx.QueryRowContext(ctx, `SELECT docker_auto_prune_enabled FROM settings WHERE id=1`).Scan(&previousAutoPrune); err != nil {
 		return err
 	}
-	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,etcqlite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,kubeconfig_directory=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=? WHERE id=1`,
+	_, err = tx.ExecContext(ctx, `UPDATE settings SET cleanup_local_merged=?,cleanup_remote_merged=?,prune_remote_tracking=?,protected_branches=?,sql_not_so_lite_enabled=?,etcqlite_enabled=?,kill_switch_enabled=?,sendbox_enabled=?,docker_enabled=?,docker_auto_prune_enabled=?,kubernetes_enabled=?,kubeconfig_directory=?,vms_enabled=?,interface_density=?,theme=?,reduce_motion=?,terminal_font_size=?,terminal_line_height=?,terminal_cursor_blink=?,terminal_scrollback=?,log_retention_days=?,log_max_file_mb=?,log_max_total_mb=? WHERE id=1`,
 		boolInt(settings.CleanupLocalMerged),
 		boolInt(settings.CleanupRemoteMerged),
 		boolInt(settings.PruneRemoteTracking),
@@ -634,6 +650,8 @@ func (s *Store) SetSettings(ctx context.Context, settings app.Settings) error {
 		boolInt(settings.TerminalCursorBlink),
 		settings.TerminalScrollback,
 		settings.LogRetentionDays,
+		settings.LogMaxFileMB,
+		settings.LogMaxTotalMB,
 	)
 	if err != nil {
 		return err
@@ -966,6 +984,44 @@ func (s *Store) logs(ctx context.Context, id int64, stream string, limit int) ([
 		rev[i], rev[j] = rev[j], rev[i]
 	}
 	return rev, rows.Err()
+}
+
+// PruneLogsBefore deletes project log lines recorded before cutoff and reports
+// how many it removed. It deletes per project so each range uses the
+// (project_id, created_at) index.
+func (s *Store) PruneLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT project_id FROM logs`)
+	if err != nil {
+		return 0, fmt.Errorf("list projects with logs: %w", err)
+	}
+	var projects []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("list projects with logs: %w", err)
+		}
+		projects = append(projects, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, fmt.Errorf("list projects with logs: %w", err)
+	}
+	// Stored times are RFC 3339 with trimmed fractions; a fixed nine-digit
+	// fraction keeps the text comparison exact.
+	bound := cutoff.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+	var removed int64
+	for _, id := range projects {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE project_id=? AND created_at<?`, id, bound)
+		if err != nil {
+			return removed, fmt.Errorf("delete expired logs for project %d: %w", id, err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return removed, fmt.Errorf("count expired logs for project %d: %w", id, err)
+		}
+		removed += count
+	}
+	return removed, nil
 }
 
 func (s *Store) ClearLogs(ctx context.Context, id int64, stream string) (int64, error) {

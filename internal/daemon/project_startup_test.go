@@ -366,6 +366,12 @@ func TestStartProjectInstallsLocalNodeDevDependency(t *testing.T) {
 	t.Setenv("NPM_CONFIG_AUDIT", "false")
 	t.Setenv("NPM_CONFIG_FUND", "false")
 	t.Setenv("NPM_CONFIG_UPDATE_NOTIFIER", "false")
+	// The fixture only has a local file dependency: keep npm off the network and
+	// the shared runner cache, and store its progress so a timeout shows the
+	// stalled phase.
+	t.Setenv("NPM_CONFIG_OFFLINE", "true")
+	t.Setenv("NPM_CONFIG_CACHE", t.TempDir())
+	t.Setenv("NPM_CONFIG_LOGLEVEL", "verbose")
 	directory := t.TempDir()
 	writeStartupFiles(t, directory, map[string]string{
 		"package.json":            `{"name":"synthetic-startup","version":"1.0.0","private":true,"type":"module","scripts":{"dev":"node server.mjs"},"devDependencies":{"synthetic-runtime-dependency":"file:./dependency"}}`,
@@ -390,7 +396,7 @@ createServer((_, response) => response.end(ready)).listen(Number(process.env.POR
 	if _, err := server.startProject(context.Background(), project.Name, true); err != nil {
 		t.Fatal(err)
 	}
-	waitForStartupSetupWithin(t, server, project.ID, time.Minute)
+	waitForStartupSetupWithin(t, server, project.ID, 3*time.Minute)
 	waitForProjectStatus(t, st, project.ID, "running")
 }
 
