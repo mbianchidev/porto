@@ -58,8 +58,9 @@ it never means no daemon exists or permits stopping an unrelated desktop/CLI.
 Desktop startup failures include the path to the persistent diagnostic log:
 `logs/porto.log` inside the platform's Porto data directory, or under
 `PORTO_HOME` when configured. Logging defaults to debug and includes the
-detached daemon's output. Completed days are compressed as dated ZIP archives;
-Porto keeps seven days by default and exposes retention in System settings. See
+detached daemon's output. Completed days and 10 MiB parts are compressed as
+dated ZIP archives under a 50 MiB total cap; Porto keeps seven days of logs by
+default and exposes retention in System settings. See
 [application diagnostic logs](daily-use.md#application-diagnostic-logs) for
 platform paths, rotation, retention, and verbosity settings.
 

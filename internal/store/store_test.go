@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
 )
@@ -546,5 +547,47 @@ func TestLogFilteringAndClearing(t *testing.T) {
 	}
 	if empty == nil || len(empty) != 0 {
 		t.Fatalf("empty logs = %#v, want non-nil empty slice", empty)
+	}
+}
+
+func TestPruneLogsBeforeDeletesOnlyOlderLines(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "porto.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	cutoff := time.Date(2026, time.September, 22, 0, 0, 0, 0, time.UTC)
+	for _, line := range []struct {
+		project int64
+		text    string
+		at      time.Time
+	}{
+		{1, "expired", cutoff.Add(-time.Nanosecond)},
+		{2, "expired elsewhere", cutoff.AddDate(0, 0, -3)},
+		{1, "at cutoff", cutoff},
+		{1, "fraction after cutoff", cutoff.Add(500 * time.Millisecond)},
+		{2, "recent", cutoff.AddDate(0, 0, 2)},
+	} {
+		if _, err := st.db.Exec(`INSERT INTO logs(project_id, stream, line, created_at) VALUES(?,?,?,?)`,
+			line.project, "stdout", line.text, line.at.Format(time.RFC3339Nano)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	removed, err := st.PruneLogsBefore(context.Background(), cutoff)
+	if err != nil || removed != 2 {
+		t.Fatalf("removed %d lines: %v", removed, err)
+	}
+	var kept []string
+	for _, project := range []int64{1, 2} {
+		lines, err := st.Logs(context.Background(), project, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, line := range lines {
+			kept = append(kept, line.Line)
+		}
+	}
+	if strings.Join(kept, ",") != "at cutoff,fraction after cutoff,recent" {
+		t.Fatalf("kept lines = %v", kept)
 	}
 }

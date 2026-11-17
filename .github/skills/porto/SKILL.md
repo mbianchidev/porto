@@ -209,7 +209,9 @@ Exit codes: `0` healthy or degraded, `1` a required component is unavailable,
 contain. Repairs need consent: `porto diagnose repair <action> --confirm`. The
 daemon log is `logs/porto.log` in the state directory: macOS
 `~/Library/Application Support/porto`, Linux `~/.config/porto`, Windows
-`%APPDATA%\porto`, or `PORTO_HOME` when set.
+`%APPDATA%\porto`, or `PORTO_HOME` when set. Earlier days and 10 MiB parts are
+`porto-YYYY-MM-DD[.N].zip` beside it; logs older than the retention window
+(7 days by default) are deleted automatically.
 
 ## Ground rules
 

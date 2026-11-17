@@ -517,6 +517,7 @@ func (s *Server) Run(ctx context.Context) error {
 	}()
 	go s.branchCleanupLoop(ctx)
 	go s.certificateRenewalLoop(ctx)
+	go s.projectLogRetentionLoop(ctx)
 	go s.kubernetesRouteLoop(ctx)
 	go s.dockerCleanupLoop(ctx)
 	go s.nativeFiles.Monitor(ctx)
@@ -971,10 +972,13 @@ func (s *Server) setSettings(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	if settings.LogRetentionDays != current.LogRetentionDays && s.updateLogRetention != nil {
-		if err := s.updateLogRetention(settings.LogRetentionDays); err != nil {
-			slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+	if settings.LogRetentionDays != current.LogRetentionDays {
+		if s.updateLogRetention != nil {
+			if err := s.updateLogRetention(settings.LogRetentionDays); err != nil {
+				slog.Error("Unable to apply diagnostic log retention", "days", settings.LogRetentionDays, "error", err)
+			}
 		}
+		s.applyProjectLogRetention(r.Context(), time.Time{})
 	}
 	if settings.SQLNotSoLiteEnabled && !current.SQLNotSoLiteEnabled {
 		s.syncSQLNotSoLite(r.Context())

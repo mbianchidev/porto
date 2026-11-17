@@ -115,6 +115,57 @@ function openDaemonBootstrapLog(logPath) {
   }
 }
 
+const UPDATE_VERSION_DIRECTORY = /^\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.+-]+)?$/
+// The installer log and the helper copy (with its Windows handshake markers)
+// that a finished install leaves in its version folder.
+const UPDATE_INSTALL_RECORD = /(?:\.install\.log|^apply-update-\d+\.(?:sh|ps1)(?:\.ready|\.proceed)?)$/
+
+// Deletes updater install logs and helper copies in updates/<version>/ dated
+// before the retention window, which counts calendar days including today, and
+// removes version folders that become empty. Packages, in-progress downloads,
+// symlinks and unrelated files are left alone.
+function pruneUpdateLogs({ updatesDirectory, retentionDays, now = new Date() }) {
+  if (!Number.isInteger(retentionDays) || retentionDays < 1) {
+    throw new RangeError(`Log retention must be a positive whole number of days, got ${JSON.stringify(retentionDays)}`)
+  }
+  const cutoff = new Date(now.getFullYear(), now.getMonth(), now.getDate() - (retentionDays - 1))
+  const result = { removedFiles: 0, removedDirectories: 0, errors: [] }
+  let versions
+  try {
+    versions = fs.readdirSync(updatesDirectory, { withFileTypes: true })
+  } catch (error) {
+    if (error.code === 'ENOENT') return result
+    throw new Error(`Unable to list Porto updates ${updatesDirectory}: ${error.message}`, { cause: error })
+  }
+  for (const version of versions) {
+    if (!version.isDirectory() || !UPDATE_VERSION_DIRECTORY.test(version.name)) continue
+    const versionDirectory = path.join(updatesDirectory, version.name)
+    try {
+      // Removing a log refreshes the folder time, so judge the folder first.
+      const expiredDirectory = fs.lstatSync(versionDirectory).mtime < cutoff
+      for (const entry of fs.readdirSync(versionDirectory, { withFileTypes: true })) {
+        if (!entry.isFile() || !UPDATE_INSTALL_RECORD.test(entry.name)) continue
+        const logPath = path.join(versionDirectory, entry.name)
+        try {
+          const info = fs.lstatSync(logPath)
+          if (!info.isFile() || info.mtime >= cutoff) continue
+          fs.rmSync(logPath)
+          result.removedFiles += 1
+        } catch (error) {
+          result.errors.push(new Error(`Unable to remove expired update install file ${logPath}: ${error.message}`, { cause: error }))
+        }
+      }
+      if (expiredDirectory && fs.readdirSync(versionDirectory).length === 0) {
+        fs.rmdirSync(versionDirectory)
+        result.removedDirectories += 1
+      }
+    } catch (error) {
+      result.errors.push(new Error(`Unable to clean update folder ${versionDirectory}: ${error.message}`, { cause: error }))
+    }
+  }
+  return result
+}
+
 function attachRendererLogging(webContents, consoleImpl = console) {
   webContents.on('console-message', ({ level, message, lineNumber }) => {
     const method = level === 'warning' ? 'warn' : level
@@ -131,5 +182,6 @@ module.exports = {
   initializeLogDateState,
   installDesktopLogging,
   openDaemonBootstrapLog,
+  pruneUpdateLogs,
   resolveLogPath,
 }

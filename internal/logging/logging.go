@@ -9,14 +9,25 @@ import (
 	"os"
 	"path/filepath"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 const (
 	LevelEnv        = "PORTO_LOG_LEVEL"
 	MirrorStderrEnv = "PORTO_LOG_MIRROR_STDERR"
+	// MaxFileEnv caps the live log in MiB before it rotates within a day.
+	MaxFileEnv = "PORTO_LOG_MAX_FILE_MIB"
+	// MaxTotalEnv caps the live log plus its archives in MiB.
+	MaxTotalEnv = "PORTO_LOG_MAX_TOTAL_MIB"
+
+	DefaultMaxFileMiB  = 10
+	DefaultMaxTotalMiB = 50
+	maximumLimitMiB    = 1 << 20
+	mebibyte           = 1 << 20
 )
 
 type Session struct {
@@ -30,6 +41,8 @@ type Session struct {
 	stateDirty     bool
 	retentionDays  int
 	retentionReady bool
+	maxFileBytes   int64
+	maxTotalBytes  int64
 	now            func() time.Time
 	archiveDelay   time.Duration
 	renameDelay    time.Duration
@@ -47,16 +60,54 @@ type openOptions struct {
 	archiveDelay   time.Duration
 	renameDelay    time.Duration
 	renameAttempts int
+	maxFileBytes   int64
+	maxTotalBytes  int64
 }
 
 // Open routes process-wide diagnostics until the returned session is closed.
 func Open(path, levelName string, stderr *os.File) (*Session, error) {
+	maxFileBytes, maxTotalBytes, err := SizeLimitsFromEnvironment(os.Getenv)
+	if err != nil {
+		return nil, err
+	}
 	return open(path, levelName, stderr, openOptions{
 		now:            time.Now,
 		archiveDelay:   time.Minute,
 		renameDelay:    25 * time.Millisecond,
 		renameAttempts: 80,
+		maxFileBytes:   maxFileBytes,
+		maxTotalBytes:  maxTotalBytes,
 	})
+}
+
+// SizeLimitsFromEnvironment resolves the live-file and total log caps in bytes.
+// The total must leave room for archives beyond one full live file.
+func SizeLimitsFromEnvironment(getenv func(string) string) (maxFileBytes, maxTotalBytes int64, err error) {
+	fileMiB, err := mebibytesSetting(getenv, MaxFileEnv, DefaultMaxFileMiB)
+	if err != nil {
+		return 0, 0, err
+	}
+	totalMiB, err := mebibytesSetting(getenv, MaxTotalEnv, DefaultMaxTotalMiB)
+	if err != nil {
+		return 0, 0, err
+	}
+	if totalMiB <= fileMiB {
+		return 0, 0, fmt.Errorf("%s (%d MiB) must be larger than %s (%d MiB) to leave room for archives",
+			MaxTotalEnv, totalMiB, MaxFileEnv, fileMiB)
+	}
+	return fileMiB * mebibyte, totalMiB * mebibyte, nil
+}
+
+func mebibytesSetting(getenv func(string) string, name string, fallback int64) (int64, error) {
+	value := strings.TrimSpace(getenv(name))
+	if value == "" {
+		return fallback, nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed < 1 || parsed > maximumLimitMiB {
+		return 0, fmt.Errorf("%s must be a whole number of MiB from 1 to %d, got %q", name, maximumLimitMiB, value)
+	}
+	return parsed, nil
 }
 
 func open(path, levelName string, stderr *os.File, options openOptions) (*Session, error) {
@@ -93,6 +144,16 @@ func open(path, levelName string, stderr *os.File, options openOptions) (*Sessio
 	if options.renameAttempts <= 0 {
 		options.renameAttempts = 1
 	}
+	if options.maxFileBytes <= 0 {
+		options.maxFileBytes = DefaultMaxFileMiB * mebibyte
+	}
+	if options.maxTotalBytes <= 0 {
+		options.maxTotalBytes = DefaultMaxTotalMiB * mebibyte
+	}
+	if options.maxTotalBytes <= options.maxFileBytes {
+		return nil, errors.Join(fmt.Errorf("total log cap %d bytes must exceed the %d byte live file cap",
+			options.maxTotalBytes, options.maxFileBytes), file.Close())
+	}
 	info, err := file.Stat()
 	if err != nil {
 		return nil, errors.Join(fmt.Errorf("inspect Porto log file: %w", err), file.Close())
@@ -116,6 +177,8 @@ func open(path, levelName string, stderr *os.File, options openOptions) (*Sessio
 		archiveDelay:   options.archiveDelay,
 		renameDelay:    options.renameDelay,
 		renameAttempts: options.renameAttempts,
+		maxFileBytes:   options.maxFileBytes,
+		maxTotalBytes:  options.maxTotalBytes,
 		previousLogger: previousLogger,
 		previousOutput: previousOutput,
 		previousFlags:  previousFlags,
@@ -126,6 +189,9 @@ func open(path, levelName string, stderr *os.File, options openOptions) (*Sessio
 			_ = debug.SetCrashOutput(nil, debug.CrashOptions{})
 		}
 		return nil, errors.Join(err, file.Close())
+	}
+	if err := session.removeOrphanedTemporaryFiles(); err != nil {
+		_, _ = fmt.Fprintf(stderr, "porto: clean interrupted log files in %s: %v\n", directory, err)
 	}
 	logger := slog.New(slog.NewTextHandler(session, &slog.HandlerOptions{Level: level})).
 		With("component", "daemon", "pid", os.Getpid())
@@ -165,12 +231,18 @@ func (s *Session) Close() error {
 }
 
 func (s *Session) Write(data []byte) (int, error) {
+	original := data
 	s.mu.Lock()
 	if s.file == nil {
 		s.mu.Unlock()
 		return 0, os.ErrClosed
 	}
-	maintenanceErr := s.maintainLocked(s.now())
+	now := s.now()
+	data = s.boundRecord(data)
+	rotated, maintenanceErr := s.rotateIfNeededLocked(now, int64(len(data)))
+	if rotated {
+		maintenanceErr = errors.Join(maintenanceErr, s.cleanupLocked(now))
+	}
 	if s.file == nil {
 		s.mu.Unlock()
 		_, reportErr := fmt.Fprintf(s.stderr, "porto: maintain log file %s: %v\n", s.path, maintenanceErr)
@@ -178,6 +250,10 @@ func (s *Session) Write(data []byte) (int, error) {
 	}
 	n, err := s.file.Write(data)
 	s.mu.Unlock()
+	if n == len(data) {
+		// A truncated record was written in full as far as the caller is concerned.
+		n = len(original)
+	}
 	if maintenanceErr != nil {
 		_, reportErr := fmt.Fprintf(s.stderr, "porto: maintain log file %s: %v\n", s.path, maintenanceErr)
 		err = errors.Join(err, reportErr)
@@ -191,4 +267,23 @@ func (s *Session) Write(data []byte) (int, error) {
 		err = errors.Join(err, mirrorErr)
 	}
 	return n, err
+}
+
+// boundRecord truncates a single record that cannot fit in the live file cap,
+// on a UTF-8 boundary and with an explicit marker, so no file exceeds the cap.
+func (s *Session) boundRecord(data []byte) []byte {
+	if s.maxFileBytes <= 0 || int64(len(data)) <= s.maxFileBytes {
+		return data
+	}
+	marker := fmt.Sprintf(" [truncated %d bytes to the %d byte log file cap]\n", len(data), s.maxFileBytes)
+	keep := int(s.maxFileBytes) - len(marker)
+	if keep < 0 {
+		keep = 0
+	}
+	for keep > 0 && !utf8.RuneStart(data[keep]) {
+		keep--
+	}
+	bounded := make([]byte, 0, keep+len(marker))
+	bounded = append(bounded, data[:keep]...)
+	return append(bounded, marker...)
 }

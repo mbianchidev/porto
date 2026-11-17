@@ -349,12 +349,12 @@ export function SettingsPage({
 
       <section className="hygiene" aria-labelledby="diagnostic-log-settings-title">
         <div className="hygieneIntro">
-          <h2 id="diagnostic-log-settings-title">Keep diagnostics bounded.</h2>
-          <p>Porto rotates the shared desktop and daemon log each day and compresses completed days as ZIP archives.</p>
+          <h2 id="diagnostic-log-settings-title">Keep logs bounded.</h2>
+          <p>Porto rotates the shared desktop and daemon log each day or at 10 MiB, compresses completed parts as ZIP archives and keeps all of them under 50 MiB.</p>
         </div>
         <div className="hygieneControls">
           <label className="settingsField">
-            <span>Keep diagnostic logs for</span>
+            <span>Keep logs for</span>
             <input
               type="number"
               min={1}
@@ -372,7 +372,7 @@ export function SettingsPage({
             <small>
               {draft !== null && !logRetentionValid
                 ? 'Enter a whole number from 1 to 365.'
-                : 'Calendar days, including today. Archives older than this are deleted automatically.'}
+                : 'Calendar days, including today. Older diagnostic archives, project logs and update logs are deleted automatically.'}
             </small>
           </label>
           <div className="settingsActions">

@@ -15,9 +15,11 @@ const {
   attachRendererLogging,
   installDesktopLogging,
   openDaemonBootstrapLog,
+  pruneUpdateLogs,
   resolveLogPath,
 } = require('./desktop-logging.cjs')
 const {
+  DEFAULT_LOG_RETENTION_DAYS,
   bundledExecutablePaths,
   countRunningContainers,
   daemonBinaryIdentity,
@@ -33,6 +35,7 @@ const {
   installDockerEngine,
   mergeExecutablePaths,
   prepareDockerEngineUpdate,
+  readLogRetentionDays,
   resolvePackagedDashboard,
   resolvePortoBinary,
   resolveLoginShellPath,
@@ -75,6 +78,8 @@ let desktopPreferences = { ...DEFAULT_DESKTOP_PREFERENCES }
 let desktopPreferencesPath = ''
 let desktopUpdater = null
 let updateCheckTimer = null
+let updateLogCleanupTimer = null
+let updatesDirectory = ''
 let updateInstallErrorPath = ''
 let updatePromptActive = false
 let promptedAvailableVersion = ''
@@ -569,6 +574,33 @@ function startUpdateChecks() {
   updateCheckTimer.unref?.()
 }
 
+const UPDATE_LOG_CLEANUP_INTERVAL = 24 * 60 * 60 * 1000
+
+async function cleanUpdateLogs() {
+  let retentionDays = DEFAULT_LOG_RETENTION_DAYS
+  try {
+    retentionDays = await readLogRetentionDays({ daemonURL: DAEMON_URL })
+  } catch (error) {
+    console.warn('Unable to read Porto log retention; cleaning update logs with the %d day default', DEFAULT_LOG_RETENTION_DAYS, error)
+  }
+  try {
+    const result = pruneUpdateLogs({ updatesDirectory, retentionDays })
+    if (result.removedFiles > 0 || result.removedDirectories > 0) {
+      console.info('Deleted expired update logs: files=%d folders=%d retentionDays=%d', result.removedFiles, result.removedDirectories, retentionDays)
+    }
+    for (const error of result.errors) console.error('Unable to delete an expired update log; retrying tomorrow', error)
+  } catch (error) {
+    console.error('Unable to clean expired update logs; retrying tomorrow', error)
+  }
+}
+
+function startUpdateLogCleanup() {
+  if (updateLogCleanupTimer !== null) return
+  void cleanUpdateLogs()
+  updateLogCleanupTimer = setInterval(() => { void cleanUpdateLogs() }, UPDATE_LOG_CLEANUP_INTERVAL)
+  updateLogCleanupTimer.unref?.()
+}
+
 function consumeUpdateInstallError() {
   try {
     const message = fs.readFileSync(updateInstallErrorPath, 'utf8').trim()
@@ -1033,7 +1065,7 @@ app.whenReady().then(async () => {
   app.setAppUserModelId(APP_ID)
   if (process.platform === 'darwin') app.dock?.setIcon(APP_ICON)
   desktopPreferencesPath = path.join(app.getPath('userData'), 'desktop-preferences.json')
-  const updatesDirectory = path.join(app.getPath('userData'), 'updates')
+  updatesDirectory = path.join(app.getPath('userData'), 'updates')
   updateInstallErrorPath = path.join(updatesDirectory, 'install-error.txt')
   desktopPreferences = loadDesktopPreferences(desktopPreferencesPath, (error) => {
     console.error('Unable to load desktop preferences; using defaults', error)
@@ -1135,6 +1167,7 @@ app.whenReady().then(async () => {
     dialog.showErrorBox('Porto update failed', updateInstallError)
   }
   startUpdateChecks()
+  startUpdateLogCleanup()
 
   app.on('activate', () => {
     showMainWindow()
@@ -1150,6 +1183,7 @@ app.on('before-quit', () => {
   console.debug('Quitting Porto desktop; daemon continues independently')
   quitting = true
   if (updateCheckTimer !== null) clearInterval(updateCheckTimer)
+  if (updateLogCleanupTimer !== null) clearInterval(updateLogCleanupTimer)
   if (dockerEngineTimer !== null) clearInterval(dockerEngineTimer)
 })
 

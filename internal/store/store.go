@@ -968,6 +968,44 @@ func (s *Store) logs(ctx context.Context, id int64, stream string, limit int) ([
 	return rev, rows.Err()
 }
 
+// PruneLogsBefore deletes project log lines recorded before cutoff and reports
+// how many it removed. It deletes per project so each range uses the
+// (project_id, created_at) index.
+func (s *Store) PruneLogsBefore(ctx context.Context, cutoff time.Time) (int64, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT project_id FROM logs`)
+	if err != nil {
+		return 0, fmt.Errorf("list projects with logs: %w", err)
+	}
+	var projects []int64
+	for rows.Next() {
+		var id int64
+		if err := rows.Scan(&id); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("list projects with logs: %w", err)
+		}
+		projects = append(projects, id)
+	}
+	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
+		return 0, fmt.Errorf("list projects with logs: %w", err)
+	}
+	// Stored times are RFC 3339 with trimmed fractions; a fixed nine-digit
+	// fraction keeps the text comparison exact.
+	bound := cutoff.UTC().Format("2006-01-02T15:04:05.000000000Z07:00")
+	var removed int64
+	for _, id := range projects {
+		result, err := s.db.ExecContext(ctx, `DELETE FROM logs WHERE project_id=? AND created_at<?`, id, bound)
+		if err != nil {
+			return removed, fmt.Errorf("delete expired logs for project %d: %w", id, err)
+		}
+		count, err := result.RowsAffected()
+		if err != nil {
+			return removed, fmt.Errorf("count expired logs for project %d: %w", id, err)
+		}
+		removed += count
+	}
+	return removed, nil
+}
+
 func (s *Store) ClearLogs(ctx context.Context, id int64, stream string) (int64, error) {
 	query := `DELETE FROM logs WHERE project_id=?`
 	args := []any{id}

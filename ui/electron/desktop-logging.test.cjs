@@ -11,6 +11,7 @@ const {
   initializeLogDateState,
   installDesktopLogging,
   openDaemonBootstrapLog,
+  pruneUpdateLogs,
   resolveLogPath,
 } = require('./desktop-logging.cjs')
 
@@ -212,4 +213,58 @@ test('the installed daemon logs startup failures once through desktop stdio', {
   assert.match(contents, /level=ERROR.*Daemon stopped/)
   assert.equal(contents.match(/Starting Porto daemon/g)?.length, 1)
   assert.match(fs.readFileSync(bootstrap.path, 'utf8'), /porto:/)
+})
+
+test('update log cleanup deletes only expired install records and emptied version folders', (t) => {
+  const updates = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-updates-'))
+  const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-outside-'))
+  t.after(() => {
+    fs.rmSync(updates, { recursive: true, force: true })
+    fs.rmSync(outside, { recursive: true, force: true })
+  })
+  const now = new Date(2026, 8, 29, 12)
+  const expired = new Date(2026, 8, 22, 23, 59)
+  const retained = new Date(2026, 8, 23, 0, 0)
+  const write = (relative, time, contents = 'synthetic') => {
+    const file = path.join(updates, relative)
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, contents)
+    fs.utimesSync(file, time, time)
+    return file
+  }
+  write('1.0.0/porto-desktop_1.0.0_darwin_arm64.dmg.install.log', expired)
+  write('1.0.0/apply-update-4242.sh', expired)
+  write('1.1.0/porto-desktop_1.1.0_darwin_arm64.dmg.install.log', retained)
+  write('1.1.0/apply-update-4343.ps1.proceed', retained)
+  write('1.2.0/porto-desktop_1.2.0_darwin_arm64.dmg.install.log', expired)
+  write('1.2.0/porto-desktop_1.2.0_darwin_arm64.dmg', expired)
+  write('not-a-version/old.install.log', expired)
+  write('install-error.txt', expired)
+  fs.mkdirSync(path.join(updates, '1.3.0'))
+  const outsideLog = path.join(outside, 'linked.install.log')
+  fs.writeFileSync(outsideLog, 'outside')
+  fs.utimesSync(outsideLog, expired, expired)
+  const expiredFolders = ['1.0.0', '1.2.0', '1.3.0']
+  fs.mkdirSync(path.join(updates, '1.4.0'))
+  try {
+    fs.symlinkSync(outsideLog, path.join(updates, '1.4.0', 'linked.install.log'))
+    expiredFolders.push('1.4.0')
+  } catch (error) {
+    // Windows needs elevated rights for file symlinks.
+    if (error.code !== 'EPERM') throw error
+    fs.rmdirSync(path.join(updates, '1.4.0'))
+  }
+  for (const folder of expiredFolders) fs.utimesSync(path.join(updates, folder), expired, expired)
+
+  const result = pruneUpdateLogs({ updatesDirectory: updates, retentionDays: 7, now })
+
+  assert.deepEqual(result, { removedFiles: 3, removedDirectories: 2, errors: [] })
+  assert.deepEqual(fs.readdirSync(updates).sort(), [
+    '1.1.0', '1.2.0', ...(expiredFolders.includes('1.4.0') ? ['1.4.0'] : []), 'install-error.txt', 'not-a-version',
+  ])
+  assert.deepEqual(fs.readdirSync(path.join(updates, '1.2.0')), ['porto-desktop_1.2.0_darwin_arm64.dmg'])
+  assert.deepEqual(fs.readdirSync(path.join(updates, '1.1.0')).sort(), ['apply-update-4343.ps1.proceed', 'porto-desktop_1.1.0_darwin_arm64.dmg.install.log'])
+  assert.equal(fs.readFileSync(outsideLog, 'utf8'), 'outside')
+  assert.deepEqual(pruneUpdateLogs({ updatesDirectory: path.join(updates, 'missing'), retentionDays: 7, now }), { removedFiles: 0, removedDirectories: 0, errors: [] })
+  assert.throws(() => pruneUpdateLogs({ updatesDirectory: updates, retentionDays: 0, now }), RangeError)
 })
