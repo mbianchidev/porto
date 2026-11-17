@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
@@ -79,6 +80,7 @@ type Manager struct {
 	timeout                   time.Duration
 	stateDir                  string
 	lookPath                  func(string) (string, error)
+	engineLauncher            func(limactl string) (string, error)
 	directCLI                 bool
 	dialBuildKit              func(context.Context) (net.Conn, error)
 	installMu                 sync.Mutex
@@ -169,6 +171,11 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		ownershipProbe:  make(chan struct{}, 1),
 		networkLocks:    newContainerMutexes(),
 		containerNameMu: &sync.Mutex{},
+	}
+	if _, real := runner.(runtimes.ExecRunner); real && runtime.GOOS == "darwin" && stateDir != "" {
+		manager.engineLauncher = func(limactl string) (string, error) {
+			return prepareEngineLauncher(limactl, filepath.Join(stateDir, "launcher"))
+		}
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	manager.metricReader = manager.readContainerMetric
@@ -532,17 +539,36 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 
 func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
 	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
+	limactl := m.engineStartCommand()
 	var output []byte
 	var err error
 	if engineObserver(ctx) != nil {
-		err = m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: "limactl", Args: arguments})
+		err = m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: limactl, Args: arguments})
 	} else {
-		output, err = m.runCommand(ctx, engineStartTimeout, action, nil, "limactl", arguments...)
+		output, err = m.runCommand(ctx, engineStartTimeout, action, nil, limactl, arguments...)
 	}
 	if err != nil {
 		err = withLimaGuestDiagnostics(err)
 	}
 	return output, err
+}
+
+// engineStartCommand names the executable that boots the engine VM. Lima
+// re-executes it as the hostagent, so on macOS the named launcher makes the VM
+// service read "Porto Docker Engine". Without it the engine still starts.
+func (m *Manager) engineStartCommand() string {
+	if m.engineLauncher == nil {
+		return "limactl"
+	}
+	limactl, err := m.lookPath("limactl")
+	if err == nil {
+		var launcher string
+		if launcher, err = m.engineLauncher(limactl); err == nil {
+			return launcher
+		}
+	}
+	slog.Warn("Starting the Porto engine as limactl because its named launcher is unavailable", "error", err)
+	return "limactl"
 }
 
 func (m *Manager) installLimaRuntimeHelper(ctx context.Context, instance string) error {
