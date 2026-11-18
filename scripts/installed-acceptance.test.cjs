@@ -66,6 +66,11 @@ function packageFixture(fixture) {
     write(path.join(result.runtime, 'licenses', name), 'Synthetic layout fixture, never executed\n')
   }
   for (const name of analysisTools) write(path.join(result.runtime, 'licenses', `${name}.txt`), 'Synthetic layout fixture, never executed\n')
+  if (process.platform === 'darwin') {
+    write(path.join(result.runtime, 'bin', 'docker-credential-osxkeychain'), header(...fixture.target.split('/')), 0o700)
+    write(path.join(result.runtime, 'licenses', 'docker-credential-helpers.txt'), 'Synthetic layout fixture, never executed\n')
+    fs.appendFileSync(path.join(result.runtime, 'VERSIONS'), '\ndocker-credential-osxkeychain v0.9.13')
+  }
   if (process.platform === 'win32') {
     for (const name of ['qemu-img.exe', fixture.target.endsWith('/arm64') ? 'qemu-system-aarch64.exe' : 'qemu-system-x86_64.exe']) {
       write(path.join(result.runtime, 'qemu', name), header(...fixture.target.split('/')), 0o700)

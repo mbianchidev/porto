@@ -229,17 +229,43 @@ func lifecycleSettled(action string) func(before, after Container) bool {
 
 // confirmLifecycleInventory waits until listings show a completed lifecycle action, as Docker's
 // do when the API call returns; Compose otherwise skips starting a container listed as running.
+// The action already queued a refresh, so this only waits for it instead of forcing another.
 func (m *Manager) confirmLifecycleInventory(ctx context.Context, before Container, action string, settled func(before, after Container) bool) {
-	err := m.confirmContainerInventory(ctx, func(containers []Container) bool {
-		for _, container := range containers {
-			if container.ID == before.ID {
-				return settled(before, container)
+	inventory := m.activeContainerInventory()
+	if inventory == nil || m.IsNativeWindows() {
+		return
+	}
+	updates, unsubscribe := inventory.subscribe()
+	defer unsubscribe()
+	timer := time.NewTimer(defaultInventoryOperationTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			slog.Warn("Container inventory did not confirm a lifecycle change", "container", before.ID, "action", action)
+			return
+		case snapshot, ok := <-updates:
+			if !ok {
+				return
+			}
+			if !snapshot.Available || snapshot.Stale {
+				continue
+			}
+			found := false
+			for _, container := range snapshot.Containers {
+				if container.ID == before.ID {
+					found = true
+					if settled(before, container) {
+						return
+					}
+				}
+			}
+			if !found {
+				return
 			}
 		}
-		return true
-	})
-	if err != nil {
-		slog.Warn("Container inventory did not confirm a lifecycle change", "container", before.ID, "action", action, "error", err)
 	}
 }
 

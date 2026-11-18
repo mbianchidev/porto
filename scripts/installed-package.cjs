@@ -36,7 +36,7 @@ async function releaseServer(artifact) {
 function uninstall(fixture) {
   assert.ok(within(fixture.directory, fixture.installRoot), 'Only remove the synthetic installed application')
   const bin = path.join(fixture.home, '.local', 'bin')
-  for (const name of ['porto', 'porto-desktop', 'docker', 'dive']) {
+  for (const name of ['porto', 'porto-desktop', 'docker', 'dive', 'docker-credential-osxkeychain']) {
     const entry = path.join(bin, name)
     if (!fs.existsSync(entry)) continue
     if (!fs.lstatSync(entry).isSymbolicLink()) continue
