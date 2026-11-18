@@ -21,6 +21,7 @@ docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0
 compose_version="v5.5.1"
 buildx_version="v0.37.1"
 dive_version="v0.13.1"
+credential_helper_version="v0.9.13"
 qemu_version="11.1.0"
 qemu_build="20260811"
 
@@ -205,6 +206,22 @@ else
 fi
 mv "$temporary/dive/dive${binary_suffix}" "$destination/bin/dive${binary_suffix}"
 cp "$temporary/dive/LICENSE" "$destination/licenses/dive.txt"
+
+# Docker Desktop and OrbStack leave credsStore "osxkeychain" in ~/.docker/config.json, and
+# docker login prefers the Keychain when the helper exists, so macOS ships it with the CLI.
+credential_helper_checksum=""
+if [ "$goos" = "darwin" ]; then
+  case "$goarch" in
+    amd64) credential_helper_checksum="6609c5ca7117b2863c59470e662bd055772ec682efbc5383b87b4093ebf47a42" ;;
+    arm64) credential_helper_checksum="72512a79a6f1757a0b104548614dedc9de26825efcb6a4ee3e719be25578ccc2" ;;
+  esac
+  credential_helper_asset="docker-credential-osxkeychain-${credential_helper_version}.darwin-${goarch}"
+  download "https://github.com/docker/docker-credential-helpers/releases/download/${credential_helper_version}/${credential_helper_asset}" \
+    "$destination/bin/docker-credential-osxkeychain" "$credential_helper_checksum"
+  verify "$credential_helper_checksum" "$destination/bin/docker-credential-osxkeychain"
+  download "https://raw.githubusercontent.com/docker/docker-credential-helpers/${credential_helper_version}/LICENSE" \
+    "$destination/licenses/docker-credential-helpers.txt"
+fi
 bash "$script_directory/bundle-image-analysis.sh" "$goos" "$goarch" "$destination"
 bash "$script_directory/bundle-helm.sh" "$goos" "$goarch" "$destination"
 
@@ -449,6 +466,7 @@ if [ "$goos" != "windows" ]; then
   chmod 0755 "$destination/bin/kubectl"
   chmod 0755 "$destination/bin/porto-runtime-helper"
   chmod 0755 "$destination/bin/dive"
+  [ "$goos" = "darwin" ] && chmod 0755 "$destination/bin/docker-credential-osxkeychain"
   if [ "$docker_bundled" = "true" ]; then
     chmod 0755 "$destination/bin/docker"
     chmod 0755 "$destination/docker/cli-plugins/docker-compose"
@@ -472,6 +490,11 @@ qemu $([ "$qemu_bundled" = "true" ] && printf '%s (Windows build %s; Porto UTF-8
 porto-runtime-helper 4
 porto-files-mount $([ "$goos" = "windows" ] && printf 'WinFsp/cgofuse v1.6.0, confined SFTP' || printf 'not required for %s' "$goos")
 EOF
+
+if [ "$goos" = "darwin" ]; then
+  printf 'docker-credential-osxkeychain %s (%s, sha256:%s)\n' \
+    "$credential_helper_version" "$credential_helper_asset" "$credential_helper_checksum" >> "$destination/VERSIONS"
+fi
 
 cat "$destination/licenses/image-analysis-VERSIONS.txt" >> "$destination/VERSIONS"
 cat "$destination/licenses/helm-VERSIONS.txt" >> "$destination/VERSIONS"
@@ -512,6 +535,12 @@ else
 fi
 test -f "$destination/bin/dive${binary_suffix}"
 test -f "$destination/licenses/dive.txt"
+if [ "$goos" = "darwin" ]; then
+  test -x "$destination/bin/docker-credential-osxkeychain"
+  test -f "$destination/licenses/docker-credential-helpers.txt"
+else
+  test ! -e "$destination/bin/docker-credential-osxkeychain"
+fi
 
 node "$(dirname "$0")/desktop-runtime-symlinks.cjs" --validate "$destination"
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

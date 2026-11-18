@@ -81,6 +81,8 @@ type Manager struct {
 	stateDir                  string
 	lookPath                  func(string) (string, error)
 	engineLauncher            func(limactl string) (string, error)
+	temporaryShares           []string
+	temporaryShareGuard       func(context.Context) error
 	directCLI                 bool
 	dialBuildKit              func(context.Context) (net.Conn, error)
 	installMu                 sync.Mutex
@@ -176,6 +178,8 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		manager.engineLauncher = func(limactl string) (string, error) {
 			return prepareEngineLauncher(limactl, filepath.Join(stateDir, "launcher"))
 		}
+		manager.temporaryShares = macOSTemporaryShares
+		manager.temporaryShareGuard = manager.verifyTemporaryShares
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	manager.metricReader = manager.readContainerMetric
@@ -447,6 +451,13 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			return Status{}, resourceErr
 		}
 		arguments = append(arguments, resourceArguments...)
+		if len(m.temporaryShares) > 0 {
+			expression, shareErr := temporaryShareExpression(m.temporaryShares)
+			if shareErr != nil {
+				return Status{}, shareErr
+			}
+			arguments = append(arguments, "--set="+expression)
+		}
 		arguments = append(arguments, limaEngineTemplate(runtime.GOOS))
 		if err := reportEngineInstall(ctx, "starting", "lima", "Preparing the Lima guest; uncached guest images and containerd / BuildKit tools must download."); err != nil {
 			return Status{}, err
@@ -538,6 +549,10 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 }
 
 func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
+	if len(args) == 1 {
+		// Mounts can only change while the existing instance is stopped.
+		m.shareTemporaryDirectories(ctx, args[0])
+	}
 	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
 	limactl := m.engineStartCommand()
 	var output []byte
@@ -965,6 +980,10 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", fmt.Errorf("invalid exposed container port %q: %w", port, err)
 		}
 	}
+	request.Publish, err = allocateDynamicHostPorts(request.Publish)
+	if err != nil {
+		return "", err
+	}
 	if request.PublishAll {
 		if err := m.publishAllContainerPorts(ctx, &request); err != nil {
 			return "", err
@@ -1120,7 +1139,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		args = append(args, "--label", portoOpenStdinLabel+"=true")
 	}
 	if request.StdinOnce {
-		args = append(args, "--label", "io.porto.container.stdin-once=true")
+		args = append(args, "--label", portoStdinOnceLabel+"=true")
 	}
 	if request.Remove {
 		args = append(args, "--rm")
@@ -1506,6 +1525,18 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 			}()
 		}
 	}
+	if settled := lifecycleSettled(action); settled != nil {
+		if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+			if found, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+				before := *found
+				defer func() {
+					if err == nil {
+						m.confirmLifecycleInventory(ctx, before, action, settled)
+					}
+				}()
+			}
+		}
+	}
 	if action == "start" || action == "restart" || action == "unpause" {
 		var selection acceleration.Selection
 		selection, err = m.validateExistingArchitecture(ctx, id)
@@ -1528,6 +1559,11 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 			m.invalidateContainerInventory()
 		}
 		return err
+	}
+	if action == "start" || action == "restart" {
+		if handled, startErr := m.startWithOpenInput(ctx, id, action, timeout); handled {
+			return startErr
+		}
 	}
 	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
 	if handled {

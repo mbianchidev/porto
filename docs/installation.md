@@ -66,7 +66,11 @@ platform paths, rotation, retention, and verbosity settings.
 
 Desktop archives contain Porto, its dashboard, the Docker CLI with Compose and
 Buildx, Dive for terminal image-layer inspection, `kubectl`, `k9s`, Lima, and
-the supported `kind` binary for that platform. Windows packages also
+the supported `kind` binary for that platform. macOS packages also contain
+Docker's checksum-pinned `docker-credential-osxkeychain`, so `docker login`
+stores credentials in the Keychain and configs left by Docker Desktop or
+OrbStack (`"credsStore": "osxkeychain"`) keep working after those runtimes are
+removed. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
 system installation. Windows ARM64 excludes KinD because upstream does not
 publish a native binary; Porto builds its Docker CLI from Docker's pinned
@@ -416,6 +420,23 @@ docker --host unix:///var/run/docker.sock info \
 Porto records the previous symbolic-link target. Restore it with
 `porto docker deactivate`; if required, rerun the administrator command printed
 by Porto with `docker deactivate` as the final arguments.
+
+macOS clears `/var/run` on every boot, so a plain activation lasts until the
+next restart. Add `--persist` to keep it, as other desktop Docker runtimes do:
+
+```sh
+sudo env PORTO_HOME="$HOME/Library/Application Support/porto" \
+  "$(command -v porto)" docker activate --replace --persist
+```
+
+This installs the root LaunchDaemon
+`/Library/LaunchDaemons/dev.mbianchi.porto.docker-endpoint.plist`. At boot it
+runs a fixed `/bin/sh` command (never the user-writable Porto executable) that
+recreates the link only when nothing occupies `/var/run/docker.sock`, so it
+never replaces a socket or another runtime's link. The link may dangle until
+Porto starts. `porto docker status` reports `"persistent": true`, and
+`porto docker deactivate` removes the job before restoring the previous link.
+Rerun with `--persist` after moving `PORTO_HOME`. `--persist` is macOS-only.
 
 Canonical activation is optional: Porto Desktop and
 `docker --context porto ...` work without it. It is intended for tools that

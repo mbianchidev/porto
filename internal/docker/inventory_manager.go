@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -202,6 +203,70 @@ func (m *Manager) completeContainerCreation(ctx context.Context, id string, crea
 		return id, fmt.Errorf("container %q was created, but inventory confirmation failed: %w", id, err)
 	}
 	return id, nil
+}
+
+// lifecycleSettled recognizes a container's state after a completed lifecycle action. A started
+// container may already have exited, which a new exit time reveals.
+func lifecycleSettled(action string) func(before, after Container) bool {
+	active := func(state string) bool {
+		return state == "running" || state == "paused" || state == "pausing" || state == "restarting"
+	}
+	switch action {
+	case "stop":
+		return func(_, after Container) bool { return !active(after.State) }
+	case "pause":
+		return func(_, after Container) bool { return after.State == "paused" || !active(after.State) }
+	case "start", "unpause":
+		return func(before, after Container) bool { return after.State == "running" || after.ExitAt != before.ExitAt }
+	case "restart":
+		return func(before, after Container) bool {
+			return (after.State == "running" && after.PID != before.PID) || after.ExitAt != before.ExitAt
+		}
+	default:
+		return nil
+	}
+}
+
+// confirmLifecycleInventory waits until listings show a completed lifecycle action, as Docker's
+// do when the API call returns; Compose otherwise skips starting a container listed as running.
+// The action already queued a refresh, so this only waits for it instead of forcing another.
+func (m *Manager) confirmLifecycleInventory(ctx context.Context, before Container, action string, settled func(before, after Container) bool) {
+	inventory := m.activeContainerInventory()
+	if inventory == nil || m.IsNativeWindows() {
+		return
+	}
+	updates, unsubscribe := inventory.subscribe()
+	defer unsubscribe()
+	timer := time.NewTimer(defaultInventoryOperationTimeout)
+	defer timer.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			slog.Warn("Container inventory did not confirm a lifecycle change", "container", before.ID, "action", action)
+			return
+		case snapshot, ok := <-updates:
+			if !ok {
+				return
+			}
+			if !snapshot.Available || snapshot.Stale {
+				continue
+			}
+			found := false
+			for _, container := range snapshot.Containers {
+				if container.ID == before.ID {
+					found = true
+					if settled(before, container) {
+						return
+					}
+				}
+			}
+			if !found {
+				return
+			}
+		}
+	}
 }
 
 func (m *Manager) confirmContainerInventory(ctx context.Context, matches func([]Container) bool) error {

@@ -47,8 +47,9 @@ irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-des
 
 The installers pick the package for the OS and architecture, verify it against
 the release's `SHA256SUMS`, install for the current user, link `porto` into
-`~/.local/bin`, add `docker` and `dive` links only when those commands aren't
-already installed, and launch the app. Set these environment variables before
+`~/.local/bin`, add `docker` and `dive` links (and on macOS
+`docker-credential-osxkeychain`) only when those commands aren't already
+installed, and launch the app. Set these environment variables before
 the command when needed:
 
 | Variable | Effect |
@@ -100,8 +101,8 @@ otherwise the CLI reads a different state database.
 porto scan --depth 3 ~/code          # flags go BEFORE the roots
 porto list                           # JSON array of projects
 porto start --no-pull <project>
+porto restart --no-pull --no-cache <project>   # forced uncached image rebuild
 porto logs <project> --stream all -n 200
-porto restart <project>
 porto stop <project>
 ```
 
@@ -111,6 +112,12 @@ porto stop <project>
 - `porto start` runs `git pull --ff-only` on the active branch first. Pass
   `--no-pull` when the user has local work so Porto doesn't move their branch.
   Dependency setup still runs.
+- Compose projects run `docker compose build --no-cache` on every start and
+  restart. `--no-cache` forces the same rebuild for Make projects that wrap a
+  root Compose file and is rejected for other projects. Use `porto start` or
+  `porto restart` for clean rebuilds instead of calling `docker compose`
+  directly, unless the checkout isn't a registered project (for example a
+  worktree that `porto list` doesn't show).
 - A project stays `starting` through dependency setup until
   `http://127.0.0.1:<port>/` returns HTTP 200, and becomes `crashed` if setup or
   the app fails. Check `porto logs` before reporting success.
@@ -139,9 +146,15 @@ porto docker status                              # engine state
   shortcuts for `porto docker <cmd>`.
 - **`porto start|stop|logs` act on projects, not containers.** For containers
   use `porto docker stop|logs <container>` or `docker --context porto ...`.
+- Tools that ignore contexts use `/var/run/docker.sock`. `porto docker activate
+  --replace --persist` (run with `sudo`, macOS) points it at Porto and keeps it
+  across reboots; `porto docker status` shows `canonical` and `persistent`.
+  It's a global change, so ask first.
 - `docker context use porto` changes the default context for every terminal.
   Run it only when the user wants Porto as their default engine. Unset
   `DOCKER_HOST` or `DOCKER_CONTEXT` if they override the selected context.
+- Bind mounts work from the home directory and, on macOS, from `/tmp` and
+  `$TMPDIR`; other host paths aren't shared with the engine VM.
 - Docker API 1.41 to 1.47 is supported; Swarm and engine plugins aren't. Check
   the [compatibility matrix](https://github.com/mbianchidev/porto/blob/main/docs/docker-engine.md#docker-api-compatibility-matrix)
   before relying on an unusual feature.

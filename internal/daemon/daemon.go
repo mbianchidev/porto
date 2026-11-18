@@ -1366,11 +1366,49 @@ func (s *Server) expandScanRoot(root string) (string, error) {
 	return filepath.Join(home, root[2:]), nil
 }
 
+type startOptions struct {
+	noPull  bool
+	noCache bool
+}
+
+var errNoCacheUnsupported = errors.New("--no-cache applies only to Compose projects and Make projects with a root Compose file")
+
+func startOptionsFromQuery(query url.Values) startOptions {
+	enabled := func(name string) bool {
+		value := query.Get(name)
+		return value == "1" || value == "true"
+	}
+	return startOptions{noPull: enabled("noPull"), noCache: enabled("noCache")}
+}
+
+func startErrorStatus(err error) int {
+	if errors.Is(err, errNoCacheUnsupported) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
+}
+
+// checkNoCache rejects uncached rebuilds that Porto cannot honor instead of silently ignoring them.
+func (s *Server) checkNoCache(project app.Project) error {
+	if !projectUsesCompose(project) {
+		return fmt.Errorf("%w; %s is a %s project", errNoCacheUnsupported, project.Name, project.Strategy)
+	}
+	if s.delivery != nil && project.Strategy == "compose" {
+		definition, err := s.delivery.DefinitionPath(project)
+		if err != nil {
+			return err
+		}
+		if definition != "" {
+			return fmt.Errorf("%w; %s runs a recorded delivery definition whose images are built by its delivery pipeline", errNoCacheUnsupported, project.Name)
+		}
+	}
+	return nil
+}
+
 func (s *Server) start(w http.ResponseWriter, r *http.Request) {
-	noPull := r.URL.Query().Get("noPull") == "1" || r.URL.Query().Get("noPull") == "true"
-	p, err := s.startProject(r.Context(), r.PathValue("name"), noPull)
+	p, err := s.startProjectWithOptions(r.Context(), r.PathValue("name"), startOptionsFromQuery(r.URL.Query()))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), startErrorStatus(err))
 		return
 	}
 	s.syncKillSwitch(r.Context())
@@ -1417,10 +1455,25 @@ func (s *Server) runProjectSetup(ctx context.Context, project app.Project) (proj
 		s.mu.Unlock()
 	}()
 
-	return s.executeProjectSetup(context.WithoutCancel(ctx), project)
+	return s.executeProjectSetup(context.WithoutCancel(ctx), project, false)
 }
 
-func (s *Server) executeProjectSetup(ctx context.Context, project app.Project) (projectsetup.Result, error) {
+// composeRebuildProject returns a Compose view of a Make project so the setup runner can rebuild
+// the images its targets use, under the same Compose project name the launch environment sets.
+func composeRebuildProject(project app.Project) (app.Project, bool) {
+	if project.Strategy != "make" {
+		return project, false
+	}
+	file, ok := compose.FindFile(project.Path)
+	if !ok {
+		return project, false
+	}
+	project.Strategy = "compose"
+	project.ComposeFile = file
+	return project, true
+}
+
+func (s *Server) executeProjectSetup(ctx context.Context, project app.Project, noCache bool) (projectsetup.Result, error) {
 	if s.delivery != nil && project.Strategy == "compose" {
 		definition, err := s.delivery.DefinitionPath(project)
 		if err != nil {
@@ -1443,14 +1496,35 @@ func (s *Server) executeProjectSetup(ctx context.Context, project app.Project) (
 	if err := emit("system", "Dependency setup started."); err != nil {
 		return projectsetup.Result{}, err
 	}
-	if project.Strategy == "compose" {
+	var rebuildProject app.Project
+	rebuildCompose := false
+	if noCache {
+		rebuildProject, rebuildCompose = composeRebuildProject(project)
+	}
+	if project.Strategy == "compose" || rebuildCompose {
 		if err := s.compose.Check(ctx); err != nil {
 			return projectsetup.Result{}, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
 		}
 	}
-	result, err := s.setupRunner.Run(ctx, project, emit)
-	if err != nil {
-		return result, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
+	result := projectsetup.Result{}
+	runDependencies := true
+	if rebuildCompose {
+		_, planErr := projectsetup.Plan(project)
+		runDependencies = !errors.Is(planErr, projectsetup.ErrUnsupported)
+	}
+	if runDependencies {
+		var err error
+		result, err = s.setupRunner.Run(ctx, project, emit)
+		if err != nil {
+			return result, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
+		}
+	}
+	if rebuildCompose {
+		rebuilt, err := s.setupRunner.Run(ctx, rebuildProject, emit)
+		result.Commands = append(result.Commands, rebuilt.Commands...)
+		if err != nil {
+			return result, errors.Join(err, emit("system", "Dependency setup failed: "+err.Error()))
+		}
 	}
 	if err := emit("system", "Dependency setup completed."); err != nil {
 		return result, err
@@ -1459,11 +1533,20 @@ func (s *Server) executeProjectSetup(ctx context.Context, project app.Project) (
 }
 
 func (s *Server) startProject(ctx context.Context, name string, noPull bool) (app.Project, error) {
+	return s.startProjectWithOptions(ctx, name, startOptions{noPull: noPull})
+}
+
+func (s *Server) startProjectWithOptions(ctx context.Context, name string, options startOptions) (app.Project, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	p, err := s.store.GetProject(ctx, name)
 	if err != nil {
 		return p, err
+	}
+	if options.noCache {
+		if err := s.checkNoCache(p); err != nil {
+			return p, err
+		}
 	}
 	if s.operations != nil && s.operations.BusyFor(ctx, "project:"+strconv.FormatInt(p.ID, 10)) {
 		return p, errors.New("another operation owns this project")
@@ -1528,7 +1611,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		}
 	}
 	recordedDelivery := s.delivery != nil && s.delivery.OwnsDefinition(p.ID, composePlan.ConfigFile)
-	if !noPull && !recordedDelivery {
+	if !options.noPull && !recordedDelivery {
 		if out, err := gitutil.Pull(p.Path); err != nil {
 			_ = s.store.AddLog(ctx, p.ID, "git", strings.TrimSpace(out))
 			return p, fmt.Errorf("git pull failed: %w", err)
@@ -1546,7 +1629,12 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 		project: runtimeProject,
 	}
 	if !recordedDelivery {
-		if _, setupErr := projectsetup.Plan(p); setupErr == nil {
+		_, setupErr := projectsetup.Plan(p)
+		if options.noCache && errors.Is(setupErr, projectsetup.ErrUnsupported) {
+			// Make projects without dependency setup still need the uncached Compose rebuild.
+			setupErr = nil
+		}
+		if setupErr == nil {
 			if err := s.store.SetRuntime(ctx, p.ID, "starting", 0, port); err != nil {
 				delete(s.composePorts, p.ID)
 				return p, err
@@ -1556,7 +1644,7 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 			running.setupDone = make(chan struct{})
 			s.running[p.ID] = running
 			s.settingUp[p.ID] = true
-			go s.prepareAndStartProject(setupContext, p, running, composePlan)
+			go s.prepareAndStartProject(setupContext, p, running, composePlan, options.noCache)
 			return runtimeProject, nil
 		} else if !errors.Is(setupErr, projectsetup.ErrUnsupported) {
 			delete(s.composePorts, p.ID)
@@ -1570,10 +1658,10 @@ func (s *Server) startProject(ctx context.Context, name string, noPull bool) (ap
 	return s.store.GetProject(ctx, name)
 }
 
-func (s *Server) prepareAndStartProject(ctx context.Context, project app.Project, running *projectProcess, composePlan compose.PortPlan) {
+func (s *Server) prepareAndStartProject(ctx context.Context, project app.Project, running *projectProcess, composePlan compose.PortPlan, noCache bool) {
 	defer running.cancelSetup()
 	defer close(running.setupDone)
-	_, err := s.executeProjectSetup(ctx, project)
+	_, err := s.executeProjectSetup(ctx, project, noCache)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -1982,10 +2070,23 @@ func waitForProjectProcess(running *projectProcess, timeout time.Duration) bool 
 }
 
 func (s *Server) restart(w http.ResponseWriter, r *http.Request) {
+	options := startOptionsFromQuery(r.URL.Query())
+	if options.noCache {
+		project, err := s.store.GetProject(r.Context(), r.PathValue("name"))
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		// Validate before stopping so an unsupported rebuild never leaves the project down.
+		if err := s.checkNoCache(project); err != nil {
+			http.Error(w, err.Error(), startErrorStatus(err))
+			return
+		}
+	}
 	_, _ = s.stopProject(r.Context(), r.PathValue("name"), false)
-	p, err := s.startProject(r.Context(), r.PathValue("name"), r.URL.Query().Get("noPull") == "1")
+	p, err := s.startProjectWithOptions(r.Context(), r.PathValue("name"), options)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		http.Error(w, err.Error(), startErrorStatus(err))
 		return
 	}
 	s.syncKillSwitch(r.Context())

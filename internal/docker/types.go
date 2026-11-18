@@ -19,6 +19,7 @@ type Status struct {
 	CanonicalLink string `json:"canonicalLink,omitempty"`
 	Canonical     bool   `json:"canonical"`
 	PreviousLink  string `json:"previousLink,omitempty"`
+	Persistent    bool   `json:"persistent,omitempty"`
 	Message       string `json:"message,omitempty"`
 	Namespace     string `json:"namespace,omitempty"`
 	Inventory     string `json:"inventory,omitempty"`

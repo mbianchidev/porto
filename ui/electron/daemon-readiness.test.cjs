@@ -44,7 +44,7 @@ function response(body, ok = true) {
 
 test('accepts a compatible daemon with a dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 31, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 32, dashboardReady: true }),
   })
 
   assert.equal(ready, true)
@@ -55,7 +55,7 @@ test('requires the packaged daemon binary identity to match', async () => {
     expectedDaemonIdentity: 'new-binary',
     fetchImpl: async () => response({
       status: 'ok',
-      apiVersion: 31,
+      apiVersion: 32,
       dashboardReady: true,
       daemonIdentity: 'new-binary',
     }),
@@ -64,14 +64,14 @@ test('requires the packaged daemon binary identity to match', async () => {
     expectedDaemonIdentity: 'new-binary',
     fetchImpl: async () => response({
       status: 'ok',
-      apiVersion: 31,
+      apiVersion: 32,
       dashboardReady: true,
       daemonIdentity: 'old-binary',
     }),
   })
   const legacy = await isDaemonReady({
     expectedDaemonIdentity: 'new-binary',
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 31, dashboardReady: true }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 32, dashboardReady: true }),
   })
 
   assert.equal(matching, true)
@@ -101,7 +101,7 @@ test('rejects an older daemon without dashboard readiness metadata', async () =>
 
 test('rejects a daemon that cannot serve the dashboard', async () => {
   const ready = await isDaemonReady({
-    fetchImpl: async () => response({ status: 'ok', apiVersion: 31, dashboardReady: false }),
+    fetchImpl: async () => response({ status: 'ok', apiVersion: 32, dashboardReady: false }),
   })
 
   assert.equal(ready, false)

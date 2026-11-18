@@ -348,7 +348,7 @@ before any backend operation. Escaped image names remain intact.
 | `GET /containers/{id}/top`, `GET /containers/{id}/changes` | backend process arguments and typed added/modified/deleted filesystem paths; snapshot comparison uses the recorded snapshot key and excludes external container mounts |
 | `POST /containers/{id}/resize` | resizes the container task's terminal; independent of exec resize |
 | `POST/GET /containers/{id}/checkpoints`, `DELETE /containers/{id}/checkpoints/{name}` | standard create/list/remove responses; names are scoped to the source container, duplicate names conflict, and deletion verifies source metadata |
-| `POST /auth`, `GET /images/search`, `GET /images/{name}/history` | HTTPS challenge-based login, bounded/filterable registry search, and image configuration history with actual image identity |
+| `POST /auth`, `GET /images/search`, `GET /images/{name}/history` | HTTPS challenge-based login (loopback registries such as `localhost:5000` fall back to plain HTTP, like Docker's default insecure registries), bounded/filterable registry search, and image configuration history with actual image identity |
 | `GET /events` | bounded container-lifecycle replay with immutable actor names/images/labels; supports both map and array filter encodings |
 | `POST /images/load`, `POST /images/create?fromSrc=-`, `POST /images/{name}/push` | incremental progress/error frames are flushed immediately; interrupted uploads, canceled transports, malformed archives, and partial failures remain errors |
 | `GET /images/{name}/json`, `GET /images/json` | `VirtualSize` is omitted starting at API 1.44; image inspect omits `Container`/`ContainerConfig` starting at 1.45. Image inspect, image lists, container `Image` fields, history, `POST /commit` and `/system/df` all report the image target digest as the image ID, as Docker's containerd image store does |
@@ -372,7 +372,7 @@ format errors.
 | CPU/memory/PID limits, CPU shares/period/quota/sets, memory reservation/swap/swappiness, OOM disabling, block-I/O weight | translated at creation; direct updates persist the OCI resources and update a running task. Combined resource/restart updates preflight policy metadata and roll back both metadata changes if the task update fails |
 | Read-only root, capability additions/drops, custom DNS/search/options, extra hosts, supplementary groups, ulimits | supported through the native spec or compatibility runtime |
 | `--gpus` | NVIDIA count/device/capability requests are translated; the Linux backend must actually provide the driver, toolkit, and devices. Unsupported request drivers/options fail explicitly |
-| `-P` / `PublishAllPorts` | merges image and request exposed ports, preserves explicit bindings, and selects explicit TCP/UDP host ports so rootless nerdctl does not need unsupported automatic allocation |
+| `-P` / `PublishAllPorts`, `-p 80`, `-p 127.0.0.1::80`, `-p 0:80` | merges image and request exposed ports, preserves explicit bindings, and selects explicit free TCP/UDP host ports on the host, including for Compose short-syntax ports without a host port, so rootless nerdctl does not need unsupported automatic allocation and CNI never receives host port 0 |
 | Security options and namespaces | custom AppArmor/SELinux profiles, unconfined/no-new-privileges settings, cgroup/IPC/PID/UTS options use backend validation. Docker seccomp profile JSON is staged privately beside the backend and removed after creation; daemon-host filenames are not accepted as profile JSON |
 | Structured bind, local volume, tmpfs | basic supported mount options; local/default volume driver declarations are accepted |
 | `HostConfig.LogConfig` | default/`json-file` without custom options; other drivers or configuration are rejected |
@@ -494,6 +494,16 @@ processes/VMs; it refuses to provision runtimes outside GitHub Actions.
 Fresh SSH connections must be available in an existing Lima guest. A guest
 at its SSH socket connection limit fails this preflight rather than restarting
 or terminating unrelated sessions.
+
+For a quick end-to-end check of an installed engine with the real Docker CLI,
+run `scripts/docker-cli-sweep.sh`. It exercises about 130 Docker, Buildx and
+Compose commands through the current Docker context (images, containers, piped
+and terminal input, attach, copy, binds from `$TMPDIR`, published ports,
+networks, volumes, builds, a local registry with login, and Compose lifecycles),
+prints PASS or FAIL for each, and exits non-zero on any failure. It pulls public
+images, uses `127.0.0.1:5055` and `5056`, labels what it creates `porto.sweep=1`
+and removes it on exit. Run it after engine or compatibility changes, with
+`DOCKER=/path/to/docker` to test another client.
 
 The common detached lifecycle works through standard Docker clients:
 
@@ -766,6 +776,46 @@ The daemon exposes `GET /api/docker/cleanup` for the schedule and results and
 `POST /api/docker/cleanup` for **Run now**. The POST returns `202 Accepted` with
 a run identifier; clients must read its eventual outcome from the GET response.
 
+### Rootless compatibility runtime
+
+Most containers (bridge networks, published ports, volumes, `--rm`, `-i`) are
+created by the bundled rootless nerdctl. Porto adapts its gaps to Docker
+behavior:
+
+- **Piped input.** nerdctl's attached start wires only stdout and stderr for
+  non-terminal containers and never closes their input, so
+  `echo data | docker run -i ...`, `docker start -ai` and `docker compose run -T`
+  with input would hang. Porto writes the client's input into the task's stdin
+  FIFO inside the engine and closes it through containerd on EOF.
+- **Detached input.** nerdctl rejects `-d -i` without `-t` and its detached
+  start gives containers no input, so `docker run -d -i ubuntu bash` would exit
+  at once. Porto starts such containers through nerdctl's attached start in its
+  own session inside the engine, which keeps their input open like Docker. A
+  restart policy that restarts the container later uses nerdctl's detached
+  start again, so the restarted container's input is closed.
+- **Attach.** nerdctl cannot attach to output that goes to the log driver and
+  would compete for FIFOs another start still reads. `docker attach` to a
+  non-terminal container therefore follows its output from the moment of
+  attaching until it exits, and sends input to its stdin FIFO. Input closes with
+  the client's only for containers created with `StdinOnce` (`docker create -i`,
+  `docker run -i`). A container started without open input refuses attached
+  input explicitly; use `docker exec -i`.
+- **Network connect and disconnect.** CNI runs inside RootlessKit's user, mount
+  and network namespaces, where rootless containerd keeps its bridges and IPAM
+  state.
+- **Archive copy.** `docker cp` runs `stat -c` and `tar` inside the container and
+  works with GNU and BusyBox tools.
+
+On macOS, the engine VM shares the home directory plus Docker Desktop's default
+temporary roots, `/private/tmp` and `/private/var/folders` (`$TMPDIR`). Bind
+sources under `/tmp` and `/var/folders` are translated to those shared paths, so
+`docker run -v "$(mktemp -d)":/data ...` works. New engines get the shares when
+they are created. An existing engine gains them on its next start from the
+stopped state; until then, creating a container with such a bind fails with a
+message asking for `porto docker engine-stop` and `porto docker engine-start`
+instead of mounting an empty directory. Other host paths outside your home
+directory are not shared.
+
 ## Explicit limitations
 
 Porto returns HTTP `501 Not Implemented` with a Docker JSON error for unsupported API operations. It does not silently ignore requested isolation or security settings.
@@ -776,7 +826,8 @@ Not implemented:
   recursive bind, volume subpath/driver/label, and advanced tmpfs options return
   501 before resources are created
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort, and Porto-owned raw log files cannot synthesize per-line timestamps
-- attach with historical logs
+- attach with historical logs, and attaching input to a non-terminal container
+  whose input is closed (started without `-i`, or restarted by a restart policy)
 - remote-URL rootfs import; request-body import, container commit/export, and image save/load use Docker-compatible endpoints
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
@@ -824,8 +875,10 @@ To expose Porto at the canonical Unix path for tools that ignore contexts, use
 porto docker deactivate
 ```
 
-See [Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
-for administrator retries, verification commands, restoration, and Windows
-behavior.
+On macOS, `porto docker activate --persist` also installs a root LaunchDaemon
+that recreates the link after each reboot. See
+[Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
+for administrator retries, verification commands, persistence, restoration, and
+Windows behavior.
 
 Access to the Porto Docker socket grants control over containers and host-mounted files. Treat it as host-administrator access.

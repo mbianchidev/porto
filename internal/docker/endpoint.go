@@ -15,6 +15,7 @@ type EndpointState struct {
 	CanonicalPath string    `json:"canonicalPath"`
 	TargetPath    string    `json:"targetPath"`
 	PreviousLink  string    `json:"previousLink,omitempty"`
+	Persistent    bool      `json:"persistent,omitempty"`
 	ActivatedAt   time.Time `json:"activatedAt"`
 }
 
@@ -30,6 +31,10 @@ func ActivateEndpoint(canonicalPath, targetPath, statePath string, replace bool)
 		CanonicalPath: canonicalPath,
 		TargetPath:    targetPath,
 		ActivatedAt:   time.Now().UTC(),
+	}
+	if previous, err := ReadEndpointState(statePath); err == nil {
+		// Keep the boot-time job recorded so deactivation still removes it after a re-activation.
+		state.Persistent = previous.Persistent
 	}
 	info, err := os.Lstat(canonicalPath)
 	switch {
@@ -98,6 +103,11 @@ func DeactivateEndpoint(statePath string) error {
 	if !samePath(current, state.TargetPath) {
 		return fmt.Errorf("refusing to remove Docker endpoint changed outside Porto: %s now points to %s", state.CanonicalPath, current)
 	}
+	if state.Persistent {
+		if err := removeEndpointLaunchDaemon(); err != nil {
+			return fmt.Errorf("remove boot-time Docker endpoint job: %w", err)
+		}
+	}
 	if err := os.Remove(state.CanonicalPath); err != nil {
 		return fmt.Errorf("remove Porto Docker endpoint: %w", err)
 	}
@@ -133,6 +143,7 @@ func AddEndpointStatus(status Status, canonicalPath, statePath string) Status {
 	if state, err := ReadEndpointState(statePath); err == nil {
 		status.PreviousLink = state.PreviousLink
 	}
+	status.Persistent = EndpointPersisted()
 	return status
 }
 

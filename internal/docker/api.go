@@ -659,6 +659,13 @@ func (a *API) createContainer(w http.ResponseWriter, r *http.Request) {
 		writeDockerError(w, err)
 		return
 	}
+	request.HostConfig.Binds, request.HostConfig.Mounts, err = a.manager.translateTemporaryMounts(
+		r.Context(), request.HostConfig.Binds, request.HostConfig.Mounts,
+	)
+	if err != nil {
+		writeDockerError(w, err)
+		return
+	}
 	if _, selected := r.Context().Value(wslContextKey{}).(wsl.Integration); selected && len(request.HostConfig.Devices) > 0 {
 		writeDockerUnsupported(w, "passing WSL distribution devices into a separate Lima engine")
 		return

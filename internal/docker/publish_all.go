@@ -79,6 +79,44 @@ func (m *Manager) publishAllContainerPorts(ctx context.Context, request *CreateC
 	return nil
 }
 
+// allocateDynamicHostPorts gives publishes that leave the host port to the engine ("80",
+// "127.0.0.1::80", "0:80") an explicit free port: rootless nerdctl rejects automatic allocation
+// and CNI's portmap plugin rejects host port 0.
+func allocateDynamicHostPorts(publish []string) ([]string, error) {
+	if len(publish) == 0 {
+		return publish, nil
+	}
+	result := make([]string, 0, len(publish))
+	for _, value := range publish {
+		separator := strings.LastIndex(value, ":")
+		containerPort, host := value, ""
+		if separator >= 0 {
+			containerPort, host = value[separator+1:], value[:separator]
+		}
+		hostIP, hostPort := "", host
+		if index := strings.LastIndex(host, ":"); index >= 0 {
+			hostIP, hostPort = host[:index], host[index+1:]
+		}
+		if hostPort != "" && hostPort != "0" {
+			result = append(result, value)
+			continue
+		}
+		port, err := network.ParsePort(containerPort)
+		if err != nil {
+			return nil, fmt.Errorf("invalid published container port %q: %w", containerPort, err)
+		}
+		allocated, err := availablePublishedPort(string(port.Proto()))
+		if err != nil {
+			return nil, fmt.Errorf("allocate published container port: %w", err)
+		}
+		if hostIP != "" {
+			hostIP += ":"
+		}
+		result = append(result, hostIP+strconv.Itoa(allocated)+":"+containerPort)
+	}
+	return result, nil
+}
+
 func availablePublishedPort(protocol string) (int, error) {
 	switch protocol {
 	case "tcp":
