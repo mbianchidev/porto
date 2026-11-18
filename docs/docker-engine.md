@@ -495,6 +495,16 @@ Fresh SSH connections must be available in an existing Lima guest. A guest
 at its SSH socket connection limit fails this preflight rather than restarting
 or terminating unrelated sessions.
 
+For a quick end-to-end check of an installed engine with the real Docker CLI,
+run `scripts/docker-cli-sweep.sh`. It exercises about 130 Docker, Buildx and
+Compose commands through the current Docker context (images, containers, piped
+and terminal input, attach, copy, binds from `$TMPDIR`, published ports,
+networks, volumes, builds, a local registry with login, and Compose lifecycles),
+prints PASS or FAIL for each, and exits non-zero on any failure. It pulls public
+images, uses `127.0.0.1:5055` and `5056`, labels what it creates `porto.sweep=1`
+and removes it on exit. Run it after engine or compatibility changes, with
+`DOCKER=/path/to/docker` to test another client.
+
 The common detached lifecycle works through standard Docker clients:
 
 ```sh

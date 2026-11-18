@@ -5,7 +5,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -116,22 +115,6 @@ func TestForwardTaskInputFeedsNewTaskAndClosesItsInput(t *testing.T) {
 	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("lost"), taskInputOptions{}); !errors.Is(err, errTaskInputClosed) {
 		t.Fatalf("input to a task without stdin = %v, want an explicit refusal", err)
 	}
-}
-
-type inputForwardingOperations struct {
-	execOperations
-	received chan string
-	fifo     string
-}
-
-func (o *inputForwardingOperations) ForwardTaskInput(_ context.Context, id string, input io.Reader, options taskInputOptions) error {
-	data, err := io.ReadAll(input)
-	o.received <- fmt.Sprintf("%s:%s await=%t close=%t", id, data, options.awaitTask, options.closeOnEOF)
-	return err
-}
-
-func (o *inputForwardingOperations) TaskInput(context.Context, string) (string, error) {
-	return o.fifo, nil
 }
 
 func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
