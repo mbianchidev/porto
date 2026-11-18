@@ -109,3 +109,22 @@ test('WSL tools require native Linux ELF artifacts for each selected architectur
     assert.throws(() => validateWSLToolchain(root, architecture), /native Linux ELF/)
   }
 })
+
+test('macOS requires the bundled Keychain credential helper and its license', (t) => {
+  const root = temporaryRuntime(t)
+  fs.writeFileSync(path.join(root, 'VERSIONS'), 'docker 29.7.2\ndive v0.13.1\ndocker-credential-osxkeychain v0.9.13\n')
+  writeLicenses(root)
+  writeAnalysisTools(root, 'darwin')
+  const layout = toolchainLayout(root, 'darwin')
+  for (const file of Object.values(layout)) {
+    fs.mkdirSync(path.dirname(file), { recursive: true })
+    fs.writeFileSync(file, 'synthetic', { mode: 0o700 })
+  }
+  const helper = path.join(root, 'bin', 'docker-credential-osxkeychain')
+  assert.throws(() => validateToolchainLayout(root, { platform: 'darwin' }), /missing executable credential helper/)
+  fs.writeFileSync(helper, 'synthetic', { mode: 0o700 })
+  assert.throws(() => validateToolchainLayout(root, { platform: 'darwin' }), /docker-credential-helpers\.txt/)
+  fs.writeFileSync(path.join(root, 'licenses', 'docker-credential-helpers.txt'), 'license')
+  assert.equal(validateToolchainLayout(root, { platform: 'darwin' }).credentialHelper, helper)
+  assert.equal(validateToolchainLayout(root, { platform: 'linux' }).credentialHelper, '')
+})

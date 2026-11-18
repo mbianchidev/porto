@@ -66,7 +66,11 @@ platform paths, rotation, retention, and verbosity settings.
 
 Desktop archives contain Porto, its dashboard, the Docker CLI with Compose and
 Buildx, Dive for terminal image-layer inspection, `kubectl`, `k9s`, Lima, and
-the supported `kind` binary for that platform. Windows packages also
+the supported `kind` binary for that platform. macOS packages also contain
+Docker's checksum-pinned `docker-credential-osxkeychain`, so `docker login`
+stores credentials in the Keychain and configs left by Docker Desktop or
+OrbStack (`"credsStore": "osxkeychain"`) keep working after those runtimes are
+removed. Windows packages also
 contain architecture-matched QEMU and `qemu-img`, so Lima needs no separate
 system installation. Windows ARM64 excludes KinD because upstream does not
 publish a native binary; Porto builds its Docker CLI from Docker's pinned

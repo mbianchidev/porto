@@ -24,6 +24,11 @@ function toolchainLayout(runtimeRoot, platform = process.platform) {
   }
 }
 
+// macOS ships the Keychain credential helper that Docker configs left by other runtimes select.
+function credentialHelperPath(runtimeRoot, platform = process.platform) {
+  return platform === 'darwin' ? path.join(runtimeRoot, 'bin', 'docker-credential-osxkeychain') : ''
+}
+
 function validateWSLToolchain(runtimeRoot, architecture) {
   const machine = { amd64: 62, arm64: 183 }[architecture]
   if (!machine) throw new Error(`Unsupported native WSL architecture ${architecture}`)
@@ -72,8 +77,9 @@ function validateToolchainLayout(runtimeRoot, {
     }
     return { supported: false, versions, layout, reason: dockerVersion }
   }
-  for (const [name, file] of Object.entries(layout)) {
-    if (name === 'dive') continue
+  const credentialHelper = credentialHelperPath(runtimeRoot, platform)
+  for (const [name, file] of [...Object.entries(layout), ['credential helper', credentialHelper]]) {
+    if (name === 'dive' || !file) continue
     try {
       accessImpl(file, mode)
     } catch (error) {
@@ -89,6 +95,7 @@ function validateToolchainLayout(runtimeRoot, {
     'docker-buildx.txt',
     'docker-buildx-AUTHORS.txt',
     'dive.txt',
+    ...(credentialHelper ? ['docker-credential-helpers.txt'] : []),
   ]) {
     const file = path.join(runtimeRoot, 'licenses', license)
     if (!existsImpl(file)) throw new Error(`Bundled Docker toolchain is missing ${file}`)
@@ -98,7 +105,7 @@ function validateToolchainLayout(runtimeRoot, {
     const architecture = wsl.startsWith('linux/') ? wsl.slice('linux/'.length) : ''
     validateWSLToolchain(runtimeRoot, architecture)
   }
-  return { supported: true, versions, layout, localTools }
+  return { supported: true, versions, layout, localTools, credentialHelper }
 }
 
 function versionToken(value) {
@@ -177,6 +184,12 @@ function smoke(runtimeRoot, options = {}) {
     const composeOutput = execute(inspection.layout.launcher, ['compose', 'version', '--short'], { env: environment }, inspection.layout.compose)
     const buildxOutput = execute(inspection.layout.launcher, ['buildx', 'version'], { env: environment }, inspection.layout.buildx)
     const diveOutput = execute(inspection.layout.dive, ['--version'], { env: environment })
+    if (inspection.credentialHelper) {
+      const helperOutput = execute(inspection.credentialHelper, ['version'], { env: environment })
+      if (!helperOutput.includes(versionToken(inspection.versions.get('docker-credential-osxkeychain') || 'missing'))) {
+        throw new Error(`docker-credential-osxkeychain reported ${helperOutput}; expected the bundled version`)
+      }
+    }
     for (const [name, executable, args, expected] of inspection.localTools) {
       const output = execute(executable, args, { env: environment })
       if (!output.includes(versionToken(expected))) throw new Error(`${name} reported an unexpected version`)

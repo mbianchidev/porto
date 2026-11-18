@@ -47,8 +47,9 @@ irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-des
 
 The installers pick the package for the OS and architecture, verify it against
 the release's `SHA256SUMS`, install for the current user, link `porto` into
-`~/.local/bin`, add `docker` and `dive` links only when those commands aren't
-already installed, and launch the app. Set these environment variables before
+`~/.local/bin`, add `docker` and `dive` links (and on macOS
+`docker-credential-osxkeychain`) only when those commands aren't already
+installed, and launch the app. Set these environment variables before
 the command when needed:
 
 | Variable | Effect |

@@ -346,6 +346,10 @@ if [ "$goos" = "darwin" ]; then
     "dive" \
     "$install_root/Porto.app/Contents/Resources/runtime/bin/dive" \
     "Dive image inspector"
+  install_bundled_tool_link \
+    "docker-credential-osxkeychain" \
+    "$install_root/Porto.app/Contents/Resources/runtime/bin/docker-credential-osxkeychain" \
+    "Docker Keychain credential helper"
   echo "Installed Porto at $install_root/Porto.app"
   echo "macOS builds are not Developer ID signed or notarized by default. Gatekeeper may require approval in System Settings > Privacy & Security."
   if [ "${PORTO_NO_LAUNCH:-0}" != "1" ]; then
