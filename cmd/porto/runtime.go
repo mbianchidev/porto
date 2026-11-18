@@ -259,11 +259,15 @@ func dockerCmd(args []string) error {
 		}
 		fs := flag.NewFlagSet("docker activate", flag.ContinueOnError)
 		replace := fs.Bool("replace", false, "replace an existing Docker socket symlink and remember it for restoration")
+		persist := fs.Bool("persist", false, "macOS: install a LaunchDaemon that recreates the link after every reboot")
 		if err := fs.Parse(args[1:]); err != nil {
 			return err
 		}
 		if fs.NArg() != 0 {
-			return errors.New("usage: porto docker activate [--replace]")
+			return errors.New("usage: porto docker activate [--replace] [--persist]")
+		}
+		if *persist && runtime.GOOS != "darwin" {
+			return errors.New("--persist is available only on macOS")
 		}
 		if !daemonUp() {
 			return errors.New("daemon is not running; start it before activating the Docker endpoint")
@@ -272,13 +276,22 @@ func dockerCmd(args []string) error {
 		if err != nil {
 			return err
 		}
+		retryArguments := []string{"activate"}
+		if *replace {
+			retryArguments = append(retryArguments, "--replace")
+		}
+		if *persist {
+			retryArguments = append(retryArguments, "--persist")
+		}
 		state, err := portodocker.ActivateEndpoint(config.CanonicalDockerSocketPath(), socketPath, statePath, *replace)
 		if err != nil {
-			retryArguments := []string{"activate"}
-			if *replace {
-				retryArguments = append(retryArguments, "--replace")
-			}
 			return dockerPrivilegeHint(err, retryArguments...)
+		}
+		if *persist {
+			state, err = portodocker.PersistEndpoint(statePath)
+			if err != nil {
+				return dockerPrivilegeHint(fmt.Errorf("activated the canonical Docker endpoint, but could not persist it across reboots: %w", err), retryArguments...)
+			}
 		}
 		return writeOutput(state)
 	case "deactivate":

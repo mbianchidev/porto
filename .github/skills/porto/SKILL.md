@@ -145,6 +145,10 @@ porto docker status                              # engine state
   shortcuts for `porto docker <cmd>`.
 - **`porto start|stop|logs` act on projects, not containers.** For containers
   use `porto docker stop|logs <container>` or `docker --context porto ...`.
+- Tools that ignore contexts use `/var/run/docker.sock`. `porto docker activate
+  --replace --persist` (run with `sudo`, macOS) points it at Porto and keeps it
+  across reboots; `porto docker status` shows `canonical` and `persistent`.
+  It's a global change, so ask first.
 - `docker context use porto` changes the default context for every terminal.
   Run it only when the user wants Porto as their default engine. Unset
   `DOCKER_HOST` or `DOCKER_CONTEXT` if they override the selected context.

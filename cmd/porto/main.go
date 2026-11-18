@@ -811,7 +811,8 @@ Commands:
   porto docker operations [id]|watch <id>|cancel <id>
   porto docker migrate --context <name> [--objects kind:name,...] [--allow-source-helper] [--confirm]
   porto docker files <container|image|volume|vm> <name> [--writable] --confirm
-  porto docker context-install|activate|deactivate
+  porto docker context-install|deactivate
+  porto docker activate [--replace] [--persist]
   porto docker container <Docker subcommand> [args...]
   porto docker build [Docker build flags] <context>
   porto kubernetes status|contexts|pods|services|configmaps|configs|secrets|nodes|kubeconfig|context-install

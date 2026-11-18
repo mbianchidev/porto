@@ -824,8 +824,10 @@ To expose Porto at the canonical Unix path for tools that ignore contexts, use
 porto docker deactivate
 ```
 
-See [Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
-for administrator retries, verification commands, restoration, and Windows
-behavior.
+On macOS, `porto docker activate --persist` also installs a root LaunchDaemon
+that recreates the link after each reboot. See
+[Make Porto the default Docker engine](installation.md#make-porto-the-default-docker-engine)
+for administrator retries, verification commands, persistence, restoration, and
+Windows behavior.
 
 Access to the Porto Docker socket grants control over containers and host-mounted files. Treat it as host-administrator access.

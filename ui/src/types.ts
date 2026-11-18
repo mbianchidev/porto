@@ -207,6 +207,7 @@ export type DockerStatus = {
   canonicalPath?: string
   canonicalLink?: string
   canonical: boolean
+  persistent?: boolean
   previousLink?: string
   message?: string
   namespace?: string
