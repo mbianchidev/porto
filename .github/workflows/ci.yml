@@ -614,7 +614,10 @@ jobs:
             echo "::warning::npm registry audit endpoint unavailable; dependency installation completed without reported vulnerabilities."
             exit 0
           fi
-          exit 1
+          # Fail on every high or critical advisory except the unpatched ones scripts/npm-audit-policy.cjs accepts.
+          npm --prefix electron audit --package-lock-only --json > "$audit_log" || true
+          node --test ../scripts/npm-audit-policy.test.cjs
+          node ../scripts/npm-audit-policy.cjs < "$audit_log"
 
       - name: Validate release installers
         if: matrix.node == '26'

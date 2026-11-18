@@ -21,6 +21,16 @@ unused npm download cache. Locked `npm ci` installations, builds, and tests rema
 part of CI and release validation; registry errors and high-severity findings
 still fail the security audit.
 
+When `npm audit` reports high or critical findings, both this audit and the CI
+Electron lockfile audit pass the JSON report to `scripts/npm-audit-policy.cjs`.
+It fails on every advisory except the explicitly accepted ones and prints each
+accepted advisory as a workflow warning. Only advisories with no patched release
+that reach build tooling alone may be accepted. The list currently holds
+picomatch ReDoS `GHSA-fc5q-39xc-vjpf` (every release up to 4.0.7, reached through
+Vite and electron-builder's node-gyp); remove it once picomatch ships a fix.
+npm's suggested `audit fix --force` would downgrade Vite and electron-builder
+across major versions instead.
+
 The maintained official `golang.org/x/crypto` module is required for SSH.
 GO-2026-5932 covers its retired OpenPGP packages, which remain in the latest
 stable release, `v0.58.0`; Porto imports none of those packages. The crypto
@@ -645,7 +655,8 @@ than creating one for every record.
 The desktop lockfile keeps patched `brace-expansion` releases in both dependency
 branches, `fast-uri` 3.1.9, and node-gyp's `undici` 6.29.1. Electron uses
 45.0.0; development-client fixtures use patched `undici`
-8.12.3. Dependency audits remain enforced without advisory suppressions.
+8.12.3. Dependency audits remain enforced; only the unpatched advisories listed in
+`scripts/npm-audit-policy.cjs` are accepted.
 A downloader override makes `app-builder-lib` use the same fetch-based
 `@electron/get` 5.x downloader as Electron and Electron Packager, removing its
 legacy `got`/`http-cache-semantics` dependency chain without downgrading
@@ -959,7 +970,8 @@ a minimatch advisory; a peer-inclusive Squirrel build needs separate dependency
 modernization, not a forced override that breaks glob's internal matcher API.
 Optional protobuf/native SSH installation scripts are explicitly disabled;
 these tests use Unix sockets/named pipes, not SSH clients. Dependency installation
-and audit are required before these jobs run, without advisory suppressions.
+and audit are required before these jobs run; only unpatched advisories listed in
+`scripts/npm-audit-policy.cjs` are accepted.
 
 The Windows installer job also checksum-verifies and installs the official
 WinFsp 2.1 driver on its disposable runner, then tests the **installed**

@@ -54,4 +54,13 @@ jobs:
           package-manager-cache: false
 
       - name: Audit dependencies
-        run: npm audit --package-lock-only --audit-level=high
+        # Fails on every high or critical advisory except the unpatched ones scripts/npm-audit-policy.cjs accepts.
+        run: |
+          set -o pipefail
+          audit_log="$(mktemp)"
+          trap 'rm -f "$audit_log"' EXIT
+          if npm audit --package-lock-only --audit-level=high; then
+            exit 0
+          fi
+          npm audit --package-lock-only --json > "$audit_log" || true
+          node ../scripts/npm-audit-policy.cjs < "$audit_log"
