@@ -46,6 +46,24 @@ func TestParseLogArgsAllowsOptionsBeforeAndAfterProject(t *testing.T) {
 	}
 }
 
+func TestProjectActionPathAcceptsFlagsAroundProject(t *testing.T) {
+	for _, args := range [][]string{
+		{"--no-pull", "--no-cache", "api"},
+		{"api", "--no-cache", "--no-pull"},
+	} {
+		path, err := projectActionPath("restart", args)
+		if err != nil {
+			t.Fatalf("parse %v: %v", args, err)
+		}
+		if path != "/api/projects/api/restart?noCache=1&noPull=1" {
+			t.Fatalf("parse %v = %q", args, path)
+		}
+	}
+	if _, err := projectActionPath("stop", []string{"api", "--no-cache"}); err == nil || !strings.Contains(err.Error(), "only to porto start and porto restart") {
+		t.Fatalf("stop --no-cache error = %v", err)
+	}
+}
+
 func TestParseLogArgsClear(t *testing.T) {
 	project, stream, _, clear, err := parseLogArgs([]string{"app", "--clear", "--stream", "stdout"})
 	if err != nil {

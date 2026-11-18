@@ -100,8 +100,8 @@ otherwise the CLI reads a different state database.
 porto scan --depth 3 ~/code          # flags go BEFORE the roots
 porto list                           # JSON array of projects
 porto start --no-pull <project>
+porto restart --no-pull --no-cache <project>   # forced uncached image rebuild
 porto logs <project> --stream all -n 200
-porto restart <project>
 porto stop <project>
 ```
 
@@ -111,6 +111,12 @@ porto stop <project>
 - `porto start` runs `git pull --ff-only` on the active branch first. Pass
   `--no-pull` when the user has local work so Porto doesn't move their branch.
   Dependency setup still runs.
+- Compose projects run `docker compose build --no-cache` on every start and
+  restart. `--no-cache` forces the same rebuild for Make projects that wrap a
+  root Compose file and is rejected for other projects. Use `porto start` or
+  `porto restart` for clean rebuilds instead of calling `docker compose`
+  directly, unless the checkout isn't a registered project (for example a
+  worktree that `porto list` doesn't show).
 - A project stays `starting` through dependency setup until
   `http://127.0.0.1:<port>/` returns HTTP 200, and becomes `crashed` if setup or
   the app fails. Check `porto logs` before reporting success.

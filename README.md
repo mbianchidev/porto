@@ -131,7 +131,7 @@ porto logs api --stream stdout -n 100
 porto stop api
 ```
 
-Replace `api` with a project name shown by `porto list`. Startup normally runs `git pull --ff-only`; use `porto start --no-pull api` to skip it. Porto then installs the project's dependencies before launching it. Setup output appears in the process logs; missing tools or failed installs stop startup. See [dependency setup](docs/project-management.md#dependency-setup) for supported package managers and build steps.
+Replace `api` with a project name shown by `porto list`. Startup normally runs `git pull --ff-only`; use `porto start --no-pull api` to skip it. Porto then installs the project's dependencies before launching it; Compose projects rebuild their images without cache, and `--no-cache` forces the same for Make projects that wrap Compose. Setup output appears in the process logs; missing tools or failed installs stop startup. See [dependency setup](docs/project-management.md#dependency-setup) for supported package managers and build steps.
 
 Automatic port assignment starts at `41000`; Compose-published ports are also supported. Porto marks an application ready when its HTTP endpoint returns 200. Pin a port with `porto port api 8080`. Running projects are also available at `http://<project>.porto.localhost:37680` without DNS setup.
 

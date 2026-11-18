@@ -8,7 +8,8 @@ Porto discovers runnable projects, chooses a setup and run strategy, and keeps t
 porto scan [roots...] --depth 3 [--ignore .git,vendor,dist,target]
 porto list
 porto daemon start|status
-porto start|stop|restart|kill <project> [--no-pull]
+porto start|restart <project> [--no-pull] [--no-cache]
+porto stop|kill <project>
 porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
 porto cert path|generate|trust|untrust|status
 porto https install|status|uninstall
@@ -63,10 +64,18 @@ disconnects. Stop a project before using this standalone action.
 The setup strategy follows the detected project type:
 
 - Make projects use the first available `install`, `setup`, `bootstrap`, `deps`, or `dependencies` target, falling back to a supported language manifest when no setup target exists.
-- Compose projects run `docker compose build --no-cache`.
+- Compose projects run `docker compose build --no-cache` on every start and restart.
 - Node projects use pnpm, Yarn, Bun, or npm according to their lockfile, include development dependencies needed by tools such as Vite, and run the build script when Porto detected a production `start` script. Installer processes use `NODE_ENV=development`; build and application processes retain their original environment. npm explicitly includes dev dependencies even if `.npmrc` omits them.
 - Python projects use uv, Poetry, Pipenv, or a project-local `.venv` with pip. Python runs through the selected manager's environment; local `.venv` executables are also on `PATH` for Make-based Python projects.
 - Go and Rust projects run `go mod download` or `cargo fetch`.
+
+Pass `--no-cache` to `porto start` or `porto restart` to force an uncached image
+rebuild for Make projects that wrap a root Compose file. Porto runs the Make
+setup target, if any, then `docker compose -f <file> build --no-cache` under the
+same Compose project name the run target uses. Compose projects already rebuild
+without cache, so the flag only confirms that behavior. Porto rejects
+`--no-cache` for other strategies and for recorded application-delivery
+definitions, and validates a restart before stopping the project.
 
 Porto checks its native Docker and BuildKit backend before Compose setup and
 startup, and points Compose at the Porto socket automatically.

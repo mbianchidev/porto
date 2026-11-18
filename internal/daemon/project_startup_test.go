@@ -4,17 +4,20 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/mbianchidev/porto/internal/app"
+	"github.com/mbianchidev/porto/internal/compose"
 	projectsetup "github.com/mbianchidev/porto/internal/setup"
 )
 
@@ -459,6 +462,96 @@ func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
 	}
 	if got := strings.TrimSpace(string(environment)); got != want {
 		t.Fatalf("Python VIRTUAL_ENV = %q, want %q", got, want)
+	}
+}
+
+func TestStartProjectNoCacheRebuildsComposeWrappedByMake(t *testing.T) {
+	skipWindowsShellHelper(t)
+	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
+	composeFile := "services: {}\n"
+	tests := []struct {
+		name    string
+		files   map[string]string
+		noCache bool
+		want    []string
+	}{
+		{"setup target then rebuild", map[string]string{"Makefile": "deps:\n\t@echo ready\n", "compose.yaml": composeFile}, true, []string{"make deps", "docker compose -f compose.yaml build --no-cache"}},
+		{"rebuild without setup target", map[string]string{"Makefile": "dev:\n\tdocker compose up --build\n", "compose.yaml": composeFile}, true, []string{"docker compose -f compose.yaml build --no-cache"}},
+		{"default keeps make setup only", map[string]string{"Makefile": "deps:\n\t@echo ready\n", "compose.yaml": composeFile}, false, []string{"make deps"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			directory := t.TempDir()
+			writeStartupFiles(t, directory, tt.files)
+			st, project := testProject(t, app.Project{Name: "synthetic", Path: directory, Strategy: "make", Command: daemonHelperCommand()})
+			server := New(st, nil)
+			server.compose = &fakeComposeCleanup{}
+			var mu sync.Mutex
+			var got []string
+			server.setupRunner = projectSetupRunnerFunc(func(_ context.Context, setupProject app.Project, _ func(string, string) error) (projectsetup.Result, error) {
+				if compose.ProjectName(setupProject) != compose.ProjectName(project) {
+					return projectsetup.Result{}, errors.New("setup used a different Compose project name than the launch")
+				}
+				commands, err := projectsetup.Plan(setupProject)
+				mu.Lock()
+				defer mu.Unlock()
+				for _, command := range commands {
+					got = append(got, command.String())
+				}
+				return projectsetup.Result{}, err
+			})
+			t.Cleanup(func() {
+				if _, err := server.stopProject(context.Background(), project.Name, true); err != nil {
+					t.Errorf("stop project: %v", err)
+				}
+			})
+
+			if _, err := server.startProjectWithOptions(context.Background(), project.Name, startOptions{noPull: true, noCache: tt.noCache}); err != nil {
+				t.Fatal(err)
+			}
+			waitForStartupSetup(t, server, project.ID)
+			mu.Lock()
+			defer mu.Unlock()
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("setup commands = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestNoCacheRejectsProjectsWithoutComposeBeforeRestarting(t *testing.T) {
+	skipWindowsShellHelper(t)
+	t.Setenv("PORTO_DAEMON_HELPER_PROCESS", "1")
+	st, project := testProject(t, app.Project{Name: "synthetic", Path: t.TempDir(), Strategy: "package", Command: daemonHelperCommand()})
+	server := New(st, nil)
+	t.Cleanup(func() {
+		if _, err := server.stopProject(context.Background(), project.Name, true); err != nil {
+			t.Errorf("stop project: %v", err)
+		}
+	})
+	running, err := server.startProject(context.Background(), project.Name, true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if running.PID == 0 {
+		t.Fatalf("project did not launch: %+v", running)
+	}
+
+	for action, handler := range map[string]http.HandlerFunc{"start": server.start, "restart": server.restart} {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/api/projects/synthetic/"+action+"?noPull=1&noCache=1", nil)
+		request.SetPathValue("name", project.Name)
+		handler(response, request)
+		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "--no-cache applies only") {
+			t.Fatalf("%s --no-cache = %d %q, want a bad request", action, response.Code, response.Body.String())
+		}
+	}
+	current, err := st.GetProjectByID(context.Background(), project.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if current.PID != running.PID {
+		t.Fatalf("rejected restart replaced the running project: PID %d, want %d", current.PID, running.PID)
 	}
 }
 

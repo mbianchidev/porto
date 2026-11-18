@@ -361,22 +361,41 @@ func list(st *store.Store) error {
 }
 
 func projectAction(action string, args []string) error {
-	fs := flag.NewFlagSet(action, flag.ContinueOnError)
-	noPull := fs.Bool("no-pull", false, "skip git pull")
-	if err := fs.Parse(args); err != nil {
+	path, err := projectActionPath(action, args)
+	if err != nil {
 		return err
-	}
-	if fs.NArg() != 1 {
-		return fmt.Errorf("usage: porto %s <project>", action)
-	}
-	path := fmt.Sprintf("/api/projects/%s/%s", fs.Arg(0), action)
-	if *noPull {
-		path += "?noPull=1"
 	}
 	if !daemonUp() {
 		return fmt.Errorf("daemon is not running; start it with 'porto daemon start'")
 	}
 	return api("POST", path, nil, os.Stdout)
+}
+
+func projectActionPath(action string, args []string) (string, error) {
+	fs := flag.NewFlagSet(action, flag.ContinueOnError)
+	noPull := fs.Bool("no-pull", false, "skip git pull")
+	noCache := fs.Bool("no-cache", false, "rebuild Compose images without the build cache (start and restart only)")
+	if err := parseInterspersed(fs, args, map[string]bool{"no-pull": true, "no-cache": true}); err != nil {
+		return "", err
+	}
+	if fs.NArg() != 1 {
+		return "", fmt.Errorf("usage: porto %s <project>", action)
+	}
+	if *noCache && action != "start" && action != "restart" {
+		return "", fmt.Errorf("--no-cache applies only to porto start and porto restart")
+	}
+	path := fmt.Sprintf("/api/projects/%s/%s", fs.Arg(0), action)
+	query := url.Values{}
+	if *noPull {
+		query.Set("noPull", "1")
+	}
+	if *noCache {
+		query.Set("noCache", "1")
+	}
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	return path, nil
 }
 
 func logs(st *store.Store, args []string) error {
@@ -759,7 +778,8 @@ Commands:
   porto agent serve|connect|forget
   porto extension list|install|enable|disable|invoke|cancel|remove|pack|keygen
   porto extension catalog|catalog-sign|catalog-import|catalog-install|trust|revoke-publisher|secret
-  porto start|stop|restart|kill <project> [--no-pull]
+  porto start|restart <project> [--no-pull] [--no-cache]
+  porto stop|kill <project>
   porto logs <project> [-n 200] [--stream all|stdout|stderr] [--clear]
   porto cert path|generate|trust|untrust|status
   porto https install|status|uninstall
