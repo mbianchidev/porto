@@ -803,7 +803,7 @@ func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...str
 const limaRuntimeHelperScript = `namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`
 
 // rootlessKitExec runs "$@" inside RootlessKit's user, mount and network namespaces when rootless
-// containerd is active, because its CNI bridges, IPAM state and task FIFO paths exist only there.
+// containerd is active, because its CNI bridges and IPAM state exist only there.
 const rootlessKitExec = `state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containerd-rootless"
 if [ -r "$state/child_pid" ]; then
   exec nsenter -U --preserve-credentials -m -n -t "$(cat "$state/child_pid")" -F -- "$@"
@@ -822,7 +822,8 @@ func (r *grpcContainerRuntime) runtimeHelperCommand(args ...string) (runtimes.Co
 	if r.lima != "" {
 		command.Name = "limactl"
 		script := limaRuntimeHelperScript
-		if strings.HasPrefix(args[0], "cni-") {
+		switch args[0] {
+		case "cni-connect", "cni-disconnect", "cni-check":
 			script = limaRootlessCNIHelperScript
 		}
 		arguments := []string{"sh", "-c", script, "porto-runtime-helper", r.namespace}

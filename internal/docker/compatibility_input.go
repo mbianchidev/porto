@@ -116,10 +116,18 @@ func (r *grpcContainerRuntime) waitForTaskInput(ctx context.Context, id string) 
 	}
 }
 
-// taskInputWriterScript copies its input into the task's stdin FIFO, whose reported path is valid
-// inside RootlessKit's mount namespace for rootless containerd.
-const taskInputWriterScript = `set -- sh -c 'exec cat > "$1"' porto-task-input "$1"
-` + rootlessKitExec
+// taskInputWriterScript copies its input into the task's stdin FIFO. Rootless containerd reports
+// it as seen from RootlessKit's mount namespace, where /run/containerd is the host's
+// $XDG_RUNTIME_DIR/containerd, so the host path is used when it exists; entering RootlessKit's
+// namespaces isn't permitted on every guest.
+const taskInputWriterScript = `fifo="$1"
+case "$fifo" in
+/run/containerd/*)
+  host="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containerd/${fifo#/run/containerd/}"
+  if [ -p "$host" ]; then fifo="$host"; fi
+  ;;
+esac
+exec cat > "$fifo"`
 
 func (r *grpcContainerRuntime) writeTaskInput(ctx context.Context, fifo string, input io.Reader) error {
 	runner, ok := r.runner.(runtimes.ProcessRunner)

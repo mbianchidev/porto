@@ -6,7 +6,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -56,8 +58,48 @@ func TestRootlessKitScriptsEnterRootlessKitNamespaces(t *testing.T) {
 	if got := run(limaRuntimeHelperScript); got != "helper ns=default cni-connect --network backend" {
 		t.Fatalf("non-CNI helper entered RootlessKit: %q", got)
 	}
-	writer := "nsenter ns= -U --preserve-credentials -m -n -t 4242 -F -- sh -c exec cat > \"$1\" porto-task-input /run/containerd/fifo/1/demo-stdin"
-	if got := run(taskInputWriterScript, "/run/containerd/fifo/1/demo-stdin"); got != writer {
-		t.Fatalf("rootless task input writer = %q, want %q", got, writer)
+	if got := run(limaRuntimeHelperScript, "default", "cni-identities", "backend"); got != "helper ns=default cni-identities backend" {
+		t.Fatalf("CNI identity reads entered RootlessKit: %q", got)
+	}
+}
+
+func TestTaskInputWriterUsesTheHostPathOfRootlessFIFOs(t *testing.T) {
+	runtimeDir := t.TempDir()
+	hostFIFO := filepath.Join(runtimeDir, "containerd", "fifo", "1", "demo-stdin")
+	if err := os.MkdirAll(filepath.Dir(hostFIFO), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(hostFIFO, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	received := make(chan string, 1)
+	go func() {
+		data, _ := os.ReadFile(hostFIFO)
+		received <- string(data)
+	}()
+	command := exec.Command("sh", "-c", taskInputWriterScript, "porto-task-input", "/run/containerd/fifo/1/demo-stdin")
+	command.Env = append(os.Environ(), "XDG_RUNTIME_DIR="+runtimeDir)
+	command.Stdin = strings.NewReader("rootless input")
+	if output, err := command.CombinedOutput(); err != nil {
+		t.Fatalf("task input writer failed: %v: %s", err, output)
+	}
+	if got := <-received; got != "rootless input" {
+		t.Fatalf("host FIFO received %q", got)
+	}
+}
+
+func TestOnlyCNIMutationsEnterRootlessKit(t *testing.T) {
+	runtime := &grpcContainerRuntime{lima: "porto-engine", namespace: "default"}
+	for command, want := range map[string]string{
+		"cni-connect": limaRootlessCNIHelperScript, "cni-disconnect": limaRootlessCNIHelperScript, "cni-check": limaRootlessCNIHelperScript,
+		"cni-identities": limaRuntimeHelperScript, "task-metrics": limaRuntimeHelperScript,
+	} {
+		helper, err := runtime.runtimeHelperCommand(command)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !slices.Contains(helper.Args, want) {
+			t.Fatalf("%s helper args = %q, want script %q", command, helper.Args, want)
+		}
 	}
 }
