@@ -98,7 +98,6 @@ func TestForwardTaskInputFeedsNewTaskAndClosesItsInput(t *testing.T) {
 type inputForwardingOperations struct {
 	execOperations
 	received chan string
-	closed   chan struct{}
 }
 
 func (o *inputForwardingOperations) ForwardTaskInput(_ context.Context, id string, input io.Reader) error {
@@ -107,15 +106,13 @@ func (o *inputForwardingOperations) ForwardTaskInput(_ context.Context, id strin
 	return err
 }
 
-func (o *inputForwardingOperations) Close() error {
-	close(o.closed)
-	return nil
-}
-
 func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
-	operations := &inputForwardingOperations{received: make(chan string, 1), closed: make(chan struct{})}
+	operations := &inputForwardingOperations{received: make(chan string, 1)}
 	manager := New(&fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}})
-	manager.execConnector = func(context.Context) (execOperations, error) { return operations, nil }
+	manager.execConnector = func(context.Context) (execOperations, error) {
+		// Production lends the inventory's runtime through this wrapper.
+		return borrowedExecOperations{operations}, nil
+	}
 	attachedErr := errors.New("container exited with code 3")
 	started := newFakeProcess(func(input []byte) ([]byte, []byte, error) {
 		if len(input) != 0 {
@@ -146,10 +143,5 @@ func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
 	}
 	if err := process.Wait(); !errors.Is(err, attachedErr) {
 		t.Fatalf("Wait = %v, want the attached start's exit", err)
-	}
-	select {
-	case <-operations.closed:
-	case <-time.After(5 * time.Second):
-		t.Fatal("containerd connection was not released")
 	}
 }

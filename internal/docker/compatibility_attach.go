@@ -39,7 +39,7 @@ func (m *Manager) taskOutputFollowsLogs(ctx context.Context, id string) bool {
 		return false
 	}
 	defer operations.Close()
-	inspector, ok := operations.(taskOutputInspector)
+	inspector, ok := execOperationsAs[taskOutputInspector](operations)
 	if !ok {
 		return false
 	}

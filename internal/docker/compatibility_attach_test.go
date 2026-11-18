@@ -35,7 +35,8 @@ func TestStartAttachFollowsLogsOnlyForLogURITasks(t *testing.T) {
 	manager := New(runner)
 	attach := func(output string, stdin bool) error {
 		manager.execConnector = func(context.Context) (execOperations, error) {
-			return taskOutputOperations{output: output}, nil
+			// Production lends the inventory's runtime through this wrapper.
+			return borrowedExecOperations{taskOutputOperations{output: output}}, nil
 		}
 		process, err := manager.StartAttach(context.Background(), "demo", stdin)
 		if err == nil {

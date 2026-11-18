@@ -197,6 +197,16 @@ func (p *compatibilityInputProcess) Wait() error {
 	return err
 }
 
+// execOperationsAs finds an optional capability behind the wrapper that lends the inventory's
+// live runtime, whose embedded interface would otherwise hide every extra method.
+func execOperationsAs[T any](operations execOperations) (T, bool) {
+	if borrowed, ok := operations.(borrowedExecOperations); ok {
+		operations = borrowed.execOperations
+	}
+	capability, ok := operations.(T)
+	return capability, ok
+}
+
 // forwardCompatibilityInput keeps the attached start's output and exit status, and replaces its
 // ignored stdin with a writer that reaches the task. Without a containerd connection it returns
 // the original process, which keeps output working but cannot deliver input.
@@ -209,7 +219,7 @@ func (m *Manager) forwardCompatibilityInput(ctx context.Context, id string, proc
 		slog.Warn("Container input forwarding is unavailable", "container", id, "error", err)
 		return process
 	}
-	forwarder, ok := operations.(compatibilityInputForwarder)
+	forwarder, ok := execOperationsAs[compatibilityInputForwarder](operations)
 	if !ok {
 		_ = operations.Close()
 		slog.Warn("Container input forwarding is unsupported by the containerd connection", "container", id)
