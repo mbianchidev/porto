@@ -79,7 +79,13 @@ func dockerInspectForVersion(value json.RawMessage, version string, image bool) 
 			delete(document, "Container")
 			delete(document, "ContainerConfig")
 		}
-	} else if config, ok := document["Config"].(map[string]any); ok {
+	} else {
+		// Docker names containers "/name"; clients such as Compose strip that first character.
+		if name, ok := document["Name"].(string); ok && name != "" && !strings.HasPrefix(name, "/") {
+			document["Name"] = "/" + name
+		}
+	}
+	if config, ok := document["Config"].(map[string]any); ok && !image {
 		if labels, ok := config["Labels"].(map[string]any); ok {
 			if labels[portoTTYLabel] == "true" {
 				config["Tty"] = true

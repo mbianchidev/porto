@@ -1525,6 +1525,18 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 			}()
 		}
 	}
+	if settled := lifecycleSettled(action); settled != nil {
+		if inventory := m.activeContainerInventory(); inventory != nil && !m.IsNativeWindows() {
+			if found, lookupErr := findSnapshotContainer(inventory.snapshotValue(), id); lookupErr == nil {
+				before := *found
+				defer func() {
+					if err == nil {
+						m.confirmLifecycleInventory(ctx, before, action, settled)
+					}
+				}()
+			}
+		}
+	}
 	if action == "start" || action == "restart" || action == "unpause" {
 		var selection acceleration.Selection
 		selection, err = m.validateExistingArchitecture(ctx, id)
