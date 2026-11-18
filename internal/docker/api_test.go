@@ -1515,13 +1515,14 @@ func TestDockerCLIContainerArchiveUploadAndDownload(t *testing.T) {
 	runner := &fakeRunner{outputs: map[string][]byte{}, errors: map[string]error{}}
 	runner.handler = func(command runtimes.Command) ([]byte, error) {
 		args := command.Args
-		if len(args) >= 7 && args[0] == "exec" && args[1] == "demo" && args[2] == "stat" {
+		// BusyBox stat lacks --printf, so the probe must use -c with numeric fields only.
+		if len(args) >= 7 && args[0] == "exec" && args[1] == "demo" && args[2] == "stat" && args[3] == "-c" {
 			target := args[len(args)-1]
 			switch target {
 			case "/tmp":
-				return []byte("0\x0041ed\x001700000000\x00"), nil
+				return []byte("0 41ed 1700000000\n"), nil
 			case "/tmp/download.txt":
-				return []byte("15\x0081a4\x001700000000\x00"), nil
+				return []byte("15 81a4 1700000000\n"), nil
 			}
 		}
 		return nil, fmt.Errorf("unexpected command: %+v", command)

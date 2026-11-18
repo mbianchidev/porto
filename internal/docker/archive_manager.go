@@ -13,19 +13,20 @@ import (
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
 
-const containerStatFormat = "%s\\x00%f\\x00%Y\\x00"
+// containerStatFormat holds only numeric fields so GNU and BusyBox stat -c output parse alike.
+const containerStatFormat = "%s %f %Y"
 
 func (m *Manager) ContainerPathStat(ctx context.Context, id, containerPath string) (PathStat, error) {
 	if err := validateContainerPath(containerPath); err != nil {
 		return PathStat{}, err
 	}
 	output, err := m.ExecContainer(ctx, id, []string{
-		"stat", "--printf", containerStatFormat, "--", containerPath,
+		"stat", "-c", containerStatFormat, "--", containerPath,
 	}, nil)
 	if err != nil {
 		return PathStat{}, err
 	}
-	fields := strings.Split(strings.TrimSuffix(string(output), "\x00"), "\x00")
+	fields := strings.Fields(string(output))
 	if len(fields) != 3 {
 		return PathStat{}, errors.New("container stat returned an invalid response")
 	}

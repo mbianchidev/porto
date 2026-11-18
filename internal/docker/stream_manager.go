@@ -143,6 +143,9 @@ func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin b
 	}
 	if err == nil {
 		m.invalidateContainerInventory()
+		if stdin && len(console) == 0 {
+			process = m.forwardCompatibilityInput(ctx, id, process)
+		}
 	}
 	return process, err
 }

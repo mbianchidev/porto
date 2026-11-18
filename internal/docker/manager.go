@@ -965,6 +965,10 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 			return "", fmt.Errorf("invalid exposed container port %q: %w", port, err)
 		}
 	}
+	request.Publish, err = allocateDynamicHostPorts(request.Publish)
+	if err != nil {
+		return "", err
+	}
 	if request.PublishAll {
 		if err := m.publishAllContainerPorts(ctx, &request); err != nil {
 			return "", err

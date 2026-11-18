@@ -253,6 +253,50 @@ func TestDockerRegistryLoginVerifiesCredentialsWithoutPersistingThem(t *testing.
 	}
 }
 
+func TestDockerRegistryLoginFallsBackToHTTPOnlyForLoopbackRegistries(t *testing.T) {
+	handler := NewAPI(New(&fakeRunner{}), "")
+	var destinations []string
+	handler.registryClient = &http.Client{Transport: httpsRegistryTransport{registryTestTransport(func(request *http.Request) (*http.Response, error) {
+		destinations = append(destinations, request.URL.String())
+		if request.URL.Scheme == "https" {
+			return nil, errors.New("tls: first record does not look like a TLS handshake")
+		}
+		response := &http.Response{Request: request, Header: make(http.Header), Body: io.NopCloser(strings.NewReader(""))}
+		if username, password, ok := request.BasicAuth(); ok && username == "synthetic-user" && password == "synthetic-token" {
+			response.StatusCode = 200
+		} else {
+			response.StatusCode = 401
+			response.Header.Set("WWW-Authenticate", `Basic realm="synthetic"`)
+		}
+		return response, nil
+	})}}
+	login := func(server string) *httptest.ResponseRecorder {
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, httptest.NewRequest("POST", "/v1.47/auth", strings.NewReader(
+			`{"username":"synthetic-user","password":"synthetic-token","serveraddress":"`+server+`"}`)))
+		return response
+	}
+
+	for _, server := range []string{"localhost:5000", "127.0.0.1:5000"} {
+		destinations = nil
+		if response := login(server); response.Code != 200 {
+			t.Fatalf("%s login = %d: %s", server, response.Code, response.Body.String())
+		}
+		if destinations[0] != "https://"+server+"/v2/" || destinations[len(destinations)-1] != "http://"+server+"/v2/" {
+			t.Fatalf("%s login destinations = %q", server, destinations)
+		}
+	}
+	destinations = nil
+	if response := login("registry.example.test"); response.Code == 200 {
+		t.Fatal("a remote registry login succeeded without HTTPS")
+	}
+	for _, destination := range destinations {
+		if strings.HasPrefix(destination, "http://") {
+			t.Fatalf("remote registry credentials were sent over plain HTTP: %q", destinations)
+		}
+	}
+}
+
 func TestRegistryAuthenticationRefusesPlaintextTokenRealms(t *testing.T) {
 	called := false
 	transport := httpsRegistryTransport{registryTestTransport(func(*http.Request) (*http.Response, error) {

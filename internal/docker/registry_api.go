@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -45,11 +46,28 @@ type httpsRegistryTransport struct {
 }
 
 func (transport httpsRegistryTransport) RoundTrip(request *http.Request) (*http.Response, error) {
-	if request.URL.Scheme != "https" || request.URL.User != nil {
+	secure := request.URL.Scheme == "https" || (request.URL.Scheme == "http" && loopbackRegistry(request.URL.Host))
+	if !secure || request.URL.User != nil {
 		return nil, errors.New("registry authentication requires HTTPS without embedded URL credentials")
 	}
 	return transport.RoundTripper.RoundTrip(request)
 }
+
+// loopbackRegistry matches Docker's default insecure registries, which may fall back to plain HTTP.
+func loopbackRegistry(hostPort string) bool {
+	host := hostPort
+	if split, _, err := net.SplitHostPort(hostPort); err == nil {
+		host = split
+	}
+	host = strings.Trim(host, "[]")
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
+var errRegistryAuthorization = errors.New("registry authentication failed")
 
 func (a *API) registryLogin(w http.ResponseWriter, r *http.Request) {
 	var auth RegistryAuth
@@ -96,19 +114,29 @@ func (a *API) registryLogin(w http.ResponseWriter, r *http.Request) {
 			return username, password, nil
 		}),
 	)
-	for attempt := 0; attempt < 3; attempt++ {
-		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, "https://"+host+"/v2/", nil)
+	send := func(scheme string) (*http.Response, error) {
+		request, err := http.NewRequestWithContext(r.Context(), http.MethodGet, scheme+"://"+host+"/v2/", nil)
 		if err != nil {
-			writeDockerError(w, err)
-			return
+			return nil, err
 		}
 		if auth.RegistryToken != "" {
 			request.Header.Set("Authorization", "Bearer "+auth.RegistryToken)
 		} else if err := authorizer.Authorize(r.Context(), request); err != nil {
-			writeDockerJSON(w, http.StatusUnauthorized, map[string]string{"message": "registry authentication failed"})
+			return nil, errRegistryAuthorization
+		}
+		return client.Do(request)
+	}
+	scheme := "https"
+	for attempt := 0; attempt < 3; attempt++ {
+		response, err := send(scheme)
+		if err != nil && scheme == "https" && loopbackRegistry(host) && !errors.Is(err, errRegistryAuthorization) {
+			scheme = "http"
+			response, err = send(scheme)
+		}
+		if errors.Is(err, errRegistryAuthorization) {
+			writeDockerJSON(w, http.StatusUnauthorized, map[string]string{"message": errRegistryAuthorization.Error()})
 			return
 		}
-		response, err := client.Do(request)
 		if err != nil {
 			writeDockerError(w, fmt.Errorf("contact registry: %w", err))
 			return
@@ -131,7 +159,7 @@ func (a *API) registryLogin(w http.ResponseWriter, r *http.Request) {
 			break
 		}
 	}
-	writeDockerJSON(w, http.StatusUnauthorized, map[string]string{"message": "registry authentication failed"})
+	writeDockerJSON(w, http.StatusUnauthorized, map[string]string{"message": errRegistryAuthorization.Error()})
 }
 
 func (a *API) registrySearch(w http.ResponseWriter, r *http.Request) {
