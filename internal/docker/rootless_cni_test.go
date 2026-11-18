@@ -10,7 +10,8 @@ import (
 	"testing"
 )
 
-func TestRootlessCNIHelperEntersRootlessKitNamespaces(t *testing.T) {
+func TestRootlessKitScriptsEnterRootlessKitNamespaces(t *testing.T) {
+	t.Setenv("CONTAINERD_NAMESPACE", "")
 	directory := t.TempDir()
 	home, bin, runtimeDir := filepath.Join(directory, "home"), filepath.Join(directory, "bin"), filepath.Join(directory, "run")
 	helper := filepath.Join(home, ".local", "bin", "porto-runtime-helper")
@@ -25,9 +26,12 @@ func TestRootlessCNIHelperEntersRootlessKitNamespaces(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	run := func(script string) string {
+	run := func(script string, args ...string) string {
 		t.Helper()
-		command := exec.Command("sh", "-c", script, "porto-runtime-helper", "default", "cni-connect", "--network", "backend")
+		if len(args) == 0 {
+			args = []string{"default", "cni-connect", "--network", "backend"}
+		}
+		command := exec.Command("sh", append([]string{"-c", script, "porto-runtime-helper"}, args...)...)
 		command.Env = append(os.Environ(), "HOME="+home, "XDG_RUNTIME_DIR="+runtimeDir, "PATH="+bin+":/usr/bin:/bin")
 		output, err := command.CombinedOutput()
 		if err != nil {
@@ -51,5 +55,9 @@ func TestRootlessCNIHelperEntersRootlessKitNamespaces(t *testing.T) {
 	}
 	if got := run(limaRuntimeHelperScript); got != "helper ns=default cni-connect --network backend" {
 		t.Fatalf("non-CNI helper entered RootlessKit: %q", got)
+	}
+	writer := "nsenter ns= -U --preserve-credentials -m -n -t 4242 -F -- sh -c exec cat > \"$1\" porto-task-input /run/containerd/fifo/1/demo-stdin"
+	if got := run(taskInputWriterScript, "/run/containerd/fifo/1/demo-stdin"); got != writer {
+		t.Fatalf("rootless task input writer = %q, want %q", got, writer)
 	}
 }

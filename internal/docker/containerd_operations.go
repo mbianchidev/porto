@@ -802,15 +802,17 @@ func (r *grpcContainerRuntime) runRuntimeHelper(ctx context.Context, args ...str
 
 const limaRuntimeHelperScript = `namespace="$1"; shift; exec env CONTAINERD_NAMESPACE="$namespace" "$HOME/.local/bin/porto-runtime-helper" "$@"`
 
-// Rootless containerd keeps its CNI bridges and IPAM state inside RootlessKit's user, mount and
-// network namespaces; outside them CNI cannot create or find the bridge of a running container.
-const limaRootlessCNIHelperScript = `namespace="$1"; shift
-helper="$HOME/.local/bin/porto-runtime-helper"
-state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containerd-rootless"
+// rootlessKitExec runs "$@" inside RootlessKit's user, mount and network namespaces when rootless
+// containerd is active, because its CNI bridges, IPAM state and task FIFO paths exist only there.
+const rootlessKitExec = `state="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/containerd-rootless"
 if [ -r "$state/child_pid" ]; then
-  exec env CONTAINERD_NAMESPACE="$namespace" nsenter -U --preserve-credentials -m -n -t "$(cat "$state/child_pid")" -F -- "$helper" "$@"
+  exec nsenter -U --preserve-credentials -m -n -t "$(cat "$state/child_pid")" -F -- "$@"
 fi
-exec env CONTAINERD_NAMESPACE="$namespace" "$helper" "$@"`
+exec "$@"`
+
+const limaRootlessCNIHelperScript = `export CONTAINERD_NAMESPACE="$1"; shift
+set -- "$HOME/.local/bin/porto-runtime-helper" "$@"
+` + rootlessKitExec
 
 func (r *grpcContainerRuntime) runtimeHelperCommand(args ...string) (runtimes.Command, error) {
 	if len(args) == 0 || strings.TrimSpace(args[0]) == "" {

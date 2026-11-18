@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"os"
 	"strings"
 	"sync"
 	"time"
@@ -83,20 +82,23 @@ func (r *grpcContainerRuntime) waitForTaskInput(ctx context.Context, id string) 
 	}
 }
 
+// taskInputWriterScript copies its input into the task's stdin FIFO, whose reported path is valid
+// inside RootlessKit's mount namespace for rootless containerd.
+const taskInputWriterScript = `set -- sh -c 'exec cat > "$1"' porto-task-input "$1"
+` + rootlessKitExec
+
 func (r *grpcContainerRuntime) writeTaskInput(ctx context.Context, fifo string, input io.Reader) error {
-	if r.lima == "" {
-		return writeLocalTaskInput(ctx, fifo, input)
-	}
 	runner, ok := r.runner.(runtimes.ProcessRunner)
 	if !ok {
-		return fmt.Errorf("%w: Lima task input requires process streaming", ErrUnsupported)
+		return fmt.Errorf("%w: task input requires process streaming", ErrUnsupported)
 	}
-	writer, err := runner.Start(ctx, runtimes.Command{
-		Name: "limactl",
-		Args: []string{"shell", "--workdir=/", r.lima, "--", "sh", "-c", `exec cat > "$1"`, "porto-task-input", fifo},
-	})
+	command := runtimes.Command{Name: "sh", Args: []string{"-c", taskInputWriterScript, "porto-task-input", fifo}}
+	if r.lima != "" {
+		command = runtimes.Command{Name: "limactl", Args: append([]string{"shell", "--workdir=/", r.lima, "--", command.Name}, command.Args...)}
+	}
+	writer, err := runner.Start(ctx, command)
 	if err != nil {
-		return fmt.Errorf("start Lima task input writer: %w", err)
+		return fmt.Errorf("start task input writer: %w", err)
 	}
 	stopped := make(chan struct{})
 	defer close(stopped)
@@ -120,39 +122,9 @@ func (r *grpcContainerRuntime) writeTaskInput(ctx context.Context, fifo string, 
 	drained.Wait()
 	if waitErr := writer.Wait(); waitErr != nil {
 		detail := strings.TrimSpace(stderr.String())
-		return errors.Join(copyErr, closeErr, fmt.Errorf("Lima task input writer: %w: %s", waitErr, detail))
+		return errors.Join(copyErr, closeErr, fmt.Errorf("task input writer: %w: %s", waitErr, detail))
 	}
 	return errors.Join(copyErr, closeErr)
-}
-
-func writeLocalTaskInput(ctx context.Context, fifo string, input io.Reader) error {
-	type opened struct {
-		file *os.File
-		err  error
-	}
-	result := make(chan opened, 1)
-	// Opening a FIFO blocks until containerd's shim holds its read end.
-	go func() {
-		file, err := os.OpenFile(fifo, os.O_WRONLY, 0)
-		result <- opened{file, err}
-	}()
-	var file *os.File
-	select {
-	case <-ctx.Done():
-		go func() {
-			if late := <-result; late.file != nil {
-				_ = late.file.Close()
-			}
-		}()
-		return ctx.Err()
-	case value := <-result:
-		if value.err != nil {
-			return fmt.Errorf("open task input %q: %w", fifo, value.err)
-		}
-		file = value.file
-	}
-	_, copyErr := io.Copy(file, input)
-	return errors.Join(copyErr, file.Close())
 }
 
 type limitedWriter struct {

@@ -16,6 +16,7 @@ import (
 
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
+	"github.com/mbianchidev/porto/internal/runtimes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -77,7 +78,8 @@ func TestForwardTaskInputFeedsNewTaskAndClosesItsInput(t *testing.T) {
 	previousInterval := compatibilityInputPollInterval
 	compatibilityInputPollInterval = time.Millisecond
 	t.Cleanup(func() { compatibilityInputPollInterval = previousInterval })
-	runtime := &grpcContainerRuntime{tasks: tasks, namespace: "default"}
+	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
+	runtime := &grpcContainerRuntime{tasks: tasks, namespace: "default", runner: runtimes.ExecRunner{}}
 
 	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("piped input\n")); err != nil {
 		t.Fatal(err)
