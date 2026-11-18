@@ -152,6 +152,8 @@ porto docker status                              # engine state
 - `docker context use porto` changes the default context for every terminal.
   Run it only when the user wants Porto as their default engine. Unset
   `DOCKER_HOST` or `DOCKER_CONTEXT` if they override the selected context.
+- Bind mounts work from the home directory and, on macOS, from `/tmp` and
+  `$TMPDIR`; other host paths aren't shared with the engine VM.
 - Docker API 1.41 to 1.47 is supported; Swarm and engine plugins aren't. Check
   the [compatibility matrix](https://github.com/mbianchidev/porto/blob/main/docs/docker-engine.md#docker-api-compatibility-matrix)
   before relying on an unusual feature.
