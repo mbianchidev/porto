@@ -1052,7 +1052,8 @@ func TestDockerCLIAttachUsesHijackedStdio(t *testing.T) {
 		return nil, fmt.Errorf("unexpected command: %+v", command)
 	}
 	runner.starter = func(command runtimes.Command) (runtimes.Process, error) {
-		if len(command.Args) == 0 || command.Args[0] != "attach" || command.Args[len(command.Args)-1] != "demo" {
+		// nerdctl-owned containers attach by following their logs.
+		if len(command.Args) < 3 || command.Args[0] != "logs" || command.Args[1] != "--follow" || command.Args[len(command.Args)-1] != "demo" {
 			return nil, fmt.Errorf("unexpected attach command: %v", command.Args)
 		}
 		return newFakeProcess(func([]byte) ([]byte, []byte, error) {

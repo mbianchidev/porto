@@ -19,10 +19,18 @@ import (
 )
 
 // nerdctl's attached start wires only stdout and stderr for non-terminal containers and never
-// closes the task's stdin, so piped input (docker run -i) never reaches the container nor ends
-// with EOF. Porto feeds the task's stdin FIFO itself and closes it through containerd.
+// closes the task's stdin, and its attach cannot reach a task's input. Porto writes client input
+// into the task's stdin FIFO itself and closes it through containerd when the input ends.
 type compatibilityInputForwarder interface {
-	ForwardTaskInput(ctx context.Context, id string, input io.Reader) error
+	ForwardTaskInput(ctx context.Context, id string, input io.Reader, options taskInputOptions) error
+	TaskInput(ctx context.Context, id string) (string, error)
+}
+
+type taskInputOptions struct {
+	// awaitTask waits for the task an attached start is creating concurrently.
+	awaitTask bool
+	// closeOnEOF ends the container's input with the client's (Docker's StdinOnce).
+	closeOnEOF bool
 }
 
 var (
@@ -32,7 +40,25 @@ var (
 
 const compatibilityInputShutdownTimeout = 10 * time.Second
 
-func (r *grpcContainerRuntime) ForwardTaskInput(ctx context.Context, id string, input io.Reader) error {
+var errTaskInputClosed = fmt.Errorf("%w: the container's input is closed because it was started detached without -i; restart it with 'docker start' or use 'docker exec -i'", ErrUnsupported)
+
+// TaskInput returns the stdin FIFO of a running task, or "" when the task has no input.
+func (r *grpcContainerRuntime) TaskInput(ctx context.Context, id string) (string, error) {
+	if r.tasks == nil {
+		return "", fmt.Errorf("%w: containerd task service is unavailable", ErrUnavailable)
+	}
+	resolved, err := r.resolveContainerID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	process, err := r.getTask(ctx, resolved)
+	if err != nil {
+		return "", containerdOperationError("inspect task input of", resolved, err)
+	}
+	return process.GetStdin(), nil
+}
+
+func (r *grpcContainerRuntime) ForwardTaskInput(ctx context.Context, id string, input io.Reader, options taskInputOptions) error {
 	if r.tasks == nil {
 		return fmt.Errorf("%w: containerd task service is unavailable", ErrUnavailable)
 	}
@@ -40,11 +66,19 @@ func (r *grpcContainerRuntime) ForwardTaskInput(ctx context.Context, id string, 
 	if err != nil {
 		return err
 	}
-	fifo, err := r.waitForTaskInput(ctx, resolved)
+	var fifo string
+	if options.awaitTask {
+		fifo, err = r.waitForTaskInput(ctx, resolved)
+	} else if fifo, err = r.TaskInput(ctx, resolved); err == nil && fifo == "" {
+		err = errTaskInputClosed
+	}
 	if err != nil {
 		return err
 	}
 	writeErr := r.writeTaskInput(ctx, fifo, input)
+	if !options.closeOnEOF {
+		return writeErr
+	}
 	closeContext, cancel := context.WithTimeout(withContainerdNamespace(context.WithoutCancel(ctx), r.namespace), compatibilityInputShutdownTimeout)
 	defer cancel()
 	_, closeErr := r.tasks.CloseIO(closeContext, &tasksapi.CloseIORequest{ContainerID: resolved, Stdin: true})
@@ -179,33 +213,51 @@ func execOperationsAs[T any](operations execOperations) (T, bool) {
 	return capability, ok
 }
 
-// forwardCompatibilityInput keeps the attached start's output and exit status, and replaces its
-// ignored stdin with a writer that reaches the task. Without a containerd connection it returns
-// the original process, which keeps output working but cannot deliver input.
-func (m *Manager) forwardCompatibilityInput(ctx context.Context, id string, process runtimes.Process) runtimes.Process {
+// taskInputForwarder borrows the containerd connection that can reach task input FIFOs.
+func (m *Manager) taskInputForwarder(ctx context.Context) (compatibilityInputForwarder, func() error, error) {
 	if m.execConnector == nil {
-		return process
+		return nil, nil, fmt.Errorf("%w: containerd task input requires a direct containerd connection", ErrUnavailable)
 	}
 	operations, err := m.execConnector(ctx)
+	if err != nil {
+		return nil, nil, err
+	}
+	forwarder, ok := execOperationsAs[compatibilityInputForwarder](operations)
+	if !ok {
+		return nil, nil, errors.Join(fmt.Errorf("%w: the containerd connection cannot reach task input", ErrUnsupported), operations.Close())
+	}
+	return forwarder, operations.Close, nil
+}
+
+// forwardCompatibilityInput keeps the process's output and exit status, and replaces its stdin
+// with a writer that reaches the task. Without a containerd connection it returns the original
+// process, which keeps output working but cannot deliver input.
+func (m *Manager) forwardCompatibilityInput(ctx context.Context, id string, process runtimes.Process, options taskInputOptions) runtimes.Process {
+	forwarder, closeForwarder, err := m.taskInputForwarder(ctx)
 	if err != nil {
 		slog.Warn("Container input forwarding is unavailable", "container", id, "error", err)
 		return process
 	}
-	forwarder, ok := execOperationsAs[compatibilityInputForwarder](operations)
-	if !ok {
-		_ = operations.Close()
-		slog.Warn("Container input forwarding is unsupported by the containerd connection", "container", id)
-		return process
-	}
+	return wrapTaskInput(ctx, id, process, forwarder, closeForwarder, options)
+}
+
+func wrapTaskInput(
+	ctx context.Context,
+	id string,
+	process runtimes.Process,
+	forwarder compatibilityInputForwarder,
+	closeForwarder func() error,
+	options taskInputOptions,
+) runtimes.Process {
 	_ = process.Stdin().Close()
 	reader, writer := io.Pipe()
 	forwardContext, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	wrapped := &compatibilityInputProcess{Process: process, input: writer, cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(wrapped.done)
-		forwardErr := forwarder.ForwardTaskInput(forwardContext, id, reader)
+		forwardErr := forwarder.ForwardTaskInput(forwardContext, id, reader, options)
 		_ = reader.CloseWithError(io.ErrClosedPipe)
-		err := errors.Join(forwardErr, operations.Close())
+		err := errors.Join(forwardErr, closeForwarder())
 		if err != nil && forwardContext.Err() == nil {
 			slog.Error("Container input forwarding failed", "container", id, "error", err)
 		}

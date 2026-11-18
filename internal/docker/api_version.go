@@ -93,7 +93,7 @@ func dockerInspectForVersion(value json.RawMessage, version string, image bool) 
 			if labels[portoOpenStdinLabel] == "true" {
 				config["OpenStdin"] = true
 			}
-			if labels["io.porto.container.stdin-once"] == "true" {
+			if labels[portoStdinOnceLabel] == "true" {
 				config["StdinOnce"] = true
 			}
 			if encoded, ok := labels[portoExposedPortsLabel].(string); ok && encoded != "" {

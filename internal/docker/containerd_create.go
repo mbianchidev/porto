@@ -29,6 +29,7 @@ const (
 	portoLogPathLabel      = "io.porto.container.log-path"
 	portoOpenStdinLabel    = "io.porto.container.open-stdin"
 	portoTTYLabel          = "io.porto.container.tty"
+	portoStdinOnceLabel    = "io.porto.container.stdin-once"
 	portoAutoRemoveLabel   = "io.porto.container.auto-remove"
 	portoNetworkAliasLabel = "io.porto.container.network-aliases"
 	portoNetworkStateLabel = "io.porto.container.network-state"

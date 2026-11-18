@@ -18,6 +18,9 @@ type containerAttachDetails struct {
 	State       containerWaitState
 	ConsoleSize [2]uint
 	OpenStdin   bool
+	StdinOnce   bool
+	// Managed marks Porto's direct runtime; other containers belong to the nerdctl compatibility runtime.
+	Managed bool
 }
 
 type containerStartBaseline struct {
@@ -93,8 +96,14 @@ func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool, consol
 		}
 		return driver.Attach(ctx, id, stdin, false, size)
 	}
-	if len(console) == 0 && m.taskOutputFollowsLogs(ctx, id) {
-		return m.startLogAttach(ctx, id, stdin)
+	if len(console) == 0 {
+		details, err := m.containerAttachDetails(ctx, id)
+		if err != nil {
+			return nil, err
+		}
+		if !details.Managed {
+			return m.startLogAttach(ctx, details, stdin)
+		}
 	}
 	args := []string{"attach"}
 	if !stdin {
@@ -148,7 +157,7 @@ func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin b
 	if err == nil {
 		m.invalidateContainerInventory()
 		if stdin && len(console) == 0 {
-			process = m.forwardCompatibilityInput(ctx, id, process)
+			process = m.forwardCompatibilityInput(ctx, id, process, taskInputOptions{awaitTask: true, closeOnEOF: true})
 		}
 	}
 	return process, err
@@ -164,6 +173,7 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		Config struct {
 			TTY       bool
 			OpenStdin bool
+			StdinOnce bool
 			Labels    map[string]string
 		} `json:"Config"`
 		State      containerWaitState `json:"State"`
@@ -183,6 +193,8 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		AutoRemove: inspected.HostConfig.AutoRemove,
 		State:      inspected.State.normalized(),
 		OpenStdin:  inspected.Config.OpenStdin || inspected.Config.Labels[portoOpenStdinLabel] == "true",
+		StdinOnce:  inspected.Config.StdinOnce || inspected.Config.Labels[portoStdinOnceLabel] == "true",
+		Managed:    inspected.Config.Labels[portoManagedLabel] == portoRuntimeVersion,
 	}
 	if inspected.Config.Labels[portoTTYLabel] == "true" {
 		details.TTY = true

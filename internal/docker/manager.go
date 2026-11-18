@@ -1139,7 +1139,7 @@ func (m *Manager) CreateContainer(ctx context.Context, request CreateContainerRe
 		args = append(args, "--label", portoOpenStdinLabel+"=true")
 	}
 	if request.StdinOnce {
-		args = append(args, "--label", "io.porto.container.stdin-once=true")
+		args = append(args, "--label", portoStdinOnceLabel+"=true")
 	}
 	if request.Remove {
 		args = append(args, "--rm")
@@ -1559,6 +1559,11 @@ func (m *Manager) ContainerActionWithTimeout(ctx context.Context, id, action str
 			m.invalidateContainerInventory()
 		}
 		return err
+	}
+	if action == "start" || action == "restart" {
+		if handled, startErr := m.startWithOpenInput(ctx, id, action, timeout); handled {
+			return startErr
+		}
 	}
 	handled, directErr, fallbackReason := m.directContainerAction(ctx, id, action, timeout)
 	if handled {

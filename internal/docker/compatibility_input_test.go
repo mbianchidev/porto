@@ -5,6 +5,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -81,7 +82,7 @@ func TestForwardTaskInputFeedsNewTaskAndClosesItsInput(t *testing.T) {
 	t.Setenv("XDG_RUNTIME_DIR", t.TempDir())
 	runtime := &grpcContainerRuntime{tasks: tasks, namespace: "default", runner: runtimes.ExecRunner{}}
 
-	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("piped input\n")); err != nil {
+	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("piped input\n"), taskInputOptions{awaitTask: true, closeOnEOF: true}); err != nil {
 		t.Fatal(err)
 	}
 	select {
@@ -95,17 +96,42 @@ func TestForwardTaskInputFeedsNewTaskAndClosesItsInput(t *testing.T) {
 	if len(tasks.closeIO) != 1 || tasks.closeIO[0].GetContainerID() != "demo" || !tasks.closeIO[0].GetStdin() {
 		t.Fatalf("CloseIO requests = %v, want one stdin close for demo", tasks.closeIO)
 	}
+
+	// Attaching to a running -d -i container keeps its input open after the client's ends.
+	go func() {
+		file, err := os.Open(fifo)
+		if err == nil {
+			data, _ := io.ReadAll(file)
+			_ = file.Close()
+			received <- string(data)
+		}
+	}()
+	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("attached\n"), taskInputOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	if got := <-received; got != "attached\n" || len(tasks.closeIO) != 1 {
+		t.Fatalf("attached input = %q with %d CloseIO requests, want the input without closing the task's", got, len(tasks.closeIO))
+	}
+	tasks.gets = []*tasktypes.Process{{Status: tasktypes.Status_RUNNING}}
+	if err := runtime.ForwardTaskInput(context.Background(), "demo", strings.NewReader("lost"), taskInputOptions{}); !errors.Is(err, errTaskInputClosed) {
+		t.Fatalf("input to a task without stdin = %v, want an explicit refusal", err)
+	}
 }
 
 type inputForwardingOperations struct {
 	execOperations
 	received chan string
+	fifo     string
 }
 
-func (o *inputForwardingOperations) ForwardTaskInput(_ context.Context, id string, input io.Reader) error {
+func (o *inputForwardingOperations) ForwardTaskInput(_ context.Context, id string, input io.Reader, options taskInputOptions) error {
 	data, err := io.ReadAll(input)
-	o.received <- id + ":" + string(data)
+	o.received <- fmt.Sprintf("%s:%s await=%t close=%t", id, data, options.awaitTask, options.closeOnEOF)
 	return err
+}
+
+func (o *inputForwardingOperations) TaskInput(context.Context, string) (string, error) {
+	return o.fifo, nil
 }
 
 func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
@@ -123,7 +149,7 @@ func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
 		return []byte("output"), nil, attachedErr
 	})
 
-	process := manager.forwardCompatibilityInput(context.Background(), "demo", started)
+	process := manager.forwardCompatibilityInput(context.Background(), "demo", started, taskInputOptions{awaitTask: true, closeOnEOF: true})
 	output := make(chan []byte, 1)
 	go func() { data, _ := io.ReadAll(process.Stdout()); output <- data }()
 	if _, err := process.Stdin().Write([]byte("piped")); err != nil {
@@ -134,7 +160,7 @@ func TestAttachedCompatibilityStartForwardsInputUntilEOF(t *testing.T) {
 	}
 	select {
 	case got := <-operations.received:
-		if got != "demo:piped" {
+		if got != "demo:piped await=true close=true" {
 			t.Fatalf("forwarded input = %q", got)
 		}
 	case <-time.After(5 * time.Second):

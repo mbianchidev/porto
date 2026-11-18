@@ -777,11 +777,19 @@ behavior:
   `echo data | docker run -i ...`, `docker start -ai` and `docker compose run -T`
   with input would hang. Porto writes the client's input into the task's stdin
   FIFO inside the engine and closes it through containerd on EOF.
-- **Attach.** nerdctl cannot attach to a non-terminal container that was started
-  detached, because its output goes to the log driver. `docker attach` then
-  follows that container's output from the moment of attaching until it exits.
-  Input can't be attached to such a container (`docker run -d -i`); use
-  `docker exec -i` or start it with `docker start -ai`.
+- **Detached input.** nerdctl rejects `-d -i` without `-t` and its detached
+  start gives containers no input, so `docker run -d -i ubuntu bash` would exit
+  at once. Porto starts such containers through nerdctl's attached start in its
+  own session inside the engine, which keeps their input open like Docker. A
+  restart policy that restarts the container later uses nerdctl's detached
+  start again, so the restarted container's input is closed.
+- **Attach.** nerdctl cannot attach to output that goes to the log driver and
+  would compete for FIFOs another start still reads. `docker attach` to a
+  non-terminal container therefore follows its output from the moment of
+  attaching until it exits, and sends input to its stdin FIFO. Input closes with
+  the client's only for containers created with `StdinOnce` (`docker create -i`,
+  `docker run -i`). A container started without open input refuses attached
+  input explicitly; use `docker exec -i`.
 - **Network connect and disconnect.** CNI runs inside RootlessKit's user, mount
   and network namespaces, where rootless containerd keeps its bridges and IPAM
   state.
@@ -809,7 +817,7 @@ Not implemented:
   501 before resources are created
 - log output streams incrementally and preserve order within stdout and stderr; exact ordering between the two streams is best effort, and Porto-owned raw log files cannot synthesize per-line timestamps
 - attach with historical logs, and attaching input to a non-terminal container
-  that was started detached
+  whose input is closed (started without `-i`, or restarted by a restart policy)
 - remote-URL rootfs import; request-body import, container commit/export, and image save/load use Docker-compatible endpoints
 - legacy build contexts larger than 2 GiB; Buildx sessions use normal BuildKit file synchronization
 - swarm, services, tasks, secrets, configs, plugins, and node management
