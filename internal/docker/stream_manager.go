@@ -17,6 +17,7 @@ type containerAttachDetails struct {
 	AutoRemove  bool
 	State       containerWaitState
 	ConsoleSize [2]uint
+	OpenStdin   bool
 }
 
 type containerStartBaseline struct {
@@ -92,6 +93,9 @@ func (m *Manager) StartAttach(ctx context.Context, id string, stdin bool, consol
 		}
 		return driver.Attach(ctx, id, stdin, false, size)
 	}
+	if len(console) == 0 && m.taskOutputFollowsLogs(ctx, id) {
+		return m.startLogAttach(ctx, id, stdin)
+	}
 	args := []string{"attach"}
 	if !stdin {
 		args = append(args, "--no-stdin")
@@ -158,8 +162,9 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 	var inspected struct {
 		ID     string `json:"Id"`
 		Config struct {
-			TTY    bool
-			Labels map[string]string
+			TTY       bool
+			OpenStdin bool
+			Labels    map[string]string
 		} `json:"Config"`
 		State      containerWaitState `json:"State"`
 		HostConfig struct {
@@ -177,6 +182,7 @@ func (m *Manager) containerAttachDetails(ctx context.Context, id string) (contai
 		TTY:        inspected.Config.TTY,
 		AutoRemove: inspected.HostConfig.AutoRemove,
 		State:      inspected.State.normalized(),
+		OpenStdin:  inspected.Config.OpenStdin || inspected.Config.Labels[portoOpenStdinLabel] == "true",
 	}
 	if inspected.Config.Labels[portoTTYLabel] == "true" {
 		details.TTY = true

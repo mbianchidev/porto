@@ -81,6 +81,8 @@ type Manager struct {
 	stateDir                  string
 	lookPath                  func(string) (string, error)
 	engineLauncher            func(limactl string) (string, error)
+	temporaryShares           []string
+	temporaryShareGuard       func(context.Context) error
 	directCLI                 bool
 	dialBuildKit              func(context.Context) (net.Conn, error)
 	installMu                 sync.Mutex
@@ -176,6 +178,8 @@ func NewWithStateDir(runner runtimes.Runner, stateDir string) *Manager {
 		manager.engineLauncher = func(limactl string) (string, error) {
 			return prepareEngineLauncher(limactl, filepath.Join(stateDir, "launcher"))
 		}
+		manager.temporaryShares = macOSTemporaryShares
+		manager.temporaryShareGuard = manager.verifyTemporaryShares
 	}
 	manager.runtimeConnector = manager.connectContainerRuntime
 	manager.metricReader = manager.readContainerMetric
@@ -447,6 +451,13 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 			return Status{}, resourceErr
 		}
 		arguments = append(arguments, resourceArguments...)
+		if len(m.temporaryShares) > 0 {
+			expression, shareErr := temporaryShareExpression(m.temporaryShares)
+			if shareErr != nil {
+				return Status{}, shareErr
+			}
+			arguments = append(arguments, "--set="+expression)
+		}
 		arguments = append(arguments, limaEngineTemplate(runtime.GOOS))
 		if err := reportEngineInstall(ctx, "starting", "lima", "Preparing the Lima guest; uncached guest images and containerd / BuildKit tools must download."); err != nil {
 			return Status{}, err
@@ -538,6 +549,10 @@ func (m *Manager) InstallEngine(ctx context.Context) (status Status, err error) 
 }
 
 func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...string) ([]byte, error) {
+	if len(args) == 1 {
+		// Mounts can only change while the existing instance is stopped.
+		m.shareTemporaryDirectories(ctx, args[0])
+	}
 	arguments := append([]string{"start", "--timeout=" + engineStartTimeout.String()}, args...)
 	limactl := m.engineStartCommand()
 	var output []byte
