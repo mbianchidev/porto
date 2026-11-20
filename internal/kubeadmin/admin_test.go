@@ -428,7 +428,8 @@ func adminFixture(t *testing.T) (*Manager, *fakeAPI, *operations.Manager) {
 
 func waitAdmin(t *testing.T, ops *operations.Manager, id string) operations.Operation {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	// Operations queue on shared, loaded CI hosts; the bound guards hangs, not latency.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, err := ops.Wait(ctx, id)
 	if err != nil {

@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -400,7 +401,8 @@ createServer((_, response) => response.end(ready)).listen(Number(process.env.POR
 		t.Fatal(err)
 	}
 	waitForStartupSetupWithin(t, server, project.ID, 3*time.Minute)
-	waitForProjectStatus(t, st, project.ID, "running")
+	// A real `npm run dev` cold start needs longer than the helper-process default.
+	waitForProjectStatusWithin(t, st, project.ID, "running", 30*time.Second)
 }
 
 func TestMakeProjectUsesInstalledPythonEnvironment(t *testing.T) {
@@ -587,6 +589,49 @@ func waitForStartupSetupWithin(t *testing.T, server *Server, projectID int64, ti
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		logs, err := server.store.Logs(ctx, projectID, 100)
-		t.Fatalf("dependency setup did not finish within %s; logs = %+v (%v)", timeout, logs, err)
+		t.Fatalf("dependency setup did not finish within %s; logs = %+v (%v); child processes:\n%s",
+			timeout, logs, err, describeChildProcesses())
 	}
+}
+
+// describeChildProcesses lists the test binary's descendants so a stalled setup
+// shows which command (for example cmd.exe, npm-prefix.js or npm-cli.js) never exited.
+func describeChildProcesses() string {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, "ps", "-Ao", "pid=,ppid=,stat=,etime=,args=")
+	if runtime.GOOS == "windows" {
+		command = exec.CommandContext(ctx, "powershell", "-NoProfile", "-NonInteractive", "-Command",
+			`Get-CimInstance Win32_Process | ForEach-Object { "$($_.ProcessId) $($_.ParentProcessId) $($_.Name) $($_.CommandLine)" }`)
+	}
+	output, err := command.Output()
+	if err != nil {
+		return "unavailable: " + err.Error()
+	}
+	lister := strconv.Itoa(command.Process.Pid)
+	lines := map[string]string{}
+	children := map[string][]string{}
+	for _, line := range strings.Split(string(output), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 2 || fields[0] == lister {
+			continue
+		}
+		lines[fields[0]] = strings.TrimSpace(line)
+		children[fields[1]] = append(children[fields[1]], fields[0])
+	}
+	var tree []string
+	seen := map[string]bool{}
+	for queue := []string{strconv.Itoa(os.Getpid())}; len(queue) > 0; queue = queue[1:] {
+		for _, child := range children[queue[0]] {
+			if !seen[child] {
+				seen[child] = true
+				tree = append(tree, lines[child])
+				queue = append(queue, child)
+			}
+		}
+	}
+	if len(tree) == 0 {
+		return "none"
+	}
+	return strings.Join(tree, "\n")
 }

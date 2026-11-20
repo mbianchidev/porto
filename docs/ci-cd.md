@@ -90,17 +90,31 @@ the Git deadlines. Locale checks, actual lock creation, process termination and
 owned-lock cleanup remain required; production timeouts are unchanged.
 
 The real npm dependency-startup fixture allows three minutes for a cold
-installer on Windows under race-enabled package parallelism; synthetic setup
-fixtures retain their 15-second deadline. It runs npm offline with an isolated
-cache, since its only dependency is a local file package, and at verbose log
-level so a timeout's stored output shows the stalled phase. It still requires
-the installed development dependency and an HTTP-ready application.
+installer and 30 seconds for the started `npm run dev` server to become ready;
+synthetic setup fixtures retain their 15-second deadline and 3-second status
+wait. On Windows CI it runs in its own verbose step after the parallel package
+suite, which skips it, so the cold npm does not compete with other packages. It
+runs npm offline with an isolated cache, since its only dependency is a local
+file package, and at verbose log level so a timeout's stored output shows the
+stalled phase. A setup timeout also lists the test binary's child processes
+(`cmd.exe`, `npm-prefix.js`, `npm-cli.js`) to show which one never exited. It
+still requires the installed development dependency and an HTTP-ready
+application.
 Setup timeouts include stored command output instead of only a generic failure.
+
+Operation and Kubernetes administration test waits allow 30 seconds: they guard
+against hangs, not latency, and queued work on loaded Windows runners exceeded
+the earlier one- and five-second bounds.
 
 Docker CLI parity tests allow one minute for the initial context creation on
 Windows, separating cold CLI/configuration bootstrap from the 30-second budget
 for each subsequent command. They still execute every command through the real
 `porto` context and native named pipe; no command is retried or skipped.
+Before the parallel package suite, the Windows Go job runs `docker --version`,
+`docker context ls` and `npm --version` once and logs how long each took. A
+job's first launch of these CLIs reads cold binaries and module trees, and during
+the suite's compile and link I/O it has stalled with no output past those
+deadlines.
 
 Lima installation verifies containerd with `nerdctl info --format
 '{{.ServerVersion}}'` within the existing 30-second deadline, taking the version
@@ -668,7 +682,10 @@ downloader itself.
 Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
-diagnostics, and disk/configuration preservation without booting a VM.
+diagnostics, and disk/configuration preservation without booting a VM. It first
+launches `limactl --version` once within three minutes and logs how long that
+took, because a freshly built or installed `limactl.exe` has stalled past the
+30-second check deadline on its first Windows launch with no output.
 Upstream Docker, Lima and synchronization source patches use an isolated Git
 discovery boundary and reverse-application check. This prevents `git apply`
 from silently skipping archive-relative changes when a build's `TMPDIR` is
@@ -1107,7 +1124,7 @@ the preflight without switching or pulling. The native installer script also
 checks before building or downloading runtime inputs. Missing or unsupported tools
 fail with setup instructions rather than a late packaging assertion.
 
-Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
+Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, desktop packages, and GitHub Actions (workflows and the composite actions under `.github/actions/`) into weekly pull requests.
 
 The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
 fix for the missing-authority server panic,
