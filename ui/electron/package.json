@@ -48,9 +48,9 @@
     "@electron/osx-sign": "^2.7.2",
     "@electron/packager": "^20.3.0",
     "7zip-bin-full": "^26.6.0",
-    "electron": "^45.3.2",
+    "electron": "^45.3.3",
     "electron-builder": "^26.18.0",
-    "pe-library": "^2.0.1",
+    "pe-library": "^2.0.3",
     "undici": "^7.30.2"
   },
   "overrides": {
