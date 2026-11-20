@@ -682,7 +682,10 @@ downloader itself.
 Native runtime packaging executes `scripts/lima-runtime-smoke.cjs` against the
 actual bundled Lima executable. It uses an isolated `LIMA_HOME` with synthetic
 VM files to check dead-PID recovery, live-PID preservation, malformed-PID
-diagnostics, and disk/configuration preservation without booting a VM.
+diagnostics, and disk/configuration preservation without booting a VM. It first
+launches `limactl --version` once within three minutes and logs how long that
+took, because a freshly built or installed `limactl.exe` has stalled past the
+30-second check deadline on its first Windows launch with no output.
 Upstream Docker, Lima and synchronization source patches use an isolated Git
 discovery boundary and reverse-application check. This prevents `git apply`
 from silently skipping archive-relative changes when a build's `TMPDIR` is

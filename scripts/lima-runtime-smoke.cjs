@@ -13,6 +13,37 @@ const limactl = path.resolve(process.argv[2])
 const instanceName = 'synthetic-pid-check'
 const diskContents = 'Synthetic VM data must survive process-state recovery.\n'
 
+function limaEnvironment(home) {
+  const environment = Object.fromEntries(Object.entries(process.env)
+    .filter(([key]) => key.toUpperCase() !== 'LIMA_HOME'))
+  environment.LIMA_HOME = home
+  return environment
+}
+
+// A freshly built or installed limactl.exe has stalled past the 30-second check
+// deadline on its first Windows launch with no output, so absorb that once here.
+function warmLimactl() {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-lima-warm-'))
+  const started = Date.now()
+  try {
+    execFileSync(limactl, ['--version'], {
+      cwd: home,
+      env: limaEnvironment(home),
+      encoding: 'utf8',
+      timeout: 180000,
+      windowsHide: true,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+  } catch (error) {
+    throw new Error(`limactl --version did not complete its first launch: ${error.message}`, { cause: error })
+  } finally {
+    fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
+  }
+  console.log(`limactl --version first launch took ${((Date.now() - started) / 1000).toFixed(1)}s`)
+}
+
+warmLimactl()
+
 function fixture(t) {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-lima-pid-'))
   t.after(() => fs.promises.rm(home, {
@@ -35,9 +66,7 @@ function fixture(t) {
   ].join('\n')
   fs.writeFileSync(path.join(directory, 'lima.yaml'), config)
   fs.writeFileSync(path.join(directory, 'diffdisk'), diskContents)
-  const environment = Object.fromEntries(Object.entries(process.env)
-    .filter(([key]) => key.toUpperCase() !== 'LIMA_HOME'))
-  environment.LIMA_HOME = home
+  const environment = limaEnvironment(home)
   const run = (args, overrides = {}) => {
     const inherited = Object.fromEntries(Object.entries(environment)
       .filter(([key]) => !Object.keys(overrides)
