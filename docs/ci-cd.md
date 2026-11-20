@@ -110,6 +110,11 @@ Docker CLI parity tests allow one minute for the initial context creation on
 Windows, separating cold CLI/configuration bootstrap from the 30-second budget
 for each subsequent command. They still execute every command through the real
 `porto` context and native named pipe; no command is retried or skipped.
+Before the parallel package suite, the Windows Go job runs `docker --version`,
+`docker context ls` and `npm --version` once and logs how long each took. A
+job's first launch of these CLIs reads cold binaries and module trees, and during
+the suite's compile and link I/O it has stalled with no output past those
+deadlines.
 
 Lima installation verifies containerd with `nerdctl info --format
 '{{.ServerVersion}}'` within the existing 30-second deadline, taking the version

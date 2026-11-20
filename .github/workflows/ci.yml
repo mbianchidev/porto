@@ -65,6 +65,24 @@ jobs:
         if: runner.os == 'macOS'
         run: go test ./... -count=1 -failfast
 
+      # A job's first docker and npm launches read cold binaries and module trees;
+      # under the parallel suite's compile and link I/O they have stalled with no
+      # output past test deadlines, so load them once while the runner is idle.
+      - name: Warm external CLIs used by tests
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($tool in @(@('docker', '--version'), @('docker', 'context', 'ls'), @('npm', '--version'))) {
+            if (-not (Get-Command $tool[0] -ErrorAction SilentlyContinue)) {
+              Write-Output "$($tool[0]) is not installed; its tests skip"
+              continue
+            }
+            $watch = [Diagnostics.Stopwatch]::StartNew()
+            & $tool[0] $tool[1..($tool.Length - 1)]
+            if ($LASTEXITCODE -ne 0) { throw "$($tool -join ' ') exited with $LASTEXITCODE" }
+            Write-Output ("{0} took {1:n1}s" -f ($tool -join ' '), $watch.Elapsed.TotalSeconds)
+          }
+
       # The real npm startup fixture runs alone so its cold npm does not compete
       # with the parallel package suite on the Windows runner.
       - name: Test
