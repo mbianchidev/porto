@@ -3,6 +3,7 @@ module github.com/mbianchidev/porto
 go 1.27.3
 
 require (
+	cel.dev/cel-go v0.33.4
 	github.com/Microsoft/go-winio v0.6.4
 	github.com/Microsoft/hcsshim v0.15.0
 	github.com/awslabs/operatorpkg v0.0.0-20261002163259-5e8ed3699dea
@@ -23,7 +24,6 @@ require (
 	github.com/ebitengine/purego v0.11.3
 	github.com/go-logr/logr v1.4.4
 	github.com/godbus/dbus/v5 v5.2.4
-	github.com/google/cel-go v0.30.0
 	github.com/hashicorp/yamux v0.1.2
 	github.com/moby/buildkit v0.35.0
 	github.com/moby/moby/api v1.57.0
@@ -95,6 +95,7 @@ require (
 	github.com/go-openapi/swag/stringutils v0.29.2 // indirect
 	github.com/go-openapi/swag/typeutils v0.29.2 // indirect
 	github.com/go-openapi/swag/yamlutils v0.29.2 // indirect
+	github.com/google/cel-go v0.30.0 // indirect
 	github.com/google/gnostic-models v0.7.1 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
