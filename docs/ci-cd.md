@@ -1107,7 +1107,7 @@ the preflight without switching or pulling. The native installer script also
 checks before building or downloading runtime inputs. Missing or unsupported tools
 fail with setup instructions rather than a late packaging assertion.
 
-Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, and GitHub Actions into weekly pull requests.
+Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, desktop packages, and GitHub Actions (workflows and the composite actions under `.github/actions/`) into weekly pull requests.
 
 The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
 fix for the missing-authority server panic,
