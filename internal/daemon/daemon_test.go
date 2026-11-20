@@ -1312,7 +1312,12 @@ func skipWindowsShellHelper(t *testing.T) {
 
 func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want string) {
 	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
+	waitForProjectStatusWithin(t, st, projectID, want, 3*time.Second)
+}
+
+func waitForProjectStatusWithin(t *testing.T, st *store.Store, projectID int64, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		project, err := st.GetProjectByID(context.Background(), projectID)
 		if err != nil {
@@ -1327,7 +1332,7 @@ func waitForProjectStatus(t *testing.T, st *store.Store, projectID int64, want s
 	if err != nil {
 		t.Fatalf("load project after timeout: %v", err)
 	}
-	t.Fatalf("status = %q, want %q", project.Status, want)
+	t.Fatalf("status = %q after %s, want %q", project.Status, timeout, want)
 }
 
 func testProject(t *testing.T, project app.Project) (*store.Store, app.Project) {

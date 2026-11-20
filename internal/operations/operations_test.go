@@ -22,7 +22,7 @@ func TestProjectActionsAndQueuedJobsShareAnOwnerAndCancelCleanly(t *testing.T) {
 	}
 	done := make(chan struct{})
 	go func() { defer close(done); <-owner.Done(); release() }()
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := manager.Close(ctx); err != nil {
 		t.Fatal(err)
@@ -44,7 +44,7 @@ func TestOperationHistoryNeverStoresUnclassifiedToolOutput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	result, err := manager.Wait(ctx, value.ID)
 	if err != nil || result.Status != "failed" || strings.Contains(result.Error, "synthetic-secret-value") {

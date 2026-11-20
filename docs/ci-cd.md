@@ -90,12 +90,21 @@ the Git deadlines. Locale checks, actual lock creation, process termination and
 owned-lock cleanup remain required; production timeouts are unchanged.
 
 The real npm dependency-startup fixture allows three minutes for a cold
-installer on Windows under race-enabled package parallelism; synthetic setup
-fixtures retain their 15-second deadline. It runs npm offline with an isolated
-cache, since its only dependency is a local file package, and at verbose log
-level so a timeout's stored output shows the stalled phase. It still requires
-the installed development dependency and an HTTP-ready application.
+installer and 30 seconds for the started `npm run dev` server to become ready;
+synthetic setup fixtures retain their 15-second deadline and 3-second status
+wait. On Windows CI it runs in its own verbose step after the parallel package
+suite, which skips it, so the cold npm does not compete with other packages. It
+runs npm offline with an isolated cache, since its only dependency is a local
+file package, and at verbose log level so a timeout's stored output shows the
+stalled phase. A setup timeout also lists the test binary's child processes
+(`cmd.exe`, `npm-prefix.js`, `npm-cli.js`) to show which one never exited. It
+still requires the installed development dependency and an HTTP-ready
+application.
 Setup timeouts include stored command output instead of only a generic failure.
+
+Operation and Kubernetes administration test waits allow 30 seconds: they guard
+against hangs, not latency, and queued work on loaded Windows runners exceeded
+the earlier one- and five-second bounds.
 
 Docker CLI parity tests allow one minute for the initial context creation on
 Windows, separating cold CLI/configuration bootstrap from the 30-second budget
