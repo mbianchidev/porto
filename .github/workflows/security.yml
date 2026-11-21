@@ -3,6 +3,7 @@ name: Security audit
 on:
   push:
     branches: [main]
+    paths-ignore: ['**.md']
   schedule:
     - cron: '0 6 * * 1'
   workflow_dispatch:
