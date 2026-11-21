@@ -59,6 +59,7 @@ the command when needed:
 | `PORTO_BIN_DIR` | CLI link directory (default `~/.local/bin`) |
 | `PORTO_INSTALL_DIR` | App location (macOS `~/Applications`, Linux `~/.local/opt/porto`) |
 | `PORTO_SKIP_PREREQS=1` | Linux only: skip QEMU and sandbox setup when the user manages them |
+| `PORTO_AGENT_SKILLS_DIR` | Also save this skill from the same release as `porto/SKILL.md` in these skills directories (`:`-separated, `;` on Windows), e.g. `~/.copilot/skills` |
 
 Platform notes:
 

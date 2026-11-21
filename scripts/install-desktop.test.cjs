@@ -22,6 +22,8 @@ function fixture(t, {
   existing = '',
   imageTool = true,
   sandbox = 'unrestricted',
+  skillsDirs = [],
+  skill = '',
 } = {}) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-installer-'))
   t.after(() => fs.rmSync(root, { recursive: true, force: true }))
@@ -59,7 +61,12 @@ destination=""
 while [ "$#" -gt 0 ]; do
   case "$1" in -o) destination="$2"; shift 2;; *) url="$1"; shift;; esac
 done
-case "$url" in */SHA256SUMS) cp "$FIXTURE_ROOT/SHA256SUMS" "$destination";; *) cp "$FIXTURE_ROOT/desktop.tar.gz" "$destination";; esac`)
+printf '%s\\n' "$url" >> "$FIXTURE_ROOT/curl.log"
+case "$url" in
+  */SHA256SUMS) cp "$FIXTURE_ROOT/SHA256SUMS" "$destination";;
+  */SKILL.md) [ -f "$FIXTURE_ROOT/SKILL.md" ] || exit 22; cp "$FIXTURE_ROOT/SKILL.md" "$destination";;
+  *) cp "$FIXTURE_ROOT/desktop.tar.gz" "$destination";;
+esac`)
   if (packageManager) executable(path.join(bin, packageManager), `
 printf '%s\\n' "$*" >> "$FIXTURE_ROOT/packages.log"
 case "$1" in
@@ -94,6 +101,7 @@ esac`)
   assert.equal(archive.status, 0, archive.stderr)
   const checksum = crypto.createHash('sha256').update(fs.readFileSync(path.join(root, 'desktop.tar.gz'))).digest('hex')
   fs.writeFileSync(path.join(root, 'SHA256SUMS'), `${checksum}  porto-desktop_fixture_linux_${arch}.tar.gz\n`)
+  if (skill) fs.writeFileSync(path.join(root, 'SKILL.md'), skill)
   const installRoot = path.join(root, 'Installed Porto \u00e9')
   fs.mkdirSync(installRoot)
   fs.writeFileSync(path.join(installRoot, 'previous-installation'), 'synthetic previous installation')
@@ -109,6 +117,7 @@ esac`)
       PORTO_BIN_DIR: path.join(home, '.local', 'bin'),
       PORTO_NO_LAUNCH: '1',
       PORTO_SKIP_PREREQS: skip ? '1' : '0',
+      ...(skillsDirs.length ? { PORTO_AGENT_SKILLS_DIR: skillsDirs.join(':') } : {}),
       FIXTURE_ROOT: root,
       FIXTURE_PACKAGE_RESULT: packageResult,
       FIXTURE_QEMU: qemu,
@@ -222,6 +231,37 @@ test('unrestricted hosts and explicit prerequisite opt-outs do not change AppArm
     const result = fixture(t, options)
     assert.equal(result.status, 0, result.stderr)
     assert.equal(fs.existsSync(path.join(result.root, 'sandbox-command.log')), false)
+  }
+})
+
+const syntheticSkill = '---\nname: porto\ndescription: Synthetic Porto skill.\n---\n'
+
+test('installs the release-matched agent skill into each requested skills directory', (t) => {
+  const result = fixture(t, { existing: 'working', skill: syntheticSkill })
+  assert.equal(result.status, 0, result.stderr)
+  assert.doesNotMatch(fs.readFileSync(path.join(result.root, 'curl.log'), 'utf8'), /SKILL\.md/)
+
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-skills-'))
+  t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+  const targets = [path.join(home, '.copilot', 'skills'), path.join(home, 'Agent skills \u00e9')]
+  const installed = fixture(t, { existing: 'working', skill: syntheticSkill, skillsDirs: targets })
+  assert.equal(installed.status, 0, installed.stderr)
+  assert.match(fs.readFileSync(path.join(installed.root, 'curl.log'), 'utf8'),
+    /^https:\/\/raw\.githubusercontent\.com\/mbianchidev\/porto\/vfixture\/\.github\/skills\/porto\/SKILL\.md$/m)
+  for (const target of targets) {
+    assert.equal(fs.readFileSync(path.join(target, 'porto', 'SKILL.md'), 'utf8'), syntheticSkill)
+  }
+})
+
+test('an unavailable or invalid agent skill fails before replacing Porto', (t) => {
+  for (const skill of ['', '<!doctype html>\n']) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-skills-'))
+    t.after(() => fs.rmSync(home, { recursive: true, force: true }))
+    const result = fixture(t, { existing: 'working', skill, skillsDirs: [home] })
+    assert.notEqual(result.status, 0, result.stdout)
+    assert.match(result.stderr, /agent skill.*Existing Porto files have not been replaced/s)
+    assert.equal(fs.existsSync(path.join(home, 'porto')), false)
+    assert.equal(fs.readFileSync(path.join(result.installRoot, 'previous-installation'), 'utf8'), 'synthetic previous installation')
   }
 })
 
