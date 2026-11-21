@@ -649,6 +649,10 @@ Pin a k3s version when reproducibility is required:
 porto kubernetes cluster create dev --version v1.33.4+k3s1
 ```
 
+Each provider picks its default version differently. See
+[newer Kubernetes releases](kubernetes-upgrades.md#newer-kubernetes-releases)
+before using a new minor version.
+
 Create with another provider:
 
 ```sh

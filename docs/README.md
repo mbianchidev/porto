@@ -14,7 +14,7 @@ The root [README](../README.md) explains what Porto offers and provides the shor
 - [Remote environments and Edge fleets](remote-environments.md): authenticated enrollment, imported identities, scoped actions, offline behavior and revocation
 - [Project management](project-management.md) — CLI commands, discovery, dependency setup, lifecycle, ports, state, and logs
 - [Local runtimes](runtimes.md) — Docker endpoint, containers, Compose, Kubernetes resources, pod inspection, and Linux VMs
-- [Kubernetes upgrades](kubernetes-upgrades.md): distribution-specific upgrades, persistent-volume restoration, and recovery
+- [Kubernetes upgrades](kubernetes-upgrades.md): distribution-specific upgrades, persistent-volume restoration, recovery, and adopting newer Kubernetes releases
 - [Kubernetes autoscaling](kubernetes-autoscaling.md): real local Karpenter workers, KEDA triggers, budgets, and ownership
 - [Kubernetes GitOps](kubernetes-gitops.md): Flux/Argo CD discovery, explicit bootstrap, scoped sources, reconciliation, ownership handoff and deletion
 - [Porto Docker Engine](docker-engine.md) — Docker context setup, native containerd architecture, API compatibility, persistence, and limitations
