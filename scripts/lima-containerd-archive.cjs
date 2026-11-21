@@ -194,7 +194,7 @@ function intelTCGImages() {
       location: `${release}/unpacked/${image}-vmlinuz-generic`,
       arch: 'x86_64',
       digest: 'sha256:7efd88a7facf80874d781ccb2c2421f0aaaa575e3b94760430619e826f490117',
-      cmdline: 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check',
+      cmdline: 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check systemd.default_device_timeout_sec=600',
     },
     initrd: {
       location: `${release}/unpacked/${image}-initrd-generic`,

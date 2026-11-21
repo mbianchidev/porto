@@ -27,6 +27,10 @@ the change, and its manifest/build helper are retained under `runtime/licenses`.
 A matching native Windows build also creates a Unicode-path image and opens
 Unicode-path firmware in a paused, network-free QEMU process, then requires a
 clean QMP exit. This quick probe does not replace full installed-runtime CI.
+Before its 10-second deadlines, the build runs `--version` once on each rewritten
+executable with a three-minute bound and logs the time: Windows scans a newly
+written executable on first launch, and that scan has stalled the QMP greeting
+with no output on hosted runners.
 
 The bundled Lima also recognizes the native OS client's
 `OpenSSH_for_Windows_` version banner. Otherwise it treats that client as version

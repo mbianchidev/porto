@@ -97,7 +97,7 @@ test('Intel TCG network diagnostics are opt-in, bounded, and do not expose proxy
   assert.doesNotMatch(diagnosticScript, /print\([^)]*str\(error\)/i)
 })
 
-test('Intel TCG uses matching pinned guest, kernel and initrd with only the upstream timer-check workaround', () => {
+test('Intel TCG uses matching pinned guest, kernel and initrd with only the timer-check and device-timeout workarounds', () => {
   const images = intelTCGImages()
   assert.equal(images.length, 1)
   const [image] = images
@@ -113,7 +113,7 @@ test('Intel TCG uses matching pinned guest, kernel and initrd with only the upst
   const name = base.slice(base.lastIndexOf('/') + 1)
   assert.equal(image.kernel.location, `${directory}unpacked/${name}-vmlinuz-generic`)
   assert.equal(image.initrd.location, `${directory}unpacked/${name}-initrd-generic`)
-  assert.equal(image.kernel.cmdline, 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check')
+  assert.equal(image.kernel.cmdline, 'root=LABEL=cloudimg-rootfs ro console=tty1 console=ttyS0 no_timer_check systemd.default_device_timeout_sec=600')
   image.kernel.cmdline = 'synthetic mutation'
   assert.notEqual(intelTCGImages()[0].kernel.cmdline, image.kernel.cmdline)
 })
