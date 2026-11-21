@@ -6,14 +6,23 @@ Porto's automation lives in `.github/workflows`. Every workflow declares the lea
 
 | Workflow | File | Trigger | Purpose |
 | --- | --- | --- | --- |
-| CI | `ci.yml` | pull requests, pushes to `main`, manual | Formatting, vet, tests, cross-compilation, dashboard lint and build |
-| CodeQL | `codeql.yml` | pull requests, pushes to `main`, weekly | Static analysis for `go` and `javascript-typescript` |
-| Security audit | `security.yml` | pushes to `main`, weekly, manual | `govulncheck` and `npm audit` |
+| CI | `ci.yml` | pull requests, pushes to `main` (except Markdown-only), manual | Formatting, vet, tests, cross-compilation, dashboard lint and build |
+| CodeQL | `codeql.yml` | pull requests, pushes to `main` (except Markdown-only), weekly | Static analysis for `go` and `javascript-typescript` |
+| Security audit | `security.yml` | pushes to `main` (except Markdown-only), weekly, manual | `govulncheck` and `npm audit` |
 | Emulated runtime acceptance | `emulated-runtime.yml` | manual | Full software-emulated Lima platform/phase matrix |
 | Release | `release.yml` | tags matching `v*`, manual | Builds, packages, and publishes archives plus native macOS and Windows installers |
 
-CodeQL retains both complete language analyses on every existing event, including
-draft pull requests; there are no changed-file or language-selection exclusions.
+Pull requests and pushes that change only Markdown files (`**.md`) don't start
+CI, CodeQL or the security audit: no test, build or package reads them. A change
+to any other file, including a workflow, runs every check. Releases still copy
+`README.md` into archives and are unaffected, because path filters don't apply to
+tag pushes. GitHub evaluates at most the first 3,000 changed files, so start CI
+manually if a very large mixed change doesn't trigger it. Weekly CodeQL and
+security runs keep full coverage. There are no required status checks, so a
+skipped run never blocks merging.
+
+CodeQL retains both complete language analyses on every run it starts, including
+draft pull requests; there are no language-selection exclusions.
 The security audit runs `govulncheck@latest` and audits the complete dashboard
 lockfile with `npm audit --package-lock-only --audit-level=high`. The audit-only
 job does not install packages, run dependency lifecycle scripts, or transfer an

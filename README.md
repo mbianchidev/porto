@@ -175,10 +175,22 @@ See [local runtimes](docs/runtimes.md) for container, Kubernetes, VM, and provid
 
 ## Use Porto from coding agents
 
-The [Porto agent skill](.github/skills/porto/SKILL.md) teaches coding agents to install Porto, check the daemon, and drive projects, containers, clusters and VMs through the `porto` CLI. Agents working in this repository discover it automatically. For other projects, copy `.github/skills/porto/` into the agent's skills directory, or paste this prompt:
+The [Porto agent skill](.github/skills/porto/SKILL.md) teaches coding agents to install Porto, check the daemon, and drive projects, containers, clusters and VMs through the `porto` CLI. Agents working in this repository discover it automatically.
+
+To install Porto and the skill together, set `PORTO_AGENT_SKILLS_DIR` to your agent's personal skills directory, such as `~/.copilot/skills` for GitHub Copilot CLI or `~/.claude/skills` for Claude Code. Separate several directories with `:` (`;` on Windows). The installer saves the skill from the same release as `porto/SKILL.md` and refreshes it on every run.
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | PORTO_AGENT_SKILLS_DIR="$HOME/.copilot/skills" sh
+```
+
+```powershell
+$env:PORTO_AGENT_SKILLS_DIR = "$HOME\.copilot\skills"; irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+```
+
+Or hand both steps to an agent with this prompt:
 
 ```text
-Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. Install Porto if `porto version` fails, make sure its daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
+Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. If `porto version` fails, install Porto with PORTO_AGENT_SKILLS_DIR set to your personal skills directory; otherwise save that file as porto/SKILL.md in that directory. Make sure the daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
 ```
 
 ## Configuration and local state
