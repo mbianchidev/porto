@@ -62,7 +62,10 @@ Installed desktop builds add two shell preferences:
 - **Open Porto when I sign in** registers or removes the operating-system login
   item on Windows and after the macOS app has been moved into Applications.
 - **Close the window to the menu bar or system tray** hides Porto instead of
-  quitting the desktop shell. The tray icon is always shown; its menu provides
+  quitting the desktop shell. The tray icon is always shown as a monochrome
+  glyph: a macOS template image that follows the menu bar's tint, and on
+  Windows and Linux white or black to match the system dark or light theme. Its
+  menu provides
   **Open Porto**, the Docker engine controls described below, and **Quit
   Porto**. When both settings are enabled, Windows login
   launches quietly in the tray while the daemon starts and resumes its managed

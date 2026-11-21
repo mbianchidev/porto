@@ -5,7 +5,7 @@
 // the endpoint is unreachable or belongs to a different binary build.
 // contextIsolation stays on and nodeIntegration stays off. The preload exposes
 // only narrow desktop-preferences and update bridges used by the Settings page.
-const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, shell, Tray } = require('electron')
+const { app, BrowserWindow, dialog, ipcMain, Menu, nativeImage, nativeTheme, shell, Tray } = require('electron')
 const { execFile, spawn } = require('node:child_process')
 const fs = require('node:fs')
 const path = require('node:path')
@@ -60,6 +60,7 @@ const {
   validateDesktopPreferences,
 } = require('./desktop-preferences.cjs')
 const { launchDownloadedUpdate } = require('./desktop-update-install.cjs')
+const { createTrayIcon } = require('./tray-icon.cjs')
 const {
   DEFAULT_UPDATE_CHECK_INTERVAL,
   createDesktopUpdater,
@@ -233,14 +234,16 @@ function refreshTrayMenu() {
 
 function ensureTray() {
   if (tray !== null) return
-  const size = process.platform === 'darwin' ? 18 : 20
-  const icon = nativeImage.createFromPath(APP_ICON).resize({ width: size, height: size })
-  if (icon.isEmpty()) {
-    throw new Error(`Unable to load Porto tray icon from ${APP_ICON}`)
-  }
-  tray = new Tray(icon)
+  tray = new Tray(createTrayIcon(nativeImage, nativeTheme))
   refreshTrayMenu()
   tray.on('click', showMainWindow)
+  nativeTheme.on('updated', () => {
+    try {
+      tray.setImage(createTrayIcon(nativeImage, nativeTheme))
+    } catch (error) {
+      console.error('Unable to update the Porto tray icon for the system theme', error)
+    }
+  })
 }
 
 async function refreshDockerEngineState() {
