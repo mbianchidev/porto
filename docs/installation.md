@@ -42,7 +42,11 @@ Windows uses an NSIS EXE installer, and Linux uses the portable desktop archive.
 The interactive Windows installer offers an unchecked desktop-shortcut option;
 silent installs do not create one. Set
 `PORTO_VERSION=v1.0.0` to install a specific release or `PORTO_NO_LAUNCH=1` to
-install without opening it.
+install without opening it. Set `PORTO_AGENT_SKILLS_DIR` to one or more agent
+skills directories (`:`-separated, `;` on Windows), such as `~/.copilot/skills`
+or `~/.claude/skills`, to also save the release's
+[Porto agent skill](../.github/skills/porto/SKILL.md) as `porto/SKILL.md` in
+each. A failed skill download stops before Porto is replaced.
 
 The desktop app compares the SHA-256 identity cached by the running daemon with
 the daemon bundled in the installed app. It gracefully replaces a different

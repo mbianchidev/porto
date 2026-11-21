@@ -59,6 +59,7 @@ the command when needed:
 | `PORTO_BIN_DIR` | CLI link directory (default `~/.local/bin`) |
 | `PORTO_INSTALL_DIR` | App location (macOS `~/Applications`, Linux `~/.local/opt/porto`) |
 | `PORTO_SKIP_PREREQS=1` | Linux only: skip QEMU and sandbox setup when the user manages them |
+| `PORTO_AGENT_SKILLS_DIR` | Also save this skill from the same release as `porto/SKILL.md` in these skills directories (`:`-separated, `;` on Windows), e.g. `~/.copilot/skills` |
 
 Platform notes:
 
@@ -192,6 +193,12 @@ Completed clusters are registered in `~/.kube/config`, so plain `kubectl` works
 after selecting their context. Creation boots VMs and can take several minutes.
 `porto kubernetes cluster delete <name>` removes the node VMs and kubeconfig
 immediately, without a prompt.
+
+Pin a Kubernetes release at creation with `--version` (`v1.37.1+k3s1`,
+`v1.36.4+k0s.1`, or `v1.37.0` for kind and Apple); without it k3s and k0s use
+their stable channel. `porto kubernetes cluster upgrade <name> --version <release> --confirm`
+upgrades one minor version at a time and interrupts the cluster, so ask first.
+See [newer Kubernetes releases](https://github.com/mbianchidev/porto/blob/main/docs/kubernetes-upgrades.md#newer-kubernetes-releases).
 
 ## 7. Linux VMs
 

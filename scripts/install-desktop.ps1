@@ -55,6 +55,34 @@ try {
         throw "Checksum verification failed for $Asset."
     }
 
+    if ($env:PORTO_AGENT_SKILLS_DIR) {
+        $SkillUrl = "https://raw.githubusercontent.com/$Repository/$Tag/.github/skills/porto/SKILL.md"
+        $Skill = Join-Path $Temporary "SKILL.md"
+        try {
+            Invoke-WebRequest $SkillUrl -OutFile $Skill
+        }
+        catch {
+            throw "Unable to download the Porto agent skill for $Tag from ${SkillUrl}: $($_.Exception.Message) Existing Porto files have not been replaced."
+        }
+        if (-not (Select-String -LiteralPath $Skill -Pattern '^name: porto$' -Quiet)) {
+            throw "The Porto agent skill downloaded from $SkillUrl is not valid. Existing Porto files have not been replaced."
+        }
+        foreach ($SkillsDirectory in ($env:PORTO_AGENT_SKILLS_DIR -split [regex]::Escape([System.IO.Path]::PathSeparator))) {
+            if (-not $SkillsDirectory) {
+                continue
+            }
+            $SkillDirectory = Join-Path $SkillsDirectory "porto"
+            try {
+                New-Item -ItemType Directory -Force -Path $SkillDirectory | Out-Null
+                Copy-Item -LiteralPath $Skill -Destination (Join-Path $SkillDirectory "SKILL.md") -Force
+            }
+            catch {
+                throw "Unable to install the Porto agent skill in ${SkillsDirectory}: $($_.Exception.Message) Existing Porto files have not been replaced."
+            }
+            Write-Host "Installed the Porto agent skill at $(Join-Path $SkillDirectory 'SKILL.md')"
+        }
+    }
+
     $InstallRoot = if ($env:PORTO_INSTALL_DIR) { $env:PORTO_INSTALL_DIR } else { Join-Path $env:LOCALAPPDATA "Programs\Porto" }
     $IsUpdate = Test-Path $InstallRoot
     if ($IsUpdate) {

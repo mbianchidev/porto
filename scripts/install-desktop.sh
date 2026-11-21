@@ -60,6 +60,30 @@ if [ -z "$expected" ] || [ "$expected" != "$actual" ]; then
   exit 1
 fi
 
+install_agent_skill() {
+  [ -n "${PORTO_AGENT_SKILLS_DIR:-}" ] || return 0
+  skill_url="https://raw.githubusercontent.com/${repository}/${tag}/.github/skills/porto/SKILL.md"
+  if ! curl -fL --retry 4 --retry-all-errors -o "$temporary/SKILL.md" "$skill_url" ||
+    ! awk '$0 == "name: porto" { found = 1 } END { exit !found }' "$temporary/SKILL.md"; then
+    echo "Unable to download the Porto agent skill for $tag from $skill_url. Existing Porto files have not been replaced." >&2
+    exit 1
+  fi
+  set -f
+  saved_ifs="$IFS"
+  IFS=":"
+  for skills_dir in $PORTO_AGENT_SKILLS_DIR; do
+    [ -n "$skills_dir" ] || continue
+    if ! mkdir -p "$skills_dir/porto" || ! cp "$temporary/SKILL.md" "$skills_dir/porto/SKILL.md"; then
+      echo "Unable to install the Porto agent skill in $skills_dir. Existing Porto files have not been replaced." >&2
+      exit 1
+    fi
+    echo "Installed the Porto agent skill at $skills_dir/porto/SKILL.md"
+  done
+  IFS="$saved_ifs"
+  set +f
+}
+install_agent_skill
+
 if [ "$goos" = "darwin" ]; then
   mounted_volume="$temporary/Porto"
   mkdir -p "$mounted_volume"

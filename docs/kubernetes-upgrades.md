@@ -131,6 +131,86 @@ recorded in the directory's `recovery.json`; use kind against the Porto Docker
 endpoint to delete only that exact old runtime. Do not delete the replacement
 runtime named in the current cluster ownership metadata.
 
+## Newer Kubernetes releases
+
+Porto has no maximum Kubernetes version. A new minor release, such as 1.38,
+works as soon as the provider publishes a stable build for it. Use the
+provider's release format: `v1.38.0+k3s1` for k3s, `v1.38.0+k0s.0` for k0s,
+and `v1.38.0` for kind and Apple. Upgrades reject prereleases (`-alpha`,
+`-beta`, `-rc`) and moving channels. Cluster creation passes `--version` to the
+provider unchanged, so give it a published stable release.
+
+### New clusters
+
+| Provider | Without `--version` | Select a newer release |
+| --- | --- | --- |
+| k3s | k3s `stable` channel at creation time | `--version v1.38.0+k3s1` |
+| k0s | k0s stable release at creation time | `--version v1.38.0+k0s.0` |
+| kind | Default node image of the bundled kind binary | `--version v1.38.0` (a `kindest/node` tag) |
+| Apple | Porto's pinned `kindest/node` image | `--version v1.38.0` |
+
+k3s and k0s pick up a new minor version once their stable channel moves to it,
+which can take several weeks after the upstream Kubernetes release. Pass an
+explicit `--version` to use it before then. kind node images are built for a
+specific kind release, so a newer minor version can need a Porto release that
+bundles a newer kind.
+
+```sh
+porto kubernetes cluster create dev --provider k3s --version v1.38.0+k3s1
+```
+
+### Existing clusters
+
+Upgrade one minor version at a time. A 1.36 cluster reaches 1.38 in two steps:
+
+```sh
+porto kubernetes cluster upgrade dev --version v1.37.1+k3s1 --confirm
+porto kubernetes cluster upgrade dev --version v1.38.0+k3s1 --confirm
+```
+
+Apple clusters can't be upgraded. Create a new cluster at the target version
+and move workloads to it.
+
+### Maintainer checklist for a new minor version
+
+Make these changes once the upstream release and the provider builds are
+published. Pinned components must still support the older cluster versions
+people run, not only the new one.
+
+1. **Bundled kubectl**: `KUBECTL_VERSION` in
+   `scripts/bundle-desktop-runtime.sh`. Porto runs kubectl for cluster
+   operations, and kubectl supports servers only one minor version older or
+   newer. Use the minor version before the newest one: kubectl 1.37 covers 1.36
+   to 1.38 clusters. Update the bundled version in
+   [remote environments](remote-environments.md).
+2. **Debug toolbox**: `DebugToolboxImage` in `internal/kubernetes/debug.go`,
+   pinned by digest. Its kubectl follows the same rule. Update the image
+   reference in [runtimes](runtimes.md).
+3. **kind**: `KIND_VERSION` in `scripts/bundle-desktop-runtime.sh`, once a kind
+   release lists `kindest/node` images for the new minor version in its release
+   notes.
+4. **Apple default image**: `appleNodeImage` in
+   `internal/kubernetes/apple_native.go`, pinned by digest. Update its version in
+   [runtimes](runtimes.md) after verifying a native cluster.
+5. **Go Kubernetes libraries**: the `k8s.io/*` modules in `go.mod`, plus
+   `sigs.k8s.io/controller-runtime` and `sigs.k8s.io/karpenter` when they need to
+   match. Update the client-go version in
+   [remote environments](remote-environments.md).
+6. **Cluster add-ons**: check each project's Kubernetes compatibility matrix and
+   bump if needed. Envoy Gateway is `envoyGatewayManifestURL` in
+   `internal/kubernetes/provision.go`; Karpenter and KEDA are in
+   `internal/autoscaling/types.go`; Flux, Argo CD and Helm are in
+   `internal/kubeadmin/gitops_types.go` and `internal/kubeadmin/helm_types.go`.
+7. **Examples and tests**: the version placeholders in
+   `ui/src/pages/KubernetesOverview.tsx` and `ui/src/pages/ClusterUpgrade.tsx`,
+   the examples in this document, and the source and target versions of the
+   kind upgrade integration test (`internal/kubernetes/upgrade_integration_test.go`,
+   described in [Kubernetes autoscaling](kubernetes-autoscaling.md)). Move that
+   test to upgrade from the previous minor version to the new one.
+
+k3s and k0s need no Porto change: Porto downloads the selected release from
+upstream when it installs or upgrades a node.
+
 ## API
 
 `POST /api/kubernetes/clusters/{name}/upgrade` accepts
