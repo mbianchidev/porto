@@ -193,6 +193,12 @@ after selecting their context. Creation boots VMs and can take several minutes.
 `porto kubernetes cluster delete <name>` removes the node VMs and kubeconfig
 immediately, without a prompt.
 
+Pin a Kubernetes release at creation with `--version` (`v1.37.1+k3s1`,
+`v1.36.4+k0s.1`, or `v1.37.0` for kind and Apple); without it k3s and k0s use
+their stable channel. `porto kubernetes cluster upgrade <name> --version <release> --confirm`
+upgrades one minor version at a time and interrupts the cluster, so ask first.
+See [newer Kubernetes releases](https://github.com/mbianchidev/porto/blob/main/docs/kubernetes-upgrades.md#newer-kubernetes-releases).
+
 ## 7. Linux VMs
 
 ```sh
