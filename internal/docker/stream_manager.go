@@ -153,6 +153,9 @@ func (m *Manager) StartContainerAttached(ctx context.Context, id string, stdin b
 		process, err = m.startTerminalProcess(ctx, "start attached Porto container terminal", console[0], args...)
 	} else {
 		process, err = m.startProcess(ctx, "start attached Porto container", args...)
+		if err == nil {
+			process = withoutNerdctlLoggingWarnings(process)
+		}
 	}
 	if err == nil {
 		m.invalidateContainerInventory()

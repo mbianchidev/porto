@@ -7,6 +7,8 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"testing/iotest"
+	"time"
 
 	"github.com/mbianchidev/porto/internal/runtimes"
 )
@@ -75,5 +77,49 @@ func TestStartAttachFollowsLogsAndForwardsInputForCompatibilityContainers(t *tes
 	if len(started) != 2 || !strings.HasPrefix(started[0], "logs --follow --since ") || !strings.HasSuffix(started[0], " demo") ||
 		started[1] != "attach --no-stdin demo" {
 		t.Fatalf("started commands = %q", started)
+	}
+}
+
+func TestNerdctlAttachDropsOnlyLoggingBinaryWarningsFromContainerStderr(t *testing.T) {
+	input := "synthetic container error\n" +
+		`time="2026-01-02T03:04:05Z" level=warning msg="writing container output to the logging binary failed; further output will not be logged" error="write |1: broken pipe"` + "\n" +
+		`time="2026-01-02T03:04:05Z" level=fatal msg="synthetic start failure"` + "\n" +
+		`time="synthetic partial line`
+	var output strings.Builder
+	if err := copyWithoutNerdctlLoggingWarnings(&output, iotest.OneByteReader(strings.NewReader(input))); err != nil {
+		t.Fatal(err)
+	}
+	want := "synthetic container error\n" +
+		`time="2026-01-02T03:04:05Z" level=fatal msg="synthetic start failure"` + "\n" +
+		`time="synthetic partial line`
+	if output.String() != want {
+		t.Fatalf("filtered stderr = %q, want %q", output.String(), want)
+	}
+}
+
+func TestNerdctlAttachStreamsPartialStderrLinesImmediately(t *testing.T) {
+	source, writer := io.Pipe()
+	process := withoutNerdctlLoggingWarnings(&fakeProcess{stderr: source})
+	go func() { _, _ = writer.Write([]byte("Synthetic prompt: ")) }()
+	read := make(chan string, 1)
+	go func() {
+		buffer := make([]byte, 64)
+		count, _ := process.Stderr().Read(buffer)
+		read <- string(buffer[:count])
+	}()
+	select {
+	case got := <-read:
+		if got != "Synthetic prompt: " {
+			t.Fatalf("partial stderr = %q", got)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("partial stderr line was held back")
+	}
+	_ = writer.Close()
+	if rest, err := io.ReadAll(process.Stderr()); err != nil || len(rest) != 0 {
+		t.Fatalf("remaining stderr = %q, %v", rest, err)
+	}
+	if err := process.Stderr().Close(); err != nil {
+		t.Fatal(err)
 	}
 }

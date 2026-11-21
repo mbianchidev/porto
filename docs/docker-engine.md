@@ -800,6 +800,13 @@ behavior:
   the client's only for containers created with `StdinOnce` (`docker create -i`,
   `docker run -i`). A container started without open input refuses attached
   input explicitly; use `docker exec -i`.
+- **Runtime warnings in attached output.** nerdctl 2.4 copies a foreground
+  container's output into its logging binary and warns on its own stderr when
+  that binary exits before a short-lived container's last write. Docker never
+  puts runtime diagnostics in a container's stderr, so non-terminal attached
+  starts drop exactly that warning line. All other stderr, including other
+  nerdctl errors, is forwarded unchanged, and partial lines such as prompts
+  still stream immediately.
 - **Network connect and disconnect.** CNI runs inside RootlessKit's user, mount
   and network namespaces, where rootless containerd keeps its bridges and IPAM
   state.
