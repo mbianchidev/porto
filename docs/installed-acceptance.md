@@ -145,8 +145,10 @@ assertions, and all existing command and job deadlines remain unchanged.
 Linux/macOS install their documented QEMU
 prerequisite; Windows must select its shipped architecture-matched QEMU.
 Intel macOS TCG additionally uses Lima's upstream `no_timer_check` CI workaround
-with the same pinned guest image and matching SHA-256-pinned kernel/initrd.
-Only that emulated fixture skips the guest kernel's timer sanity check; all
+and a 10-minute `systemd.default_device_timeout_sec`, with the same pinned guest
+image and matching SHA-256-pinned kernel/initrd.
+Only that emulated fixture skips the guest kernel's timer sanity check and waits
+longer for slow udev to publish its required `/boot` labels; all
 Porto rendering, ownership, lifecycle and preservation assertions remain.
 Production defaults and non-Intel fixtures are unchanged.
 Installed ARM64 TCG guests use measured host parallelism: at least two guest

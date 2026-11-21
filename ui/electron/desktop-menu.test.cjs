@@ -59,8 +59,16 @@ function desktopFixture({
         getApplicationMenu: () => calls.applicationMenu,
       },
       nativeImage: {
-        createFromPath: () => ({ resize: () => ({ isEmpty: () => false }) }),
+        createEmpty: () => {
+          const representations = []
+          return {
+            addRepresentation: (representation) => representations.push(representation),
+            isEmpty: () => representations.length === 0,
+            setTemplateImage() {},
+          }
+        },
       },
+      nativeTheme: { shouldUseDarkColors: false, shouldUseDarkColorsForSystemIntegratedUI: false, on() {} },
       Tray: class {
         setToolTip() {}
         setContextMenu(menu) { calls.trayMenu = menu }

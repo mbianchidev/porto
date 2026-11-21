@@ -146,7 +146,25 @@ async function probeFirmware(program, args, firmware, { spawnImpl = spawn, timeo
   }
 }
 
+// Windows scans a freshly rewritten executable on its first launch. That scan has
+// stalled qemu-system past the 10-second QMP deadline with no output, so absorb
+// it once with a long bound before the deadline-bound probes.
+function warmExecutable(file) {
+  const name = path.basename(file)
+  const started = Date.now()
+  const result = spawnSync(file, ['--version'], {
+    encoding: 'utf8', timeout: 180000, maxBuffer: 65536, windowsHide: true,
+  })
+  if (result.error) throw new Error(`Bundled ${name} did not complete its first launch (${result.error.code || 'unknown error'})`,
+    { cause: result.error })
+  assert.equal(result.status, 0, `Bundled ${name} --version failed: ${result.stderr}`)
+  console.log(`${name} --version first launch took ${((Date.now() - started) / 1000).toFixed(1)}s`)
+}
+
 async function verifyUnicodeAccess(directory, architecture) {
+  const system = path.join(directory, `qemu-system-${architecture === 'amd64' ? 'x86_64' : 'aarch64'}.exe`)
+  warmExecutable(path.join(directory, 'qemu-img.exe'))
+  warmExecutable(system)
   const temporary = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-qemu-\u00e9 \u8def\u5f84-'))
   const invoke = (name, args, input) => {
     const result = spawnSync(path.join(directory, name), args, {
@@ -163,7 +181,7 @@ async function verifyUnicodeAccess(directory, architecture) {
     assert.equal(fs.statSync(image).size, 1024 * 1024)
     const firmware = path.join(temporary, 'firmware.fd')
     fs.copyFileSync(path.join(directory, 'share', `edk2-${architecture === 'amd64' ? 'x86_64' : 'aarch64'}-code.fd`), firmware)
-    await probeFirmware(path.join(directory, `qemu-system-${architecture === 'amd64' ? 'x86_64' : 'aarch64'}.exe`), [
+    await probeFirmware(system, [
       '-machine', `${architecture === 'amd64' ? 'q35' : 'virt'},accel=tcg`,
       '-cpu', architecture === 'amd64' ? 'qemu64' : 'neoverse-n1',
       '-m', '128', '-S', '-nodefaults', '-no-user-config', '-display', 'none', '-net', 'none',

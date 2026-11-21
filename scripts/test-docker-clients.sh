@@ -327,7 +327,7 @@ else
       export PORTO_DOCKER_CLIENT_SOFTWARE_EMULATION=1
       PORTO_DOCKER_CLIENT_LIMA_IMAGES="$(node scripts/lima-containerd-archive.cjs --intel-tcg-images)"
       export PORTO_DOCKER_CLIENT_LIMA_IMAGES
-      echo "::notice::Intel macOS TCG uses Lima's CI-only no_timer_check workaround with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged."
+      echo "::notice::Intel macOS TCG uses Lima's CI-only no_timer_check workaround and a 10-minute systemd device timeout with matching pinned kernel/initrd; Porto assertions and production defaults are unchanged."
       echo "::notice::Intel macOS data fixtures explicitly use bounded QEMU TCG; a hardware capability bit is not support for nested HVF on hosted runners."
     fi
   fi

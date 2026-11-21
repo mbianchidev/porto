@@ -915,9 +915,16 @@ instruction counting. Intel macOS TCG fixtures explicitly opt into Lima's
 [intermittent IO-APIC timer panic](https://github.com/lima-vm/lima/issues/84).
 They boot the same checksum-pinned Ubuntu 26.04 image selected by Lima 2.2.1,
 with its matching dated-release kernel and initrd also pinned by SHA-256, and
-append only `no_timer_check` to the guest command line. This disables the guest
-kernel's hardware-timer sanity check in those emulated fixtures, not a Porto
-assertion. Both source and destination use the same override. CI emits an
+append only `no_timer_check` and `systemd.default_device_timeout_sec=600` to
+the guest command line. The first disables the guest kernel's hardware-timer
+sanity check in those emulated fixtures, not a Porto assertion. The second
+raises systemd's 90-second
+[device timeout](https://www.freedesktop.org/software/systemd/man/latest/kernel-command-line.html)
+so slow emulated udev can still publish the `LABEL=BOOT` and `LABEL=UEFI` links:
+on a slow hosted Intel runner those device units expired, `local-fs.target`
+failed and the guest stopped in emergency mode. The mounts stay required, and
+the change stays well inside the 20-minute engine start budget. Both source and
+destination use the same override. CI emits an
 explicit notice; packaged runtime defaults, non-Intel fixtures and native
 hardware acceptance are unchanged. Keep all three dated image/kernel/initrd pins
 aligned when updating this fixture. Raising Lima's outer timeout does not repair an
