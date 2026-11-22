@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -76,15 +75,9 @@ func (m *Manager) shareTemporaryDirectories(ctx context.Context, instance string
 }
 
 func (m *Manager) addTemporaryShares(ctx context.Context, instance string) error {
-	output, err := m.runStdoutCommand(ctx, 20*time.Second, "inspect owned engine mount configuration", "limactl", "list", instance, "--json")
+	listed, err := m.listLimaInstance(ctx, "inspect owned engine mount configuration", instance)
 	if err != nil {
 		return err
-	}
-	var listed struct {
-		Dir string `json:"dir"`
-	}
-	if err := json.Unmarshal(output, &listed); err != nil || listed.Dir == "" || filepath.Base(listed.Dir) != instance {
-		return errors.New("Lima did not return the owned engine's configuration directory")
 	}
 	configuration, err := os.ReadFile(filepath.Join(listed.Dir, "lima.yaml"))
 	if err != nil {

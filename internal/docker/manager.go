@@ -557,10 +557,18 @@ func (m *Manager) startLimaRuntime(ctx context.Context, action string, args ...s
 	limactl := m.engineStartCommand()
 	var output []byte
 	var err error
+	begin := time.Now()
 	if engineObserver(ctx) != nil {
 		err = m.streamEngineInstallCommand(ctx, engineStartTimeout, action, runtimes.Command{Name: limactl, Args: arguments})
 	} else {
 		output, err = m.runCommand(ctx, engineStartTimeout, action, nil, limactl, arguments...)
+	}
+	if err != nil && strings.Contains(err.Error(), limaPartialEventFailure) {
+		if resumeErr := m.resumeLimaStart(ctx, engineInstanceName, begin); resumeErr != nil {
+			err = errors.Join(err, fmt.Errorf("resume Porto container runtime start: %w", resumeErr))
+		} else {
+			err = nil
+		}
 	}
 	if err != nil {
 		err = withLimaGuestDiagnostics(err)
