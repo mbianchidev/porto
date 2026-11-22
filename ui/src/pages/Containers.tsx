@@ -1,6 +1,20 @@
-import { lazy, Suspense, useRef, useState, type FormEvent, type ReactNode } from 'react'
-import { apiGet, apiSend, errorMessage } from '../api'
+import { lazy, Suspense, useEffect, useId, useRef, useState, type FormEvent, type ReactNode } from 'react'
+import { apiGet, apiSend, errorMessage, isAbortError } from '../api'
 import { useContainerSnapshots } from '../containerSnapshots'
+import {
+  composeStackPlan,
+  composeStackResources,
+  containerDisplayName,
+  containerState,
+  describeStepFailures,
+  isActive,
+  isPaused,
+  isStartable,
+  removeComposeStack,
+  runComposeSteps,
+  type ComposeStackAction,
+  type ComposeStackResources,
+} from '../containerLifecycle'
 import { usePolledResource } from '../hooks'
 import { useMessages } from '../useMessages'
 import { useDockerMode } from '../dockerMode'
@@ -54,21 +68,10 @@ const ContainerInspect = lazy(async () => {
 const TERMINAL_SHELLS = ['sh', 'bash', 'ash', '/bin/bash'] as const
 const WINDOWS_TERMINAL_SHELLS = ['cmd.exe', 'powershell.exe'] as const
 type TerminalShell = (typeof TERMINAL_SHELLS)[number] | (typeof WINDOWS_TERMINAL_SHELLS)[number]
-
-function containerState(container: DockerContainer) {
-  return container.state.toLocaleLowerCase()
-}
-
-function isPaused(container: DockerContainer) {
-  return containerState(container) === 'paused'
-}
-
-function isStartable(container: DockerContainer) {
-  return ['stopped', 'exited', 'created'].includes(containerState(container))
-}
-
-function isActive(container: DockerContainer) {
-  return ['running', 'paused', 'pausing', 'restarting'].includes(containerState(container))
+const STACK_ACTION_TEXT: Record<ComposeStackAction, { label: string; progress: string; done: string }> = {
+  start: { label: 'Start stack', progress: 'Starting', done: 'Started' },
+  stop: { label: 'Stop stack', progress: 'Stopping', done: 'Stopped' },
+  restart: { label: 'Restart stack', progress: 'Restarting', done: 'Restarted' },
 }
 
 function containerTerminalSocketURL(container: DockerContainer, shell: TerminalShell, debug: boolean): string {
@@ -111,8 +114,8 @@ function containerColumns(grouped: boolean): InventoryColumn<DockerContainer>[] 
       header: grouped ? 'Service / container' : 'Name',
       render: (container) => (
         <span className="containerIdentity">
-          <strong>{grouped ? container.composeService || container.name.replace(/^\//, '') : container.name.replace(/^\//, '')}</strong>
-          {grouped && container.composeService && <small>{container.name.replace(/^\//, '')}</small>}
+          <strong>{grouped ? container.composeService || containerDisplayName(container) : containerDisplayName(container)}</strong>
+          {grouped && container.composeService && <small>{containerDisplayName(container)}</small>}
         </span>
       ),
     },
@@ -149,6 +152,7 @@ export function Containers() {
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([project, projectContainers]) => ({
       project,
+      stack: projectContainers,
       containers: project.toLocaleLowerCase().includes(normalizedQuery)
         ? projectContainers
         : projectContainers.filter((container) => containerMatches(container, normalizedQuery)),
@@ -241,6 +245,11 @@ export function Containers() {
     }
   }
 
+  function stackChanged(removedIDs: string[] = []) {
+    containers.reload()
+    if (selectedID && removedIDs.includes(selectedID)) setSelectedID(null)
+  }
+
   function containerActions(container: DockerContainer) {
     const paused = isPaused(container)
     const startable = isStartable(container)
@@ -293,7 +302,7 @@ export function Containers() {
         <label className="projectSearch">
           <span className="visuallyHidden">Filter containers</span>
           <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="6.5" /><path d="m16 16 4 4" /></svg>
-          <ResourceInput options={items.flatMap((container) => [container.name.replace(/^\//, ''), ...(container.composeProject ? [container.composeProject] : [])])} type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
+          <ResourceInput options={items.flatMap((container) => [containerDisplayName(container), ...(container.composeProject ? [container.composeProject] : [])])} type="search" value={query} placeholder="Filter containers by name, image, or status" onChange={(event) => setQuery(event.target.value)} />
         </label>
         <span className="filterResultCount" aria-live="polite">{filteredCount} / {items.length} containers</span>
         <button className="refreshControl" type="button" disabled={!available} onClick={() => setCreateOpen((value) => !value)}>
@@ -406,8 +415,10 @@ export function Containers() {
               <ComposeContainerGroup
                 project={group.project}
                 containers={group.containers}
+                stackContainers={group.stack}
                 selectedID={selectedID}
                 onSelect={(container) => openContainer(container)}
+                onStackChanged={stackChanged}
                 renderActions={containerActions}
                 key={group.project}
               />
@@ -439,7 +450,7 @@ export function Containers() {
         )}
 
         {selected && (
-          <Inspector title={selected.name.replace(/^\//, '')} subtitle={[selected.image, selected.composeProject, selected.composeService].filter(Boolean).join(' · ')} onClose={closeInspector}>
+          <Inspector title={containerDisplayName(selected)} subtitle={[selected.image, selected.composeProject, selected.composeService].filter(Boolean).join(' · ')} onClose={closeInspector}>
             <InspectorTabs
               panelID="container-inspector-panel"
               tabs={[
@@ -558,50 +569,224 @@ export function Containers() {
 function ComposeContainerGroup({
   project,
   containers,
+  stackContainers,
   selectedID,
   onSelect,
+  onStackChanged,
   renderActions,
 }: {
   project: string
   containers: DockerContainer[]
+  stackContainers: DockerContainer[]
   selectedID: string | null
   onSelect: (container: DockerContainer) => void
+  onStackChanged: (removedIDs?: string[]) => void
   renderActions: (container: DockerContainer) => ReactNode
 }) {
+  const { notifyError, notifyNotice } = useMessages()
   const [open, setOpen] = useState(true)
+  const [busy, setBusy] = useState('')
+  const [confirmingRemoval, setConfirmingRemoval] = useState(false)
+  const [resources, setResources] = useState<ComposeStackResources | null>(null)
+  const [deleteVolumes, setDeleteVolumes] = useState(false)
+  const resourceRequest = useRef<AbortController | null>(null)
+  const removeTrigger = useRef<HTMLButtonElement | null>(null)
+  const removalPanel = useRef<HTMLElement | null>(null)
+  const baseID = useId()
+  const bodyID = `${baseID}-body`
+  const removalTitleID = `${baseID}-removal-title`
+  const removalPanelID = `${baseID}-removal`
   const services = new Set(containers.map((container) => container.composeService).filter(Boolean)).size
   const running = containers.filter((container) => containerState(container) === 'running').length
   const groupState = composeGroupLamp(containers)
+  const activeCount = stackContainers.filter(isActive).length
+  const startable = stackContainers.some((container) => isStartable(container) || isPaused(container))
+
+  useEffect(() => () => resourceRequest.current?.abort(), [])
+  useEffect(() => {
+    if (confirmingRemoval) removalPanel.current?.focus()
+  }, [confirmingRemoval])
+
+  async function runStackAction(action: ComposeStackAction) {
+    const text = STACK_ACTION_TEXT[action]
+    const steps = composeStackPlan(stackContainers, action)
+    const total = steps.flat().length
+    setBusy(`${text.progress} stack…`)
+    try {
+      const result = await runComposeSteps(steps, action !== 'stop')
+      if (result.failures.length === 0) {
+        notifyNotice('containers', `${text.done} ${result.completed.length} container(s) in ${project}.`)
+      } else {
+        const skipped = result.skipped.length > 0 ? ` Skipped ${result.skipped.length} dependent container(s).` : ''
+        notifyError('containers', `Unable to ${action} ${result.failures.length} of ${total} container(s) in ${project}. ${describeStepFailures(result.failures)}.${skipped}`)
+      }
+    } finally {
+      setBusy('')
+      onStackChanged()
+    }
+  }
+
+  function openRemoval() {
+    resourceRequest.current?.abort()
+    const controller = new AbortController()
+    resourceRequest.current = controller
+    setOpen(true)
+    setConfirmingRemoval(true)
+    setDeleteVolumes(false)
+    setResources(null)
+    composeStackResources(project, controller.signal)
+      .then((value) => {
+        if (!controller.signal.aborted) setResources(value)
+      })
+      .catch((err: unknown) => {
+        if (isAbortError(err)) return
+        const message = errorMessage(err, 'Unable to list stack resources')
+        setResources({ networks: [], volumes: [], networkError: message, volumeError: message })
+      })
+  }
+
+  function closeRemoval() {
+    resourceRequest.current?.abort()
+    setConfirmingRemoval(false)
+    setResources(null)
+    setDeleteVolumes(false)
+    requestAnimationFrame(() => {
+      if (removeTrigger.current?.isConnected) removeTrigger.current.focus()
+    })
+  }
+
+  async function removeStack() {
+    if (!resources) return
+    const withVolumes = deleteVolumes && !resources.volumeError
+    const keptNetworks = resources.networkError ? ' Networks could not be listed and were kept.' : ''
+    setBusy('Stopping…')
+    try {
+      const removal = await removeComposeStack(stackContainers, resources, withVolumes, (phase) => setBusy(`${phase}…`))
+      const failures = [...removal.stop.failures, ...removal.remove.failures]
+      if (failures.length > 0) {
+        notifyError('containers', `Removed ${removal.remove.completed.length} of ${stackContainers.length} container(s) in ${project}. ${describeStepFailures(failures)}. Networks and volumes were kept because containers remain.`)
+      } else {
+        const parts = [`${removal.remove.completed.length} container(s)`, `${removal.removedNetworks.length} network(s)`]
+        if (withVolumes) parts.push(`${removal.removedVolumes.length} volume(s)`)
+        if (removal.resourceFailures.length > 0) {
+          notifyError('containers', `Removed ${parts.join(', ')} from ${project}, but some resources remain. ${removal.resourceFailures.join('; ')}.${keptNetworks}`)
+        } else {
+          notifyNotice('containers', `Removed Compose stack ${project}: ${parts.join(', ')}.${withVolumes ? '' : ' Volumes were kept.'}${keptNetworks}`)
+        }
+      }
+      onStackChanged(removal.remove.completed.map((container) => container.id))
+    } finally {
+      setBusy('')
+      closeRemoval()
+    }
+  }
 
   return (
-    <details className="containerComposeGroup" open={open} onToggle={(event) => setOpen(event.currentTarget.open)}>
-      <summary>
-        <span className="containerComposeIdentity">
-          <StatusLamp state={groupState} />
-          <span className="visuallyHidden">{groupState} application state</span>
-          <span>
-            <strong>{project}</strong>
-            <small>Compose application</small>
+    <section className={`containerComposeGroup ${open ? 'open' : ''}`.trim()} aria-label={`${project} Compose application`}>
+      <div className="containerComposeHeader">
+        <button type="button" className="containerComposeToggle" aria-expanded={open} aria-controls={bodyID} onClick={() => setOpen((value) => !value)}>
+          <span className="containerComposeIdentity">
+            <StatusLamp state={groupState} />
+            <span className="visuallyHidden">{groupState} application state</span>
+            <span>
+              <strong>{project}</strong>
+              <small>Compose application</small>
+            </span>
           </span>
-        </span>
-        <span className="containerComposeMeta">{services} service(s) · {containers.length} container(s) · {running} running</span>
-      </summary>
-      <div className="containerComposeBody">
-        <InventoryList
-          items={containers}
-          getKey={(container) => container.id}
-          columnsTemplate={COLUMNS_TEMPLATE}
-          getLamp={(container) => lampStateFor(container.state)}
-          getLampLabel={(container) => container.state}
-          selectedKey={selectedID}
-          onSelect={onSelect}
-          ariaLabel={`${project} Compose containers`}
-          emptyMessage={`No matching containers in ${project}.`}
-          columns={containerColumns(true)}
-          renderActions={renderActions}
-        />
+          <span className="containerComposeMeta">{services} service(s) · {containers.length} container(s) · {running} running</span>
+        </button>
+        <div className="containerComposeActions" role="group" aria-label={`${project} stack actions`}>
+          <span className="containerComposeStatus" role="status">{busy}</span>
+          {(['start', 'stop', 'restart'] as const).map((action) => (
+            <ActionButton
+              key={action}
+              label={STACK_ACTION_TEXT[action].label}
+              icon={action === 'start' ? 'play' : action}
+              disabled={Boolean(busy) || (action === 'start' ? !startable : activeCount === 0)}
+              onClick={() => void runStackAction(action)}
+            />
+          ))}
+          <ActionButton
+            ref={removeTrigger}
+            className="removeButton"
+            label="Remove stack"
+            icon="remove"
+            aria-expanded={confirmingRemoval}
+            aria-controls={confirmingRemoval ? removalPanelID : undefined}
+            disabled={Boolean(busy) || stackContainers.length === 0}
+            onClick={() => confirmingRemoval ? closeRemoval() : openRemoval()}
+          />
+        </div>
       </div>
-    </details>
+      {open && (
+        <div className="containerComposeBody" id={bodyID}>
+          {confirmingRemoval && (
+            <section
+              className="drawerPanel containerComposeRemoval"
+              id={removalPanelID}
+              aria-labelledby={removalTitleID}
+              ref={removalPanel}
+              tabIndex={-1}
+              onKeyDown={(event) => {
+                if (event.key === 'Escape' && !busy) closeRemoval()
+              }}
+            >
+              <h3 id={removalTitleID}>Remove Compose stack {project}</h3>
+              <p>
+                {activeCount > 0 ? `Stops ${activeCount} running container(s), then removes ` : 'Removes '}
+                all {stackContainers.length} container(s) and the stack's networks, like <code>docker compose down</code>.
+              </p>
+              {resources === null ? (
+                <p role="status">Checking the stack's networks and volumes…</p>
+              ) : (
+                <>
+                  <dl className="runtimeGrid">
+                    <div>
+                      <dt>Networks</dt>
+                      <dd>{resources.networkError ? `Unavailable and kept: ${resources.networkError}` : resources.networks.join(', ') || 'None found'}</dd>
+                    </div>
+                    <div>
+                      <dt>Volumes</dt>
+                      <dd>{resources.volumeError ? `Unavailable and kept: ${resources.volumeError}` : resources.volumes.join(', ') || 'No named volumes'}</dd>
+                    </div>
+                  </dl>
+                  <label className="containerComposeVolumeChoice">
+                    <input
+                      type="checkbox"
+                      checked={deleteVolumes}
+                      disabled={Boolean(resources.volumeError) || Boolean(busy)}
+                      onChange={(event) => setDeleteVolumes(event.target.checked)}
+                    />
+                    <span>
+                      Also delete volumes, like <code>docker compose down -v</code>. Permanently deletes the named volumes listed above and the containers' anonymous volumes.
+                    </span>
+                  </label>
+                </>
+              )}
+              <div className="containerCreateActions">
+                <button type="button" className="destructiveAction" disabled={resources === null || Boolean(busy)} onClick={() => void removeStack()}>
+                  {deleteVolumes ? 'Confirm stack and volume removal' : 'Confirm stack removal'}
+                </button>
+                <button type="button" disabled={Boolean(busy)} onClick={closeRemoval}>Cancel</button>
+              </div>
+            </section>
+          )}
+          <InventoryList
+            items={containers}
+            getKey={(container) => container.id}
+            columnsTemplate={COLUMNS_TEMPLATE}
+            getLamp={(container) => lampStateFor(container.state)}
+            getLampLabel={(container) => container.state}
+            selectedKey={selectedID}
+            onSelect={onSelect}
+            ariaLabel={`${project} Compose containers`}
+            emptyMessage={`No matching containers in ${project}.`}
+            columns={containerColumns(true)}
+            renderActions={renderActions}
+          />
+        </div>
+      )}
+    </section>
   )
 }
 
@@ -645,7 +830,7 @@ function ContainerTerminal({ container }: { container: DockerContainer }) {
           key={`${container.id}:${mode}:${shell}:${container.state}`}
           endpoint={endpoint}
           title={debug ? 'Debug terminal' : 'Container terminal'}
-          detail={container.name.replace(/^\//, '')}
+          detail={containerDisplayName(container)}
           running={running}
           ariaLabel={`${debug ? 'Debug' : 'Interactive'} terminal for ${container.name}`}
           stoppedMessage={isPaused(container) ? 'Resume the container to open its terminal.' : 'Start the container to open its terminal.'}

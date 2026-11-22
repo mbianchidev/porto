@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test'
+import { composeStackPlan } from '../src/containerLifecycle'
 import { isLogRecord, LogBuffer, type LogRecord } from '../src/containerLogs'
 import type { FileEntry, FileListing } from '../src/dataTypes'
 
@@ -197,7 +198,7 @@ test('Compose status and running counts follow live task snapshots', async ({ pa
   })
   await page.goto('/#/containers', { waitUntil: 'networkidle' })
   const group = page.locator('.containerComposeGroup')
-  const summary = group.locator('summary')
+  const summary = group.locator('.containerComposeToggle')
   await expect(summary).toContainText('3 service(s) · 4 container(s) · 0 running')
   const filter = page.getByLabel('Filter containers', { exact: true })
   const suggestions = () => filter.evaluate((element) => {
@@ -276,11 +277,137 @@ for (const grouped of [true, false]) {
     }
     await expect(page.getByRole('option', { name: /Status: Restarting/ })).toHaveCount(0)
     if (grouped) {
-      await expect(page.locator('.containerComposeGroup summary')).toContainText('2 service(s) · 2 container(s) · 0 running')
+      await expect(page.locator('.containerComposeToggle')).toContainText('2 service(s) · 2 container(s) · 0 running')
       await page.screenshot({ path: testInfo.outputPath('inactive-containers.png'), fullPage: true })
     }
   })
 }
+
+function stackMember(service: string, state: string, dependsOn = '') {
+  return {
+    ...fixture, id: `synthetic-${service}`, name: `fixture-stack-${service}-1`, composeService: service,
+    state, status: state === 'running' ? 'Up' : 'Exited (0)', taskPresent: state === 'running', pid: state === 'running' ? 10 : 0,
+    labels: dependsOn ? { 'com.docker.compose.depends_on': dependsOn } : {},
+  }
+}
+
+test('Compose stack plans follow depends_on order and tolerate cycles', () => {
+  const ids = (waves: ReturnType<typeof composeStackPlan>) => waves.map((wave) => wave.map((step) => `${step.container.id}:${step.action}`))
+  const stack = [
+    stackMember('web', 'exited', 'api:service_started:false'),
+    stackMember('api', 'paused', 'db:service_healthy:false,cache:service_started:true'),
+    stackMember('db', 'running'),
+  ]
+  expect(ids(composeStackPlan(stack, 'start'))).toEqual([['synthetic-api:unpause'], ['synthetic-web:start']])
+  expect(ids(composeStackPlan(stack, 'stop'))).toEqual([['synthetic-api:stop'], ['synthetic-db:stop']])
+  expect(ids(composeStackPlan(stack, 'restart'))).toEqual([['synthetic-db:restart'], ['synthetic-api:restart']])
+  const cycle = [stackMember('a', 'running', 'b:service_started:false'), stackMember('b', 'running', 'a:service_started:false')]
+  expect(ids(composeStackPlan(cycle, 'stop'))).toEqual([['synthetic-a:stop', 'synthetic-b:stop']])
+})
+
+test('Compose stack controls act on the whole stack and removal previews networks and volumes', async ({ page }, testInfo) => {
+  const stack = [
+    stackMember('db', 'running'),
+    stackMember('api', 'running', 'db:service_healthy:false'),
+    stackMember('web', 'exited', 'api:service_started:false'),
+  ]
+  const other = { ...stackMember('db', 'running'), id: 'synthetic-other', name: 'other-db', composeProject: 'other-stack' }
+  await mockRuntime(page, { ...snapshot, containers: [...stack, other] })
+  const mutations: string[] = []
+  await page.route('**/api/docker/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    const json = (value: unknown) => route.fulfill({ contentType: 'application/json', body: JSON.stringify(value) })
+    if (request.method() !== 'GET') {
+      mutations.push(`${request.method()} ${path}`)
+      return request.method() === 'DELETE' ? route.fulfill({ status: 204 }) : json({ status: 'ok' })
+    }
+    if (path === '/api/docker/networks') return json([
+      { name: 'fixture-stack_default', labels: { 'com.docker.compose.project': 'fixture-stack' } },
+      { name: 'other-stack_default', labels: { 'com.docker.compose.project': 'other-stack' } },
+      { name: 'shared-external', labels: {} },
+    ])
+    if (path === '/api/docker/volumes') return json([
+      { name: 'fixture-stack_data', labels: { 'com.docker.compose.project': 'fixture-stack', 'com.docker.compose.volume': 'data' } },
+      { name: 'other-stack_data', labels: { 'com.docker.compose.project': 'other-stack' } },
+    ])
+    return route.fallback()
+  })
+  await page.goto('/#/containers', { waitUntil: 'networkidle' })
+  const group = page.getByRole('region', { name: 'fixture-stack Compose application', exact: true })
+  const actions = group.getByRole('group', { name: 'fixture-stack stack actions' })
+
+  await actions.getByRole('button', { name: 'Start stack', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Started 1 container(s) in fixture-stack.' })).toBeVisible()
+  expect(mutations.splice(0)).toEqual(['POST /api/docker/containers/synthetic-web/start'])
+
+  await actions.getByRole('button', { name: 'Stop stack', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Stopped 2 container(s) in fixture-stack.' })).toBeVisible()
+  expect(mutations.splice(0)).toEqual(['POST /api/docker/containers/synthetic-api/stop', 'POST /api/docker/containers/synthetic-db/stop'])
+
+  await group.locator('.containerComposeToggle').click()
+  await expect(group.getByRole('listbox')).toHaveCount(0)
+  await actions.getByRole('button', { name: 'Remove stack', exact: true }).click()
+  const removal = group.getByRole('region', { name: 'Remove Compose stack fixture-stack' })
+  await expect(removal).toBeFocused()
+  await expect(removal).toContainText('Stops 2 running container(s), then removes all 3 container(s)')
+  await expect(removal.getByRole('definition').first()).toHaveText('fixture-stack_default')
+  await expect(removal.getByRole('definition').last()).toHaveText('fixture-stack_data')
+  await removal.press('Escape')
+  await expect(removal).toHaveCount(0)
+  await expect(actions.getByRole('button', { name: 'Remove stack', exact: true })).toBeFocused()
+  expect(mutations).toEqual([])
+
+  await actions.getByRole('button', { name: 'Remove stack', exact: true }).click()
+  await removal.getByRole('checkbox', { name: /Also delete volumes/ }).check()
+  await page.screenshot({ path: testInfo.outputPath('compose-stack-removal.png'), fullPage: true })
+  await removal.getByRole('button', { name: 'Confirm stack and volume removal', exact: true }).click()
+  await expect(page.getByRole('status').filter({ hasText: 'Removed Compose stack fixture-stack: 3 container(s), 1 network(s), 1 volume(s).' })).toBeVisible()
+  expect(mutations).toEqual([
+    'POST /api/docker/containers/synthetic-api/stop',
+    'POST /api/docker/containers/synthetic-db/stop',
+    'POST /api/docker/containers/synthetic-web/remove-volumes',
+    'POST /api/docker/containers/synthetic-api/remove-volumes',
+    'POST /api/docker/containers/synthetic-db/remove-volumes',
+    'DELETE /api/docker/networks/fixture-stack_default',
+    'DELETE /api/docker/volumes/fixture-stack_data',
+  ])
+})
+
+test('a failed Compose dependency skips only its dependents and keeps the stack networks', async ({ page }) => {
+  await mockRuntime(page, { ...snapshot, containers: [
+    stackMember('db', 'exited'), stackMember('api', 'exited', 'db:service_started:false'), stackMember('cache', 'exited'),
+  ] })
+  const mutations: string[] = []
+  await page.route('**/api/docker/**', async (route) => {
+    const request = route.request()
+    const path = new URL(request.url()).pathname
+    if (request.method() !== 'GET') {
+      mutations.push(`${request.method()} ${path}`)
+      if (path.endsWith('/synthetic-db/start') || path.endsWith('/synthetic-db/remove')) {
+        return route.fulfill({ status: 409, contentType: 'application/json', body: JSON.stringify({ message: 'synthetic conflict' }) })
+      }
+      return route.fulfill({ contentType: 'application/json', body: '{"status":"ok"}' })
+    }
+    if (path === '/api/docker/networks') {
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify([{ name: 'fixture-stack_default', labels: { 'com.docker.compose.project': 'fixture-stack' } }]) })
+    }
+    return route.fallback()
+  })
+  await page.goto('/#/containers', { waitUntil: 'networkidle' })
+  const group = page.getByRole('region', { name: 'fixture-stack Compose application', exact: true })
+  await group.getByRole('button', { name: 'Start stack', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Unable to start 1 of 3 container(s) in fixture-stack. fixture-stack-db-1: synthetic conflict. Skipped 1 dependent container(s).')
+  expect(mutations.splice(0).sort()).toEqual(['POST /api/docker/containers/synthetic-cache/start', 'POST /api/docker/containers/synthetic-db/start'])
+
+  await group.getByRole('button', { name: 'Remove stack', exact: true }).click()
+  const removal = group.getByRole('region', { name: 'Remove Compose stack fixture-stack' })
+  await expect(removal.getByRole('checkbox', { name: /Also delete volumes/ })).not.toBeChecked()
+  await removal.getByRole('button', { name: 'Confirm stack removal', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('Removed 2 of 3 container(s) in fixture-stack. fixture-stack-db-1: synthetic conflict. Networks and volumes were kept because containers remain.')
+  expect(mutations[0]).toBe('POST /api/docker/containers/synthetic-api/remove')
+  expect(mutations.slice(1).sort()).toEqual(['POST /api/docker/containers/synthetic-cache/remove', 'POST /api/docker/containers/synthetic-db/remove'])
+})
 
 test('logs remain bounded, searchable, stream-filtered and close on tab switch', async ({ page }) => {
       await mockRuntime(page)
