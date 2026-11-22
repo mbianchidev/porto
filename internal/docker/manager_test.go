@@ -1115,8 +1115,8 @@ func TestLimaEngineTemplate(t *testing.T) {
 		want string
 	}{
 		{goos: "windows", want: "template://ubuntu-24.04"},
-		{goos: "darwin", want: "template://default"},
-		{goos: "linux", want: "template://default"},
+		{goos: "darwin", want: "template://ubuntu-26.04"},
+		{goos: "linux", want: "template://ubuntu-26.04"},
 	} {
 		t.Run(test.goos, func(t *testing.T) {
 			if got := limaEngineTemplate(test.goos); got != test.want {
@@ -1150,7 +1150,7 @@ func TestInstallEngineFallsBackToWritableLimaBackend(t *testing.T) {
 	foundWritableMount := false
 	for _, command := range runner.commands {
 		if command.Name == "limactl" && strings.Contains(strings.Join(command.Args, " "), "--mount-writable") {
-			template := "template://default"
+			template := "template://ubuntu-26.04"
 			if runtime.GOOS == "windows" {
 				template = "template://ubuntu-24.04"
 			}

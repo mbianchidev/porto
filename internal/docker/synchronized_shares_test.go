@@ -3,6 +3,9 @@ package docker
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -22,6 +25,24 @@ func TestSynchronizedShareOutputSeparatesSSHConfigurationFromDiagnostics(t *test
 		"show-ssh", "--format=config", "porto-engine")
 	if err != nil || string(output) != configuration {
 		t.Fatalf("SSH configuration was contaminated by diagnostics: %q, %v", output, err)
+	}
+}
+
+func TestSynchronizedShareKnownHostsMatchesLimaHostKeyAlias(t *testing.T) {
+	keygen, err := exec.LookPath("ssh-keygen")
+	if err != nil {
+		t.Skip("OpenSSH ssh-keygen is unavailable")
+	}
+	const key = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQ"
+	knownHosts := filepath.Join(t.TempDir(), "known_hosts")
+	if err := os.WriteFile(knownHosts, []byte(synchronizedShareKnownHosts("lima-porto-engine", 12345, key)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, host := range []string{"[127.0.0.1]:12345", "[::1]:12345", "lima-porto-engine"} {
+		output, err := exec.Command(keygen, "-F", host, "-f", knownHosts).CombinedOutput()
+		if err != nil || !strings.Contains(string(output), key) {
+			t.Errorf("OpenSSH cannot find the pinned guest key for %s: %v: %s", host, err, output)
+		}
 	}
 }
 

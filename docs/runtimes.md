@@ -507,11 +507,11 @@ Porto supports these providers without changing the existing default:
 - **apple** (Apple silicon only, experimental): Porto-owned native node containers, each backed by its own Apple Virtualization.framework VM
 
 k3s and k0s nodes use Ubuntu 24.04 cloud disk images and Lima's `user-v2`
-network for communication between nodes. On Windows, Lima 2.2 uses QEMU
+network for communication between nodes. On Windows, Lima 2.3 uses QEMU
 (version 11 or newer, with Windows Hypervisor Platform). Porto does not
-substitute the experimental WSL2 driver: it requires rootfs tar archives and
+substitute the experimental WSL2 or HCS drivers: WSL2 requires rootfs tar archives and
 does not implement the same per-VM CPU, memory, and networking settings.
-See Lima's [QEMU implementation](https://github.com/lima-vm/lima/blob/v2.2.0/pkg/driver/qemu/qemu.go)
+See Lima's [QEMU implementation](https://github.com/lima-vm/lima/blob/v2.3.0/pkg/driver/qemu/qemu.go)
 and [WSL2 limitations](https://github.com/lima-vm/lima/blob/v2.2.0/website/content/en/docs/config/vmtype/wsl2.md).
 
 Kubernetes nodes disable inherited host-directory mounts and Lima's own

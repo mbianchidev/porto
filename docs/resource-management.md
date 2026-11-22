@@ -210,6 +210,8 @@ suspension until their synchronization is paused.
 
 SSH configuration, verified host keys and the Mutagen daemon are private to
 Porto. Global SSH configuration and unrelated Mutagen sessions are not changed.
+The pinned key is recorded for the loopback endpoint and for Lima's
+`lima-<instance>` host-key alias, which Lima 2.3 adds to its SSH configuration.
 Multiplexing, persistence and agent forwarding are disabled for these private
 connections.
 

@@ -622,7 +622,7 @@ func limaEngineTemplate(goos string) string {
 	if goos == "windows" {
 		return "template://ubuntu-24.04"
 	}
-	return "template://default"
+	return "template://ubuntu-26.04"
 }
 
 func (m *Manager) runtimeHelperPath() (string, error) {

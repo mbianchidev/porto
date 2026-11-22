@@ -61,8 +61,9 @@ The API server is part of the Porto daemon and starts whenever the Docker runtim
 An explicit supported Rosetta policy selects VZ and its amd64 userspace handler
 for a new Apple Silicon engine instead. Existing QEMU disks are not converted.
 
-New Windows engines use `template://ubuntu-24.04`; macOS and Linux keep Lima's
-default template. This selection applies only when creating an engine and
+New Windows engines use `template://ubuntu-24.04`; macOS and Linux engines use
+`template://ubuntu-26.04`, the LTS release that Lima 2.3 no longer selects by
+default. This selection applies only when creating an engine and
 never changes the disk or image of an existing instance.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
