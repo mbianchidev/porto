@@ -223,7 +223,9 @@ or an early forced kill, and caller cancellation still wins.
 Noninteractive Lima FIFO bridges also watch a private lifetime channel: closing
 unused application stdin cannot terminate output, while completion or failed
 setup releases guest reader jobs and their FIFO directory instead of consuming
-SSH multiplexing slots.
+SSH multiplexing slots. Completion first gives the readers about half a second
+to reach EOF, so output the shim is still copying after the exit event is not
+cut off.
 
 Choose **Compose editor**, upload a YAML/JSON file (at most 1 MiB), select an
 immutable template version, or provide an explicit Git repository/ref/file.

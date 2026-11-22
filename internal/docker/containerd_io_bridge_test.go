@@ -91,6 +91,66 @@ func TestNonInteractiveLimaBridgeReleasesItsGuestJobsOnControlEOF(t *testing.T) 
 	}
 }
 
+func TestNonInteractiveLimaBridgeForwardsOutputWrittenAfterControlEOF(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the bridge runs inside a Linux guest; this host probe requires POSIX sh and mkfifo")
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	var bridge runtimes.Process
+	runner := &fakeRunner{starter: func(runtimes.Command) (runtimes.Process, error) {
+		var err error
+		bridge, err = (runtimes.ExecRunner{}).Start(ctx, runtimes.Command{
+			Name: "sh", Args: []string{"-c", limaIOBridgeScript, "porto-io-fixture", "0", "0", ""},
+			Env: []string{"XDG_RUNTIME_DIR=" + t.TempDir()},
+		})
+		return bridge, err
+	}}
+	backend := &grpcContainerRuntime{runner: runner, lima: "synthetic"}
+	processIO, err := backend.newLimaProcessIO(ctx, "synthetic", false, false, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = bridge.Kill(); _ = bridge.Wait() })
+	stream, err := processIO.creator("synthetic")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var writers []*os.File
+	for _, path := range []string{stream.Config().Stdout, stream.Config().Stderr} {
+		writer, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			t.Fatal(err)
+		}
+		writers = append(writers, writer)
+		t.Cleanup(func() { _ = writer.Close() })
+	}
+	output := make(chan []byte, 1)
+	go func() { data, _ := io.ReadAll(processIO.stdout); output <- data }()
+	// The exit event can reach the host before the shim's final FIFO write.
+	processIO.finishOutput()
+	time.Sleep(100 * time.Millisecond)
+	if _, err := writers[0].Write([]byte("synthetic-late-output\n")); err != nil {
+		t.Fatalf("guest FIFO reader stopped before the shim finished writing: %v", err)
+	}
+	for _, writer := range writers {
+		if err := writer.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	select {
+	case data := <-output:
+		if string(data) != "synthetic-late-output\n" {
+			t.Fatalf("late container output = %q", data)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("guest bridge did not release after its FIFO writers closed")
+	}
+	if err := bridge.Wait(); err != nil {
+		t.Fatalf("guest bridge did not exit cleanly after draining output: %v", err)
+	}
+}
+
 func TestProcessInputClosureIsIdempotentAndPreservesBytes(t *testing.T) {
 	reader, writer := io.Pipe()
 	defer reader.Close()
