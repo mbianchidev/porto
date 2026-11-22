@@ -174,7 +174,9 @@ to close before the next startup. If a target exits while the stop command is
 running, Lima confirms its process handle has exited before accepting the stop,
 including Windows' "no running instance of the task" exit status.
 Live process IDs are not treated as stale;
-configuration errors and VM disks are preserved. macOS and Linux retain the
+configuration errors and VM disks are preserved. Lima's QEMU/MSYS2 `PATH`
+notice is logged at Debug level so it never reaches container output.
+macOS and Linux retain the
 unmodified upstream Lima binaries. Lima 2.3 waits for opening SSH sessions
 before resetting the guest user's first-boot environment, which avoids a
 systemd v255 logind hang that stalled some new Ubuntu 24.04 VMs for minutes and

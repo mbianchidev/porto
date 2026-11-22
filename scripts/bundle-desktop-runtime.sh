@@ -321,6 +321,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
   lima_logind_patch="$script_directory/patches/lima-2.3.0-logind-opening.patch"
   lima_guestagent_probe_patch="$script_directory/patches/lima-2.2.1-guestagent-probe.patch"
+  lima_quiet_path_patch="$script_directory/patches/lima-2.3.0-windows-quiet-path.patch"
   (
     cd "$temporary/$lima_source_directory"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_stop_patch"
@@ -330,6 +331,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_guestagent_probe_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_quiet_path_patch"
     GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOWORK=off \
       go test -mod=readonly ./pkg/sshutil ./pkg/cidata ./pkg/guestagent/api/client \
       -run '^(TestParseOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions|TestInfoProbeDeadlines)$' -count=1
@@ -353,6 +355,7 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
   cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
   cp "$lima_logind_patch" "$destination/licenses/lima-logind-opening.patch"
   cp "$lima_guestagent_probe_patch" "$destination/licenses/lima-guestagent-probe.patch"
+  cp "$lima_quiet_path_patch" "$destination/licenses/lima-windows-quiet-path.patch"
 fi
 
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

@@ -25,8 +25,9 @@ function limaEnvironment(home) {
 function warmLimactl() {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-lima-warm-'))
   const started = Date.now()
+  let result
   try {
-    execFileSync(limactl, ['--version'], {
+    result = spawnSync(limactl, ['--version'], {
       cwd: home,
       env: limaEnvironment(home),
       encoding: 'utf8',
@@ -34,11 +35,16 @@ function warmLimactl() {
       windowsHide: true,
       stdio: ['ignore', 'pipe', 'pipe'],
     })
-  } catch (error) {
-    throw new Error(`limactl --version did not complete its first launch: ${error.message}`, { cause: error })
   } finally {
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 })
   }
+  if (result.error || result.status !== 0) {
+    const reason = result.error ? result.error.message : `exit ${result.status}: ${result.stderr}`
+    throw new Error(`limactl --version did not complete its first launch: ${reason}`, { cause: result.error })
+  }
+  // Anything limactl logs before running a command also reaches the container
+  // streams and diagnostics that Porto relays through `limactl shell`.
+  assert.equal(result.stderr, '', 'limactl --version must not write to stderr')
   console.log(`limactl --version first launch took ${((Date.now() - started) / 1000).toFixed(1)}s`)
 }
 

@@ -1294,11 +1294,16 @@ applies `scripts/patches/lima-2.3.0-windows-stop.patch`,
 `scripts/patches/lima-2.2.0-windows-graceful-stop.patch`,
 `scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`,
 `scripts/patches/lima-2.2.1-windows-wsl-mount.patch`,
-`scripts/patches/lima-2.3.0-logind-opening.patch` and
-`scripts/patches/lima-2.2.1-guestagent-probe.patch`, and rebuilds only
+`scripts/patches/lima-2.3.0-logind-opening.patch`,
+`scripts/patches/lima-2.2.1-guestagent-probe.patch` and
+`scripts/patches/lima-2.3.0-windows-quiet-path.patch`, and rebuilds only
 `limactl.exe` as `v2.3.0+porto.1`. Each file name records the Lima version the
 patch was last rebased on. Lima 2.3.0 already contains the earlier PID backport
 and native Windows OpenSSH version parsing, so those patches were removed. The
+quiet-path patch logs Lima 2.3's QEMU/MSYS2 `PATH` update at Debug level: at
+Info it went to stderr on every call, including container output relayed
+through `limactl shell`, and the runtime smoke check now requires
+`limactl --version` to write nothing to stderr. The
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.

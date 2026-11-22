@@ -1,0 +1,21 @@
+Porto quiet Windows tool-directory PATH update for Lima v2.3.0 (Apache-2.0).
+
+Lima 2.3.0 logs at Info level, before its flags are parsed, whenever it appends
+an existing QEMU or MSYS2 directory to PATH on Windows. Every limactl call then
+writes that line to stderr, so it appears in container output streamed through
+`limactl shell` and in diagnostics Porto parses. Keep the PATH update and log
+it at Debug level instead.
+
+diff --git a/cmd/limactl/main.go b/cmd/limactl/main.go
+index 6ed4da7..836ae44 100644
+--- a/cmd/limactl/main.go
++++ b/cmd/limactl/main.go
+@@ -43,7 +43,7 @@ func main() {
+ 		p := os.Getenv("PATH")
+ 		newPath := envutil.AppendDirsToPath(p, envutil.PlatformCommonToolDirs)
+ 		if newPath != p {
+-			logrus.Info("Temporarily add the common tool (QEMU etc.) directories to PATH")
++			logrus.Debug("Temporarily add the common tool (QEMU etc.) directories to PATH")
+ 			if err := os.Setenv("PATH", newPath); err != nil {
+ 				logrus.WithError(err).Warning("Can't add common tool directories to PATH, relying entirely on system PATH")
+ 			}
