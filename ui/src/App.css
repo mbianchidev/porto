@@ -2171,21 +2171,39 @@ button:disabled {
   box-shadow: none;
 }
 
-.containerComposeGroup > summary {
+.containerComposeHeader {
   display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-right: 10px;
+}
+
+.containerComposeGroup.open > .containerComposeHeader {
+  border-bottom: 1px solid var(--line);
+}
+
+.containerComposeToggle {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
   align-items: center;
   justify-content: space-between;
   gap: 16px;
+  border: 0;
+  border-radius: var(--radius-lg);
   padding: 12px 14px;
-  cursor: pointer;
-  list-style: none;
+  background: transparent;
+  box-shadow: none;
+  color: inherit;
+  text-align: left;
 }
 
-.containerComposeGroup > summary::-webkit-details-marker {
-  display: none;
+.containerComposeToggle:hover,
+.containerComposeToggle:active {
+  background: transparent;
 }
 
-.containerComposeGroup > summary::before {
+.containerComposeToggle::before {
   width: 0;
   height: 0;
   flex: 0 0 auto;
@@ -2196,17 +2214,42 @@ button:disabled {
   transition: transform 140ms ease-out;
 }
 
-.containerComposeGroup[open] > summary::before {
+.containerComposeToggle[aria-expanded="true"]::before {
   transform: rotate(90deg);
 }
 
-.containerComposeGroup[open] > summary {
-  border-bottom: 1px solid var(--line);
-}
-
-.containerComposeGroup > summary:focus-visible {
+.containerComposeToggle:focus-visible {
   outline: 3px solid var(--amber);
   outline-offset: -3px;
+}
+
+.containerComposeActions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+
+.containerComposeStatus {
+  color: var(--ink-faint);
+  font: 10px/1.3 var(--mono);
+}
+
+.containerComposeRemoval {
+  display: grid;
+  gap: 9px;
+  margin-bottom: 12px;
+}
+
+.containerComposeRemoval h3,
+.containerComposeRemoval p {
+  margin: 0;
+}
+
+.containerComposeVolumeChoice {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
 }
 
 .containerComposeIdentity {
@@ -3645,9 +3688,19 @@ button:disabled {
     min-width: 86px;
   }
 
-  .containerComposeGroup > summary {
-    align-items: flex-start;
+  .containerComposeHeader {
     flex-wrap: wrap;
+    padding: 0 10px 8px 0;
+  }
+
+  .containerComposeToggle {
+    align-items: flex-start;
+    flex-basis: 100%;
+    flex-wrap: wrap;
+  }
+
+  .containerComposeActions {
+    padding-left: 14px;
   }
 
   .containerComposeMeta {
@@ -3707,7 +3760,7 @@ button:disabled {
 
   .rail,
   .railGroupChevron,
-  .containerComposeGroup > summary::before {
+  .containerComposeToggle::before {
     transition: none;
   }
 }
@@ -3721,6 +3774,6 @@ button:disabled {
 :root[data-reduce-motion="true"] .iconButton::after,
 :root[data-reduce-motion="true"] .rail,
 :root[data-reduce-motion="true"] .railGroupChevron,
-:root[data-reduce-motion="true"] .containerComposeGroup > summary::before {
+:root[data-reduce-motion="true"] .containerComposeToggle::before {
   transition: none;
 }

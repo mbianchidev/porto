@@ -371,6 +371,7 @@ export type DockerNetwork = {
   internal: string
   ipv6: string
   createdAt: string
+  labels?: Record<string, string>
 }
 
 export type DockerVolume = {
@@ -379,6 +380,7 @@ export type DockerVolume = {
   mountpoint: string
   scope: string
   createdAt: string
+  labels?: Record<string, string>
 }
 
 export type DockerBuild = {
@@ -407,7 +409,7 @@ export type DockerCreateNetworkRequest = {
   internal: boolean
 }
 
-export type DockerContainerAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove' | 'remove-force'
+export type DockerContainerAction = 'start' | 'stop' | 'restart' | 'pause' | 'unpause' | 'remove' | 'remove-force' | 'remove-volumes'
 
 // --- Kubernetes ---------------------------------------------------------------
 

@@ -159,6 +159,31 @@ not disable manually named inspection or forwarding. Kubernetes still checks
 the requested get, mutation or port-forward permission. Helm release names
 likewise accept either a listed release or a manually entered name.
 
+## Manage Compose stacks
+
+**Containers** groups containers by their Compose project label. Each group's
+header has stack controls that act on every container in the project, even
+when a filter hides some of them:
+
+- **Start stack** starts stopped containers and resumes paused ones.
+- **Stop stack** stops active containers.
+- **Restart stack** restarts active containers.
+- **Remove stack** works like `docker compose down`.
+
+Start and Restart follow each service's `depends_on` order and skip dependents
+when a dependency fails. Stop and Remove run dependents first. Each container
+uses the same per-container action, and the same safeguards, as its row
+buttons.
+
+**Remove stack** previews the project's Compose-created networks and volumes
+before anything changes. Confirming it stops active containers and removes every
+container, then removes those networks. Volumes are kept unless you select
+**Also delete volumes**, which works like `docker compose down -v`: it deletes the
+listed named volumes and the containers' anonymous volumes. External networks
+and volumes are never included. If any container cannot be stopped or removed,
+Porto keeps the stack's networks and volumes and reports which containers
+remain.
+
 ## Clean up unused runtime data
 
 Porto cleans up unused runtime data daily by default. Each run removes
