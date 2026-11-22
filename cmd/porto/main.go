@@ -828,5 +828,5 @@ Commands:
   porto diagnose [--json]
   porto diagnose bundle [--preview] [--output path]
   porto diagnose repair <action> [--target name] --confirm
-  porto vm status|images|list|create|start|stop|delete|exec|shell|copy|snapshot|restore`)
+  porto vm status|images|list|create|clone|start|stop|delete|exec|shell|copy|snapshot|restore`)
 }

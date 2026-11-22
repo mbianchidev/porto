@@ -1096,6 +1096,23 @@ porto vm delete test-ubuntu
 
 Snapshot names follow the same 1-63 character lowercase letter, number, dot, and hyphen format as VM names. Lima snapshots are experimental and currently available only for QEMU-backed VMs. On macOS, install QEMU with `brew install qemu`, restart Porto, then create the VM with `--vm-type qemu` or choose the QEMU driver in the dashboard. Porto temporarily stops running VMs for snapshot creation and restoration, then restarts them even when the snapshot command fails. Existing `vz` VMs cannot be converted and must be recreated to use snapshots.
 
+Clone a prepared machine instead of provisioning each copy from scratch:
+
+```sh
+porto vm stop golden
+porto vm clone golden job-1 --start
+```
+
+`porto vm clone <source> <name> [--start]` uses Lima's clone, which works for
+both VZ and QEMU VMs. The source must be a stopped standalone VM without
+attached native files. On APFS and other copy-on-write filesystems the disk copy
+is nearly instant and shares unchanged blocks with the source. Porto records the
+clone as its own standalone VM, so it appears in `porto vm list` and the
+dashboard and `porto vm delete` removes it. A failed clone is removed instead of
+being left behind as an untracked Lima instance. The clone is a copy of the
+source disk: it keeps the source's SSH host keys and `/etc/machine-id`, while
+Lima gives it its own hostname (`lima-<name>`).
+
 Porto-created Kubernetes node VMs use the `porto-<cluster>-<group>-<index>` naming scheme. Standalone machines are not attached to Kubernetes automatically. Porto records ownership metadata and hides unrelated Lima instances and Kubernetes node VMs from the standalone machine inventory.
 
 The image catalog maps to Lima templates. Template availability depends on the installed Lima version and host architecture; Porto surfaces provider failures without changing native project state.

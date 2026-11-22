@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -764,4 +765,137 @@ func imageByID(images []Image, id string) (Image, bool) {
 		}
 	}
 	return Image{}, false
+}
+
+type cloneRunner struct {
+	mu          sync.Mutex
+	commands    []string
+	instances   map[string]string
+	failClone   bool
+	partialCopy bool
+}
+
+func (r *cloneRunner) Run(_ context.Context, command runtimes.Command) ([]byte, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	joined := strings.Join(command.Args, " ")
+	r.commands = append(r.commands, joined)
+	switch {
+	case len(command.Args) >= 2 && command.Args[0] == "list" && command.Args[1] == "--json":
+		names := command.Args[2:]
+		if len(names) == 0 {
+			for name := range r.instances {
+				names = append(names, name)
+			}
+		}
+		var output strings.Builder
+		for _, name := range names {
+			if status, ok := r.instances[name]; ok {
+				fmt.Fprintf(&output, `{"name":%q,"status":%q,"vmType":"vz","arch":"aarch64","cpus":2,"memory":2147483648,"disk":21474836480}`+"\n", name, status)
+			}
+		}
+		return []byte(output.String()), nil
+	case command.Args[0] == "clone":
+		if r.failClone {
+			if r.partialCopy {
+				r.instances[command.Args[3]] = "Broken"
+			}
+			return []byte("synthetic copy failure: no space left on device"), errors.New("exit status 1")
+		}
+		r.instances[command.Args[3]] = "Stopped"
+		return nil, nil
+	case command.Args[0] == "start":
+		r.instances[command.Args[len(command.Args)-1]] = "Running"
+		return nil, nil
+	case command.Args[0] == "delete":
+		delete(r.instances, command.Args[len(command.Args)-1])
+		return nil, nil
+	case command.Args[0] == "shell":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unexpected command: %s", joined)
+	}
+}
+
+func newCloneFixture(t *testing.T, runner *cloneRunner) *Manager {
+	t.Helper()
+	manager := NewWithStateDir(runner, t.TempDir())
+	if err := manager.writeMetadata(Metadata{Name: "golden", Kind: "standalone", Image: "ubuntu-24.04", RosettaEnabled: true}); err != nil {
+		t.Fatal(err)
+	}
+	return manager
+}
+
+func TestCloneRecordsAStoppedSourceCopyAsPortoOwned(t *testing.T) {
+	for _, start := range []bool{false, true} {
+		t.Run(fmt.Sprintf("start=%t", start), func(t *testing.T) {
+			runner := &cloneRunner{instances: map[string]string{"golden": "Stopped"}}
+			manager := newCloneFixture(t, runner)
+			instance, err := manager.Clone(context.Background(), "golden", CloneRequest{Name: "job-1", Start: start})
+			if err != nil {
+				t.Fatalf("clone: %v", err)
+			}
+			want := map[bool]string{false: "Stopped", true: "Running"}[start]
+			if instance.Name != "job-1" || instance.Status != want || !instance.RosettaEnabled {
+				t.Fatalf("clone = %+v, want a %s copy keeping the source settings", instance, want)
+			}
+			if !slices.Contains(runner.commands, "clone --tty=false golden job-1") {
+				t.Fatalf("Lima clone was not used: %v", runner.commands)
+			}
+			listed, err := manager.List(context.Background())
+			if err != nil || len(listed) != 2 {
+				t.Fatalf("Porto inventory after clone = %+v, %v", listed, err)
+			}
+			if err := manager.Delete(context.Background(), "job-1", true); err != nil {
+				t.Fatalf("Porto could not delete its clone: %v", err)
+			}
+			if _, err := os.Stat(manager.metadataPath("job-1")); !os.IsNotExist(err) {
+				t.Fatalf("clone ownership record survived deletion: %v", err)
+			}
+		})
+	}
+}
+
+func TestCloneRejectsUnsafeSourcesAndNames(t *testing.T) {
+	for _, test := range []struct {
+		name      string
+		instances map[string]string
+		source    string
+		clone     string
+		want      string
+	}{
+		{name: "running source", instances: map[string]string{"golden": "Running"}, source: "golden", clone: "job-1", want: "stop VM"},
+		{name: "existing destination", instances: map[string]string{"golden": "Stopped", "job-1": "Stopped"}, source: "golden", clone: "job-1", want: "already exists"},
+		{name: "same name", instances: map[string]string{"golden": "Stopped"}, source: "golden", clone: "golden", want: "different"},
+		{name: "unmanaged source", instances: map[string]string{"golden": "Stopped", "foreign": "Stopped"}, source: "foreign", clone: "job-1", want: "not managed by Porto"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			runner := &cloneRunner{instances: test.instances}
+			manager := newCloneFixture(t, runner)
+			_, err := manager.Clone(context.Background(), test.source, CloneRequest{Name: test.clone})
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("clone error = %v, want %q", err, test.want)
+			}
+			for _, command := range runner.commands {
+				if strings.HasPrefix(command, "clone ") || strings.HasPrefix(command, "delete ") {
+					t.Fatalf("rejected clone changed Lima state: %v", runner.commands)
+				}
+			}
+		})
+	}
+}
+
+func TestCloneRemovesPartialCopyAfterFailure(t *testing.T) {
+	runner := &cloneRunner{instances: map[string]string{"golden": "Stopped"}, failClone: true, partialCopy: true}
+	manager := newCloneFixture(t, runner)
+	_, err := manager.Clone(context.Background(), "golden", CloneRequest{Name: "job-1"})
+	if err == nil || !strings.Contains(err.Error(), "no space left") {
+		t.Fatalf("clone error = %v", err)
+	}
+	if _, exists := runner.instances["job-1"]; exists || runner.instances["golden"] != "Stopped" {
+		t.Fatalf("instances after failed clone = %v", runner.instances)
+	}
+	if _, err := os.Stat(manager.metadataPath("job-1")); !os.IsNotExist(err) {
+		t.Fatalf("failed clone was recorded as Porto-owned: %v", err)
+	}
 }

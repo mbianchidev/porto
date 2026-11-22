@@ -107,6 +107,7 @@ func (s *Server) runtimeRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /api/vms/instances", s.requireRuntime("vms", s.createVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/start", s.requireRuntime("vms", s.startVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/stop", s.requireRuntime("vms", s.stopVM))
+	mux.HandleFunc("POST /api/vms/instances/{name}/clone", s.requireRuntime("vms", s.cloneVM))
 	mux.HandleFunc("POST /api/vms/instances/{name}/exec", s.requireRuntime("vms", s.execVM))
 	mux.HandleFunc("GET /api/vms/instances/{name}/terminal", s.requireRuntime("vms", s.vmTerminal))
 	mux.HandleFunc("POST /api/vms/instances/{name}/snapshot", s.requireRuntime("vms", s.snapshotVM))
@@ -1415,6 +1416,25 @@ func (s *Server) stopVM(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, map[string]string{"status": "stopped"})
+}
+
+func (s *Server) cloneVM(w http.ResponseWriter, r *http.Request) {
+	if !s.requireDetachedVMFiles(w, r.PathValue("name")) {
+		return
+	}
+	if !s.requireStandaloneVM(w, r.PathValue("name")) {
+		return
+	}
+	var request vm.CloneRequest
+	if !decodeRuntimeJSON(w, r, &request) {
+		return
+	}
+	instance, err := s.vms.Clone(r.Context(), r.PathValue("name"), request)
+	if err != nil {
+		writeRuntimeError(w, err)
+		return
+	}
+	writeJSONStatus(w, http.StatusCreated, instance)
 }
 
 func (s *Server) execVM(w http.ResponseWriter, r *http.Request) {
