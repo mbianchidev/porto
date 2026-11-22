@@ -177,7 +177,13 @@ Live process IDs are not treated as stale;
 configuration errors and VM disks are preserved. Lima's QEMU/MSYS2 `PATH`
 notice is logged at Debug level so it never reaches container output.
 macOS and Linux retain the
-unmodified upstream Lima binaries. Lima 2.3 waits for opening SSH sessions
+unmodified upstream Lima binaries. Lima 2.3's `limactl start` can stop when it
+reads a host-agent event that is still being written (`as events.Event:
+unexpected end of JSON input`) while the guest keeps booting. Porto then
+resumes the wait itself: it reads only complete lines from the instance's
+`ha.stdout.log`, requires a running, non-degraded event from this start and a
+live host agent, and keeps the original 20-minute start deadline. Other start
+failures are reported unchanged. Lima 2.3 waits for opening SSH sessions
 before resetting the guest user's first-boot environment, which avoids a
 systemd v255 logind hang that stalled some new Ubuntu 24.04 VMs for minutes and
 then kept one vCPU busy ([lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570)).
