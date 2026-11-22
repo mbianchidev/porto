@@ -98,6 +98,11 @@ type PortForward struct {
 	HostPort  int `json:"hostPort"`
 }
 
+type CloneRequest struct {
+	Name  string `json:"name"`
+	Start bool   `json:"start"`
+}
+
 const vmResourceScript = `snapshot() {
   awk '/^cpu / {
     idle=$5+$6
@@ -447,6 +452,85 @@ func limaCreateReusedInstance(output []byte) bool {
 	message := strings.ToLower(string(output))
 	return strings.Contains(message, "using the existing instance") ||
 		strings.Contains(message, "using existing instance")
+}
+
+// Clone copies a stopped Porto-owned standalone VM with Lima's clone, which
+// copies disks with copy-on-write where the host filesystem supports it, and
+// records the copy as a Porto-owned standalone VM.
+func (m *Manager) Clone(ctx context.Context, source string, request CloneRequest) (Instance, error) {
+	if err := validateName(source); err != nil {
+		return Instance{}, err
+	}
+	if err := validateName(request.Name); err != nil {
+		return Instance{}, err
+	}
+	if source == request.Name {
+		return Instance{}, errors.New("the clone needs a name different from its source VM")
+	}
+	if err := m.EnsureStandalone(source); err != nil {
+		return Instance{}, err
+	}
+	metadata := Metadata{Kind: "standalone"}
+	if m.stateDir != "" {
+		var err error
+		if metadata, err = m.readMetadata(source); err != nil {
+			return Instance{}, fmt.Errorf("read VM ownership: %w", err)
+		}
+	}
+	existing, err := m.Existing(ctx, []string{source, request.Name})
+	if err != nil {
+		return Instance{}, fmt.Errorf("inspect Lima instances before cloning: %w", err)
+	}
+	sourceFound := false
+	for _, instance := range existing {
+		switch instance.Name {
+		case request.Name:
+			return Instance{}, fmt.Errorf("Lima instance %q already exists; choose another name for the clone", request.Name)
+		case source:
+			sourceFound = true
+			if !strings.EqualFold(instance.Status, "stopped") {
+				return Instance{}, fmt.Errorf("stop VM %q before cloning it (status: %s)", source, instance.Status)
+			}
+		}
+	}
+	if !sourceFound {
+		return Instance{}, fmt.Errorf("VM %q not found", source)
+	}
+	if _, err := m.run(ctx, 10*time.Minute, "clone Lima instance", "clone", "--tty=false", source, request.Name); err != nil {
+		return Instance{}, errors.Join(err, m.removePartialClone(request.Name))
+	}
+	if err := m.writeMetadata(Metadata{Name: request.Name, Kind: "standalone", Image: metadata.Image,
+		ArchitecturePolicy: metadata.ArchitecturePolicy, RosettaEnabled: metadata.RosettaEnabled, CreatedAt: time.Now().UTC()}); err != nil {
+		return Instance{}, errors.Join(err, m.deleteUntracked(context.Background(), request.Name, true))
+	}
+	if request.Start {
+		if err := m.start(ctx, request.Name, startTimeout); err != nil {
+			return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
+		}
+	}
+	instance, err := m.Get(ctx, request.Name)
+	if err != nil {
+		return Instance{}, errors.Join(err, m.Delete(context.Background(), request.Name, true))
+	}
+	return instance, nil
+}
+
+// removePartialClone deletes what a failed clone left behind. The name was
+// verified absent before cloning, so any instance under it is the partial copy.
+func (m *Manager) removePartialClone(name string) error {
+	cleanupContext, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	exists, _, err := m.instanceState(cleanupContext, name)
+	if err != nil {
+		return fmt.Errorf("inspect failed clone: %w", err)
+	}
+	if !exists {
+		return nil
+	}
+	if err := m.deleteUntracked(cleanupContext, name, true); err != nil {
+		return fmt.Errorf("remove partial clone %q: %w", name, err)
+	}
+	return nil
 }
 
 func supportsArchitecture(image Image, architecture string) bool {

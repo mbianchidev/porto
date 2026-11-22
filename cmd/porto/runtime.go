@@ -705,7 +705,7 @@ func kubernetesClusterCmd(args []string) error {
 
 func vmCmd(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: porto vm status|images|list|create|start|stop|delete|exec|snapshot|restore")
+		return errors.New("usage: porto vm status|images|list|create|clone|start|stop|delete|exec|snapshot|restore")
 	}
 	switch args[0] {
 	case "status":
@@ -737,6 +737,16 @@ func vmCmd(args []string) error {
 			Name: fs.Arg(0), Image: *image, VMType: *vmType, CPUs: *cpus, MemoryMiB: *memory,
 			DiskGiB: *disk, Architecture: *architecture, Provision: *provision, Start: !*stopped,
 		})
+	case "clone":
+		fs := flag.NewFlagSet("vm clone", flag.ContinueOnError)
+		start := fs.Bool("start", false, "start the clone after copying")
+		if err := parseInterspersed(fs, args[1:], map[string]bool{"start": true}); err != nil {
+			return err
+		}
+		if fs.NArg() != 2 {
+			return errors.New("usage: porto vm clone <stopped-source> <name> [--start]")
+		}
+		return runtimePOST("/api/vms/instances/"+url.PathEscape(fs.Arg(0))+"/clone", vm.CloneRequest{Name: fs.Arg(1), Start: *start})
 	case "start", "stop":
 		if len(args) != 2 {
 			return fmt.Errorf("usage: porto vm %s <name>", args[0])

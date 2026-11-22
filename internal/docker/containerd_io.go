@@ -95,8 +95,27 @@ if [ -n "$stderr_path" ]; then
 fi
 if [ -z "$stdin_path" ]; then
   # Unattached stdin is a private lifetime channel, not container input.
+  output_children="$children"
   exec 3<&0
-  (while IFS= read -r ignored <&3; do :; done; kill -USR1 "$bridge_pid" 2>/dev/null || true) &
+  (
+    while IFS= read -r ignored <&3; do :; done
+    # The host closes this channel on process exit, which can precede the shim's
+    # last FIFO write. Let readers reach EOF before a held writer forces release.
+    sleep 0.5 </dev/null >/dev/null 2>&1 &
+    grace=$!
+    while kill -0 "$grace" 2>/dev/null; do
+      running=""
+      for child in $output_children; do
+        if kill -0 "$child" 2>/dev/null; then running=1; fi
+      done
+      if [ -z "$running" ]; then
+        kill "$grace" 2>/dev/null || true
+        break
+      fi
+      sleep 0.01
+    done
+    kill -USR1 "$bridge_pid" 2>/dev/null || true
+  ) &
   children="$children $!"
   exec 3<&-
 fi

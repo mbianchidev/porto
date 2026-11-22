@@ -210,10 +210,13 @@ porto vm exec test-ubuntu uname -a
 porto vm copy ./file.txt test-ubuntu:/tmp/file.txt
 porto vm snapshot test-ubuntu before-change     # QEMU VMs only
 porto vm stop test-ubuntu
+porto vm clone test-ubuntu test-copy --start    # source must be stopped
 ```
 
 `vm create` starts the VM unless `--stopped` is passed; `--memory` is MiB and
-`--disk` is GiB. `porto vm list` hides Kubernetes node VMs and Lima instances
+`--disk` is GiB. `vm clone` copies a stopped Porto VM (copy-on-write on APFS,
+so it takes seconds) and Porto owns the copy like any VM it created.
+`porto vm list` hides Kubernetes node VMs and Lima instances
 Porto doesn't own. `porto vm delete <name>` force-deletes immediately, without
 a prompt.
 

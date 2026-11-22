@@ -225,7 +225,7 @@ the guest-agent service state, journal and available virtio ports.
 The reported Lima save/load flake also came from its older nerdctl 2.3.5:
 `save` could exit before its asynchronous export writer finished, returning an
 empty or truncated archive. The preceding passing run used the same version.
-Lima 2.2.1 now supplies checksum-pinned nerdctl 2.4.1, including the
+Lima 2.3.0 supplies checksum-pinned nerdctl 2.4.2, which keeps the
 [upstream save fix](https://github.com/containerd/nerdctl/commit/80d3ab8a4dac11f4c87f0ea09d07492807c458a8).
 Saved archives are checked through the end before Porto serves them, so a
 failed export cannot masquerade as a successful backup.
@@ -922,7 +922,7 @@ provisioning. The guest retains its two vCPUs and normal clock handling, without
 instruction counting. Intel macOS TCG fixtures explicitly opt into Lima's
 [upstream CI workaround](https://github.com/lima-vm/lima/pull/2541) for the
 [intermittent IO-APIC timer panic](https://github.com/lima-vm/lima/issues/84).
-They boot the same checksum-pinned Ubuntu 26.04 image selected by Lima 2.2.1,
+They boot the same checksum-pinned Ubuntu 26.04 image as Lima's `ubuntu-26.04` template,
 with its matching dated-release kernel and initrd also pinned by SHA-256, and
 append only `no_timer_check` and `systemd.default_device_timeout_sec=600` to
 the guest command line. The first disables the guest kernel's hardware-timer
@@ -1289,14 +1289,21 @@ Dive `v0.13.1` is checksum-pinned for every supported desktop architecture.
 Its MIT license and version metadata ship beside the other runtime tools, and
 native packaging smoke tests execute `dive --version`.
 
-For Windows Lima 2.2.1, the bundler checksum-verifies the stable source archive,
-applies `scripts/patches/lima-2.2.0-windows-pid.patch`,
-`scripts/patches/lima-2.2.0-windows-stop.patch` and
-`scripts/patches/lima-2.2.0-windows-graceful-stop.patch` and
-`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`, and
-`scripts/patches/lima-2.2.1-windows-wsl-mount.patch`, and rebuilds only
-`limactl.exe` as `v2.2.1+porto.2`. The first four patches were introduced for
-2.2.0 and remain necessary on 2.2.1. The PID change is an upstream backport; the
+For Windows Lima 2.3.0, the bundler checksum-verifies the stable source archive,
+applies `scripts/patches/lima-2.3.0-windows-stop.patch`,
+`scripts/patches/lima-2.2.0-windows-graceful-stop.patch`,
+`scripts/patches/lima-2.2.0-windows-arm64-cpu.patch`,
+`scripts/patches/lima-2.2.1-windows-wsl-mount.patch`,
+`scripts/patches/lima-2.3.0-logind-opening.patch`,
+`scripts/patches/lima-2.2.1-guestagent-probe.patch` and
+`scripts/patches/lima-2.3.0-windows-quiet-path.patch`, and rebuilds only
+`limactl.exe` as `v2.3.0+porto.1`. Each file name records the Lima version the
+patch was last rebased on. Lima 2.3.0 already contains the earlier PID backport
+and native Windows OpenSSH version parsing, so those patches were removed. The
+quiet-path patch logs Lima 2.3's QEMU/MSYS2 `PATH` update at Debug level: at
+Info it went to stderr on every call, including container output relayed
+through `limactl shell`, and the runtime smoke check now requires
+`limactl --version` to write nothing to stderr. The
 force-stop change makes Windows SIGKILL terminate the selected process tree
 with a bounded, hidden `taskkill.exe` call and waits for the target to exit.
 It stops the host-agent tree before the driver can exit and orphan children.

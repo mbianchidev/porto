@@ -160,9 +160,9 @@ also used by Porto's managed Kubernetes nodes. A Lima default-image update
 therefore cannot silently change the Windows engine's guest OS. Existing
 engines retain their disks and guest OS; an app upgrade does not recreate them.
 
-Windows packages bundle Lima `v2.2.1+porto.7`: the stable 2.2.1 source with
-[upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435)
-backported and consoleless shutdown fixes. Graceful QEMU stops request ACPI
+Windows packages bundle Lima `v2.3.0+porto.1`: the stable 2.3.0 source, which
+includes [upstream's Windows PID fix](https://github.com/lima-vm/lima/commit/28285d6e58dc38a75b912c76f5b5f0cad534d435),
+plus consoleless shutdown fixes. Graceful QEMU stops request ACPI
 powerdown through that instance's existing QMP socket and retain Lima's
 host-agent event and stopped-state checks. No console window or implicit
 forced termination is required. After an interrupted shutdown,
@@ -174,8 +174,13 @@ to close before the next startup. If a target exits while the stop command is
 running, Lima confirms its process handle has exited before accepting the stop,
 including Windows' "no running instance of the task" exit status.
 Live process IDs are not treated as stale;
-configuration errors and VM disks are preserved. macOS and Linux retain the
-unmodified upstream Lima binaries.
+configuration errors and VM disks are preserved. Lima's QEMU/MSYS2 `PATH`
+notice is logged at Debug level so it never reaches container output.
+macOS and Linux retain the
+unmodified upstream Lima binaries. Lima 2.3 waits for opening SSH sessions
+before resetting the guest user's first-boot environment, which avoids a
+systemd v255 logind hang that stalled some new Ubuntu 24.04 VMs for minutes and
+then kept one vCPU busy ([lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570)).
 Windows guest-agent health probes have a ten-second per-RPC deadline so Lima's
 existing reconnect loop can replace a stalled QEMU serial channel. Shorter caller
 deadlines and the one-minute guest-agent startup requirement remain unchanged;
@@ -188,7 +193,7 @@ not invalidate the running engine's saved mount configuration. This exception
 is confined to WSL UNC paths; permissions, ordinary UNC failures and actual
 filesystem I/O errors remain visible.
 
-New engines use nerdctl 2.4.1 from Lima 2.2.1. It fixes an upstream `save`
+New engines use nerdctl 2.4.2 from Lima 2.3.0. nerdctl 2.4 fixes an upstream `save`
 race that could return a truncated archive under load. Existing engines retain
 their installed guest tools; upgrading Porto does not replace their disks.
 Porto validates saved archive structure before returning success. If an older

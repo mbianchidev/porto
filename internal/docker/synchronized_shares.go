@@ -118,13 +118,18 @@ fi`, "porto-sync-identity", guestPath, state.OwnerID, id)
 	if err != nil {
 		return syncshares.Endpoint{}, err
 	}
-	key := fields[0] + " " + fields[1] + "\n"
-	knownHosts := fmt.Sprintf("[127.0.0.1]:%d %s[::1]:%d %s", instance.SSHLocalPort, key, instance.SSHLocalPort, key)
+	key := fields[0] + " " + fields[1]
 	return syncshares.Endpoint{
 		OwnerID: state.OwnerID, URL: alias + ":" + guestPath, GuestPath: guestPath, Host: alias,
-		SSHConfig: sshConfiguration, KnownHosts: []byte(knownHosts),
+		SSHConfig: sshConfiguration, KnownHosts: []byte(synchronizedShareKnownHosts(alias, instance.SSHLocalPort, key)),
 		GuestIdentity: strings.TrimSpace(string(identity)),
 	}, nil
+}
+
+// Lima 2.3 adds HostKeyAlias to ssh.config once it has pinned the guest's keys,
+// so OpenSSH then looks the key up by alias instead of the loopback endpoint.
+func synchronizedShareKnownHosts(alias string, port int, key string) string {
+	return fmt.Sprintf("[127.0.0.1]:%d %s\n[::1]:%d %s\n%s %s\n", port, key, port, key, alias, key)
 }
 
 func (m *Manager) synchronizedShareOutput(ctx context.Context, action string, arguments ...string) ([]byte, error) {

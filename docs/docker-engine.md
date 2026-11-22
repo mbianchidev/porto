@@ -61,8 +61,9 @@ The API server is part of the Porto daemon and starts whenever the Docker runtim
 An explicit supported Rosetta policy selects VZ and its amd64 userspace handler
 for a new Apple Silicon engine instead. Existing QEMU disks are not converted.
 
-New Windows engines use `template://ubuntu-24.04`; macOS and Linux keep Lima's
-default template. This selection applies only when creating an engine and
+New Windows engines use `template://ubuntu-24.04`; macOS and Linux engines use
+`template://ubuntu-26.04`, the LTS release that Lima 2.3 no longer selects by
+default. This selection applies only when creating an engine and
 never changes the disk or image of an existing instance.
 
 Porto stores backend ownership metadata in `<PORTO_HOME>/docker/engine.json` and a matching protected marker inside the Lima VM. An unrelated VM named `porto-engine` is never adopted or deleted. Container images, writable layers, networks, and volumes remain in containerd's persistent storage. Stopping Porto does not delete them.
@@ -264,6 +265,9 @@ Porto-owned healthchecks are scheduled by the daemon and executed through
 direct containerd exec. Timing, retries, start periods, start intervals, bounded
 result logs, and starting/healthy/unhealthy transitions are persisted in
 container metadata so they recover after a daemon restart.
+An unset start interval is reported as `0`, as Docker does, even though
+nerdctl 2.4.2 and later record their 5-second default; the check still uses
+5 seconds while the container is starting.
 
 Network connect and disconnect use CNI `ADD` and `DEL` through the backend-local
 runtime helper. The inventory exposes endpoint interface, MAC, address, gateway,

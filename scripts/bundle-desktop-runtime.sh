@@ -14,7 +14,7 @@ script_directory="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 kubectl_version="${KUBECTL_VERSION:-v1.36.1}"
 kind_version="${KIND_VERSION:-v0.33.0}"
 k9s_version="${K9S_VERSION:-v0.50.18}"
-lima_version="${LIMA_VERSION:-v2.2.1}"
+lima_version="${LIMA_VERSION:-v2.3.0}"
 docker_version="29.7.2"
 docker_git_commit="a7dcaa6fdb6ed04aacbfdc76357fdae01605609e"
 docker_source_checksum="225b7ab2a15f5230b482df8461069cd4bce38891266fb9898d4188d0a3cbf54a"
@@ -298,13 +298,9 @@ fi
 lima_runtime_version="$lima_version"
 lima_source_checksum=""
 case "$lima_version" in
-  v2.2.0)
-    lima_source_checksum="cdba3804df7d8c00a2af674a3fe0b24c19673a0e846e5f75ac9badf227ce52f5"
-    lima_windows_version="v2.2.0+porto.6"
-    ;;
-  v2.2.1)
-    lima_source_checksum="d551efb52115ba006c1052d5c929e4d3afac363c78c9cfca6975af1f85c1426a"
-    lima_windows_version="v2.2.1+porto.7"
+  v2.3.0)
+    lima_source_checksum="436ace830cb3e8fa512e0157a220bd8d6f826aef789c3f26d2984f0ea1e3c2ea"
+    lima_windows_version="v2.3.0+porto.1"
     ;;
 esac
 if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
@@ -319,32 +315,29 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
     --exclude="$lima_source_directory/pkg/limayaml/default.yaml" \
     --exclude="$lima_source_directory/pkg/cidata/cloud-config.yaml" \
     -xzf "$temporary/lima-source.tar.gz" -C "$temporary"
-  lima_pid_patch="$script_directory/patches/lima-2.2.0-windows-pid.patch"
-  lima_stop_patch="$script_directory/patches/lima-2.2.0-windows-stop.patch"
+  lima_stop_patch="$script_directory/patches/lima-2.3.0-windows-stop.patch"
   lima_graceful_stop_patch="$script_directory/patches/lima-2.2.0-windows-graceful-stop.patch"
   lima_arm64_cpu_patch="$script_directory/patches/lima-2.2.0-windows-arm64-cpu.patch"
   lima_wsl_mount_patch="$script_directory/patches/lima-2.2.1-windows-wsl-mount.patch"
-  lima_ssh_version_patch="$script_directory/patches/lima-2.2.1-windows-ssh-version.patch"
-  lima_logind_patch="$script_directory/patches/lima-2.2.1-logind-opening.patch"
+  lima_logind_patch="$script_directory/patches/lima-2.3.0-logind-opening.patch"
   lima_guestagent_probe_patch="$script_directory/patches/lima-2.2.1-guestagent-probe.patch"
+  lima_quiet_path_patch="$script_directory/patches/lima-2.3.0-windows-quiet-path.patch"
   (
     cd "$temporary/$lima_source_directory"
-    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_pid_patch" "$lima_stop_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_stop_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_graceful_stop_patch"
     bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_arm64_cpu_patch"
     GOWORK=off node "$script_directory/go-dependencies.cjs" mod download
-    if [ "$lima_version" = v2.2.1 ]; then
-      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
-      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_ssh_version_patch"
-      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
-      bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_guestagent_probe_patch"
-      GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOWORK=off \
-        go test -mod=readonly ./pkg/sshutil ./pkg/cidata ./pkg/guestagent/api/client \
-        -run '^(TestParseNativeWindowsOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions|TestInfoProbeDeadlines)$' -count=1
-      if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
-        CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
-          -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
-      fi
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_wsl_mount_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_logind_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_guestagent_probe_patch"
+    bash "$script_directory/apply-runtime-patch.sh" "$PWD" "$lima_quiet_path_patch"
+    GOOS="$(go env GOHOSTOS)" GOARCH="$(go env GOHOSTARCH)" GOWORK=off \
+      go test -mod=readonly ./pkg/sshutil ./pkg/cidata ./pkg/guestagent/api/client \
+      -run '^(TestParseOpenSSHVersion|TestEnvironmentWaitsForOpeningSessions|TestInfoProbeDeadlines)$' -count=1
+    if [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = "windows/$goarch" ]; then
+      CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/limayaml \
+        -run '^TestOfflineWSLMountKeepsOnlyDisconnectedProviderErrorsRecoverable$' -count=1
     fi
     if [ "$goarch" = arm64 ] && [ "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" = windows/arm64 ]; then
       CGO_ENABLED=0 GOWORK=off go test -mod=readonly ./pkg/sshutil \
@@ -356,16 +349,13 @@ if [ "$goos" = "windows" ] && [ -n "$lima_source_checksum" ]; then
         -o "$destination/lima/bin/limactl.exe" ./cmd/limactl
   )
   cp "$temporary/$lima_source_directory/LICENSE" "$destination/licenses/lima.txt"
-  cp "$lima_pid_patch" "$destination/licenses/lima-windows-pid.patch"
   cp "$lima_stop_patch" "$destination/licenses/lima-windows-stop.patch"
   cp "$lima_graceful_stop_patch" "$destination/licenses/lima-windows-graceful-stop.patch"
   cp "$lima_arm64_cpu_patch" "$destination/licenses/lima-windows-arm64-cpu.patch"
-  if [ "$lima_version" = v2.2.1 ]; then
-    cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
-    cp "$lima_ssh_version_patch" "$destination/licenses/lima-windows-ssh-version.patch"
-    cp "$lima_logind_patch" "$destination/licenses/lima-logind-opening.patch"
-    cp "$lima_guestagent_probe_patch" "$destination/licenses/lima-guestagent-probe.patch"
-  fi
+  cp "$lima_wsl_mount_patch" "$destination/licenses/lima-windows-wsl-mount.patch"
+  cp "$lima_logind_patch" "$destination/licenses/lima-logind-opening.patch"
+  cp "$lima_guestagent_probe_patch" "$destination/licenses/lima-guestagent-probe.patch"
+  cp "$lima_quiet_path_patch" "$destination/licenses/lima-windows-quiet-path.patch"
 fi
 
 if [ "$goos/$goarch" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ]; then

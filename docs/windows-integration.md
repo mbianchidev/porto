@@ -49,13 +49,14 @@ Installed-package fixtures likewise put the trusted native OpenSSH directory
 ahead of inherited toolchains, so the packaged daemon and Buildx bridge use
 the same OS client instead of depending on the runner's Git PATH ordering.
 
-The bundle also backports
+The bundle also keeps a stricter variant of
 [Lima's opening-session guard](https://github.com/lima-vm/lima/commit/396604e38baf2645a4fa23b4bb4f012ef41ddb85)
 for the Ubuntu 24.04/systemd v255 first-boot `terminate-user` race documented in
-[lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570). It waits within
-the existing boot budget before refreshing the guest environment. Unavailable
-session inspection or sessions still opening after 30 seconds fail explicitly,
-without an unsafe reset or an SSH-ready success marker.
+[lima-vm/lima#5570](https://github.com/lima-vm/lima/issues/5570). Upstream Lima
+2.3 waits up to 30 seconds and then resets anyway; Porto's Windows build waits
+within the existing boot budget before refreshing the guest environment.
+Unavailable session inspection or sessions still opening after 30 seconds fail
+explicitly, without an unsafe reset or an SSH-ready success marker.
 Sessions that finish between enumeration and inspection are accepted only after
 a fresh list confirms removal. Unknown state for a still-listed session remains
 an error. Source-patch regression tests run on the build host, including when
