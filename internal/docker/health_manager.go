@@ -55,6 +55,7 @@ func (m *Manager) checkCompatibilityHealth(ctx context.Context, check *Container
 
 func (m *Manager) preserveCompatibilityHealth(ctx context.Context, id string, check *ContainerHealthcheck) error {
 	if check == nil || len(check.Test) == 0 || check.Test[0] != "CMD" {
+		m.clearDefaultedHealthStartInterval(ctx, id, check)
 		return nil
 	}
 	encoded, err := json.Marshal(check)
@@ -79,6 +80,56 @@ func (m *Manager) preserveCompatibilityHealth(ctx context.Context, id string, ch
 		return fmt.Errorf("%w: persist original health configuration", ErrUnsupported)
 	}
 	return nil
+}
+
+// nerdctl 2.4.2 stores its five-second start-interval default when none was
+// requested, while Docker reports zero and applies the same default when it runs
+// the check. Restore zero so inspect and migrations match Docker; the other
+// merged image values stay as nerdctl recorded them. This only changes what
+// inspect reports, so failures are logged instead of failing creation.
+func (m *Manager) clearDefaultedHealthStartInterval(ctx context.Context, id string, check *ContainerHealthcheck) {
+	if check == nil || check.StartInterval != 0 || (len(check.Test) > 0 && check.Test[0] == "NONE") ||
+		m.operationsConnector == nil {
+		return
+	}
+	document, err := m.inspect(ctx, "container", id)
+	if err != nil {
+		log.Printf("read created container %s healthcheck: %v", id, err)
+		return
+	}
+	var inspected struct {
+		Config struct {
+			Labels map[string]string `json:"Labels"`
+		} `json:"Config"`
+	}
+	if err := json.Unmarshal(document, &inspected); err != nil {
+		log.Printf("decode created container %s labels: %v", id, err)
+		return
+	}
+	encoded := inspected.Config.Labels[nerdctlHealthcheckLabel]
+	if encoded == "" {
+		return
+	}
+	var stored ContainerHealthcheck
+	if err := json.Unmarshal([]byte(encoded), &stored); err != nil {
+		log.Printf("decode created container %s healthcheck: %v", id, err)
+		return
+	}
+	if stored.StartInterval != defaultHealthStartInterval {
+		return
+	}
+	stored.StartInterval = 0
+	normalized, err := json.Marshal(stored)
+	if err != nil {
+		log.Printf("encode created container %s healthcheck: %v", id, err)
+		return
+	}
+	handled, err := m.withContainerOperations(ctx, func(operations containerOperations) error {
+		return operations.UpdateLabels(ctx, id, map[string]string{nerdctlHealthcheckLabel: string(normalized)})
+	})
+	if err != nil || !handled {
+		log.Printf("restore requested start interval for container %s healthcheck: handled=%t: %v", id, handled, err)
+	}
 }
 
 type containerHealthState struct {

@@ -532,6 +532,59 @@ func TestDockerAPICreatesContainerThroughNativeBackend(t *testing.T) {
 	}
 }
 
+func TestCreatedHealthcheckKeepsDockerDefaultStartInterval(t *testing.T) {
+	const command = "test -f /synthetic-ready"
+	inspectDocument := func(startInterval time.Duration) []byte {
+		label, err := json.Marshal(map[string]any{
+			"Test": []string{"CMD-SHELL", command}, "Interval": int64(30 * time.Second), "StartInterval": int64(startInterval),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		document, err := json.Marshal(map[string]any{"Config": map[string]any{"Labels": map[string]string{nerdctlHealthcheckLabel: string(label)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return document
+	}
+	for _, test := range []struct {
+		name                string
+		requested, stored   time.Duration
+		wantNormalizedLabel bool
+	}{
+		{name: "nerdctl default restored to Docker zero", stored: 5 * time.Second, wantNormalizedLabel: true},
+		{name: "requested start interval kept", requested: 5 * time.Second, stored: 5 * time.Second},
+		{name: "image start interval kept", stored: 2 * time.Second},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			operations := &fakeContainerOperations{}
+			manager := New(&fakeRunner{
+				outputs: map[string][]byte{"nerdctl container inspect demo": inspectDocument(test.stored)},
+				errors:  map[string]error{},
+			})
+			manager.operationsConnector = func(context.Context) (containerOperations, error) { return operations, nil }
+			check := &ContainerHealthcheck{Test: []string{"CMD-SHELL", command}, Interval: 30 * time.Second, StartInterval: test.requested}
+			if err := manager.preserveCompatibilityHealth(context.Background(), "demo", check); err != nil {
+				t.Fatal(err)
+			}
+			var updates []string
+			for _, call := range operations.calls {
+				if strings.HasPrefix(call, "update-labels demo ") {
+					updates = append(updates, call)
+				}
+			}
+			if (len(updates) == 1) != test.wantNormalizedLabel || len(updates) > 1 {
+				t.Fatalf("healthcheck label updates = %v, want normalized=%t", updates, test.wantNormalizedLabel)
+			}
+			if test.wantNormalizedLabel &&
+				(!strings.Contains(updates[0], command) || !strings.Contains(updates[0], `"interval":30000000000`) ||
+					strings.Contains(strings.ToLower(updates[0]), "startinterval")) {
+				t.Fatalf("normalized healthcheck lost requested values or kept the default: %s", updates[0])
+			}
+		})
+	}
+}
+
 func TestInspectContainerDoesNotPollOrMutateHealth(t *testing.T) {
 	document := []byte(`{"Config":{"Healthcheck":{"Test":["CMD-SHELL","true"],"Interval":30000000000}},"State":{"Running":true,"Health":{"Status":"starting","FailingStreak":0}}}`)
 	runner := &fakeRunner{

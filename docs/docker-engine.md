@@ -265,6 +265,9 @@ Porto-owned healthchecks are scheduled by the daemon and executed through
 direct containerd exec. Timing, retries, start periods, start intervals, bounded
 result logs, and starting/healthy/unhealthy transitions are persisted in
 container metadata so they recover after a daemon restart.
+An unset start interval is reported as `0`, as Docker does, even though
+nerdctl 2.4.2 and later record their 5-second default; the check still uses
+5 seconds while the container is starting.
 
 Network connect and disconnect use CNI `ADD` and `DEL` through the backend-local
 runtime helper. The inventory exposes endpoint interface, MAC, address, gateway,
