@@ -101,15 +101,18 @@ if [ -z "$stdin_path" ]; then
     while IFS= read -r ignored <&3; do :; done
     # The host closes this channel on process exit, which can precede the shim's
     # last FIFO write. Let readers reach EOF before a held writer forces release.
-    attempts=0
-    while [ "$attempts" -lt 50 ]; do
+    sleep 0.5 </dev/null >/dev/null 2>&1 &
+    grace=$!
+    while kill -0 "$grace" 2>/dev/null; do
       running=""
       for child in $output_children; do
         if kill -0 "$child" 2>/dev/null; then running=1; fi
       done
-      [ -n "$running" ] || break
+      if [ -z "$running" ]; then
+        kill "$grace" 2>/dev/null || true
+        break
+      fi
       sleep 0.01
-      attempts=$((attempts + 1))
     done
     kill -USR1 "$bridge_pid" 2>/dev/null || true
   ) &
