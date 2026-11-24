@@ -195,3 +195,30 @@ test('slow snapshot transfers resume stalled bytes instead of failing or restart
     })
   }
 })
+
+test('throttled snapshot responses back off and retry while missing objects fail at once', async (t) => {
+  const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'porto-ci-snapshot-throttle-'))
+  const content = Buffer.from('Synthetic snapshot object')
+  const requests = []
+  const server = http.createServer((request, response) => {
+    requests.push(request.url)
+    if (request.url === '/missing') response.writeHead(404).end()
+    else if (requests.filter((url) => url === '/object').length <= 2) {
+      response.writeHead(requests.length === 1 ? 401 : 403, { 'Retry-After': '1' }).end()
+    } else response.writeHead(200, { 'Content-Length': content.length }).end(content)
+  })
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
+  t.after(() => {
+    server.closeAllConnections()
+    server.close()
+    fs.rmSync(directory, { recursive: true, force: true })
+  })
+  const origin = `http://127.0.0.1:${server.address().port}`
+  const destination = path.join(directory, 'object')
+  await downloadFile(`${origin}/object`, destination, new AbortController().signal)
+  assert.deepEqual(fs.readFileSync(destination), content)
+  assert.equal(requests.length, 3)
+  await assert.rejects(downloadFile(`${origin}/missing`, path.join(directory, 'missing'),
+    new AbortController().signal), /Snapshot HTTP 404/)
+  assert.equal(requests.length, 4)
+})

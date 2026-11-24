@@ -1,54 +1,40 @@
 version: 2
 
+# One weekly PR for every ecosystem: parallel Dependabot PRs each start a full
+# CI matrix, and the stacked runs exhaust shared upstreams such as
+# snapshot.ubuntu.com.
+multi-ecosystem-groups:
+  dependencies:
+    schedule:
+      interval: weekly
+    commit-message:
+      prefix: 'chore(deps)'
+
 updates:
   - package-ecosystem: gomod
     directory: /
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: 'chore(deps)'
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
     ignore:
       # v0.32.0+ moved to cel.dev/cel-go; the old path stays only for Kubernetes deps.
       - dependency-name: github.com/google/cel-go
         versions: ['>= 0.32.0']
-    groups:
-      go-modules:
-        patterns: ['*']
 
   - package-ecosystem: npm
     directory: /ui
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: 'chore(deps)'
-    groups:
-      dashboard:
-        patterns: ['*']
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
 
   - package-ecosystem: npm
     directory: /ui/electron
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: 'chore(deps)'
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
     ignore:
       - dependency-name: undici
         update-types: ['version-update:semver-major']
-    groups:
-      desktop:
-        patterns: ['*']
 
   - package-ecosystem: github-actions
     # Composite actions under .github/actions are not scanned from / alone.
     directories: ['/', '/.github/actions/*']
-    schedule:
-      interval: weekly
-    open-pull-requests-limit: 5
-    commit-message:
-      prefix: 'chore(ci)'
-    groups:
-      actions:
-        patterns: ['*']
+    patterns: ['*']
+    multi-ecosystem-group: dependencies
