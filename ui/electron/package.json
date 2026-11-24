@@ -2,7 +2,7 @@
   "name": "porto",
   "productName": "Porto",
   "private": true,
-  "version": "1.11.4",
+  "version": "1.11.5",
   "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
   "author": "Porto",
   "repository": "https://github.com/mbianchidev/porto",
@@ -48,7 +48,7 @@
     "@electron/osx-sign": "^2.7.2",
     "@electron/packager": "^20.3.0",
     "7zip-bin-full": "^26.6.0",
-    "electron": "^45.3.3",
+    "electron": "^45.4.1",
     "electron-builder": "^26.18.0",
     "pe-library": "^2.0.3",
     "undici": "^7.30.2"

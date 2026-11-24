@@ -25,7 +25,7 @@ require (
 	github.com/go-logr/logr v1.4.4
 	github.com/godbus/dbus/v5 v5.2.4
 	github.com/hashicorp/yamux v0.1.2
-	github.com/moby/buildkit v0.35.0
+	github.com/moby/buildkit v0.35.1
 	github.com/moby/moby/api v1.57.0
 	github.com/moby/moby/client v0.6.3
 	github.com/opencontainers/go-digest v1.0.0
