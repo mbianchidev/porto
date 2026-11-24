@@ -832,7 +832,11 @@ largest 25-40 MB packages at well under 100 KB/s, so a fixed five-minute
 per-object deadline aborted slow but progressing transfers. Each object now
 retries only after 60 seconds without received bytes, resumes the verified
 partial download with an HTTP range, and keeps a 15-minute per-object bound.
-The first failed object stops its sibling transfers. Snapshot paths change
+The first failed object stops its sibling transfers. The anonymous snapshot
+service answers HTTP 401, 403 or 429 when it sheds load from many parallel CI
+jobs, so those responses retry like 5xx and 416: up to ten attempts with
+jittered exponential backoff capped at 60 seconds, honoring `Retry-After` up
+to two minutes. Other 4xx responses, such as 404, still fail at once. Snapshot paths change
 daily, and the service answers uncached objects far more slowly, so the
 client/data harness waits up to 30 minutes for a cold preparation; the
 development-client job allows 75 minutes for it. Job caches contain only
@@ -1140,7 +1144,7 @@ the preflight without switching or pulling. The native installer script also
 checks before building or downloading runtime inputs. Missing or unsupported tools
 fail with setup instructions rather than a late packaging assertion.
 
-Dependency updates arrive through `.github/dependabot.yml`, which groups Go modules, dashboard packages, desktop packages, and GitHub Actions (workflows and the composite actions under `.github/actions/`) into weekly pull requests.
+Dependency updates arrive through `.github/dependabot.yml`, which puts Go modules, dashboard packages, desktop packages, and GitHub Actions (workflows and the composite actions under `.github/actions/`) into one weekly multi-ecosystem pull request. Separate per-ecosystem pull requests each started a full CI matrix at once, and the stacked runs exhausted shared upstreams such as the Ubuntu snapshot service.
 
 The Go module currently uses gRPC `v1.86.0-dev`, which includes the upstream
 fix for the missing-authority server panic,

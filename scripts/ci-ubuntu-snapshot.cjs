@@ -28,6 +28,23 @@ async function parallel(items, action, controller) {
   if (failure) throw failure
 }
 
+// snapshot.ubuntu.com is anonymous, so 401 and 403 only mean it is shedding load
+// from the many CI jobs that download in parallel; back off instead of failing.
+const THROTTLED = new Set([401, 403, 429])
+
+function retryAfter(header, now = Date.now()) {
+  if (!header) return undefined
+  const seconds = Number(header)
+  const milliseconds = Number.isFinite(seconds) ? seconds * 1000 : Date.parse(header) - now
+  return Number.isFinite(milliseconds) && milliseconds > 0 ? Math.min(milliseconds, 120000) : undefined
+}
+
+// Jitter keeps parallel jobs from retrying the throttled mirror in lockstep.
+function backoff(attempt, after, random = Math.random) {
+  const base = Math.min(2 ** attempt, 60) * 1000
+  return Math.max(after || 0, Math.round(base / 2 + random() * base / 2))
+}
+
 // Hosted runners can receive large snapshot objects at well under 100 KB/s, so
 // only a stalled transfer is retried early; progress resumes with HTTP ranges.
 async function downloadFile(url, destination, signal, { stallTimeout = 60000, objectTimeout = 15 * 60000 } = {}) {
@@ -65,7 +82,8 @@ async function downloadFile(url, destination, signal, { stallTimeout = 60000, ob
         await response.body?.cancel()
         if (response.status === 416) fs.rmSync(destination, { force: true })
         throw Object.assign(new Error(`Snapshot HTTP ${response.status}: ${url}`), {
-          retryable: response.status === 416 || response.status === 429 || response.status >= 500,
+          retryable: THROTTLED.has(response.status) || response.status === 416 || response.status >= 500,
+          retryAfter: retryAfter(response.headers.get('retry-after')),
         })
       }
       let size = resumed ? received : 0
@@ -84,7 +102,7 @@ async function downloadFile(url, destination, signal, { stallTimeout = 60000, ob
       if (reason.retryable === false || attempt === 9) throw reason
       console.error(`CI snapshot download retry ${attempt + 1}: ${reason.message}`)
       try {
-        await delay(Math.min(2 ** attempt, 30) * 1000, undefined, { signal: deadline })
+        await delay(backoff(attempt, reason.retryAfter), undefined, { signal: deadline })
       } catch {
         throw stopped()
       }
