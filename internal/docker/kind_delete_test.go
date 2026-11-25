@@ -10,10 +10,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/vm"
 )
 
 func TestManagedKindDeletionCrossesDockerAPIWithoutUnprotectingOtherRequests(t *testing.T) {

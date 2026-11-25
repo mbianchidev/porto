@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const imageTransferTimeout = 30 * time.Minute

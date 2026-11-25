@@ -35,14 +35,14 @@ administrator rights on Linux, and launches the desktop app.
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+curl -fsSL https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.sh | sh
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
 Windows PowerShell (open a new terminal afterwards so `Path` refreshes):
 
 ```powershell
-irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+irm https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
 The installers pick the package for the OS and architecture, verify it against
@@ -65,15 +65,15 @@ Platform notes:
 
 - **macOS**: builds aren't notarized, so Gatekeeper may block the first launch.
   Tell the user and point to the
-  [quarantine guide](https://github.com/mbianchidev/porto/blob/main/docs/installation.md#macos-gatekeeper-quarantine).
+  [quarantine guide](https://github.com/porto-containers/porto/blob/main/docs/installation.md#macos-gatekeeper-quarantine).
   Never disable Gatekeeper globally. `brew install qemu` is only needed for
   snapshot-capable VMs.
 - **Linux**: the installer installs or verifies QEMU and may configure an
   AppArmor sandbox profile through `sudo`. If you can't answer a sudo prompt,
   hand the command to the user.
 - **Headless machines** (no desktop session): use the CLI and web archive from
-  the [releases page](https://github.com/mbianchidev/porto/releases) as in
-  [manual archive installation](https://github.com/mbianchidev/porto/blob/main/docs/installation.md#manual-archive-installation).
+  the [releases page](https://github.com/porto-containers/porto/releases) as in
+  [manual archive installation](https://github.com/porto-containers/porto/blob/main/docs/installation.md#manual-archive-installation).
   Keep `porto` and `ui/dist` together, then run `porto docker engine-install`
   once the daemon is up.
 
@@ -128,7 +128,7 @@ porto stop <project>
   `docker compose down --remove-orphans`, removing the stack's containers.
 - Discovery picks the first runnable strategy per subtree: Make, Compose,
   Node.js, Python, Go, then Rust. If a project is missing, rescan its root or
-  read the [discovery rules](https://github.com/mbianchidev/porto/blob/main/docs/project-management.md#discovery).
+  read the [discovery rules](https://github.com/porto-containers/porto/blob/main/docs/project-management.md#discovery).
 - `porto branch <project> <branch>` switches the worktree and restarts a running
   project. It refuses dirty worktrees.
 
@@ -157,7 +157,7 @@ porto docker status                              # engine state
 - Bind mounts work from the home directory and, on macOS, from `/tmp` and
   `$TMPDIR`; other host paths aren't shared with the engine VM.
 - Docker API 1.41 to 1.47 is supported; Swarm and engine plugins aren't. Check
-  the [compatibility matrix](https://github.com/mbianchidev/porto/blob/main/docs/docker-engine.md#docker-api-compatibility-matrix)
+  the [compatibility matrix](https://github.com/porto-containers/porto/blob/main/docs/docker-engine.md#docker-api-compatibility-matrix)
   before relying on an unusual feature.
 - A daily runtime cleanup is on by default. It removes standalone containers
   stopped for over 24 hours, unused cache, unused images older than 24 hours
@@ -198,7 +198,7 @@ Pin a Kubernetes release at creation with `--version` (`v1.37.1+k3s1`,
 `v1.36.4+k0s.1`, or `v1.37.0` for kind and Apple); without it k3s and k0s use
 their stable channel. `porto kubernetes cluster upgrade <name> --version <release> --confirm`
 upgrades one minor version at a time and interrupts the cluster, so ask first.
-See [newer Kubernetes releases](https://github.com/mbianchidev/porto/blob/main/docs/kubernetes-upgrades.md#newer-kubernetes-releases).
+See [newer Kubernetes releases](https://github.com/porto-containers/porto/blob/main/docs/kubernetes-upgrades.md#newer-kubernetes-releases).
 
 ## 7. Linux VMs
 
@@ -250,6 +250,6 @@ both size limits are in Settings.
 - **Keep the control ports on loopback** (`37623`, `37680`, `37681`). They're
   unauthenticated by design, so never bind or forward them to a network.
 - **Trust the installed version over this file.** `porto help` lists the exact
-  commands. The [docs index](https://github.com/mbianchidev/porto/blob/main/docs/README.md)
+  commands. The [docs index](https://github.com/porto-containers/porto/blob/main/docs/README.md)
   covers what this skill leaves out: remote environments, extensions, data
   backups and migration, WSL, native Windows containers, networking and HTTPS.

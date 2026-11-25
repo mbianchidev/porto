@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/credentials"
-	"github.com/mbianchidev/porto/internal/filelock"
-	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/porto-containers/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/registries"
 	"github.com/zalando/go-keyring"
 )
 

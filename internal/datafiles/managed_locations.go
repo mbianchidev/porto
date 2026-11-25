@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 func ManagedLocation(value string) (string, string, error) {

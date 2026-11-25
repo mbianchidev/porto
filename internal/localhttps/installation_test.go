@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/certificates"
 )
 
 func TestInstallationRollsBackNewHelperAndTrust(t *testing.T) {

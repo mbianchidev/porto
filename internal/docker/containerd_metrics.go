@@ -13,8 +13,8 @@ import (
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	apitypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/typeurl/v2"
-	"github.com/mbianchidev/porto/internal/resources"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func (r *grpcContainerRuntime) ContainerMetric(

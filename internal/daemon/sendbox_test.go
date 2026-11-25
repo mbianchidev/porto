@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/sendbox"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/sendbox"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 type fakeSendboxIntegration struct{}

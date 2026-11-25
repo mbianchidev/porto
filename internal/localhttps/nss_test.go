@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/certificates"
 )
 
 func TestChromiumTrustOwnsOnlyItsFingerprintNickname(t *testing.T) {

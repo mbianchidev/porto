@@ -14,8 +14,8 @@ import (
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
-	"github.com/mbianchidev/porto/internal/containerlogs"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type LogOptions struct {

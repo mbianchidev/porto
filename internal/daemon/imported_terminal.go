@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/util/httpstream"
 	kubeclient "k8s.io/client-go/kubernetes"

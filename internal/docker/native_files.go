@@ -9,9 +9,9 @@ import (
 	"os"
 	"runtime"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/nativefiles"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/runtimefiles"
 )
 
 func (m *Manager) SetNativeFilesGuard(guard func(string, string) error) { m.nativeGuard = guard }

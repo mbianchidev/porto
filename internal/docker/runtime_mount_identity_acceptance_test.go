@@ -4,7 +4,7 @@ import (
 	"runtime"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/dataops"
 )
 
 func (fixture *runtimeDataFixture) localMountIdentity(t *testing.T) {

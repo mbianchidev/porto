@@ -7,10 +7,10 @@ import (
 	"io"
 	"os"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/localhttps"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/localhttps"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func networkingCmd(args []string) error {

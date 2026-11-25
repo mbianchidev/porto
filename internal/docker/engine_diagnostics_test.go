@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestOwnershipFailureReportsGuestPanic(t *testing.T) {

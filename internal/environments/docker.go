@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func dockerVersion(ctx context.Context, client *http.Client, address string) (string, error) {

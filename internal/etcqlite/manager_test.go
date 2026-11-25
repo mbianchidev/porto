@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/filelock"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type fixtureRunner struct {

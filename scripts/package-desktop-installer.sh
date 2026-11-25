@@ -65,7 +65,7 @@ mkdir -p "$app_root" "$packager_output" "$builder_output"
 
 CGO_ENABLED=0 GOOS="$goos" GOARCH="$goarch" \
   go build -trimpath \
-    -ldflags "-s -w -X github.com/mbianchidev/porto/internal/config.Version=$version" \
+    -ldflags "-s -w -X github.com/porto-containers/porto/internal/config.Version=$version" \
     -o "$app_root/$binary" ./cmd/porto
 bash scripts/bundle-desktop-runtime.sh "$goos" "$goarch" "$runtime_directory"
 test -f "$runtime_directory/VERSIONS"

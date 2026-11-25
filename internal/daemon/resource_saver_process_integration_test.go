@@ -19,10 +19,10 @@ import (
 	"testing"
 	"time"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
-	"github.com/mbianchidev/porto/internal/store"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/resourcesaver"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 func TestResourceSaverProcessWorker(t *testing.T) {

@@ -13,9 +13,9 @@ import (
 	registrydocker "github.com/containerd/containerd/v2/core/remotes/docker"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/registries"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/registries"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func (m *Manager) ownerRegistryResolver(image string, auth *RegistryAuth) (remotes.Resolver, error) {

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/diagnostics"
+	"github.com/porto-containers/porto/internal/diagnostics"
 )
 
 func TestWriteDiagnosticReportIncludesScopedRepairCommand(t *testing.T) {

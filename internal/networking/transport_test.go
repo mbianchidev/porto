@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/networking/networktest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/networking/networktest"
 )
 
 func TestNetworkTransportHTTPHTTPSAndSOCKSChangesKeepTLSVerification(t *testing.T) {

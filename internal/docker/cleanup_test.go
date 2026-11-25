@@ -23,11 +23,11 @@ import (
 	"github.com/containerd/containerd/v2/core/images"
 	"github.com/containerd/containerd/v2/plugins/content/local"
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"google.golang.org/grpc"
 )
 

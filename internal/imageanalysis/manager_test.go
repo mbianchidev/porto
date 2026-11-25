@@ -17,8 +17,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type fixtureSource struct {

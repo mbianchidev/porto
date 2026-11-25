@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func writeSyntheticSharingPayload(t *testing.T, root string) {

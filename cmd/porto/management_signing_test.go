@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/extensions"
+	"github.com/porto-containers/porto/internal/extensions"
 )
 
 func TestCatalogAuthoringSignsCanonicalIdentityAndRejectsBrokenKeys(t *testing.T) {

@@ -11,9 +11,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/pkg/sftp"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type SFTPCommand struct {

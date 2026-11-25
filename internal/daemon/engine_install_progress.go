@@ -13,8 +13,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/diagnostics"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/diagnostics"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 const (

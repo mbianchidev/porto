@@ -1,6 +1,6 @@
 package docker
 
-import "github.com/mbianchidev/porto/internal/networking"
+import "github.com/porto-containers/porto/internal/networking"
 
 func (m *Manager) SetNetworkPolicy(policy *networking.Manager) {
 	m.registryAuthMu.Lock()

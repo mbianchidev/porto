@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/containerlogs"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/datafiles"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func (s *Server) dataRoutes(mux *http.ServeMux) {

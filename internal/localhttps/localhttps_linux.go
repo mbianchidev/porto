@@ -12,7 +12,7 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func linuxIntegration() (systemdIntegration, error) {

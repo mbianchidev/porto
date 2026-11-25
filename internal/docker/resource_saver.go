@@ -11,8 +11,8 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/resourcesaver"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const (

@@ -17,11 +17,11 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	digest "github.com/opencontainers/go-digest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 type testWindowsImage struct{ containerd.Image }

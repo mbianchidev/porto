@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 // ClusterCreationTimeout includes cold runtime creation and sequential add-ons.

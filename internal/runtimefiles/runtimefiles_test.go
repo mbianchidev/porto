@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func TestDirectoryRequestValidatesIdentityAndReadOnly(t *testing.T) {

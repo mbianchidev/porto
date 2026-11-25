@@ -13,7 +13,7 @@ import (
 	"os/exec"
 	"strconv"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func dispatchRuntimeNamespace(ctx context.Context, descriptor Descriptor, request datafiles.Request, input io.Reader, output io.Writer) (bool, error) {

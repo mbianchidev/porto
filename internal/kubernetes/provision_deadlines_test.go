@@ -9,8 +9,8 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/vm"
 )
 
 type delayedProvisioningRunner struct {

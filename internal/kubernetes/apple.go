@@ -11,8 +11,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/providers"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/providers"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type appleClusterResource struct {

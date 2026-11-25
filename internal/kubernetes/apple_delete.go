@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func (p *ClusterProvisioner) deleteAppleManaged(ctx context.Context, request ClusterRequest) error {

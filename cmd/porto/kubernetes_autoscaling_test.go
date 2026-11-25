@@ -7,9 +7,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/autoscaling"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/autoscaling"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/kubernetes"
 )
 
 type scalingRoundTripper func(*http.Request) (*http.Response, error)

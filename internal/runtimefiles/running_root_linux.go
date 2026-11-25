@@ -10,7 +10,7 @@ import (
 
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
-	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func withRunningContainerRoot(ctx context.Context, descriptor Descriptor, readOnly bool, run func(Descriptor) error) (err error) {

@@ -14,8 +14,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 type Command struct {

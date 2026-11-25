@@ -12,8 +12,8 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const limaBuildKitCommand = `

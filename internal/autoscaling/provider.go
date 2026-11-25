@@ -14,7 +14,7 @@ import (
 	"time"
 
 	"github.com/awslabs/operatorpkg/status"
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/kubernetes"
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/resource"

@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 type fakeRunner struct {

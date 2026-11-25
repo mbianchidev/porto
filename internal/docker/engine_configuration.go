@@ -13,8 +13,8 @@ import (
 
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	tasktypes "github.com/containerd/containerd/api/types/task"
-	"github.com/mbianchidev/porto/internal/config"
 	controlapi "github.com/moby/buildkit/api/services/control"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 type EngineConfiguration struct {

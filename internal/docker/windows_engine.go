@@ -18,10 +18,10 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 const windowsRequestLabel = "io.porto.windows.request"

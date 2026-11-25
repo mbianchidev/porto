@@ -7,7 +7,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/porto-containers/porto/internal/registries"
 )
 
 const (

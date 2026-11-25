@@ -16,9 +16,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/environments"
-	"github.com/mbianchidev/porto/internal/extensions"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/environments"
+	"github.com/porto-containers/porto/internal/extensions"
+	"github.com/porto-containers/porto/internal/store"
 	"github.com/zalando/go-keyring"
 )
 

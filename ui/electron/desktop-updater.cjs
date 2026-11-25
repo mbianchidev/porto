@@ -4,7 +4,7 @@ const path = require('node:path')
 const { Readable, Transform } = require('node:stream')
 const { pipeline } = require('node:stream/promises')
 
-const DEFAULT_REPOSITORY = 'mbianchidev/porto'
+const DEFAULT_REPOSITORY = 'porto-containers/porto'
 const DEFAULT_UPDATE_CHECK_INTERVAL = 12 * 60 * 60 * 1000
 const RELEASE_VERSION_FILE = 'porto-release-version'
 const SEMVER_PATTERN = /^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/

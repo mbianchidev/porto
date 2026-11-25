@@ -247,7 +247,7 @@ test('installs the release-matched agent skill into each requested skills direct
   const installed = fixture(t, { existing: 'working', skill: syntheticSkill, skillsDirs: targets })
   assert.equal(installed.status, 0, installed.stderr)
   assert.match(fs.readFileSync(path.join(installed.root, 'curl.log'), 'utf8'),
-    /^https:\/\/raw\.githubusercontent\.com\/mbianchidev\/porto\/vfixture\/\.github\/skills\/porto\/SKILL\.md$/m)
+    /^https:\/\/raw\.githubusercontent\.com\/porto-containers\/porto\/vfixture\/\.github\/skills\/porto\/SKILL\.md$/m)
   for (const target of targets) {
     assert.equal(fs.readFileSync(path.join(target, 'porto', 'SKILL.md'), 'utf8'), syntheticSkill)
   }

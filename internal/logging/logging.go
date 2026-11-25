@@ -15,7 +15,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 const (

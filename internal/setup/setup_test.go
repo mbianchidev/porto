@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 func TestPlanSelectsSupportedEcosystems(t *testing.T) {

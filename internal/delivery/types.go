@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/deliverysource"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/deliverysource"
 )
 
 var (

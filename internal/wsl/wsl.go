@@ -20,9 +20,9 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/filelock"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/wslbridge"
+	"github.com/porto-containers/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/wslbridge"
 )
 
 var stateMu sync.Mutex

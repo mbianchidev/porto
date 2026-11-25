@@ -18,8 +18,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const supportedVersion = "0.18.1-porto.1"

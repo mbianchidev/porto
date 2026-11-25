@@ -8,7 +8,7 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 type Process interface {

@@ -8,10 +8,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/operations"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func Verify(ctx context.Context, directory, commit string, runner localtools.Runner) error {

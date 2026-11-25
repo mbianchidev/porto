@@ -10,9 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/porto-containers/porto/internal/app"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/registries"
 )
 
 const (

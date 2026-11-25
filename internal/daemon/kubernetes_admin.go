@@ -5,8 +5,8 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/mbianchidev/porto/internal/kubeadmin"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/kubeadmin"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func adminTarget(r *http.Request) kubeadmin.Target {

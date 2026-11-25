@@ -15,7 +15,7 @@ that its dashboard assets are ready.
   operations. The main process rejects calls from pages outside the local Porto
   dashboard origin.
 - Update downloads come only from the stable release returned by GitHub's
-  `mbianchidev/porto` Releases API. Porto selects the exact installer for the
+  `porto-containers/porto` Releases API. Porto selects the exact installer for the
   current OS and architecture and verifies it against the release's
   `SHA256SUMS` entry before offering a restart.
 - The daemon is started detached and un-ref'd. Closing the window never stops

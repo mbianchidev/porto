@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/kubernetes"
 )
 
 func TestKubernetesUpgradeRequiresExplicitConfirmation(t *testing.T) {

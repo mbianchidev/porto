@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 func decodeLines[T any](output []byte, convert func(map[string]string) T) ([]T, error) {

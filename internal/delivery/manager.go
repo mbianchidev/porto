@@ -18,14 +18,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/compose"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/credentials"
-	"github.com/mbianchidev/porto/internal/deliverysource"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/compose"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/deliverysource"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 var variableName = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]{0,127}$`)

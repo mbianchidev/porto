@@ -10,7 +10,7 @@ import (
 	"net/url"
 	"os"
 
-	"github.com/mbianchidev/porto/internal/autoscaling"
+	"github.com/porto-containers/porto/internal/autoscaling"
 )
 
 func kubernetesAutoscalingCmd(args []string) error {

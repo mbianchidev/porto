@@ -19,9 +19,9 @@ import (
 	"github.com/containerd/containerd/v2/pkg/cio"
 	"github.com/containerd/containerd/v2/pkg/oci"
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/containerlogs"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const limaIOBridgeScript = `set -eu

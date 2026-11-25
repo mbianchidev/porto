@@ -6,8 +6,8 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func (s *Server) waitForDeliveryReady(project app.Project, running *projectProcess) {

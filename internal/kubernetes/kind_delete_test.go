@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/vm"
 )
 
 func TestManagedKindDeletionAuthorizesOnlyItsOwnScopedDockerRequests(t *testing.T) {

@@ -19,10 +19,10 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/etcqlite"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/vm"
 	kubeclient "k8s.io/client-go/kubernetes"
 )
 

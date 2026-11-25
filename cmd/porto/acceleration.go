@@ -5,7 +5,7 @@ import (
 	"flag"
 	"os"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/acceleration"
 )
 
 func accelerationCmd(args []string) error {

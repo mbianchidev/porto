@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 const (

@@ -19,9 +19,9 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/platforms"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 )

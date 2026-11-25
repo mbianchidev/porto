@@ -6,7 +6,7 @@ import (
 	"io"
 	"os"
 
-	"github.com/mbianchidev/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/containerlogs"
 )
 
 func logStdio(args []string) (err error) {

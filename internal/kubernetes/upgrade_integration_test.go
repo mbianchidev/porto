@@ -12,10 +12,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/config"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type upgradeIntegrationRunner struct {

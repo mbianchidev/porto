@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/ports"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/ports"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 const kubernetesRouteReconcileInterval = 10 * time.Second

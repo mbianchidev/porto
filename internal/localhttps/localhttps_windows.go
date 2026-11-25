@@ -17,7 +17,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"

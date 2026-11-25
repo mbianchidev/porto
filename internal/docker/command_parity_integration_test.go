@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type parityIntegrationRunner struct {

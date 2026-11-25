@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/gitutil"
+	"github.com/porto-containers/porto/internal/gitutil"
 )
 
 // projectDefaultBranchTTL bounds how long a project listing may report a stale

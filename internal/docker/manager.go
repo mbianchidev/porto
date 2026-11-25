@@ -19,17 +19,17 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/resources"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
-	"github.com/mbianchidev/porto/internal/wsl"
 	"github.com/moby/moby/api/types/network"
+	"github.com/porto-containers/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/resourcesaver"
+	"github.com/porto-containers/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/wsl"
 )
 
 const (

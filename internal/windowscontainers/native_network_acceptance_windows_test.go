@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/networking/networktest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking/networktest"
 )
 
 func testNativeWindowsNetworking(t *testing.T, parent context.Context, installed Installation) {

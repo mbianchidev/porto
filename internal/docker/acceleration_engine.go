@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/acceleration"
 	"gopkg.in/yaml.v3"
 )
 

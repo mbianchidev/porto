@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 func TestDeliveryReadinessUsesProjectScopedConfigAndReportsUnhealthyServices(t *testing.T) {

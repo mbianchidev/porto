@@ -7,7 +7,7 @@ import (
 	"os/exec"
 	"syscall"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func cleanupProcess(cmd *exec.Cmd) error {

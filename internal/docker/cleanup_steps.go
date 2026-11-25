@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 const hostDiskTrimTimeout = 5 * time.Minute

@@ -14,8 +14,8 @@ import (
 	"time"
 
 	registrydocker "github.com/containerd/containerd/v2/core/remotes/docker"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/registries"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/registries"
 )
 
 const maxRegistrySearchResults = 100

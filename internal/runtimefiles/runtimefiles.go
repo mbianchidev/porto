@@ -13,8 +13,8 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 type Descriptor struct {

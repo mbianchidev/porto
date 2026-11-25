@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func nativeBrowserArguments() []string { return nil }

@@ -17,7 +17,7 @@ import (
 
 	namespacesapi "github.com/containerd/containerd/api/services/namespaces/v1"
 	"github.com/containerd/containerd/v2/defaults"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"google.golang.org/grpc"

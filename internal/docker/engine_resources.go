@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 	"gopkg.in/yaml.v3"
 )
 

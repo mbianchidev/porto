@@ -6,10 +6,10 @@ import (
 	"log/slog"
 	"path/filepath"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/autoscaling"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/autoscaling"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/filelock"
 )
 
 func (s *Server) lockKubeconfigStorage(ctx context.Context) (func(), error) {

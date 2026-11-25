@@ -13,8 +13,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/wslbridge"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/wslbridge"
 )
 
 func runWSLCommand(t *testing.T, args ...string) (string, string, int) {

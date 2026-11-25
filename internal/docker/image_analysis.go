@@ -8,9 +8,9 @@ import (
 	"io"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/imageanalysis"
-	"github.com/mbianchidev/porto/internal/localtools"
 	digest "github.com/opencontainers/go-digest"
+	"github.com/porto-containers/porto/internal/imageanalysis"
+	"github.com/porto-containers/porto/internal/localtools"
 )
 
 func (m *Manager) ResolveAnalysisImage(ctx context.Context, reference, platform string) (imageanalysis.Image, error) {

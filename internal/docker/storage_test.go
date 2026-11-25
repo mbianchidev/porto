@@ -19,14 +19,14 @@ import (
 	snapshotsapi "github.com/containerd/containerd/api/services/snapshots/v1"
 	apitypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/content"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/opencontainers/go-digest"
 	imagespec "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"google.golang.org/grpc"
 )
 

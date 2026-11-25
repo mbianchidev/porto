@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type rejectingRunner struct{ calls int }

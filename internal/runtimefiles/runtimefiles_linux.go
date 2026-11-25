@@ -23,8 +23,8 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
-	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/opencontainers/image-spec/identity"
+	"github.com/porto-containers/porto/internal/datafiles"
 	"golang.org/x/sys/unix"
 )
 

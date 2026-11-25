@@ -20,10 +20,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/environments"
-	"github.com/mbianchidev/porto/internal/extensions"
-	"github.com/mbianchidev/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/environments"
+	"github.com/porto-containers/porto/internal/extensions"
+	"github.com/porto-containers/porto/internal/filelock"
 )
 
 func managementAPI(ctx context.Context, method, path string, body any) error {

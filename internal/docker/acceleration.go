@@ -9,11 +9,11 @@ import (
 	"time"
 
 	"github.com/containerd/platforms"
-	"github.com/mbianchidev/porto/internal/acceleration"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	"github.com/moby/buildkit/solver/pb"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"google.golang.org/protobuf/proto"
 )
 

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/nativefiles"
 )
 
 func runMountCommand(t *testing.T, input string, args ...string) (string, string, int) {

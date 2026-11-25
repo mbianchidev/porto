@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-repository="${PORTO_REPOSITORY:-mbianchidev/porto}"
+repository="${PORTO_REPOSITORY:-porto-containers/porto}"
 api_url="${PORTO_RELEASE_API_URL:-https://api.github.com/repos/${repository}/releases/latest}"
 tag="${PORTO_VERSION:-}"
 

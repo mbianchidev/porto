@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"strings"
 
-	resourceusage "github.com/mbianchidev/porto/internal/resources"
+	resourceusage "github.com/porto-containers/porto/internal/resources"
 )
 
 type NodeResourceStats struct {

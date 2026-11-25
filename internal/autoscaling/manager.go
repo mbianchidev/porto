@@ -12,7 +12,7 @@ import (
 
 	"github.com/awslabs/operatorpkg/status"
 	"github.com/go-logr/logr"
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"

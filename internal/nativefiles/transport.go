@@ -4,8 +4,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/runtimefiles"
 )
 
 func EncodeNativeRequest(descriptor runtimefiles.Descriptor, writable bool) (string, error) {

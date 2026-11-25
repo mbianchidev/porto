@@ -10,10 +10,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/certificates"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/diagnostics"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/diagnostics"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 type diagnosticsRepairRequest struct {

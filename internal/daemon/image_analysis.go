@@ -7,7 +7,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/imageanalysis"
+	"github.com/porto-containers/porto/internal/imageanalysis"
 )
 
 func (s *Server) imageAnalysisRoutes(mux *http.ServeMux) {

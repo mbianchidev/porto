@@ -11,7 +11,7 @@ import (
 	"sync"
 
 	"github.com/charmbracelet/x/xpty"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 const MaxPTYDimension = 32767

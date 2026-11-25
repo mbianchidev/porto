@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/certificates"
 )
 
 func TestRegistryTrustRequiresImportedReferencesAndRemainsReversible(t *testing.T) {

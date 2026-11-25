@@ -16,9 +16,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/networking"
 )
 
 const databaseListing = "https://grype.anchore.io/databases/v6/latest.json"

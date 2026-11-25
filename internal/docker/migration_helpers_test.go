@@ -14,7 +14,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/dataops"
 )
 
 func TestUnattachedMigrationRequiresConsentWithoutMutatingTheSource(t *testing.T) {

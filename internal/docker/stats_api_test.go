@@ -14,7 +14,7 @@ import (
 	"time"
 
 	cgroup2 "github.com/containerd/cgroups/v3/cgroup2/stats"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestDockerContainerStatsOneShotUsesRawCounters(t *testing.T) {

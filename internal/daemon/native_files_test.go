@@ -8,8 +8,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/nativefiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestNativeCapabilitiesNeverProbeDisabledRuntimes(t *testing.T) {

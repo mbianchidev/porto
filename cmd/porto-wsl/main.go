@@ -9,8 +9,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/wslbridge"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/wslbridge"
 )
 
 func main() {

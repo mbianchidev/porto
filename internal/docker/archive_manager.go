@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 // containerStatFormat holds only numeric fields so GNU and BusyBox stat -c output parse alike.

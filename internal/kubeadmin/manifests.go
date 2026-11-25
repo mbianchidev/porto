@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/operations"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"

@@ -18,9 +18,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/filelock"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type Manager struct {

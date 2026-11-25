@@ -7,8 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/pkg/sftp"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func TestNativeSFTPRequestUsesRootedDirectIO(t *testing.T) {

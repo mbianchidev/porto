@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/process"
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func TestDockerDevelopmentClientsIntegration(t *testing.T) {

@@ -11,8 +11,8 @@ import (
 
 	"github.com/containerd/containerd/v2/core/remotes"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 const maxWindowsImageMetadata = 4 * 1024 * 1024

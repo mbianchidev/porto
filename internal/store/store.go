@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 	_ "modernc.org/sqlite"
 )
 

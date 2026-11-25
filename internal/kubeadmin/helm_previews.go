@@ -16,7 +16,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 var chartVersion = regexp.MustCompile(`^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$`)

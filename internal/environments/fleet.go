@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 type RequestFunc func(context.Context, string, string, string, json.RawMessage) (json.RawMessage, error)

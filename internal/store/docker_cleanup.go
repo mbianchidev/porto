@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 var (

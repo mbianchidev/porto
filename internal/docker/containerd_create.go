@@ -19,9 +19,9 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const (

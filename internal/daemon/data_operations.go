@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func (s *Server) storageRoutes(mux *http.ServeMux) {

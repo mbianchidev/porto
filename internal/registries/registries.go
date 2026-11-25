@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/credentials"
 	"github.com/zalando/go-keyring"
 )
 

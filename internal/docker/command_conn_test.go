@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func TestCommandConnHelperProcess(t *testing.T) {
