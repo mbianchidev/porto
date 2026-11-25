@@ -1,7 +1,7 @@
 # Runtime data API and persisted-state compatibility
 
 This reference specifies the shipped data-operation, local volume-backup and
-migration-recovery contracts behind the [roadmap's compatibility work](https://github.com/mbianchidev/porto/issues/75).
+migration-recovery contracts behind the [roadmap's compatibility work](https://github.com/porto-containers/porto/issues/75).
 It complements [runtime data management](data-management.md), which explains
 the user workflows. Native attachment records, remote environments, extensions
 and platform-specific runtime stores are separate contracts.

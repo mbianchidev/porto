@@ -20,17 +20,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/compose"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/gitutil"
-	"github.com/mbianchidev/porto/internal/killswitch"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/resources"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	projectsetup "github.com/mbianchidev/porto/internal/setup"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/compose"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/gitutil"
+	"github.com/porto-containers/porto/internal/killswitch"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/runtimes"
+	projectsetup "github.com/porto-containers/porto/internal/setup"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 type killSwitchRunner struct {

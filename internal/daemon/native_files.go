@@ -7,8 +7,8 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/nativefiles"
 )
 
 func (s *Server) nativeFileRoutes(mux *http.ServeMux) {

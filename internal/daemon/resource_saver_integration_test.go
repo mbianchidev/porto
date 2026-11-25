@@ -21,14 +21,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
-	"github.com/mbianchidev/porto/internal/config"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/store"
-	"github.com/mbianchidev/porto/internal/syncshares"
+	"github.com/porto-containers/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/config"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/resourcesaver"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/store"
+	"github.com/porto-containers/porto/internal/syncshares"
 	"golang.org/x/net/websocket"
 )
 

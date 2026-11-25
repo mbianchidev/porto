@@ -12,10 +12,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/compose"
-	"github.com/mbianchidev/porto/internal/delivery"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/compose"
+	"github.com/porto-containers/porto/internal/delivery"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 type deliveryBackend struct{ server *Server }

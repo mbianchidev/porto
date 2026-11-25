@@ -11,7 +11,7 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func (s *Server) windowsJSON(ctx context.Context, path string, value any) error {

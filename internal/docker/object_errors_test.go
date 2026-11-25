@@ -8,7 +8,7 @@ import (
 	"testing"
 
 	"github.com/containerd/errdefs"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestMissingDockerObjectsRecognizesNativeStoreDiagnosticsOnly(t *testing.T) {

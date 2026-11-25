@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/dataops"
 )
 
 func (s *Store) ReserveMigrationTemporary(ctx context.Context, resource dataops.SourceTemporary) error {

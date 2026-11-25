@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/certificates"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/certificates"
 )
 
 type Registry struct {

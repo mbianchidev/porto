@@ -15,8 +15,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/imageanalysis"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/imageanalysis"
 )
 
 type analysisExit struct {

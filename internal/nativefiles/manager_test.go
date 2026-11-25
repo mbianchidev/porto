@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type fixtureRunner struct{}

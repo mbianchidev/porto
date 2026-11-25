@@ -9,8 +9,8 @@ import (
 	"slices"
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/kubernetes"
 )
 
 func TestAllowedShell(t *testing.T) {

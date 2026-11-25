@@ -14,8 +14,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"golang.org/x/sys/windows"
 )
 

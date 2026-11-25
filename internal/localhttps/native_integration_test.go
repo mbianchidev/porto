@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/certificates"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func TestNativePortlessHTTPSTrustRenewalAndOwnedRemoval(t *testing.T) {

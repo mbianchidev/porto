@@ -13,9 +13,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"k8s.io/client-go/tools/clientcmd"
 )
 

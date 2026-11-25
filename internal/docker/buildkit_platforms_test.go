@@ -10,10 +10,10 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/defaults"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
 	apitypes "github.com/moby/buildkit/api/types"
 	"github.com/moby/buildkit/solver/pb"
+	"github.com/porto-containers/porto/internal/runtimes"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/test/bufconn"
 	"google.golang.org/protobuf/types/known/timestamppb"

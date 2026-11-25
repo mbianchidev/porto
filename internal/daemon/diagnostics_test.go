@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/diagnostics"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/diagnostics"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type diagnosticsRepairRunner struct {

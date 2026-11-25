@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/syncshares"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/syncshares"
 )
 
 type ownedSyncShareProvider struct{ manager *Manager }

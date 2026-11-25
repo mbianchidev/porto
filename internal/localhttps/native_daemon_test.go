@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/certificates"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 func TestNativePortlessHTTPSRealDaemonRestartAndRenewal(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"context"
 	"io"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func withDirectory(ctx context.Context, descriptor Descriptor, _ bool, run func(Descriptor) error) error {

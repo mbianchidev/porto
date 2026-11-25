@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
 	"github.com/pkg/sftp"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func nativeFixtureClient(t *testing.T, directory string, readOnly bool, allowedCloseErrors ...error) *sftp.Client {

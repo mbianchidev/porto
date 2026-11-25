@@ -14,7 +14,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 var namePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)

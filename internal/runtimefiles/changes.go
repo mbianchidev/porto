@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 
 	"github.com/containerd/continuity/fs"
-	"github.com/mbianchidev/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/datafiles"
 )
 
 func CompareDirectories(ctx context.Context, lower, upper string, output io.Writer) error {

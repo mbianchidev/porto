@@ -14,8 +14,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func nativeTestInstallation(t *testing.T) windowscontainers.Installation {

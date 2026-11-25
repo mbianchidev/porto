@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/credentials"
-	"github.com/mbianchidev/porto/internal/environments"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/environments"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )

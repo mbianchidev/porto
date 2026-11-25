@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func persistedWindowsRequest(id string, labels map[string]string) (CreateContainerRequest, error) {

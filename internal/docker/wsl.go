@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/wsl"
-	"github.com/mbianchidev/porto/internal/wslbridge"
+	"github.com/porto-containers/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/wslbridge"
 )
 
 type wslContextKey struct{}

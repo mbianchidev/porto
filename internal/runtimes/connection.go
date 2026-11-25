@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func DialCommand(ctx context.Context, action string, command *exec.Cmd, localAddr, remoteAddr net.Addr) (net.Conn, error) {

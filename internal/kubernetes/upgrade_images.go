@@ -10,8 +10,8 @@ import (
 	"strings"
 
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	digest "github.com/opencontainers/go-digest"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type kindImageCopy struct {

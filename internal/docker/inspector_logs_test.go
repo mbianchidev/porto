@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/containerlogs"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestInspectorJournalPreservesStreamsAndCancellation(t *testing.T) {

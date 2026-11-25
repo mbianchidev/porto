@@ -9,9 +9,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/wsl"
-	"github.com/mbianchidev/porto/internal/wslbridge"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/wslbridge"
 )
 
 func TestDockerAPITranslatesSelectedWSLBindsAndPreservesExplicitWatchSettings(t *testing.T) {

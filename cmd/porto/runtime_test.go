@@ -16,8 +16,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/kubernetes"
 )
 
 func TestDockerRunAndCLIPreserveArgumentsEnvironmentAndExitCode(t *testing.T) {

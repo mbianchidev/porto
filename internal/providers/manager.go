@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/blang/semver/v4"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const AppleContainerMinimumVersion = "1.7.1"

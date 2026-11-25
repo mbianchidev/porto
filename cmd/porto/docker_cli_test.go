@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 func TestDockerShortcutsPreserveArgumentsAndTargetPorto(t *testing.T) {

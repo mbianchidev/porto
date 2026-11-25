@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type engineStartRunner struct {

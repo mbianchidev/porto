@@ -14,7 +14,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func TestDockerMultiPlatformBuildIntegration(t *testing.T) {

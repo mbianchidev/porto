@@ -8,9 +8,9 @@ import (
 	"os/exec"
 	"strings"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/process"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 const terminalReadLimit = 1024 * 1024

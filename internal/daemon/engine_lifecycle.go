@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"net/http"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func (s *Server) requireDetachedVMFiles(w http.ResponseWriter, name string) bool {

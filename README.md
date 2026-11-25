@@ -1,7 +1,7 @@
 # Porto
 
-[![CI](https://github.com/mbianchidev/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/ci.yml)
-[![CodeQL](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/mbianchidev/porto/actions/workflows/codeql.yml)
+[![CI](https://github.com/porto-containers/porto/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/porto-containers/porto/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/porto-containers/porto/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/porto-containers/porto/actions/workflows/codeql.yml)
 
 > [!WARNING]
 > **Porto is not production-ready.** Use it for local development and experimentation only, not production or critical workloads.
@@ -68,13 +68,13 @@ See [installation](docs/installation.md) for platform details and [runtime requi
 Install and launch the latest desktop release on **macOS or Linux**:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+curl -fsSL https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.sh | sh
 ```
 
 On **Windows PowerShell**:
 
 ```powershell
-irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+irm https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
 The installers select your OS and architecture, verify the release's `SHA256SUMS`, install for the current user, expose the CLI, and launch Porto. On macOS/Linux, ensure `~/.local/bin` is on your `PATH`:
@@ -85,7 +85,7 @@ export PATH="$HOME/.local/bin:$PATH"
 
 On Windows, open a new terminal after installation so it picks up the updated user `Path`.
 
-If macOS Gatekeeper blocks launch, only unblock a trusted download from the [official releases page](https://github.com/mbianchidev/porto/releases) after checksum verification. For the one-line installer's default location:
+If macOS Gatekeeper blocks launch, only unblock a trusted download from the [official releases page](https://github.com/porto-containers/porto/releases) after checksum verification. For the one-line installer's default location:
 
 ```sh
 xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
@@ -93,7 +93,7 @@ xattr -drs com.apple.quarantine "$HOME/Applications/Porto.app"
 
 Reopen that app afterward. For a manual DMG installation, copy `Porto.app` into `/Applications` first and use that path instead. Do not disable Gatekeeper globally. See [macOS launch troubleshooting](docs/installation.md#macos-gatekeeper-quarantine).
 
-For a **headless installation**, download and verify the CLI/web archive from the [releases page](https://github.com/mbianchidev/porto/releases). Keep the `porto` binary (`porto.exe` on Windows) and `ui/dist` directory together, then add the binary's directory to `PATH`. See [manual archive installation](docs/installation.md#manual-archive-installation).
+For a **headless installation**, download and verify the CLI/web archive from the [releases page](https://github.com/porto-containers/porto/releases). Keep the `porto` binary (`porto.exe` on Windows) and `ui/dist` directory together, then add the binary's directory to `PATH`. See [manual archive installation](docs/installation.md#manual-archive-installation).
 
 ### 2. Check the daemon
 
@@ -180,17 +180,17 @@ The [Porto agent skill](.github/skills/porto/SKILL.md) teaches coding agents to 
 To install Porto and the skill together, set `PORTO_AGENT_SKILLS_DIR` to your agent's personal skills directory, such as `~/.copilot/skills` for GitHub Copilot CLI or `~/.claude/skills` for Claude Code. Separate several directories with `:` (`;` on Windows). The installer saves the skill from the same release as `porto/SKILL.md` and refreshes it on every run.
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | PORTO_AGENT_SKILLS_DIR="$HOME/.copilot/skills" sh
+curl -fsSL https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.sh | PORTO_AGENT_SKILLS_DIR="$HOME/.copilot/skills" sh
 ```
 
 ```powershell
-$env:PORTO_AGENT_SKILLS_DIR = "$HOME\.copilot\skills"; irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+$env:PORTO_AGENT_SKILLS_DIR = "$HOME\.copilot\skills"; irm https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
 Or hand both steps to an agent with this prompt:
 
 ```text
-Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. If `porto version` fails, install Porto with PORTO_AGENT_SKILLS_DIR set to your personal skills directory; otherwise save that file as porto/SKILL.md in that directory. Make sure the daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
+Read https://raw.githubusercontent.com/porto-containers/porto/main/.github/skills/porto/SKILL.md and follow it. If `porto version` fails, install Porto with PORTO_AGENT_SKILLS_DIR set to your personal skills directory; otherwise save that file as porto/SKILL.md in that directory. Make sure the daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
 ```
 
 ## Configuration and local state
@@ -222,7 +222,7 @@ Use **Settings** for runtime and desktop preferences, log retention, and optiona
 Build with a security-patched **Go 1.27.3 or newer** release and **Node.js 26 with npm** for the dashboard. Node.js 22.12 remains the compatibility minimum. Release packages do not need these build tools.
 
 ```sh
-git clone https://github.com/mbianchidev/porto.git
+git clone https://github.com/porto-containers/porto.git
 cd porto
 npm --prefix ui ci
 npm --prefix ui run build
@@ -265,7 +265,7 @@ Start with the [documentation index](docs/README.md), or go directly to a guide:
 
 ## Contributing
 
-Report bugs or discuss changes in [GitHub issues](https://github.com/mbianchidev/porto/issues), or submit a focused [pull request](https://github.com/mbianchidev/porto/pulls). Include your OS, Porto version, reproduction steps, and redacted diagnostics when reporting a problem.
+Report bugs or discuss changes in [GitHub issues](https://github.com/porto-containers/porto/issues), or submit a focused [pull request](https://github.com/porto-containers/porto/pulls). Include your OS, Porto version, reproduction steps, and redacted diagnostics when reporting a problem.
 
 For code changes, build from source as above, then run `go test ./...` and `npm --prefix ui run lint`. The [local validation guide](docs/ci-cd.md#running-the-checks-locally) covers formatting, vet, desktop tests, and optional integration checks.
 

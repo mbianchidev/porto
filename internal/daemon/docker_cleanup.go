@@ -8,9 +8,9 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/app"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 func (s *Server) dockerCleanupStatus(w http.ResponseWriter, r *http.Request) {

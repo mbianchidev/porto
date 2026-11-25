@@ -14,10 +14,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/ports"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/ports"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 const (

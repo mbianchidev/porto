@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 const ClusterUpgradeTimeout = 2 * time.Hour

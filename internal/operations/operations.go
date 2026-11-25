@@ -15,7 +15,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 var ErrBusy = errors.New("a local operation already owns this resource or the queue is full")

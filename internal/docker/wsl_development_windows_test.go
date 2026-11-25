@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/wsl"
 )
 
 func testWSLDevelopmentWorkflow(t *testing.T, ctx context.Context, manager *Manager, image, suite string) {

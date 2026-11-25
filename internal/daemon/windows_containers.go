@@ -17,9 +17,9 @@ import (
 	"sync/atomic"
 	"time"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 const windowsIntegrationPrefix = "/api/integrations/windows-containers"

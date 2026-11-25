@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/resources"
 )
 
 type resourceRow struct {

@@ -351,7 +351,7 @@ jobs:
           npm --prefix ui/electron ci
           mkdir -p "$stage/cli" "$stage/package" dist
           go build -trimpath \
-            -ldflags "-s -w -X github.com/mbianchidev/porto/internal/config.Version=$version" \
+            -ldflags "-s -w -X github.com/porto-containers/porto/internal/config.Version=$version" \
             -o "$stage/cli/porto" ./cmd/porto
           electron_arch="$GOARCH"
           if [ "$GOARCH" = amd64 ]; then electron_arch=x64; fi

@@ -7,8 +7,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/etcqlite"
 )
 
 func TestEtcqliteCLIPinsFullUint64IdentityAndExplicitSelection(t *testing.T) {

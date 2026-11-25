@@ -20,9 +20,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/credentials"
-	"github.com/mbianchidev/porto/internal/filelock"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/filelock"
 	"github.com/zalando/go-keyring"
 	"golang.org/x/net/http/httpproxy"
 )

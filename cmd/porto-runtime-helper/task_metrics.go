@@ -13,7 +13,7 @@ import (
 
 	tasksapi "github.com/containerd/containerd/api/services/tasks/v1"
 	containerd "github.com/containerd/containerd/v2/client"
-	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/resources"
 )
 
 func writeTaskMetrics(ctx context.Context, args []string, output io.Writer) (err error) {

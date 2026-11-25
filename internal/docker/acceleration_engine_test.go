@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/acceleration"
 )
 
 func TestChangingTranslatorPreservesExistingVZDevices(t *testing.T) {

@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"net/http"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func (s *Server) engineResourceStatus(w http.ResponseWriter, r *http.Request) {

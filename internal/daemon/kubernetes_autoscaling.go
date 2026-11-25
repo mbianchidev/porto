@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/autoscaling"
+	"github.com/porto-containers/porto/internal/autoscaling"
 )
 
 type kubernetesAutoscalingService interface {

@@ -7,8 +7,8 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/kubeadmin"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/kubeadmin"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func TestGitOpsRoutesRequireExplicitScopeAndDaemonMutationContext(t *testing.T) {

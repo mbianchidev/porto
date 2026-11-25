@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking"
 )
 
 func TestNetworkingEnvironmentHelper(t *testing.T) {

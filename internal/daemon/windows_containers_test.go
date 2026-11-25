@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/store"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 type nativeRoundTripper func(*http.Request) (*http.Response, error)

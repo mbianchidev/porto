@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func (m *Manager) queueLocked(ctx context.Context, current Application, action string, work func(context.Context, string, func(string) error) error) (operations.Operation, error) {

@@ -13,10 +13,10 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/deliverysource"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/deliverysource"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 var helmName = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,52}$`)

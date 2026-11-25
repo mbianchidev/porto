@@ -7,7 +7,7 @@ before destructive or global changes. Users can install Porto and the skill for
 an agent in another project with this prompt:
 
 ```text
-Read https://raw.githubusercontent.com/mbianchidev/porto/main/.github/skills/porto/SKILL.md and follow it. If `porto version` fails, install Porto with PORTO_AGENT_SKILLS_DIR set to your personal skills directory; otherwise save that file as porto/SKILL.md in that directory. Make sure the daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
+Read https://raw.githubusercontent.com/porto-containers/porto/main/.github/skills/porto/SKILL.md and follow it. If `porto version` fails, install Porto with PORTO_AGENT_SKILLS_DIR set to your personal skills directory; otherwise save that file as porto/SKILL.md in that directory. Make sure the daemon is running, then use the porto CLI for this task. Ask me before deleting anything or changing global Docker, HTTPS or Gatekeeper settings.
 ```
 
 Keep the skill in sync with `porto help` (`cmd/porto/main.go`) and the docs when

@@ -305,7 +305,7 @@ checks or silently passing.
 
 The hosted macOS attempt reached the existing `cert trust` login-keychain
 operation but did not complete within its 120-second acceptance deadline.
-[The recorded run](https://github.com/mbianchidev/porto/actions/runs/40232377758/job/121286650808)
+[The recorded run](https://github.com/porto-containers/porto/actions/runs/40232377758/job/121286650808)
 does not establish native macOS HTTPS acceptance. Porto will not bypass user
 trust authorization or replace login-keychain trust with machine-wide trust to
 make hosted CI pass.
@@ -1344,8 +1344,12 @@ code-signed. Verify a download with:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS  # shasum -a 256 --check on macOS
-gh attestation verify porto_1.2.3_linux_amd64.tar.gz --repo mbianchidev/porto
+gh attestation verify porto_1.2.3_linux_amd64.tar.gz --repo porto-containers/porto
 ```
+
+Releases up to 1.11.5 were built before the repository moved to
+`porto-containers`; their attestations name the old source repository, so
+verify them with `--repo mbianchidev/porto`.
 
 ## Running the checks locally
 

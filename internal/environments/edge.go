@@ -16,7 +16,7 @@ import (
 
 	"github.com/coder/websocket"
 	"github.com/hashicorp/yamux"
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 )
 
 func muxConfig() *yamux.Config {

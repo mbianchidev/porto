@@ -7,8 +7,8 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/wsl"
 )
 
 type repeatedFlag []string

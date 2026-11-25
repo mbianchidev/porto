@@ -15,8 +15,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 const installTarget = "github.com/mbianchidev/sql-not-so-lite/cmd/sqnsl@ba6cc552d81b6c04f2c709b5a0902c77aa4fe06c"

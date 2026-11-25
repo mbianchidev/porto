@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/mbianchidev/porto/internal/environments"
-	"github.com/mbianchidev/porto/internal/extensions"
+	"github.com/porto-containers/porto/internal/environments"
+	"github.com/porto-containers/porto/internal/extensions"
 )
 
 func (s *Server) extensionRoutes(mux *http.ServeMux) {

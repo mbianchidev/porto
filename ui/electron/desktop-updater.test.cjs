@@ -21,7 +21,7 @@ function releaseFixture(version, platform = 'darwin', arch = 'arm64', contents =
   const tag = `v${version}`
   const assetName = `porto-desktop_${version}_${target.goos}_${target.goarch}.${target.extension}`
   const checksum = crypto.createHash('sha256').update(contents).digest('hex')
-  const baseURL = `https://github.com/mbianchidev/porto/releases/download/${tag}`
+  const baseURL = `https://github.com/porto-containers/porto/releases/download/${tag}`
   return {
     contents,
     checksum,
@@ -32,7 +32,7 @@ function releaseFixture(version, platform = 'darwin', arch = 'arm64', contents =
       tag_name: tag,
       draft: false,
       prerelease: false,
-      html_url: `https://github.com/mbianchidev/porto/releases/tag/${tag}`,
+      html_url: `https://github.com/porto-containers/porto/releases/tag/${tag}`,
       assets: [
         {
           name: 'SHA256SUMS',
@@ -174,7 +174,7 @@ test('checks GitHub Releases and downloads a verified update', async () => {
   const fixture = releaseFixture('1.3.0')
   const statuses = []
   const fetchImpl = async (url) => {
-    if (url === 'https://api.github.com/repos/mbianchidev/porto/releases/latest') {
+    if (url === 'https://api.github.com/repos/porto-containers/porto/releases/latest') {
       return new Response(JSON.stringify(fixture.release), {
         status: 200,
         headers: { 'content-type': 'application/json' },

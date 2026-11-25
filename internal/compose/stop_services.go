@@ -6,8 +6,8 @@ import (
 	"os"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func (i *Integration) StopServices(ctx context.Context, project app.Project) error {

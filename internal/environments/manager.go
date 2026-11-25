@@ -17,8 +17,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/credentials"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/credentials"
 )
 
 const vaultService = "dev.mbianchi.porto.environments"

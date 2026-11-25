@@ -26,10 +26,10 @@ import (
 	"github.com/containerd/errdefs"
 	"github.com/containerd/platforms"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const (

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestInstalledNativeGuestReadiness(t *testing.T) {

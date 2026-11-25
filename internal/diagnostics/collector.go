@@ -19,16 +19,16 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/certificates"
-	"github.com/mbianchidev/porto/internal/config"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/dockercli"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/localhttps"
-	"github.com/mbianchidev/porto/internal/providers"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/certificates"
+	"github.com/porto-containers/porto/internal/config"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/dockercli"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/localhttps"
+	"github.com/porto-containers/porto/internal/providers"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/vm"
 )
 
 const (

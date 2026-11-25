@@ -24,12 +24,12 @@ import (
 	"time"
 
 	"github.com/Microsoft/hcsshim/hcn"
-	"github.com/mbianchidev/porto/internal/process"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	"github.com/moby/moby/api/types/container"
 	"github.com/moby/moby/api/types/mount"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/porto-containers/porto/internal/process"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -138,7 +138,7 @@ func testWindowsLinuxCoexistence(t *testing.T, parent context.Context, manager *
 		t.Fatal("live coexistence requires absolute current PORTO_TEST_WINDOWS_BINARY (or PORTO_TEST_PORTO_BINARY) and PORTO_WINDOWS_RUNTIME_DIR")
 	}
 	build, err := buildinfo.ReadFile(source)
-	if err != nil || build.Path != "github.com/mbianchidev/porto/cmd/porto" {
+	if err != nil || build.Path != "github.com/porto-containers/porto/cmd/porto" {
 		t.Fatalf("coexistence must execute the current Porto CLI, not a test substitute: %+v, %v", build, err)
 	}
 	runtimeFiles := []string{"containerd.exe", "containerd-shim-runhcs-v1.exe", "nerdctl.exe", "nat.exe", "sdnbridge.exe", "sdnoverlay.exe"}
@@ -502,7 +502,7 @@ done`, "porto-coexistence", suite}},
 	version := strings.TrimSpace(string(mustCommand(source, "version"))) + "-coexistence-" + suite
 	buildContext, stopBuild := context.WithTimeout(ctx, 2*time.Minute)
 	buildCommand := process.NewCommand(buildContext, filepath.Dir(workspace), "go", "build", "-mod=readonly", "-buildvcs=false",
-		"-ldflags=-X github.com/mbianchidev/porto/internal/config.Version="+version, "-o", updatedSource, "./cmd/porto")
+		"-ldflags=-X github.com/porto-containers/porto/internal/config.Version="+version, "-o", updatedSource, "./cmd/porto")
 	buildCommand.Env = process.WithEnvironment(environment, "CGO_ENABLED=0", "GOOS=windows", "GOARCH=amd64",
 		"GOTMPDIR="+buildDir, "TMP="+buildDir, "TEMP="+buildDir)
 	buildOutput, buildErr := buildCommand.CombinedOutput()

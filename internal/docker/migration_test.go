@@ -21,12 +21,12 @@ import (
 
 	apitypes "github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/core/content"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/opencontainers/go-digest"
 	imagespec "github.com/opencontainers/image-spec/specs-go"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestMigrationRequestRejectsNonLocalResourcePaths(t *testing.T) {

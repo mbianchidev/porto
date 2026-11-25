@@ -3,7 +3,7 @@ package daemon
 import (
 	"net/http"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/acceleration"
 )
 
 func (s *Server) accelerationStatus(w http.ResponseWriter, r *http.Request) {

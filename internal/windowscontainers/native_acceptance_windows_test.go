@@ -26,10 +26,10 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/hcsshim"
 	"github.com/Microsoft/hcsshim/hcn"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/process"
 	"github.com/moby/moby/api/pkg/stdcopy"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/process"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )
@@ -73,7 +73,7 @@ func TestNativeWindowsContainersAcceptance(t *testing.T) {
 		t.Fatal(err)
 	}
 	build, err := buildinfo.ReadFile(binary)
-	if err != nil || build.Path != "github.com/mbianchidev/porto/cmd/porto" {
+	if err != nil || build.Path != "github.com/porto-containers/porto/cmd/porto" {
 		t.Fatalf("acceptance must execute the current built Porto binary: %+v, %v", build, err)
 	}
 	for _, path := range runtimeSourcePaths(bundle) {

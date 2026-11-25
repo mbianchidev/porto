@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/operations"
 )
 
 func eventually(t *testing.T, condition func() bool) {

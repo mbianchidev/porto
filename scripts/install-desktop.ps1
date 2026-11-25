@@ -17,7 +17,7 @@ function Format-PortoProcesses([object[]]$Processes) {
     }) -join ", "
 }
 
-$Repository = if ($env:PORTO_REPOSITORY) { $env:PORTO_REPOSITORY } else { "mbianchidev/porto" }
+$Repository = if ($env:PORTO_REPOSITORY) { $env:PORTO_REPOSITORY } else { "porto-containers/porto" }
 $Tag = $env:PORTO_VERSION
 if (-not $Tag) {
     $ReleaseApi = if ($env:PORTO_RELEASE_API_URL) { $env:PORTO_RELEASE_API_URL } else { "https://api.github.com/repos/$Repository/releases/latest" }

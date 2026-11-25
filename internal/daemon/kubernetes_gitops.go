@@ -3,7 +3,7 @@ package daemon
 import (
 	"net/http"
 
-	"github.com/mbianchidev/porto/internal/kubeadmin"
+	"github.com/porto-containers/porto/internal/kubeadmin"
 )
 
 func gitOpsScope(r *http.Request) kubeadmin.GitOpsScope {

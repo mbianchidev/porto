@@ -17,8 +17,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
 )
 
 const sourceHelperOwnerLabel = "io.porto.migration.temporary"

@@ -4,7 +4,7 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/mbianchidev/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/kubernetes"
 )
 
 func (s *Server) upgradeKubernetesCluster(w http.ResponseWriter, r *http.Request) {

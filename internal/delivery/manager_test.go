@@ -21,10 +21,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/deliverysource"
-	"github.com/mbianchidev/porto/internal/operations"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/deliverysource"
+	"github.com/porto-containers/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/store"
 	"github.com/zalando/go-keyring"
 	"gopkg.in/yaml.v3"
 )

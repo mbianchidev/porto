@@ -15,7 +15,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 	"github.com/zalando/go-keyring"
 )
 

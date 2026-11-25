@@ -26,13 +26,13 @@ Porto needs both the `porto` binary and the compiled dashboard assets. Release a
 macOS and Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.sh | sh
+curl -fsSL https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.sh | sh
 ```
 
 Windows PowerShell:
 
 ```powershell
-irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+irm https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.ps1 | iex
 ```
 
 Both installers resolve the latest GitHub release, select the matching
@@ -318,8 +318,15 @@ ready, so those builds cannot reliably repair themselves in place. Stop active
 Porto VMs and Kubernetes clusters, then run the verified installer once:
 
 ```powershell
-irm https://raw.githubusercontent.com/mbianchidev/porto/main/scripts/install-desktop.ps1 | iex
+irm https://raw.githubusercontent.com/porto-containers/porto/main/scripts/install-desktop.ps1 | iex
 ```
+
+Porto moved from `mbianchidev/porto` to `porto-containers/porto`. Porto 1.11.5
+and earlier only accept update downloads from the old repository, so they
+report an update error instead of upgrading. Install the latest release once,
+the same way you installed Porto (one-line installer, DMG or archive); later
+builds update from the new repository. Reinstalling replaces only the
+application and keeps Porto's state.
 
 Porto 1.2.14 and later wait for the helper to signal readiness before exiting.
 The current updater also completes its locked-runtime preflight first. If a
@@ -339,7 +346,7 @@ BuildKit bridge, and Compose backend.
 
 If macOS Gatekeeper blocks Porto's first launch, only remove quarantine for a
 download you trust from the
-[official releases page](https://github.com/mbianchidev/porto/releases).
+[official releases page](https://github.com/porto-containers/porto/releases).
 First verify the DMG or desktop archive against that release's `SHA256SUMS`;
 see [checksum verification](#manual-archive-installation). If verification
 fails, do not unblock or open the app.
@@ -476,7 +483,7 @@ The test no longer expects or deliberately produces an Electron crash.
 
 ### Manual archive installation
 
-Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/mbianchidev/porto/releases). Verify the download, then unpack it:
+Download the archive for your platform and `SHA256SUMS` from the [releases page](https://github.com/porto-containers/porto/releases). Verify the download, then unpack it:
 
 ```sh
 sha256sum --check --ignore-missing SHA256SUMS

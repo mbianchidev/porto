@@ -9,8 +9,8 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/dataops"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/dataops"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func dockerMigrationCmd(args []string) error {

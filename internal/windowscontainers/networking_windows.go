@@ -15,7 +15,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking"
 	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 )

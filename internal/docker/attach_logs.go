@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"sync"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func (a *API) attachContainerLogs(w http.ResponseWriter, r *http.Request) {

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func (m *Manager) CreateNetwork(ctx context.Context, request CreateNetworkRequest) (string, error) {

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func (a *API) mutateImagePath(w http.ResponseWriter, r *http.Request) {

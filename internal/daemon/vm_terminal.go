@@ -15,9 +15,9 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type terminalResize struct {

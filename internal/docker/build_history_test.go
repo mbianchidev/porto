@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/process"
 	controlapi "github.com/moby/buildkit/api/services/control"
+	"github.com/porto-containers/porto/internal/process"
 	statuspb "google.golang.org/genproto/googleapis/rpc/status"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

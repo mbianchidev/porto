@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const appleClusterFixture = `[{"id":"porto-apple-demo","configuration":{"name":"porto-apple-demo","kubernetesVersion":"v1.35.5","creationDate":"2026-11-11T12:00:00Z","nodes":[{"name":"porto-apple-demo"},{"name":"porto-apple-demo-worker-1"}]},"status":{"state":"running","nodes":[{"name":"porto-apple-demo","status":"running"},{"name":"porto-apple-demo-worker-1","status":"running"}]}}]`

@@ -10,10 +10,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/networking/networktest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking/networktest"
 )
 
 func testDevelopmentNetworking(t *testing.T, parent context.Context, manager *Manager) {

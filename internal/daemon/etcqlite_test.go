@@ -11,8 +11,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/etcqlite"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 func etcqliteTestServer(t *testing.T) (*Server, *http.ServeMux, string) {

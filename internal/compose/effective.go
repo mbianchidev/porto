@@ -8,10 +8,10 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/localtools"
-	"github.com/mbianchidev/porto/internal/operations"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func (i *Integration) EffectiveDefinition(ctx context.Context, project app.Project) ([]byte, error) {

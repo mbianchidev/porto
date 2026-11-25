@@ -15,9 +15,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/acceleration"
-	"github.com/mbianchidev/porto/internal/resources"
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/acceleration"
+	"github.com/porto-containers/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const defaultTimeout = 2 * time.Minute

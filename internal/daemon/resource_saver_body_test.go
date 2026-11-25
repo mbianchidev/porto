@@ -15,7 +15,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/resourcesaver"
+	"github.com/porto-containers/porto/internal/resourcesaver"
 )
 
 func TestQueuedBodyStagingPreservesBinaryRequestsAndRemovesPrivateFiles(t *testing.T) {

@@ -19,10 +19,10 @@ import (
 	containerd "github.com/containerd/containerd/v2/client"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/typeurl/v2"
-	"github.com/mbianchidev/porto/internal/containerlogs"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func randomWindowsContainerID() (string, error) {

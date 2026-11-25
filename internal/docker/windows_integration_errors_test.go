@@ -11,9 +11,9 @@ import (
 	"time"
 
 	containersapi "github.com/containerd/containerd/api/services/containers/v1"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/windowscontainers"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 	"google.golang.org/protobuf/types/known/anypb"
 )
 

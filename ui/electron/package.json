@@ -5,7 +5,7 @@
   "version": "1.11.5",
   "description": "Porto desktop runtime for local apps, containers, Kubernetes clusters, and virtual machines.",
   "author": "Porto",
-  "repository": "https://github.com/mbianchidev/porto",
+  "repository": "https://github.com/porto-containers/porto",
   "main": "main.js",
   "scripts": {
     "start": "node dev-launcher.cjs",
@@ -18,7 +18,7 @@
     "productName": "Porto",
     "publish": {
       "provider": "github",
-      "owner": "mbianchidev",
+      "owner": "porto-containers",
       "repo": "porto"
     },
     "directories": {

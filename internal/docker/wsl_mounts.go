@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/wsl"
 	"gopkg.in/yaml.v3"
 )
 

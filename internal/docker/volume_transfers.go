@@ -16,9 +16,9 @@ import (
 	"slices"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/runtimefiles"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/runtimefiles"
 )
 
 const transferOwnerLabel = "io.porto.transfer.owner"

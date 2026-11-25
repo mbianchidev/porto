@@ -15,8 +15,8 @@ import (
 	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/containerd/errdefs"
 	"github.com/distribution/reference"
-	"github.com/mbianchidev/porto/internal/app"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	"github.com/porto-containers/porto/internal/app"
 )
 
 type imageMetadataStores struct {

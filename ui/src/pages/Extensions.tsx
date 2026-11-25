@@ -63,7 +63,7 @@ export function Extensions() {
 
   return <>
     <section className="fleetRail" aria-label="Extension host status"><span className="fleetRailTitle">Permission-scoped extensions</span><span className="fleetDatum">{installed.data?.length ?? 0} installed</span><span className="fleetMessage">Verified artifacts. Explicit grants. Static sandboxed views and bounded WebAssembly actions.</span></section>
-    <div className="controlBar"><button type="button" onClick={refresh}>Refresh extensions</button><a href="https://github.com/mbianchidev/porto/blob/main/docs/extensions.md" target="_blank" rel="noreferrer">Authoring and API compatibility</a></div>
+    <div className="controlBar"><button type="button" onClick={refresh}>Refresh extensions</button><a href="https://github.com/porto-containers/porto/blob/main/docs/extensions.md" target="_blank" rel="noreferrer">Authoring and API compatibility</a></div>
     <div className="workArea managementArea">
       {installed.error && <p role="alert">{installed.error}</p>}
       <div className="dataTableScroll"><table className="dataTable"><caption>Installed tooling</caption><thead><tr><th>Identity and provenance</th><th>Status and permissions</th><th>Controls</th></tr></thead><tbody>

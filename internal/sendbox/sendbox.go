@@ -10,8 +10,8 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 const (

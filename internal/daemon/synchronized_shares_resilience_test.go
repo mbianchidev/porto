@@ -8,9 +8,9 @@ import (
 	"strings"
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/runtimes"
-	"github.com/mbianchidev/porto/internal/syncshares"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/syncshares"
 )
 
 func ownedShareScript(t *testing.T, ctx context.Context, manager *portodocker.Manager, script string, arguments ...string) []byte {

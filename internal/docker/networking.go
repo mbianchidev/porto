@@ -13,9 +13,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	controlapi "github.com/moby/buildkit/api/services/control"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const networkFileOwner = "# Managed by Porto engine networking v1"

@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestCompatibilityCreationPreservesExecFormHealthWithoutRequiringAShell(t *testing.T) {

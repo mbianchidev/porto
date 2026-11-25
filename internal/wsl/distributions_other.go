@@ -6,7 +6,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func platformDistributions(context.Context, runtimes.Runner) ([]Distribution, error) {

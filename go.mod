@@ -1,4 +1,4 @@
-module github.com/mbianchidev/porto
+module github.com/porto-containers/porto
 
 go 1.27.3
 

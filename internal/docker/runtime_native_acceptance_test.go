@@ -18,9 +18,9 @@ import (
 	"time"
 
 	"github.com/containerd/containerd/v2/pkg/namespaces"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
-	"github.com/mbianchidev/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/nativefiles"
 )
 
 func (fixture *runtimeDataFixture) requireContainerFidelity(t *testing.T, selection dataops.Selection, source json.RawMessage) {

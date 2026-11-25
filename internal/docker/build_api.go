@@ -9,7 +9,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 const maxBuildContextBytes = int64(2 * 1024 * 1024 * 1024)

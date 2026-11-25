@@ -9,7 +9,7 @@ import (
 	"io"
 
 	"github.com/containerd/containerd/v2/core/runtime/v2/logging"
-	"github.com/mbianchidev/porto/internal/containerlogs"
+	"github.com/porto-containers/porto/internal/containerlogs"
 )
 
 func runShimLogger(args []string) error {

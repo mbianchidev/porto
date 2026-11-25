@@ -3,7 +3,7 @@ package daemon
 import (
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
+	portodocker "github.com/porto-containers/porto/internal/docker"
 )
 
 func TestContainerHTTPRoutesIncludeNativeBackendAndRejectCrossBackendClaims(t *testing.T) {

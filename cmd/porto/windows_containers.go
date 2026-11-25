@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 
-	"github.com/mbianchidev/porto/internal/windowscontainers"
+	"github.com/porto-containers/porto/internal/windowscontainers"
 )
 
 func windowsContainersCmd(args []string) error {

@@ -15,14 +15,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/datafiles"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/etcqlite"
-	"github.com/mbianchidev/porto/internal/kubernetes"
-	"github.com/mbianchidev/porto/internal/operations"
-	"github.com/mbianchidev/porto/internal/vm"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/datafiles"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/kubernetes"
+	"github.com/porto-containers/porto/internal/operations"
+	"github.com/porto-containers/porto/internal/vm"
 )
 
 const maxRuntimeRequestBytes = 2 * 1024 * 1024

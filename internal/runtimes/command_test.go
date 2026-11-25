@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/logging"
+	"github.com/porto-containers/porto/internal/logging"
 )
 
 func TestRuntimeDebugLoggingDoesNotExposeCommandPayloads(t *testing.T) {

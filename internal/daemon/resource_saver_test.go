@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/resourcesaver"
 )
 
 func TestResourceSaverDoesNotTreatRuntimeSystemMountsAsUserState(t *testing.T) {

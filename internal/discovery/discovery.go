@@ -8,9 +8,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/app"
-	"github.com/mbianchidev/porto/internal/compose"
-	projectsetup "github.com/mbianchidev/porto/internal/setup"
+	"github.com/porto-containers/porto/internal/app"
+	"github.com/porto-containers/porto/internal/compose"
+	projectsetup "github.com/porto-containers/porto/internal/setup"
 )
 
 type Options struct {

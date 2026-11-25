@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/etcqlite"
 )
 
 func (s *Server) etcqliteRoutes(mux *http.ServeMux) {

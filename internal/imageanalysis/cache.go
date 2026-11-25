@@ -7,7 +7,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/mbianchidev/porto/internal/localtools"
+	"github.com/porto-containers/porto/internal/localtools"
 )
 
 const cacheAdmissionBytes = int64(1024 * 1024 * 1024)

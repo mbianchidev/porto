@@ -4,7 +4,7 @@ import (
 	"errors"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/resources"
 )
 
 var (

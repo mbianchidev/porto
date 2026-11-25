@@ -14,9 +14,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/config"
-	"github.com/mbianchidev/porto/internal/diagnostics"
-	"github.com/mbianchidev/porto/internal/store"
+	"github.com/porto-containers/porto/internal/config"
+	"github.com/porto-containers/porto/internal/diagnostics"
+	"github.com/porto-containers/porto/internal/store"
 )
 
 type diagnosticStatusError struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"os/exec"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 type hostPTY = runtimes.PTY

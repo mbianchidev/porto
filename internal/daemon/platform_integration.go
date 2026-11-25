@@ -13,11 +13,11 @@ import (
 	"runtime"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/localhttps"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/process"
+	"github.com/porto-containers/porto/internal/config"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/localhttps"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/process"
 )
 
 func (s *Server) platformRoutes(mux *http.ServeMux) {

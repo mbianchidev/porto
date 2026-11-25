@@ -11,7 +11,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/config"
+	"github.com/porto-containers/porto/internal/config"
 	"k8s.io/apimachinery/pkg/util/validation"
 )
 

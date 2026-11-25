@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/mbianchidev/porto/internal/resources"
+	"github.com/porto-containers/porto/internal/resources"
 )
 
 func (a *API) imageHistory(w http.ResponseWriter, r *http.Request) {

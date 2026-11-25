@@ -7,7 +7,7 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/mbianchidev/porto/internal/nativefiles"
+	"github.com/porto-containers/porto/internal/nativefiles"
 )
 
 func main() {

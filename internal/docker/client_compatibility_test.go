@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/runtimes"
 	"github.com/moby/moby/api/types/container"
 	dockerclient "github.com/moby/moby/client"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func dockerTestEndpoint(t *testing.T) string {

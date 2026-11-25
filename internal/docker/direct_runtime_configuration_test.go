@@ -7,8 +7,8 @@ import (
 
 	corecontainers "github.com/containerd/containerd/v2/core/containers"
 	"github.com/containerd/containerd/v2/pkg/oci"
-	"github.com/mbianchidev/porto/internal/runtimes"
 	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/porto-containers/porto/internal/runtimes"
 )
 
 func TestDirectRuntimeUsesVerifiedBackendCgroupPlacement(t *testing.T) {

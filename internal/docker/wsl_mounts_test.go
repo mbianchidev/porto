@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/mbianchidev/porto/internal/wsl"
+	"github.com/porto-containers/porto/internal/wsl"
 )
 
 func TestWSLMountApplyRequiresExplicitEngineRestartConsent(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 	"os"
 	"strings"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/resourcesaver"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/resourcesaver"
 )
 
 func resourceSaverCmd(args []string) error {

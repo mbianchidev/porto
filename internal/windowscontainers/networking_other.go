@@ -5,7 +5,7 @@ package windowscontainers
 import (
 	"context"
 
-	"github.com/mbianchidev/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking"
 )
 
 func ConfigureNetworking(context.Context, networking.RuntimeConfiguration) (bool, error) {

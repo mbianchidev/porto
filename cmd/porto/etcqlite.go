@@ -10,7 +10,7 @@ import (
 	"os"
 	"strconv"
 
-	"github.com/mbianchidev/porto/internal/etcqlite"
+	"github.com/porto-containers/porto/internal/etcqlite"
 )
 
 func etcqliteCmd(args []string) error {

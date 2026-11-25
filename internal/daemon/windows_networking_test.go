@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	portodocker "github.com/mbianchidev/porto/internal/docker"
-	"github.com/mbianchidev/porto/internal/networking"
-	"github.com/mbianchidev/porto/internal/networking/networktest"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
+	portodocker "github.com/porto-containers/porto/internal/docker"
+	"github.com/porto-containers/porto/internal/networking"
+	"github.com/porto-containers/porto/internal/networking/networktest"
 )
 
 func TestNativeNetworkingTransferUsesResolvedPublicCABytesAndPrivateTransport(t *testing.T) {

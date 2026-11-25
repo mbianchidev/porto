@@ -18,8 +18,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/mbianchidev/porto/internal/datafiles"
-	"github.com/mbianchidev/porto/internal/dataops"
+	"github.com/porto-containers/porto/internal/datafiles"
+	"github.com/porto-containers/porto/internal/dataops"
 )
 
 func TestUnattachedVolumeMigrationRealDockerArchive(t *testing.T) {
