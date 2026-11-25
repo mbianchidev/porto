@@ -838,7 +838,7 @@ jobs, so those responses retry like 5xx and 416: up to ten attempts with
 jittered exponential backoff capped at 60 seconds, honoring `Retry-After` up
 to two minutes. Other 4xx responses, such as 404, still fail at once. Snapshot paths change
 daily, and the service answers uncached objects far more slowly, so the
-client/data harness waits up to 30 minutes for a cold preparation; the
+client/data harness waits up to 60 minutes for a cold preparation; the
 development-client job allows 75 minutes for it. Job caches contain only
 immutable snapshot inputs, keyed by snapshot day, host/guest architecture and
 fixture target, not incidental bootstrap-source edits. Restore falls back to
